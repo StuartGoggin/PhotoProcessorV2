@@ -1,0 +1,36 @@
+[package]
+name = "photogogo-v2"
+version = "2.0.0"
+description = "PhotoGoGo V2 - Desktop Photo Archiving App"
+authors = ["PhotoGoGo"]
+edition = "2021"
+
+[lib]
+name = "photogogo_v2_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+rayon = "1.8"
+image = { version = "0.25", features = ["jpeg", "png"] }
+kamadak-exif = "0.5"
+md-5 = "0.10"
+walkdir = "2"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+hex = "0.4"
+futures = "0.3"
+log = "0.4"
+env_logger = "0.11"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

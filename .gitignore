@@ -1,0 +1,14 @@
+# Generated files
+node_modules/
+dist/
+.tauri/
+
+# Rust
+src-tauri/target/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+*.env
