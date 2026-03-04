@@ -1,8 +1,8 @@
-﻿
+
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use crate::utils::{compute_md5, num_cpus, unique_dest};
+use crate::utils::{compute_md5, num_cpus};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

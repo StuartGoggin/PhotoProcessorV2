@@ -1,4 +1,4 @@
-﻿use rayon::prelude::*;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -88,30 +88,6 @@ fn destination_path(
     date_subdir.join(format!("{}.{}", stem, ext))
 }
 
-fn unique_dest(base: PathBuf) -> PathBuf {
-    if !base.exists() {
-        return base;
-    }
-    let stem = base
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    let ext = base
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_string();
-    let dir = base.parent().unwrap_or(Path::new("."));
-    let mut counter = 1u32;
-    loop {
-        let candidate = dir.join(format!("{}_{}.{}", stem, counter, ext));
-        if !candidate.exists() {
-            return candidate;
-        }
-        counter += 1;
-    }
-}
 
 #[tauri::command]
 pub async fn start_import(
