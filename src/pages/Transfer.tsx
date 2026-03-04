@@ -1,4 +1,4 @@
-﻿import { useState } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { TransferProgress, TransferResult } from "../types";
 import { useSettings, useProgressListener } from "../hooks";

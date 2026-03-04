@@ -1,4 +1,4 @@
-﻿//! Commands for the Tidy Up page (trash collection).
+//! Commands for the Tidy Up page (trash collection).
 
 use crate::utils::unique_dest;
 use std::fs;

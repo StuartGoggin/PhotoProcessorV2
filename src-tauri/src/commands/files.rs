@@ -1,4 +1,4 @@
-﻿//! Commands for file-level operations used by the Review page.
+//! Commands for file-level operations used by the Review page.
 
 use crate::utils::base64_encode;
 use std::fs;

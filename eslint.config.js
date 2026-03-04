@@ -1,4 +1,4 @@
-﻿// ESLint flat config (ESLint v9+)
+// ESLint flat config (ESLint v9+)
 // Install deps: npm install -D eslint @typescript-eslint/eslint-plugin @typescript-eslint/parser eslint-plugin-react-hooks
 import tsPlugin from "@typescript-eslint/eslint-plugin";
 import tsParser from "@typescript-eslint/parser";

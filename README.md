@@ -1,4 +1,4 @@
-﻿# PhotoGoGo V2
+# PhotoGoGo V2
 
 A desktop photo management workflow app built with [Tauri](https://tauri.app/) (Rust backend) and React + TypeScript frontend.
 

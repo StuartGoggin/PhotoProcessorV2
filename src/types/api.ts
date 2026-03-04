@@ -1,4 +1,4 @@
-﻿/**
+/**
  * API types — mirror the Rust structs exposed via Tauri commands/events.
  * Keep in sync with src-tauri/src/commands/*.rs
  */

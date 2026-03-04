@@ -1,4 +1,4 @@
-﻿interface StarRatingProps {
+interface StarRatingProps {
   value: number; // 0–3
   onChange?: (val: number) => void;
   readonly?: boolean;

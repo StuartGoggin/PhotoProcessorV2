@@ -1,4 +1,4 @@
-﻿/** UI-only types — not mirrored in Rust. */
+/** UI-only types — not mirrored in Rust. */
 
 export type Page =
   | "import"

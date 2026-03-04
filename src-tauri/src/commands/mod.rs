@@ -1,4 +1,4 @@
-﻿pub mod files;
+pub mod files;
 pub mod import;
 pub mod process;
 pub mod settings;

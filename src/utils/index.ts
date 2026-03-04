@@ -1,1 +1,1 @@
-﻿export * from "./fileNaming";
+export * from "./fileNaming";

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Utilities for encoding star ratings and trash markers in filenames.
  *
  * Convention:

@@ -1,4 +1,4 @@
-﻿import { useEffect } from "react";
+import { useEffect } from "react";
 import { useReview } from "../hooks";
 import { FileTree, ImagePanel, StarRating } from "../components";
 

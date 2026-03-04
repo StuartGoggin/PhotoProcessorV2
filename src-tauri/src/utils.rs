@@ -1,4 +1,4 @@
-﻿//! Shared utility functions used across command modules.
+//! Shared utility functions used across command modules.
 
 use md5::{Digest, Md5};
 use std::fs;

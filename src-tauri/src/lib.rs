@@ -1,4 +1,4 @@
-﻿mod commands;
+mod commands;
 mod utils;
 
 use commands::{
