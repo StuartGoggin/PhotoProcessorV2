@@ -1,4 +1,5 @@
-import { useState } from "react";
+﻿import { useState } from "react";
+import type { Page } from "./types";
 import Import from "./pages/Import";
 import PostProcess from "./pages/PostProcess";
 import Review from "./pages/Review";
@@ -6,16 +7,23 @@ import TidyUp from "./pages/TidyUp";
 import Transfer from "./pages/Transfer";
 import Settings from "./pages/Settings";
 
-type Page = "import" | "postprocess" | "review" | "tidyup" | "transfer" | "settings";
-
-const navItems: { id: Page; label: string; icon: string }[] = [
-  { id: "import", label: "Import", icon: "📥" },
-  { id: "postprocess", label: "Post Process", icon: "⚙️" },
-  { id: "review", label: "Review", icon: "🖼️" },
-  { id: "tidyup", label: "Tidy Up", icon: "🗑️" },
-  { id: "transfer", label: "Transfer", icon: "📤" },
-  { id: "settings", label: "Settings", icon: "⚙️" },
+const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
+  { id: "import",      label: "Import",       icon: "📥" },
+  { id: "postprocess", label: "Post Process",  icon: "⚙️" },
+  { id: "review",      label: "Review",        icon: "🖼️" },
+  { id: "tidyup",      label: "Tidy Up",       icon: "🗑️" },
+  { id: "transfer",    label: "Transfer",      icon: "📤" },
+  { id: "settings",    label: "Settings",      icon: "⚙️" },
 ];
+
+const PAGE_MAP: Record<Page, React.ReactNode> = {
+  import:      <Import />,
+  postprocess: <PostProcess />,
+  review:      <Review />,
+  tidyup:      <TidyUp />,
+  transfer:    <Transfer />,
+  settings:    <Settings />,
+};
 
 export default function App() {
   const [page, setPage] = useState<Page>("import");
@@ -29,7 +37,7 @@ export default function App() {
           <p className="text-xs text-gray-500 mt-0.5">v2.0</p>
         </div>
         <nav className="flex-1 p-2 space-y-1">
-          {navItems.map((item) => (
+          {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
               onClick={() => setPage(item.id)}
@@ -44,12 +52,7 @@ export default function App() {
 
       {/* Main content */}
       <main className="flex-1 overflow-auto bg-surface-900">
-        {page === "import" && <Import />}
-        {page === "postprocess" && <PostProcess />}
-        {page === "review" && <Review />}
-        {page === "tidyup" && <TidyUp />}
-        {page === "transfer" && <Transfer />}
-        {page === "settings" && <Settings />}
+        {PAGE_MAP[page]}
       </main>
     </div>
   );

@@ -1,23 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import type { Settings, ImportProgress, ImportResult } from "../types";
-import ProgressBar from "../components/ProgressBar";
+import type { ImportProgress, ImportResult } from "../types";
+import { useSettings, useProgressListener } from "../hooks";
+import { ProgressBar } from "../components";
 
 export default function Import() {
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const { settings } = useSettings();
+  const { subscribe, unsubscribe } = useProgressListener<ImportProgress>("import-progress");
+
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const unlistenRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    invoke<Settings>("load_settings").then(setSettings).catch(console.error);
-    return () => {
-      unlistenRef.current?.();
-    };
-  }, []);
 
   async function startImport() {
     if (!settings?.source_root || !settings?.staging_dir) {
@@ -30,11 +24,7 @@ export default function Import() {
     setError(null);
     setProgress(null);
 
-    // Subscribe to progress events
-    const unlisten = await listen<ImportProgress>("import-progress", (event) => {
-      setProgress(event.payload);
-    });
-    unlistenRef.current = unlisten;
+    await subscribe(setProgress);
 
     try {
       const res = await invoke<ImportResult>("start_import", {
@@ -45,8 +35,7 @@ export default function Import() {
     } catch (e) {
       setError(String(e));
     } finally {
-      unlisten();
-      unlistenRef.current = null;
+      unsubscribe();
       setRunning(false);
     }
   }
@@ -121,11 +110,7 @@ export default function Import() {
         </div>
       )}
 
-      <button
-        className="btn-primary"
-        onClick={startImport}
-        disabled={running}
-      >
+      <button className="btn-primary" onClick={startImport} disabled={running}>
         {running ? "Importing..." : "Start Import"}
       </button>
     </div>

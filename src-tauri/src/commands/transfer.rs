@@ -1,8 +1,8 @@
-use md5::{Digest, Md5};
+﻿
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Read;
+use crate::utils::{compute_md5, num_cpus, unique_dest};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -25,19 +25,7 @@ pub struct TransferResult {
     pub errors: Vec<String>,
 }
 
-fn compute_md5(path: &Path) -> anyhow::Result<String> {
-    let mut file = fs::File::open(path)?;
-    let mut hasher = Md5::new();
-    let mut buf = [0u8; 65536];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(hex::encode(hasher.finalize()))
-}
+
 
 fn collect_all_files(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)
@@ -303,110 +291,15 @@ pub async fn verify_checksums(
     })
 }
 
-#[tauri::command]
-pub async fn collect_trash(staging_dir: String) -> Result<usize, String> {
-    let root = PathBuf::from(&staging_dir);
-    if !root.exists() {
-        return Err(format!("Staging dir does not exist: {}", staging_dir));
-    }
 
-    let trash_dir = root.join("Trash");
-    fs::create_dir_all(&trash_dir).map_err(|e| e.to_string())?;
 
-    let trash_files: Vec<PathBuf> = WalkDir::new(&root)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.into_path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.contains("{trash}"))
-                .unwrap_or(false)
-        })
-        .collect();
 
-    let count = trash_files.len();
-    for path in trash_files {
-        let name = path.file_name().unwrap_or_default();
-        let dest = trash_dir.join(name);
-        let dest = unique_dest(dest);
-        fs::rename(&path, &dest).map_err(|e| format!("{}: {}", path.display(), e))?;
-    }
 
-    Ok(count)
-}
 
-fn unique_dest(base: PathBuf) -> PathBuf {
-    if !base.exists() {
-        return base;
-    }
-    let stem = base
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    let ext = base
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_string();
-    let dir = base.parent().unwrap_or(Path::new("."));
-    let mut i = 1u32;
-    loop {
-        let candidate = if ext.is_empty() {
-            dir.join(format!("{}_{}", stem, i))
-        } else {
-            dir.join(format!("{}_{}.{}", stem, i, ext))
-        };
-        if !candidate.exists() {
-            return candidate;
-        }
-        i += 1;
-    }
-}
 
-#[tauri::command]
-pub async fn rename_file(old_path: String, new_name: String) -> Result<String, String> {
-    let old = PathBuf::from(&old_path);
-    let parent = old.parent().ok_or("No parent directory")?;
-    let new = parent.join(&new_name);
-    fs::rename(&old, &new).map_err(|e| e.to_string())?;
-    Ok(new.to_string_lossy().into_owned())
-}
 
-#[tauri::command]
-pub fn read_image_base64(path: String) -> Result<String, String> {
-    let data = fs::read(&path).map_err(|e| e.to_string())?;
-    Ok(base64_encode(&data))
-}
 
-fn base64_encode(data: &[u8]) -> String {
-    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(TABLE[((n >> 6) & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(TABLE[(n & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}
 
-fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-}
+
+
+

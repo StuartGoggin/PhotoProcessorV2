@@ -1,4 +1,4 @@
-use rayon::prelude::*;
+﻿use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
+use crate::utils::unique_dest;
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "cr3", "jpg", "jpeg", "avi", "mp4", "mkv", "mov", "dng", "mts",
@@ -291,3 +292,4 @@ fn build_tree(path: &Path, root: &Path) -> anyhow::Result<serde_json::Value> {
         }))
     }
 }
+

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import type { Settings, ProcessProgress, ProcessResult } from "../types";
-import ProgressBar from "../components/ProgressBar";
+import type { ProcessProgress, ProcessResult } from "../types";
+import { useSettings, useProgressListener } from "../hooks";
+import { ProgressBar } from "../components";
 
 type Task = "focus" | "enhance" | "bw";
 
@@ -39,31 +39,25 @@ const TASKS: TaskConfig[] = [
 ];
 
 export default function PostProcess() {
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const { settings } = useSettings();
+  const { subscribe, unsubscribe } = useProgressListener<ProcessProgress>("process-progress");
+
   const [running, setRunning] = useState<Task | null>(null);
   const [progress, setProgress] = useState<ProcessProgress | null>(null);
   const [results, setResults] = useState<Partial<Record<Task, ProcessResult>>>({});
   const [error, setError] = useState<string | null>(null);
-  const unlistenRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    invoke<Settings>("load_settings").then(setSettings).catch(console.error);
-    return () => unlistenRef.current?.();
-  }, []);
 
   async function runTask(task: TaskConfig) {
     if (!settings?.staging_dir) {
       setError("Staging directory not configured in Settings.");
       return;
     }
+
     setRunning(task.id);
     setError(null);
     setProgress(null);
 
-    const unlisten = await listen<ProcessProgress>("process-progress", (e) => {
-      setProgress(e.payload);
-    });
-    unlistenRef.current = unlisten;
+    await subscribe(setProgress);
 
     try {
       const res = await invoke<ProcessResult>(task.command, {
@@ -73,8 +67,7 @@ export default function PostProcess() {
     } catch (e) {
       setError(String(e));
     } finally {
-      unlisten();
-      unlistenRef.current = null;
+      unsubscribe();
       setRunning(null);
     }
   }

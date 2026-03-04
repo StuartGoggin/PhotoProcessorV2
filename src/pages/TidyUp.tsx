@@ -1,25 +1,23 @@
-import { useEffect, useState } from "react";
+﻿import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Settings } from "../types";
+import { useSettings } from "../hooks";
 
 export default function TidyUp() {
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const { settings } = useSettings();
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    invoke<Settings>("load_settings").then(setSettings).catch(console.error);
-  }, []);
 
   async function collectTrash() {
     if (!settings?.staging_dir) {
       setError("Staging directory not configured.");
       return;
     }
+
     setRunning(true);
     setError(null);
     setResult(null);
+
     try {
       const count = await invoke<number>("collect_trash", {
         stagingDir: settings.staging_dir,

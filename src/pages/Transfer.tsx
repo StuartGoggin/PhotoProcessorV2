@@ -1,38 +1,38 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import type { Settings, TransferProgress, TransferResult } from "../types";
-import ProgressBar from "../components/ProgressBar";
+import type { TransferProgress, TransferResult } from "../types";
+import { useSettings, useProgressListener } from "../hooks";
+import { ProgressBar } from "../components";
+
+const PHASE_LABELS: Record<string, string> = {
+  copy: "Copying files",
+  md5: "Generating checksums",
+  verify: "Verifying checksums",
+};
 
 export default function Transfer() {
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const { settings } = useSettings();
+  const { subscribe, unsubscribe } = useProgressListener<TransferProgress>("transfer-progress");
+
   const [running, setRunning] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [progress, setProgress] = useState<TransferProgress | null>(null);
   const [result, setResult] = useState<TransferResult | null>(null);
   const [verifyResult, setVerifyResult] = useState<TransferResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const unlistenRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    invoke<Settings>("load_settings").then(setSettings).catch(console.error);
-    return () => unlistenRef.current?.();
-  }, []);
 
   async function startTransfer() {
     if (!settings?.staging_dir || !settings?.archive_dir) {
       setError("Staging and Archive directories must be configured in Settings.");
       return;
     }
+
     setRunning(true);
     setError(null);
     setResult(null);
     setProgress(null);
 
-    const unlisten = await listen<TransferProgress>("transfer-progress", (e) => {
-      setProgress(e.payload);
-    });
-    unlistenRef.current = unlisten;
+    await subscribe(setProgress);
 
     try {
       const res = await invoke<TransferResult>("start_transfer", {
@@ -43,8 +43,7 @@ export default function Transfer() {
     } catch (e) {
       setError(String(e));
     } finally {
-      unlisten();
-      unlistenRef.current = null;
+      unsubscribe();
       setRunning(false);
     }
   }
@@ -54,15 +53,13 @@ export default function Transfer() {
       setError("Archive directory not configured.");
       return;
     }
+
     setVerifying(true);
     setError(null);
     setVerifyResult(null);
     setProgress(null);
 
-    const unlisten = await listen<TransferProgress>("transfer-progress", (e) => {
-      setProgress(e.payload);
-    });
-    unlistenRef.current = unlisten;
+    await subscribe(setProgress);
 
     try {
       const res = await invoke<TransferResult>("verify_checksums", {
@@ -72,17 +69,10 @@ export default function Transfer() {
     } catch (e) {
       setError(String(e));
     } finally {
-      unlisten();
-      unlistenRef.current = null;
+      unsubscribe();
       setVerifying(false);
     }
   }
-
-  const phaseLabel: Record<string, string> = {
-    copy: "Copying files",
-    md5: "Generating checksums",
-    verify: "Verifying checksums",
-  };
 
   return (
     <div className="p-6 max-w-2xl mx-auto">
@@ -95,11 +85,15 @@ export default function Transfer() {
         <div className="card mb-6 space-y-2 text-sm">
           <div className="flex justify-between">
             <span className="text-gray-400">Staging:</span>
-            <span className="text-gray-200 truncate max-w-xs">{settings.staging_dir || <span className="text-red-400">Not set</span>}</span>
+            <span className="text-gray-200 truncate max-w-xs">
+              {settings.staging_dir || <span className="text-red-400">Not set</span>}
+            </span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-400">Archive:</span>
-            <span className="text-gray-200 truncate max-w-xs">{settings.archive_dir || <span className="text-red-400">Not set</span>}</span>
+            <span className="text-gray-200 truncate max-w-xs">
+              {settings.archive_dir || <span className="text-red-400">Not set</span>}
+            </span>
           </div>
         </div>
       )}
@@ -113,7 +107,7 @@ export default function Transfer() {
       {(running || verifying) && progress && (
         <div className="card mb-6 space-y-2">
           <p className="text-xs text-gray-400 font-medium">
-            {phaseLabel[progress.phase] ?? progress.phase}
+            {PHASE_LABELS[progress.phase] ?? progress.phase}
           </p>
           <ProgressBar
             total={progress.total}
@@ -173,18 +167,10 @@ export default function Transfer() {
       )}
 
       <div className="flex gap-3">
-        <button
-          className="btn-primary"
-          onClick={startTransfer}
-          disabled={running || verifying}
-        >
+        <button className="btn-primary" onClick={startTransfer} disabled={running || verifying}>
           {running ? "Transferring..." : "Start Transfer"}
         </button>
-        <button
-          className="btn-secondary"
-          onClick={verifyChecksums}
-          disabled={running || verifying}
-        >
+        <button className="btn-secondary" onClick={verifyChecksums} disabled={running || verifying}>
           {verifying ? "Verifying..." : "Verify Checksums"}
         </button>
       </div>

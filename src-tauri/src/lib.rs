@@ -1,10 +1,13 @@
-mod commands;
+﻿mod commands;
+mod utils;
 
 use commands::{
+    files::{read_image_base64, rename_file},
     import::{list_staging_tree, start_import},
     process::{run_bw_conversion, run_enhancement, run_focus_detection},
     settings::{load_settings, save_settings},
-    transfer::{collect_trash, read_image_base64, rename_file, start_transfer, verify_checksums},
+    tidy::collect_trash,
+    transfer::{start_transfer, verify_checksums},
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,10 +27,12 @@ pub fn run() {
             run_focus_detection,
             run_enhancement,
             run_bw_conversion,
-            // Transfer / tidy
+            // Transfer
             start_transfer,
             verify_checksums,
+            // Tidy
             collect_trash,
+            // Files (Review page)
             rename_file,
             read_image_base64,
         ])
