@@ -28,20 +28,29 @@ export default function SettingsPage() {
     archive_dir: "",
   });
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    invoke<Settings>("load_settings").then(setSettings).catch(console.error);
+    invoke<Settings>("load_settings").then(setSettings).catch((e) => setError(String(e)));
   }, []);
 
   async function pickDir(field: keyof Settings) {
-    const selected = await open({ directory: true, multiple: false });
-    if (selected && typeof selected === "string") {
-      setSettings((s) => ({ ...s, [field]: selected }));
+    setError(null);
+
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (selected && typeof selected === "string") {
+        setSettings((s) => ({ ...s, [field]: selected }));
+      }
+    } catch (e) {
+      setError(`Failed to open folder picker: ${String(e)}`);
     }
   }
 
   async function save() {
+    setError(null);
     await invoke("save_settings", { settings });
+
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
@@ -49,6 +58,12 @@ export default function SettingsPage() {
   return (
     <div className="p-6 max-w-2xl mx-auto">
       <h2 className="text-2xl font-semibold text-white mb-6">Settings</h2>
+
+      {error && (
+        <div className="bg-red-900/40 border border-red-700 rounded-lg px-4 py-3 mb-4 text-red-300 text-sm">
+          {error}
+        </div>
+      )}
 
       <div className="space-y-6">
         {FIELDS.map(({ key, label, help }) => (
