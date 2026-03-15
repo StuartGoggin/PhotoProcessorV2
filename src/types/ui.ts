@@ -2,11 +2,13 @@
 
 export type Page =
   | "import"
+  | "cleanup"
+  | "jobs"
   | "postprocess"
   | "review"
-  | "tidyup"
   | "transfer"
-  | "settings";
+  | "settings"
+  | "logs";
 
 export interface ImageSet {
   original: string | null;

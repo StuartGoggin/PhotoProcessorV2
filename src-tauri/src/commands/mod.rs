@@ -1,5 +1,6 @@
 pub mod files;
 pub mod import;
+pub mod logs;
 pub mod process;
 pub mod settings;
 pub mod tidy;

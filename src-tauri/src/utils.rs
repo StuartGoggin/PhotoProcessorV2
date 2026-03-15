@@ -1,9 +1,13 @@
 //! Shared utility functions used across command modules.
 
+use chrono::Local;
 use md5::{Digest, Md5};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use tauri::AppHandle;
+use tauri::Manager;
 
 /// Returns the number of logical CPUs available, falling back to 4.
 pub fn num_cpus() -> usize {
@@ -81,4 +85,55 @@ pub fn unique_dest(base: PathBuf) -> PathBuf {
         }
         i += 1;
     }
+}
+
+fn log_write_guard() -> &'static Mutex<()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD.get_or_init(|| Mutex::new(()))
+}
+
+pub fn app_log_path(app: &AppHandle) -> PathBuf {
+    let mut path = app
+        .path()
+        .app_config_dir()
+        .unwrap_or_else(|_| PathBuf::from("."));
+    path.push("operations.log");
+    path
+}
+
+pub fn append_app_log(app: &AppHandle, message: impl AsRef<str>) -> Result<(), String> {
+    let _guard = log_write_guard().lock().map_err(|e| e.to_string())?;
+
+    let path = app_log_path(app);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let ts = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let line = format!("[{}] {}\n", ts, message.as_ref());
+
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    file.write_all(line.as_bytes()).map_err(|e| e.to_string())
+}
+
+pub fn read_app_log(app: &AppHandle) -> Result<String, String> {
+    let path = app_log_path(app);
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+pub fn clear_app_log(app: &AppHandle) -> Result<(), String> {
+    let _guard = log_write_guard().lock().map_err(|e| e.to_string())?;
+    let path = app_log_path(app);
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::write(path, "").map_err(|e| e.to_string())
 }

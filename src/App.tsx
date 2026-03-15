@@ -1,28 +1,34 @@
 import { useState } from "react";
 import type { Page } from "./types";
 import Import from "./pages/Import";
+import Cleanup from "./pages/Cleanup";
+import Jobs from "./pages/Jobs";
 import PostProcess from "./pages/PostProcess";
 import Review from "./pages/Review";
-import TidyUp from "./pages/TidyUp";
 import Transfer from "./pages/Transfer";
 import Settings from "./pages/Settings";
+import Logs from "./pages/Logs";
 
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "import",      label: "Import",       icon: "📥" },
+  { id: "cleanup",     label: "Cleanup",      icon: "🧹" },
+  { id: "jobs",        label: "Jobs",         icon: "🧵" },
   { id: "postprocess", label: "Post Process",  icon: "⚙️" },
   { id: "review",      label: "Review",        icon: "🖼️" },
-  { id: "tidyup",      label: "Tidy Up",       icon: "🗑️" },
   { id: "transfer",    label: "Transfer",      icon: "📤" },
   { id: "settings",    label: "Settings",      icon: "⚙️" },
+  { id: "logs",        label: "Logs",          icon: "📜" },
 ];
 
 const PAGE_MAP: Record<Page, React.ReactNode> = {
   import:      <Import />,
+  cleanup:     <Cleanup />,
+  jobs:        <Jobs />,
   postprocess: <PostProcess />,
   review:      <Review />,
-  tidyup:      <TidyUp />,
   transfer:    <Transfer />,
   settings:    <Settings />,
+  logs:        <Logs />,
 };
 
 export default function App() {

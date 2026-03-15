@@ -1,42 +1,72 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ImportProgress, ImportResult } from "../types";
-import { useSettings, useProgressListener } from "../hooks";
-import { ProgressBar } from "../components";
+import { open } from "@tauri-apps/plugin-dialog";
+import type { ImportOptions, SourceShortcut } from "../types";
+import { useSettings } from "../hooks";
 
 export default function Import() {
   const { settings } = useSettings();
-  const { subscribe, unsubscribe } = useProgressListener<ImportProgress>("import-progress");
 
-  const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<ImportProgress | null>(null);
-  const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [sourceOverride, setSourceOverride] = useState("");
+  const [shortcuts, setShortcuts] = useState<SourceShortcut[]>([]);
+  const [loadingShortcuts, setLoadingShortcuts] = useState(false);
+
+  async function loadShortcuts() {
+    setLoadingShortcuts(true);
+    try {
+      const data = await invoke<SourceShortcut[]>("list_sd_cards");
+      setShortcuts(data);
+    } catch {
+      setShortcuts([]);
+    } finally {
+      setLoadingShortcuts(false);
+    }
+  }
+
+  useEffect(() => {
+    loadShortcuts();
+  }, []);
+
+  async function browseSource() {
+    setError(null);
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (selected && typeof selected === "string") {
+        setSourceOverride(selected);
+      }
+    } catch (e) {
+      setError(`Failed to open source picker: ${String(e)}`);
+    }
+  }
 
   async function startImport() {
-    if (!settings?.source_root || !settings?.staging_dir) {
+    const source = sourceOverride.trim() || settings?.source_root || "";
+    const staging = settings?.staging_dir || "";
+
+    if (!source || !staging) {
       setError("Please configure Source Root and Staging Directory in Settings first.");
       return;
     }
 
-    setRunning(true);
-    setResult(null);
+    setStarting(true);
     setError(null);
-    setProgress(null);
-
-    await subscribe(setProgress);
+    setMessage(null);
 
     try {
-      const res = await invoke<ImportResult>("start_import", {
-        sourceDir: settings.source_root,
-        stagingDir: settings.staging_dir,
+      const options: ImportOptions = { reprocessExisting: false };
+      const jobId = await invoke<string>("start_import_job", {
+        sourceDir: source,
+        stagingDir: staging,
+        options,
       });
-      setResult(res);
+      setMessage(`Queued background job: ${jobId}. Track it in Jobs tab.`);
     } catch (e) {
       setError(String(e));
     } finally {
-      unsubscribe();
-      setRunning(false);
+      setStarting(false);
     }
   }
 
@@ -49,11 +79,64 @@ export default function Import() {
 
       {settings && (
         <div className="card mb-6 space-y-2">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-500">Detected SD Cards</span>
+              <button
+                type="button"
+                className="btn-secondary px-2 py-1 text-xs"
+                onClick={loadShortcuts}
+                disabled={starting || loadingShortcuts}
+              >
+                {loadingShortcuts ? "Scanning..." : "Rescan"}
+              </button>
+            </div>
+            {shortcuts.length === 0 ? (
+              <p className="text-xs text-gray-500">No removable drives found. Use Browse or manual path.</p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {shortcuts.map((item) => (
+                  <button
+                    key={item.path}
+                    type="button"
+                    className="text-left bg-surface-700 hover:bg-surface-600 border border-surface-500 rounded-lg p-3 transition-colors"
+                    onClick={() => setSourceOverride(item.path)}
+                    disabled={starting}
+                  >
+                    <div className="text-sm text-white font-medium truncate">💾 {item.label}</div>
+                    <div className="text-xs text-gray-400 truncate mt-1">{item.path}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="flex justify-between text-sm">
             <span className="text-gray-400">Source:</span>
             <span className="text-gray-200 truncate max-w-xs">
               {settings.source_root || <span className="text-red-400">Not set</span>}
             </span>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-gray-500">Source override (optional; enables multiple sources)</label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                className="input-field w-full"
+                value={sourceOverride}
+                onChange={(e) => setSourceOverride(e.target.value)}
+                placeholder="Leave empty to use Source from Settings"
+                disabled={starting}
+              />
+              <button
+                type="button"
+                className="btn-secondary whitespace-nowrap"
+                onClick={browseSource}
+                disabled={starting}
+              >
+                Browse...
+              </button>
+            </div>
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-gray-400">Staging:</span>
@@ -70,48 +153,14 @@ export default function Import() {
         </div>
       )}
 
-      {running && progress && (
-        <div className="card mb-6 space-y-3">
-          <ProgressBar
-            total={progress.total}
-            done={progress.done}
-            label={progress.current_file}
-            extra={`${progress.done}/${progress.total} files • ${progress.speed_mbps.toFixed(1)} MB/s`}
-          />
-          {progress.skipped > 0 && (
-            <p className="text-xs text-yellow-400">Skipped (duplicate): {progress.skipped}</p>
-          )}
+      {message && (
+        <div className="bg-green-900/40 border border-green-700 rounded-lg px-4 py-3 mb-4 text-green-300 text-sm">
+          {message}
         </div>
       )}
 
-      {result && !running && (
-        <div className="card mb-6">
-          <h3 className="text-green-400 font-medium mb-2">✓ Import Complete</h3>
-          <div className="space-y-1 text-sm">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Imported:</span>
-              <span className="text-white">{result.imported} files</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Skipped:</span>
-              <span className="text-white">{result.skipped} files</span>
-            </div>
-            {result.errors.length > 0 && (
-              <div className="mt-2">
-                <p className="text-red-400 text-xs font-medium">Errors ({result.errors.length}):</p>
-                <div className="max-h-32 overflow-y-auto mt-1 space-y-0.5">
-                  {result.errors.map((e, i) => (
-                    <p key={i} className="text-xs text-red-300">{e}</p>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      <button className="btn-primary" onClick={startImport} disabled={running}>
-        {running ? "Importing..." : "Start Import"}
+      <button className="btn-primary" onClick={startImport} disabled={starting}>
+        {starting ? "Queueing..." : "Queue Import Job"}
       </button>
     </div>
   );

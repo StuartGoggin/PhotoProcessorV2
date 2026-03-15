@@ -24,6 +24,38 @@ export interface ImportResult {
   errors: string[];
 }
 
+export interface ImportOptions {
+  reprocessExisting: boolean;
+}
+
+export interface SourceShortcut {
+  path: string;
+  label: string;
+}
+
+export type ImportJobStatus = "queued" | "running" | "paused" | "aborted" | "completed" | "failed";
+
+export interface ImportJob {
+  id: string;
+  sourceDir: string;
+  stagingDir: string;
+  reprocessExisting: boolean;
+  status: ImportJobStatus;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  total: number;
+  done: number;
+  skipped: number;
+  speedMbps: number;
+  currentFile: string;
+  imported: number;
+  errors: string[];
+  logs: string[];
+  pauseRequested: boolean;
+  abortRequested: boolean;
+}
+
 export interface ProcessProgress {
   total: number;
   done: number;

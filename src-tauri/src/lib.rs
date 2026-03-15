@@ -3,7 +3,11 @@ mod utils;
 
 use commands::{
     files::{read_image_base64, rename_file},
-    import::{list_staging_tree, start_import},
+    import::{
+        abort_import_job, clear_finished_import_jobs, list_import_jobs, list_staging_tree,
+        list_sd_cards, pause_import_job, resume_import_job, start_import, start_import_job,
+    },
+    logs::{clear_log_file, read_log_file},
     process::{run_bw_conversion, run_enhancement, run_focus_detection},
     settings::{load_settings, save_settings},
     tidy::collect_trash,
@@ -22,7 +26,14 @@ pub fn run() {
             save_settings,
             // Import
             start_import,
+            start_import_job,
             list_staging_tree,
+            list_sd_cards,
+            list_import_jobs,
+            clear_finished_import_jobs,
+            pause_import_job,
+            resume_import_job,
+            abort_import_job,
             // Post-processing
             run_focus_detection,
             run_enhancement,
@@ -35,6 +46,9 @@ pub fn run() {
             // Files (Review page)
             rename_file,
             read_image_base64,
+            // Logs
+            read_log_file,
+            clear_log_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

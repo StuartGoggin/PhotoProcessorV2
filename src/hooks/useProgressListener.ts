@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-interface UseProgressListenerResult {
+interface UseProgressListenerResult<T> {
   /** Start listening for progress events. Call before invoking a long-running command. */
-  subscribe: (handler: (data: unknown) => void) => Promise<void>;
+  subscribe: (handler: (data: T) => void) => Promise<void>;
   /** Stop listening. Call in the finally block after the command resolves. */
   unsubscribe: () => void;
 }
@@ -16,7 +16,7 @@ interface UseProgressListenerResult {
  */
 export function useProgressListener<T = unknown>(
   eventName: string
-): UseProgressListenerResult {
+): UseProgressListenerResult<T> {
   const unlistenRef = useRef<(() => void) | null>(null);
 
   // Cleanup on unmount
