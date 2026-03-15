@@ -50,6 +50,8 @@ export interface ImportJob {
   speedMbps: number;
   currentFile: string;
   imported: number;
+  md5SidecarHits: number;
+  md5Computed: number;
   errors: string[];
   logs: string[];
   pauseRequested: boolean;

@@ -142,6 +142,8 @@ export default function Jobs() {
                   <div>Staging: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
                   <div>Mode: <span className="text-gray-200">{job.reprocessExisting ? "reprocess" : "import"}</span></div>
                   <div>Speed: <span className="text-gray-200">{job.speedMbps.toFixed(1)} MB/s</span></div>
+                  <div>MD5 Sidecar: <span className="text-gray-200">{job.md5SidecarHits}</span></div>
+                  <div>MD5 Computed: <span className="text-gray-200">{job.md5Computed}</span></div>
                 </div>
 
                 <div>

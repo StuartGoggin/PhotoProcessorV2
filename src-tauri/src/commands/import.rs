@@ -87,6 +87,8 @@ pub struct ImportJob {
     pub speed_mbps: f64,
     pub current_file: String,
     pub imported: usize,
+    pub md5_sidecar_hits: usize,
+    pub md5_computed: usize,
     pub errors: Vec<String>,
     pub logs: Vec<String>,
     pub pause_requested: bool,
@@ -780,6 +782,8 @@ fn run_import(
     let done_count = Arc::new(AtomicU64::new(0));
     let imported_count = Arc::new(AtomicU64::new(0));
     let skipped_count = Arc::new(AtomicU64::new(0));
+    let md5_sidecar_hits = Arc::new(AtomicU64::new(0));
+    let md5_computed = Arc::new(AtomicU64::new(0));
     let bytes_copied = Arc::new(AtomicU64::new(0));
     let start_time = Instant::now();
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -791,6 +795,8 @@ fn run_import(
     let done_clone = done_count.clone();
     let imported_clone = imported_count.clone();
     let skipped_clone = skipped_count.clone();
+    let md5_sidecar_clone = md5_sidecar_hits.clone();
+    let md5_computed_clone = md5_computed.clone();
     let bytes_clone = bytes_copied.clone();
     let errors_clone = errors.clone();
     let reserved_clone = reserved_destinations.clone();
@@ -852,10 +858,20 @@ fn run_import(
             };
 
             if used_sidecar {
+                md5_sidecar_clone.fetch_add(1, Ordering::Relaxed);
                 let _ = append_app_log(
                     &app_clone,
                     format!("{} sidecar_md5 source='{}'", mode, src_path.display()),
                 );
+            } else {
+                md5_computed_clone.fetch_add(1, Ordering::Relaxed);
+            }
+
+            if let Some(job_id) = &job_id_clone {
+                update_job(job_id, |job| {
+                    job.md5_sidecar_hits = md5_sidecar_clone.load(Ordering::Relaxed) as usize;
+                    job.md5_computed = md5_computed_clone.load(Ordering::Relaxed) as usize;
+                });
             }
 
             {
@@ -1287,6 +1303,8 @@ fn run_import(
     let imported = imported_count.load(Ordering::Relaxed) as usize;
     let processed = done_count.load(Ordering::Relaxed) as usize;
     let skipped = skipped_count.load(Ordering::Relaxed) as usize;
+    let md5_sidecar_total = md5_sidecar_hits.load(Ordering::Relaxed) as usize;
+    let md5_computed_total = md5_computed.load(Ordering::Relaxed) as usize;
     let was_aborted = job_id
         .as_ref()
         .and_then(|id| jobs_store().lock().ok().and_then(|jobs| jobs.get(id).map(|j| j.abort_requested)))
@@ -1318,23 +1336,29 @@ fn run_import(
             job.imported = imported;
             job.skipped = skipped;
             job.done = processed;
+            job.md5_sidecar_hits = md5_sidecar_total;
+            job.md5_computed = md5_computed_total;
             job.errors = final_errors.clone();
             job.current_file = "Done".to_string();
         });
 
         if was_aborted {
             append_job_log(job_id, format!(
-                "aborted imported={} skipped={} errors={}",
+                "aborted imported={} skipped={} errors={} md5_sidecar_hits={} md5_computed={}",
                 imported,
                 skipped,
-                final_errors.len()
+                final_errors.len(),
+                md5_sidecar_total,
+                md5_computed_total
             ));
         } else {
             append_job_log(job_id, format!(
-                "complete imported={} skipped={} errors={}",
+                "complete imported={} skipped={} errors={} md5_sidecar_hits={} md5_computed={}",
                 imported,
                 skipped,
-                final_errors.len()
+                final_errors.len(),
+                md5_sidecar_total,
+                md5_computed_total
             ));
         }
     }
@@ -1385,6 +1409,8 @@ pub fn start_import_job(
         speed_mbps: 0.0,
         current_file: "Queued".to_string(),
         imported: 0,
+        md5_sidecar_hits: 0,
+        md5_computed: 0,
         errors: vec![],
         logs: vec![format!("[{}] queued", now_string())],
         pause_requested: false,
