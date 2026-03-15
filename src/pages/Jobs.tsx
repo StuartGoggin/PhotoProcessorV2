@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ImportJob } from "../types";
+import type { ImportJob, ProcessJob } from "../types";
 import { ProgressBar } from "../components";
 
 function pct(done: number, total: number): number {
@@ -9,7 +9,8 @@ function pct(done: number, total: number): number {
 }
 
 export default function Jobs() {
-  const [jobs, setJobs] = useState<ImportJob[]>([]);
+  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
+  const [processJobs, setProcessJobs] = useState<ProcessJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [tail, setTail] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -18,8 +19,12 @@ export default function Jobs() {
     setLoading(true);
     setError(null);
     try {
-      const data = await invoke<ImportJob[]>("list_import_jobs");
-      setJobs(data);
+      const [importData, processData] = await Promise.all([
+        invoke<ImportJob[]>("list_import_jobs"),
+        invoke<ProcessJob[]>("list_process_jobs"),
+      ]);
+      setImportJobs(importData);
+      setProcessJobs(processData);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -30,7 +35,10 @@ export default function Jobs() {
   async function clearFinished() {
     setError(null);
     try {
-      await invoke<number>("clear_finished_import_jobs");
+      await Promise.all([
+        invoke<number>("clear_finished_import_jobs"),
+        invoke<number>("clear_finished_process_jobs"),
+      ]);
       await loadJobs();
     } catch (e) {
       setError(String(e));
@@ -67,6 +75,36 @@ export default function Jobs() {
     }
   }
 
+  async function pauseProcessJob(jobId: string) {
+    setError(null);
+    try {
+      await invoke<boolean>("pause_process_job", { jobId });
+      await loadJobs();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function resumeProcessJob(jobId: string) {
+    setError(null);
+    try {
+      await invoke<boolean>("resume_process_job", { jobId });
+      await loadJobs();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function abortProcessJob(jobId: string) {
+    setError(null);
+    try {
+      await invoke<boolean>("abort_process_job", { jobId });
+      await loadJobs();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   useEffect(() => {
     loadJobs();
   }, []);
@@ -83,7 +121,7 @@ export default function Jobs() {
     <div className="p-6 max-w-5xl mx-auto">
       <h2 className="text-2xl font-semibold text-white mb-2">Background Jobs</h2>
       <p className="text-gray-400 text-sm mb-4">
-        Monitor queued/running imports while working on other tabs.
+        Monitor queued/running import and post-process jobs while working on other tabs.
       </p>
 
       <div className="card mb-4 flex items-center gap-2 flex-wrap">
@@ -105,11 +143,14 @@ export default function Jobs() {
         </div>
       )}
 
-      {jobs.length === 0 ? (
+      {importJobs.length === 0 && processJobs.length === 0 ? (
         <div className="card text-sm text-gray-400">No jobs yet.</div>
       ) : (
-        <div className="space-y-3">
-          {jobs.map((job) => {
+        <div className="space-y-6">
+          {importJobs.length > 0 && (
+            <section className="space-y-3">
+              <h3 className="text-sm uppercase tracking-wide text-gray-400">Import Jobs</h3>
+              {importJobs.map((job) => {
             const progress = pct(job.done, job.total);
             const doneLabel = job.total > 0 ? `${job.done}/${job.total}` : `${job.done}`;
 
@@ -177,7 +218,80 @@ export default function Jobs() {
                 </div>
               </div>
             );
-          })}
+              })}
+            </section>
+          )}
+
+          {processJobs.length > 0 && (
+            <section className="space-y-3">
+              <h3 className="text-sm uppercase tracking-wide text-gray-400">Post-Process Jobs</h3>
+              {processJobs.map((job) => {
+                const progress = pct(job.done, job.total);
+                const doneLabel = job.total > 0 ? `${job.done}/${job.total}` : `${job.done}`;
+
+                return (
+                  <div key={job.id} className="card space-y-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="text-sm text-gray-200 font-medium">{job.id}</div>
+                      <div className="flex items-center gap-2">
+                        <div className="text-xs px-2 py-1 rounded bg-surface-700 text-gray-200">{job.status}</div>
+                        {(job.status === "running" || job.status === "queued") && (
+                          <button className="btn-secondary" onClick={() => pauseProcessJob(job.id)}>
+                            Pause
+                          </button>
+                        )}
+                        {job.status === "paused" && (
+                          <button className="btn-secondary" onClick={() => resumeProcessJob(job.id)}>
+                            Resume
+                          </button>
+                        )}
+                        {(job.status === "running" || job.status === "paused" || job.status === "queued") && (
+                          <button className="btn-danger" onClick={() => abortProcessJob(job.id)}>
+                            Abort
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-400">
+                      <div>Task: <span className="text-gray-200">{job.task}</span></div>
+                      <div>Staging: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
+                    </div>
+
+                    <div>
+                      <ProgressBar
+                        total={job.total || 1}
+                        done={Math.min(job.done, job.total || 1)}
+                        label={job.currentFile || ""}
+                        extra={`${doneLabel} • processed ${job.processed} • out_of_focus ${job.outOfFocus} • ${progress.toFixed(0)}%`}
+                      />
+                      {job.currentFile && (
+                        <div className="mt-1 text-xs text-gray-500 truncate">Current: {job.currentFile}</div>
+                      )}
+                    </div>
+
+                    {job.errors.length > 0 && (
+                      <div className="text-xs text-red-300 bg-red-900/20 border border-red-700 rounded p-2 max-h-24 overflow-auto">
+                        {job.errors.map((line, idx) => (
+                          <div key={idx}>{line}</div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="space-y-1">
+                      <label htmlFor={`process-job-console-${job.id}`} className="text-xs text-gray-400">Job Console</label>
+                      <textarea
+                        id={`process-job-console-${job.id}`}
+                        readOnly
+                        value={job.logs.join("\n")}
+                        className="w-full h-32 resize-y overflow-auto bg-surface-900 border border-surface-600 rounded-lg p-2 text-xs text-green-300 font-mono"
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </section>
+          )}
         </div>
       )}
     </div>

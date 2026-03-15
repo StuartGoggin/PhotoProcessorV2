@@ -358,8 +358,103 @@ fn file_created_or_mtime_as_datetime(path: &Path) -> chrono::NaiveDateTime {
     local_dt.naive_local()
 }
 
-fn capture_datetime(path: &Path) -> chrono::NaiveDateTime {
-    extract_exif_date(path).unwrap_or_else(|| file_created_or_mtime_as_datetime(path))
+fn parse_datetime_from_filename(path: &Path) -> Option<chrono::NaiveDateTime> {
+    use chrono::Timelike;
+
+    let stem = path.file_stem()?.to_str()?;
+    let parts: Vec<&str> = stem.split('_').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let date_part = parts[0];
+    let time_part = parts[1];
+
+    if date_part.len() != 8 || !date_part.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if time_part.len() != 6 || !time_part.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+
+    let dt_text = format!("{}_{}", date_part, time_part);
+    let mut dt = chrono::NaiveDateTime::parse_from_str(&dt_text, "%Y%m%d_%H%M%S").ok()?;
+
+    if parts.len() >= 3 {
+        let third = parts[2];
+        if third.len() == 3 && third.chars().all(|c| c.is_ascii_digit()) {
+            let ms = third.parse::<u32>().ok()?;
+            if let Some(with_nanos) = dt.with_nanosecond(ms.saturating_mul(1_000_000)) {
+                dt = with_nanos;
+            }
+        }
+    }
+
+    Some(dt)
+}
+
+fn is_path_in_matching_date_dir(path: &Path, dt: &chrono::NaiveDateTime) -> bool {
+    let expected_year = dt.format("%Y").to_string();
+    let expected_month = dt.format("%m").to_string();
+    let expected_day = dt.format("%d").to_string();
+
+    let day = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str());
+    let month = path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str());
+    let year = path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str());
+
+    match (year, month, day) {
+        (Some(y), Some(m), Some(d)) => {
+            y == expected_year && m == expected_month && d == expected_day
+        }
+        _ => false,
+    }
+}
+
+fn is_canonical_staging_name_for_datetime(path: &Path, dt: &chrono::NaiveDateTime) -> bool {
+    if !is_path_in_matching_date_dir(path, dt) {
+        return false;
+    }
+
+    use chrono::Timelike;
+
+    let canonical_stem = if dt.nanosecond() > 0 {
+        format!("{}_{:03}", dt.format("%Y%m%d_%H%M%S"), dt.nanosecond() / 1_000_000)
+    } else {
+        format!("{}", dt.format("%Y%m%d_%H%M%S"))
+    };
+
+    let stem = match path.file_stem().and_then(|s| s.to_str()) {
+        Some(value) => value,
+        None => return false,
+    };
+
+    stem == canonical_stem || stem.starts_with(&format!("{}_", canonical_stem))
+}
+
+fn capture_datetime(path: &Path, prefer_filename: bool) -> (chrono::NaiveDateTime, &'static str) {
+    if prefer_filename {
+        if let Some(dt) = parse_datetime_from_filename(path) {
+            return (dt, "filename");
+        }
+    }
+
+    if let Some(dt) = extract_exif_date(path) {
+        return (dt, "exif");
+    }
+
+    (file_created_or_mtime_as_datetime(path), "filesystem")
 }
 
 fn naive_datetime_to_system_time(dt: &chrono::NaiveDateTime) -> SystemTime {
@@ -817,9 +912,18 @@ fn run_import(
                 return;
             }
 
-            let dt = capture_datetime(src_path);
+            let (dt, dt_source) = capture_datetime(src_path, opts.reprocess_existing);
+            let dt_from_filename = dt_source == "filename";
 
-            let base_dest = destination_path(&staging_clone, &dt, src_path);
+            let keep_existing_name = opts.reprocess_existing
+                && dt_from_filename
+                && is_canonical_staging_name_for_datetime(src_path, &dt);
+
+            let base_dest = if keep_existing_name {
+                src_path.to_path_buf()
+            } else {
+                destination_path(&staging_clone, &dt, src_path)
+            };
 
             // Create destination directory
             if let Some(parent) = base_dest.parent() {
@@ -861,11 +965,12 @@ fn run_import(
                 md5_sidecar_clone.fetch_add(1, Ordering::Relaxed);
                 let _ = append_app_log(
                     &app_clone,
-                    format!("{} sidecar_md5 source='{}'", mode, src_path.display()),
+                    format!("{} md5_source=sidecar file='{}'", mode, src_path.display()),
                 );
             } else {
                 md5_computed_clone.fetch_add(1, Ordering::Relaxed);
             }
+            let md5_source = if used_sidecar { "sidecar" } else { "computed" };
 
             if let Some(job_id) = &job_id_clone {
                 update_job(job_id, |job| {
@@ -930,11 +1035,13 @@ fn run_import(
                     let _ = append_app_log(
                         &app_clone,
                         format!(
-                            "{} duplicate_skip source='{}' md5={} size={}",
+                            "{} duplicate_skip source='{}' md5={} size={} md5_source={} dt_source={}",
                             mode,
                             src_path.display(),
                             src_md5,
-                            src_size
+                            src_size,
+                            md5_source,
+                            dt_source
                         ),
                     );
                     if let Err(e) = write_md5_sidecar(src_path, &src_md5) {
@@ -945,9 +1052,11 @@ fn run_import(
                     }
                     if let Some(job_id) = &job_id_clone {
                         append_job_log(job_id, format!(
-                            "duplicate skip '{}' (md5={})",
+                            "duplicate skip '{}' (md5={} md5_source={} dt_source={})",
                             src_path.display(),
-                            src_md5
+                            src_md5,
+                            md5_source,
+                            dt_source
                         ));
                         update_job(job_id, |job| {
                             job.done = done as usize;
@@ -1013,16 +1122,20 @@ fn run_import(
                 let _ = append_app_log(
                     &app_clone,
                     format!(
-                        "reprocess touch_only file='{}' md5={} target_name='{}'",
+                        "reprocess touch_only file='{}' md5={} md5_source={} dt_source={} target_name='{}'",
                         src_path.display(),
                         src_md5,
+                        md5_source,
+                        dt_source,
                         dest.file_name().and_then(|n| n.to_str()).unwrap_or("")
                     ),
                 );
                 if let Some(job_id) = &job_id_clone {
                     append_job_log(job_id, format!(
-                        "touch '{}' (already correct name)",
-                        src_path.display()
+                        "touch '{}' (already canonical; md5_source={} dt_source={})",
+                        src_path.display(),
+                        md5_source,
+                        dt_source
                     ));
                 }
 
@@ -1091,17 +1204,21 @@ fn run_import(
                         let _ = append_app_log(
                             &app_clone,
                             format!(
-                                "reprocess renamed from='{}' to='{}' md5={}",
+                                "reprocess renamed from='{}' to='{}' md5={} md5_source={} dt_source={}",
                                 src_path.display(),
                                 dest.display(),
-                                src_md5
+                                src_md5,
+                                md5_source,
+                                dt_source
                             ),
                         );
                         if let Some(job_id) = &job_id_clone {
                             append_job_log(job_id, format!(
-                                "rename '{}' -> '{}'",
+                                "rename '{}' -> '{}' (md5_source={} dt_source={})",
                                 src_path.display(),
-                                dest.display()
+                                dest.display(),
+                                md5_source,
+                                dt_source
                             ));
                         }
 
@@ -1176,19 +1293,23 @@ fn run_import(
                     let _ = append_app_log(
                         &app_clone,
                         format!(
-                            "import copied from='{}' to='{}' bytes={} md5={}",
+                            "import copied from='{}' to='{}' bytes={} md5={} md5_source={} dt_source={}",
                             src_path.display(),
                             dest.display(),
                             bytes,
-                            src_md5
+                            src_md5,
+                            md5_source,
+                            dt_source
                         ),
                     );
                     if let Some(job_id) = &job_id_clone {
                         append_job_log(job_id, format!(
-                            "copy '{}' -> '{}' ({} bytes)",
+                            "copy '{}' -> '{}' ({} bytes, md5_source={}, dt_source={})",
                             src_path.display(),
                             dest.display(),
-                            bytes
+                            bytes,
+                            md5_source,
+                            dt_source
                         ));
                     }
 

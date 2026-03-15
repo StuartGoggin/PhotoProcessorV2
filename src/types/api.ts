@@ -71,6 +71,29 @@ export interface ProcessResult {
   errors: string[];
 }
 
+export type ProcessTask = "focus" | "enhance" | "bw";
+
+export type ProcessJobStatus = "queued" | "running" | "paused" | "aborted" | "completed" | "failed";
+
+export interface ProcessJob {
+  id: string;
+  task: ProcessTask;
+  stagingDir: string;
+  status: ProcessJobStatus;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  total: number;
+  done: number;
+  processed: number;
+  outOfFocus: number;
+  currentFile: string;
+  errors: string[];
+  logs: string[];
+  pauseRequested: boolean;
+  abortRequested: boolean;
+}
+
 export interface TransferProgress {
   total: number;
   done: number;

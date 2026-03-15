@@ -1,12 +1,17 @@
 use image::{DynamicImage, GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::Duration;
+use tauri::async_runtime;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
+use crate::utils::{append_app_log, num_cpus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessProgress {
@@ -21,6 +26,173 @@ pub struct ProcessResult {
     pub processed: usize,
     pub out_of_focus: usize,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProcessTask {
+    Focus,
+    Enhance,
+    Bw,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProcessJobStatus {
+    Queued,
+    Running,
+    Paused,
+    Aborted,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessJob {
+    pub id: String,
+    pub task: ProcessTask,
+    pub staging_dir: String,
+    pub status: ProcessJobStatus,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub total: usize,
+    pub done: usize,
+    pub processed: usize,
+    pub out_of_focus: usize,
+    pub current_file: String,
+    pub errors: Vec<String>,
+    pub logs: Vec<String>,
+    pub pause_requested: bool,
+    pub abort_requested: bool,
+}
+
+fn process_jobs_store() -> &'static Mutex<HashMap<String, ProcessJob>> {
+    static STORE: OnceLock<Mutex<HashMap<String, ProcessJob>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn next_process_job_id() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    format!("process-job-{}", id)
+}
+
+fn now_string() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+}
+
+fn update_process_job(job_id: &str, mutator: impl FnOnce(&mut ProcessJob)) {
+    if let Ok(mut jobs) = process_jobs_store().lock() {
+        if let Some(job) = jobs.get_mut(job_id) {
+            mutator(job);
+        }
+    }
+}
+
+fn append_process_job_log(job_id: &str, message: impl AsRef<str>) {
+    let ts = now_string();
+    update_process_job(job_id, |job| {
+        job.logs.push(format!("[{}] {}", ts, message.as_ref()));
+        if job.logs.len() > 2000 {
+            let to_drop = job.logs.len() - 2000;
+            job.logs.drain(0..to_drop);
+        }
+    });
+}
+
+fn wait_if_process_paused_or_aborted(job_id: Option<&str>) -> bool {
+    let Some(job_id) = job_id else { return false; };
+
+    loop {
+        let (pause_requested, abort_requested) = match process_jobs_store().lock() {
+            Ok(jobs) => match jobs.get(job_id) {
+                Some(job) => (job.pause_requested, job.abort_requested),
+                None => return true,
+            },
+            Err(_) => return true,
+        };
+
+        if abort_requested {
+            return true;
+        }
+
+        if pause_requested {
+            update_process_job(job_id, |job| {
+                if !matches!(job.status, ProcessJobStatus::Paused) {
+                    job.status = ProcessJobStatus::Paused;
+                    job.current_file = "Paused".to_string();
+                }
+            });
+            thread::sleep(Duration::from_millis(200));
+            continue;
+        }
+
+        update_process_job(job_id, |job| {
+            if matches!(job.status, ProcessJobStatus::Paused) {
+                job.status = ProcessJobStatus::Running;
+            }
+        });
+        return false;
+    }
+}
+
+#[tauri::command]
+pub fn list_process_jobs() -> Result<Vec<ProcessJob>, String> {
+    let jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
+    let mut out: Vec<ProcessJob> = jobs.values().cloned().collect();
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn clear_finished_process_jobs() -> Result<usize, String> {
+    let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
+    let before = jobs.len();
+    jobs.retain(|_, job| !matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted));
+    Ok(before.saturating_sub(jobs.len()))
+}
+
+#[tauri::command]
+pub fn pause_process_job(job_id: String) -> Result<bool, String> {
+    let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
+    let Some(job) = jobs.get_mut(&job_id) else { return Ok(false); };
+    if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
+        return Ok(false);
+    }
+    job.pause_requested = true;
+    job.status = ProcessJobStatus::Paused;
+    job.current_file = "Paused".to_string();
+    job.logs.push(format!("[{}] pause requested", now_string()));
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn resume_process_job(job_id: String) -> Result<bool, String> {
+    let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
+    let Some(job) = jobs.get_mut(&job_id) else { return Ok(false); };
+    if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
+        return Ok(false);
+    }
+    job.pause_requested = false;
+    job.status = ProcessJobStatus::Running;
+    job.logs.push(format!("[{}] resume requested", now_string()));
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn abort_process_job(job_id: String) -> Result<bool, String> {
+    let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
+    let Some(job) = jobs.get_mut(&job_id) else { return Ok(false); };
+    if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
+        return Ok(false);
+    }
+    job.abort_requested = true;
+    job.pause_requested = false;
+    job.current_file = "Abort requested".to_string();
+    job.logs.push(format!("[{}] abort requested", now_string()));
+    Ok(true)
 }
 
 const SECTION_SIZE: u32 = 200;
@@ -362,69 +534,9 @@ pub async fn run_focus_detection(
     app: AppHandle,
     staging_dir: String,
 ) -> Result<ProcessResult, String> {
-    let root = PathBuf::from(&staging_dir);
-    let jpgs = collect_jpgs(&root);
-    let total = jpgs.len();
-    let done_count = Arc::new(AtomicU64::new(0));
-    let oof_count = Arc::new(AtomicU64::new(0));
-    let errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-
-    let app_clone = app.clone();
-    let done_clone = done_count.clone();
-    let oof_clone = oof_count.clone();
-    let errors_clone = errors.clone();
-
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_cpus())
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    pool.install(|| {
-        jpgs.par_iter().for_each(|path| {
-            let result = (|| -> anyhow::Result<()> {
-                let img = image::open(path)?;
-                let (max_score, avg_score, focus_pct) = focus_score(&img);
-
-                if is_out_of_focus(max_score, avg_score, focus_pct) {
-                    let n = ((10.0 - max_score).round() as u32).clamp(1, 10);
-                    let new_path = mark_blurry_filename(path, n);
-                    fs::rename(path, &new_path)?;
-                    oof_clone.fetch_add(1, Ordering::Relaxed);
-                }
-                Ok(())
-            })();
-
-            if let Err(e) = result {
-                errors_clone
-                    .lock()
-                    .unwrap()
-                    .push(format!("{}: {}", path.display(), e));
-            }
-
-            let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
-            let _ = app_clone.emit(
-                "process-progress",
-                ProcessProgress {
-                    total,
-                    done: done as usize,
-                    current_file: path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    phase: "focus".to_string(),
-                },
-            );
-        });
-    });
-
-
-    let errs = errors.lock().unwrap().clone();
-    Ok(ProcessResult {
-        processed: done_count.load(Ordering::Relaxed) as usize,
-        out_of_focus: oof_count.load(Ordering::Relaxed) as usize,
-        errors: errs,
-    })
+    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, ProcessTask::Focus, None))
+        .await
+        .map_err(|e| format!("Process background task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -432,68 +544,9 @@ pub async fn run_enhancement(
     app: AppHandle,
     staging_dir: String,
 ) -> Result<ProcessResult, String> {
-    let root = PathBuf::from(&staging_dir);
-    let jpgs = collect_jpgs(&root);
-    let total = jpgs.len();
-    let done_count = Arc::new(AtomicU64::new(0));
-    let errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-
-    let app_clone = app.clone();
-    let done_clone = done_count.clone();
-    let errors_clone = errors.clone();
-
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_cpus())
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    pool.install(|| {
-        jpgs.par_iter().for_each(|path| {
-            let result = (|| -> anyhow::Result<()> {
-                let img = image::open(path)?.into_rgb8();
-                let enhanced = enhance_rgb_clahe(&img);
-                let sharpened = unsharp_mask_rgb(&enhanced, 1.0, 0.5);
-
-                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                let out_path = path
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join(format!("{}_improved.jpg", stem));
-                sharpened.save(&out_path)?;
-                Ok(())
-            })();
-
-            if let Err(e) = result {
-                errors_clone
-                    .lock()
-                    .unwrap()
-                    .push(format!("{}: {}", path.display(), e));
-            }
-
-            let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
-            let _ = app_clone.emit(
-                "process-progress",
-                ProcessProgress {
-                    total,
-                    done: done as usize,
-                    current_file: path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    phase: "enhance".to_string(),
-                },
-            );
-        });
-    });
-
-
-    let errs = errors.lock().unwrap().clone();
-    Ok(ProcessResult {
-        processed: done_count.load(Ordering::Relaxed) as usize,
-        out_of_focus: 0,
-        errors: errs,
-    })
+    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, ProcessTask::Enhance, None))
+        .await
+        .map_err(|e| format!("Process background task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -501,72 +554,244 @@ pub async fn run_bw_conversion(
     app: AppHandle,
     staging_dir: String,
 ) -> Result<ProcessResult, String> {
+    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, ProcessTask::Bw, None))
+        .await
+        .map_err(|e| format!("Process background task failed: {}", e))?
+}
+
+fn task_name(task: &ProcessTask) -> &'static str {
+    match task {
+        ProcessTask::Focus => "focus",
+        ProcessTask::Enhance => "enhance",
+        ProcessTask::Bw => "bw",
+    }
+}
+
+fn run_process_task(
+    app: AppHandle,
+    staging_dir: String,
+    task: ProcessTask,
+    job_id: Option<String>,
+) -> Result<ProcessResult, String> {
     let root = PathBuf::from(&staging_dir);
     let jpgs = collect_jpgs(&root);
     let total = jpgs.len();
     let done_count = Arc::new(AtomicU64::new(0));
-    let errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let oof_count = Arc::new(AtomicU64::new(0));
+    let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    let task_label = task_name(&task);
+    let _ = append_app_log(&app, format!("process_{} start staging='{}'", task_label, staging_dir));
+
+    if let Some(job_id) = &job_id {
+        update_process_job(job_id, |job| {
+            job.status = ProcessJobStatus::Running;
+            job.started_at = Some(now_string());
+            job.current_file = "Starting".to_string();
+            job.total = total;
+        });
+        append_process_job_log(job_id, format!("start task={} staging='{}'", task_label, staging_dir));
+    }
+
+    if total == 0 {
+        if let Some(job_id) = &job_id {
+            update_process_job(job_id, |job| {
+                job.status = ProcessJobStatus::Completed;
+                job.finished_at = Some(now_string());
+                job.current_file = "Done".to_string();
+            });
+            append_process_job_log(job_id, "no supported jpg files found");
+        }
+        let _ = append_app_log(&app, format!("process_{} no files", task_label));
+        return Ok(ProcessResult { processed: 0, out_of_focus: 0, errors: vec![] });
+    }
 
     let app_clone = app.clone();
     let done_clone = done_count.clone();
+    let oof_clone = oof_count.clone();
     let errors_clone = errors.clone();
+    let task_clone = task.clone();
+    let job_id_clone = job_id.clone();
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_cpus())
+        .num_threads((num_cpus() * 2).max(4))
         .build()
         .map_err(|e| e.to_string())?;
 
     pool.install(|| {
         jpgs.par_iter().for_each(|path| {
-            let result = (|| -> anyhow::Result<()> {
-                let img = image::open(path)?.into_luma8();
-                let clahe = apply_clahe_luma(&img);
-                let sharpened = unsharp_mask_gray(&clahe, 1.0, 0.6);
+            if wait_if_process_paused_or_aborted(job_id_clone.as_deref()) {
+                return;
+            }
 
-                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                let out_path = path
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join(format!("{}_BW.jpg", stem));
-                sharpened.save(&out_path)?;
+            let result = (|| -> anyhow::Result<()> {
+                match task_clone {
+                    ProcessTask::Focus => {
+                        let img = image::open(path)?;
+                        let (max_score, avg_score, focus_pct) = focus_score(&img);
+                        if is_out_of_focus(max_score, avg_score, focus_pct) {
+                            let n = ((10.0 - max_score).round() as u32).clamp(1, 10);
+                            let new_path = mark_blurry_filename(path, n);
+                            fs::rename(path, &new_path)?;
+                            oof_clone.fetch_add(1, Ordering::Relaxed);
+                            let _ = append_app_log(&app_clone, format!("process_focus marked_blurry from='{}' to='{}'", path.display(), new_path.display()));
+                            if let Some(job_id) = &job_id_clone {
+                                append_process_job_log(job_id, format!("marked blurry '{}' -> '{}'", path.display(), new_path.display()));
+                            }
+                        }
+                    }
+                    ProcessTask::Enhance => {
+                        let img = image::open(path)?.into_rgb8();
+                        let enhanced = enhance_rgb_clahe(&img);
+                        let sharpened = unsharp_mask_rgb(&enhanced, 1.0, 0.5);
+                        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        let out_path = path.parent().unwrap_or(Path::new(".")).join(format!("{}_improved.jpg", stem));
+                        sharpened.save(&out_path)?;
+                        let _ = append_app_log(&app_clone, format!("process_enhance wrote='{}'", out_path.display()));
+                        if let Some(job_id) = &job_id_clone {
+                            append_process_job_log(job_id, format!("enhanced '{}' -> '{}'", path.display(), out_path.display()));
+                        }
+                    }
+                    ProcessTask::Bw => {
+                        let img = image::open(path)?.into_luma8();
+                        let clahe = apply_clahe_luma(&img);
+                        let sharpened = unsharp_mask_gray(&clahe, 1.0, 0.6);
+                        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        let out_path = path.parent().unwrap_or(Path::new(".")).join(format!("{}_BW.jpg", stem));
+                        sharpened.save(&out_path)?;
+                        let _ = append_app_log(&app_clone, format!("process_bw wrote='{}'", out_path.display()));
+                        if let Some(job_id) = &job_id_clone {
+                            append_process_job_log(job_id, format!("bw '{}' -> '{}'", path.display(), out_path.display()));
+                        }
+                    }
+                }
                 Ok(())
             })();
 
             if let Err(e) = result {
-                errors_clone
-                    .lock()
-                    .unwrap()
-                    .push(format!("{}: {}", path.display(), e));
+                errors_clone.lock().unwrap().push(format!("{}: {}", path.display(), e));
+                let _ = append_app_log(&app_clone, format!("process_{} error file='{}' message='{}'", task_name(&task_clone), path.display(), e));
+                if let Some(job_id) = &job_id_clone {
+                    append_process_job_log(job_id, format!("error '{}' => {}", path.display(), e));
+                }
             }
 
             let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
+            let current_file = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+
             let _ = app_clone.emit(
                 "process-progress",
                 ProcessProgress {
                     total,
                     done: done as usize,
-                    current_file: path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    phase: "bw".to_string(),
+                    current_file: current_file.clone(),
+                    phase: task_name(&task_clone).to_string(),
                 },
             );
+
+            if let Some(job_id) = &job_id_clone {
+                update_process_job(job_id, |job| {
+                    job.done = done as usize;
+                    job.processed = done as usize;
+                    job.out_of_focus = oof_clone.load(Ordering::Relaxed) as usize;
+                    job.current_file = current_file.clone();
+                });
+            }
         });
     });
 
+    let final_errors = errors.lock().unwrap().clone();
+    let processed = done_count.load(Ordering::Relaxed) as usize;
+    let out_of_focus = oof_count.load(Ordering::Relaxed) as usize;
+    let was_aborted = job_id
+        .as_ref()
+        .and_then(|id| process_jobs_store().lock().ok().and_then(|jobs| jobs.get(id).map(|j| j.abort_requested)))
+        .unwrap_or(false);
 
-    let errs = errors.lock().unwrap().clone();
+    let _ = append_app_log(&app, format!("process_{} complete processed={} out_of_focus={} errors={}", task_label, processed, out_of_focus, final_errors.len()));
+
+    if let Some(job_id) = &job_id {
+        let failed = !final_errors.is_empty();
+        update_process_job(job_id, |job| {
+            job.status = if was_aborted {
+                ProcessJobStatus::Aborted
+            } else if failed {
+                ProcessJobStatus::Failed
+            } else {
+                ProcessJobStatus::Completed
+            };
+            job.finished_at = Some(now_string());
+            job.done = processed;
+            job.processed = processed;
+            job.out_of_focus = out_of_focus;
+            job.errors = final_errors.clone();
+            job.current_file = "Done".to_string();
+        });
+
+        if was_aborted {
+            append_process_job_log(job_id, format!("aborted processed={} out_of_focus={} errors={}", processed, out_of_focus, final_errors.len()));
+        } else {
+            append_process_job_log(job_id, format!("complete processed={} out_of_focus={} errors={}", processed, out_of_focus, final_errors.len()));
+        }
+    }
+
     Ok(ProcessResult {
-        processed: done_count.load(Ordering::Relaxed) as usize,
-        out_of_focus: 0,
-        errors: errs,
+        processed,
+        out_of_focus,
+        errors: final_errors,
     })
 }
 
-fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
+#[tauri::command]
+pub fn start_process_job(
+    app: AppHandle,
+    staging_dir: String,
+    task: String,
+) -> Result<String, String> {
+    let task_enum = match task.to_lowercase().as_str() {
+        "focus" => ProcessTask::Focus,
+        "enhance" => ProcessTask::Enhance,
+        "bw" => ProcessTask::Bw,
+        _ => return Err(format!("Unknown process task: {}", task)),
+    };
+
+    let job_id = next_process_job_id();
+    let job = ProcessJob {
+        id: job_id.clone(),
+        task: task_enum.clone(),
+        staging_dir: staging_dir.clone(),
+        status: ProcessJobStatus::Queued,
+        created_at: now_string(),
+        started_at: None,
+        finished_at: None,
+        total: 0,
+        done: 0,
+        processed: 0,
+        out_of_focus: 0,
+        current_file: "Queued".to_string(),
+        errors: vec![],
+        logs: vec![format!("[{}] queued", now_string())],
+        pause_requested: false,
+        abort_requested: false,
+    };
+
+    {
+        let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
+        jobs.insert(job_id.clone(), job);
+    }
+
+    let app_for_task = app.clone();
+    let job_id_for_task = job_id.clone();
+    async_runtime::spawn(async move {
+        let _ = async_runtime::spawn_blocking(move || {
+            run_process_task(app_for_task, staging_dir, task_enum, Some(job_id_for_task))
+        })
+        .await;
+    });
+
+    Ok(job_id)
 }
