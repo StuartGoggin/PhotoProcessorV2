@@ -11,12 +11,12 @@ import Logs from "./pages/Logs";
 
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "import",      label: "Import",       icon: "📥" },
-  { id: "cleanup",     label: "Cleanup",      icon: "🧹" },
   { id: "jobs",        label: "Jobs",         icon: "🧵" },
   { id: "postprocess", label: "Post Process",  icon: "⚙️" },
   { id: "review",      label: "Review",        icon: "🖼️" },
   { id: "transfer",    label: "Transfer",      icon: "📤" },
   { id: "settings",    label: "Settings",      icon: "⚙️" },
+  { id: "cleanup",     label: "Cleanup",      icon: "🧹" },
   { id: "logs",        label: "Logs",          icon: "📜" },
 ];
 
