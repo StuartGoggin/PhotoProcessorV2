@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ProcessTask } from "../types";
+import { FileTree } from "../components";
+import type { ProcessScopeMode, ProcessTask, TreeNode } from "../types";
 import { useSettings } from "../hooks";
 
 interface TaskConfig {
@@ -31,12 +32,45 @@ const TASKS: TaskConfig[] = [
   },
 ];
 
+const SCOPE_MODES: Array<{ id: ProcessScopeMode; label: string; description: string }> = [
+  { id: "entireStaging", label: "Entire staging", description: "Ignore selected folder and process the whole staging tree." },
+  { id: "folderRecursive", label: "Folder recursively", description: "Process the selected folder and all of its subfolders." },
+  { id: "folderOnly", label: "This folder only", description: "Process only files directly inside the selected folder." },
+];
+
 export default function PostProcess() {
   const { settings } = useSettings();
 
   const [queueingTask, setQueueingTask] = useState<ProcessTask | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [tree, setTree] = useState<TreeNode[]>([]);
+  const [selectedScope, setSelectedScope] = useState<string>("");
+  const [scopeMode, setScopeMode] = useState<ProcessScopeMode>("entireStaging");
+
+  useEffect(() => {
+    async function loadTree() {
+      const staging = settings?.staging_dir || "";
+      if (!staging) {
+        setTree([]);
+        setSelectedScope("");
+        return;
+      }
+
+      try {
+        const data = await invoke<TreeNode | TreeNode[]>("list_staging_tree", {
+          stagingDir: staging,
+        });
+        const nodes = Array.isArray(data) ? data : [data];
+        setTree(nodes.filter((node) => node.type === "dir"));
+        setSelectedScope(staging);
+      } catch (e) {
+        setError(String(e));
+      }
+    }
+
+    void loadTree();
+  }, [settings?.staging_dir]);
 
   async function runTask(task: TaskConfig) {
     if (!settings?.staging_dir) {
@@ -51,6 +85,8 @@ export default function PostProcess() {
     try {
       const jobId = await invoke<string>("start_process_job", {
         stagingDir: settings.staging_dir,
+        scopeDir: scopeMode === "entireStaging" ? settings.staging_dir : (selectedScope || settings.staging_dir),
+        scopeMode,
         task: task.id,
       });
       setMessage(`Queued post-process job: ${jobId}. Track it in Jobs tab.`);
@@ -69,9 +105,57 @@ export default function PostProcess() {
       </p>
 
       {settings?.staging_dir && (
-        <div className="card mb-4 text-sm">
-          <span className="text-gray-400">Staging: </span>
-          <span className="text-gray-200">{settings.staging_dir}</span>
+        <div className="card mb-4 text-sm space-y-2">
+          <div>
+            <span className="text-gray-400">Staging: </span>
+            <span className="text-gray-200">{settings.staging_dir}</span>
+          </div>
+          <div>
+            <span className="text-gray-400">Scope: </span>
+            <span className="text-gray-200">{scopeMode === "entireStaging" ? settings.staging_dir : (selectedScope || settings.staging_dir)}</span>
+          </div>
+          <div>
+            <span className="text-gray-400">Scope mode: </span>
+            <span className="text-gray-200">{SCOPE_MODES.find((mode) => mode.id === scopeMode)?.label ?? scopeMode}</span>
+          </div>
+        </div>
+      )}
+
+      {settings?.staging_dir && (
+        <div className="card mb-6">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <div>
+              <h3 className="text-white font-medium">Processing Scope</h3>
+              <p className="text-xs text-gray-400">Select a folder inside staging, then choose whether to process just that folder, recursively, or the full staging tree.</p>
+            </div>
+            <button className="btn-secondary" onClick={() => { setSelectedScope(settings.staging_dir); setScopeMode("entireStaging"); }}>
+              Use Full Staging
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+            {SCOPE_MODES.map((mode) => (
+              <button
+                key={mode.id}
+                className={`text-left rounded-lg border px-3 py-2 transition-colors ${scopeMode === mode.id ? "border-accent bg-accent/10 text-white" : "border-surface-600 bg-surface-800 text-gray-300 hover:bg-surface-700"}`}
+                onClick={() => setScopeMode(mode.id)}
+              >
+                <div className="text-sm font-medium">{mode.label}</div>
+                <div className="text-xs text-gray-400 mt-1">{mode.description}</div>
+              </button>
+            ))}
+          </div>
+          <div className="h-56 rounded-lg border border-surface-600 bg-surface-900/60 overflow-hidden">
+            <FileTree
+              nodes={tree}
+              selected={selectedScope.replace(settings.staging_dir, "").replace(/^[\\/]+/, "")}
+              onSelect={(node) => {
+                if (node.type !== "dir") return;
+                const relative = node.path.replace(/^[\\/]+/, "");
+                const absolute = relative ? `${settings.staging_dir}\\${relative.replace(/\//g, "\\")}` : settings.staging_dir;
+                setSelectedScope(absolute);
+              }}
+            />
+          </div>
         </div>
       )}
 

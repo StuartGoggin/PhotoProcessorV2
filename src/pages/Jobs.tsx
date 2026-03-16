@@ -256,6 +256,8 @@ export default function Jobs() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-400">
                       <div>Task: <span className="text-gray-200">{job.task}</span></div>
                       <div>Staging: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
+                      <div>Scope mode: <span className="text-gray-200">{job.scopeMode}</span></div>
+                      <div className="md:col-span-2">Scope: <span className="text-gray-200 break-all">{job.scopeDir}</span></div>
                     </div>
 
                     <div>

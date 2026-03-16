@@ -8,6 +8,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use tauri::AppHandle;
 use tauri::Manager;
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, GetFileAttributesW, SetFileAttributesW, SetFileTime, FILE_ATTRIBUTE_HIDDEN,
+    FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_WRITE_ATTRIBUTES, OPEN_EXISTING,
+};
 
 /// Returns the number of logical CPUs available, falling back to 4.
 pub fn num_cpus() -> usize {
@@ -136,4 +146,105 @@ pub fn clear_app_log(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     fs::write(path, "").map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn system_time_to_filetime(system_time: std::time::SystemTime) -> Result<FILETIME, String> {
+    let duration = system_time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?;
+
+    let windows_epoch_offset_secs = 11_644_473_600u64;
+    let intervals_100ns = (duration.as_secs() + windows_epoch_offset_secs) * 10_000_000
+        + (duration.subsec_nanos() as u64 / 100);
+
+    Ok(FILETIME {
+        dwLowDateTime: intervals_100ns as u32,
+        dwHighDateTime: (intervals_100ns >> 32) as u32,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn set_file_times_from_system_times(
+    path: &Path,
+    created: std::time::SystemTime,
+    accessed: std::time::SystemTime,
+    modified: std::time::SystemTime,
+) -> Result<(), String> {
+    let created_ft = system_time_to_filetime(created)?;
+    let accessed_ft = system_time_to_filetime(accessed)?;
+    let modified_ft = system_time_to_filetime(modified)?;
+
+    let mut wide_path: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide_path.push(0);
+
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            FILE_WRITE_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
+    let ok = unsafe { SetFileTime(handle, &created_ft, &accessed_ft, &modified_ft) };
+    let close_result = unsafe { CloseHandle(handle) };
+
+    if close_result == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn hide_file(path: &Path) -> Result<(), String> {
+    let mut wide_path: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide_path.push(0);
+
+    let attrs = unsafe { GetFileAttributesW(wide_path.as_ptr()) };
+    if attrs == u32::MAX {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
+    let ok = unsafe { SetFileAttributesW(wide_path.as_ptr(), attrs | FILE_ATTRIBUTE_HIDDEN) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
+    Ok(())
+}
+
+pub fn sync_file_metadata_from(source: &Path, target: &Path, hide_target: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let metadata = fs::metadata(source).map_err(|e| e.to_string())?;
+        let created = metadata.created().unwrap_or_else(|_| std::time::SystemTime::now());
+        let accessed = metadata.accessed().unwrap_or(created);
+        let modified = metadata.modified().unwrap_or(created);
+
+        set_file_times_from_system_times(target, created, accessed, modified)?;
+
+        if hide_target {
+            hide_file(target)?;
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (source, target, hide_target);
+    }
+
+    Ok(())
 }

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::async_runtime;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
-use crate::utils::{append_app_log, compute_md5, num_cpus};
+use crate::utils::{append_app_log, compute_md5, num_cpus, sync_file_metadata_from};
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
@@ -668,7 +668,8 @@ fn write_md5_sidecar(file_path: &Path, md5: &str) -> Result<(), String> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| "invalid filename for md5 sidecar".to_string())?;
     let sidecar = md5_sidecar_path(file_path);
-    fs::write(sidecar, format!("{}  {}\n", md5, filename)).map_err(|e| e.to_string())
+    fs::write(&sidecar, format!("{}  {}\n", md5, filename)).map_err(|e| e.to_string())?;
+    sync_file_metadata_from(file_path, &sidecar, true)
 }
 
 fn load_existing_staging_md5_hashes(

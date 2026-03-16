@@ -11,7 +11,7 @@ use std::time::Duration;
 use tauri::async_runtime;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
-use crate::utils::{append_app_log, num_cpus};
+use crate::utils::{append_app_log, num_cpus, sync_file_metadata_from};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessProgress {
@@ -38,6 +38,14 @@ pub enum ProcessTask {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub enum ProcessScopeMode {
+    EntireStaging,
+    FolderRecursive,
+    FolderOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ProcessJobStatus {
     Queued,
     Running,
@@ -53,6 +61,8 @@ pub struct ProcessJob {
     pub id: String,
     pub task: ProcessTask,
     pub staging_dir: String,
+    pub scope_dir: String,
+    pub scope_mode: ProcessScopeMode,
     pub status: ProcessJobStatus,
     pub created_at: String,
     pub started_at: Option<String>,
@@ -503,8 +513,14 @@ fn enhance_rgb_clahe(rgb: &RgbImage) -> RgbImage {
     out
 }
 
-fn collect_jpgs(dir: &Path) -> Vec<PathBuf> {
-    WalkDir::new(dir)
+fn collect_jpgs(dir: &Path, recursive: bool) -> Vec<PathBuf> {
+    let walker = if recursive {
+        WalkDir::new(dir)
+    } else {
+        WalkDir::new(dir).max_depth(1)
+    };
+
+    walker
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
@@ -529,12 +545,41 @@ fn collect_jpgs(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+fn resolve_process_scope(staging_dir: &str, scope_dir: Option<String>, scope_mode: &ProcessScopeMode) -> Result<PathBuf, String> {
+    let staging_root = PathBuf::from(staging_dir);
+    let scope = match scope_mode {
+        ProcessScopeMode::EntireStaging => staging_root.clone(),
+        ProcessScopeMode::FolderRecursive | ProcessScopeMode::FolderOnly => scope_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| staging_root.clone()),
+    };
+
+    if !scope.exists() {
+        return Err(format!("Process scope does not exist: {}", scope.display()));
+    }
+
+    let staging_canon = fs::canonicalize(&staging_root).map_err(|e| e.to_string())?;
+    let scope_canon = fs::canonicalize(&scope).map_err(|e| e.to_string())?;
+
+    if !scope_canon.starts_with(&staging_canon) {
+        return Err(format!(
+            "Process scope '{}' must be inside staging dir '{}'",
+            scope.display(),
+            staging_dir
+        ));
+    }
+
+    Ok(scope)
+}
+
 #[tauri::command]
 pub async fn run_focus_detection(
     app: AppHandle,
     staging_dir: String,
+    scope_dir: Option<String>,
+    scope_mode: Option<ProcessScopeMode>,
 ) -> Result<ProcessResult, String> {
-    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, ProcessTask::Focus, None))
+    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, scope_dir, scope_mode, ProcessTask::Focus, None))
         .await
         .map_err(|e| format!("Process background task failed: {}", e))?
 }
@@ -543,8 +588,10 @@ pub async fn run_focus_detection(
 pub async fn run_enhancement(
     app: AppHandle,
     staging_dir: String,
+    scope_dir: Option<String>,
+    scope_mode: Option<ProcessScopeMode>,
 ) -> Result<ProcessResult, String> {
-    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, ProcessTask::Enhance, None))
+    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, scope_dir, scope_mode, ProcessTask::Enhance, None))
         .await
         .map_err(|e| format!("Process background task failed: {}", e))?
 }
@@ -553,8 +600,10 @@ pub async fn run_enhancement(
 pub async fn run_bw_conversion(
     app: AppHandle,
     staging_dir: String,
+    scope_dir: Option<String>,
+    scope_mode: Option<ProcessScopeMode>,
 ) -> Result<ProcessResult, String> {
-    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, ProcessTask::Bw, None))
+    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, scope_dir, scope_mode, ProcessTask::Bw, None))
         .await
         .map_err(|e| format!("Process background task failed: {}", e))?
 }
@@ -570,18 +619,22 @@ fn task_name(task: &ProcessTask) -> &'static str {
 fn run_process_task(
     app: AppHandle,
     staging_dir: String,
+    scope_dir: Option<String>,
+    scope_mode: Option<ProcessScopeMode>,
     task: ProcessTask,
     job_id: Option<String>,
 ) -> Result<ProcessResult, String> {
-    let root = PathBuf::from(&staging_dir);
-    let jpgs = collect_jpgs(&root);
+    let scope_mode = scope_mode.unwrap_or(ProcessScopeMode::FolderRecursive);
+    let scope = resolve_process_scope(&staging_dir, scope_dir.clone(), &scope_mode)?;
+    let recursive = !matches!(scope_mode, ProcessScopeMode::FolderOnly);
+    let jpgs = collect_jpgs(&scope, recursive);
     let total = jpgs.len();
     let done_count = Arc::new(AtomicU64::new(0));
     let oof_count = Arc::new(AtomicU64::new(0));
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
 
     let task_label = task_name(&task);
-    let _ = append_app_log(&app, format!("process_{} start staging='{}'", task_label, staging_dir));
+    let _ = append_app_log(&app, format!("process_{} start staging='{}' scope='{}' scope_mode={:?}", task_label, staging_dir, scope.display(), scope_mode));
 
     if let Some(job_id) = &job_id {
         update_process_job(job_id, |job| {
@@ -589,8 +642,10 @@ fn run_process_task(
             job.started_at = Some(now_string());
             job.current_file = "Starting".to_string();
             job.total = total;
+            job.scope_dir = scope.to_string_lossy().into_owned();
+            job.scope_mode = scope_mode.clone();
         });
-        append_process_job_log(job_id, format!("start task={} staging='{}'", task_label, staging_dir));
+        append_process_job_log(job_id, format!("start task={} staging='{}' scope='{}' scope_mode={:?}", task_label, staging_dir, scope.display(), scope_mode));
     }
 
     if total == 0 {
@@ -602,7 +657,7 @@ fn run_process_task(
             });
             append_process_job_log(job_id, "no supported jpg files found");
         }
-        let _ = append_app_log(&app, format!("process_{} no files", task_label));
+        let _ = append_app_log(&app, format!("process_{} no files scope='{}' scope_mode={:?}", task_label, scope.display(), scope_mode));
         return Ok(ProcessResult { processed: 0, out_of_focus: 0, errors: vec![] });
     }
 
@@ -646,10 +701,12 @@ fn run_process_task(
                         let sharpened = unsharp_mask_rgb(&enhanced, 1.0, 0.5);
                         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                         let out_path = path.parent().unwrap_or(Path::new(".")).join(format!("{}_improved.jpg", stem));
+                        let replaced_existing = out_path.exists();
                         sharpened.save(&out_path)?;
-                        let _ = append_app_log(&app_clone, format!("process_enhance wrote='{}'", out_path.display()));
+                        sync_file_metadata_from(path, &out_path, false).map_err(anyhow::Error::msg)?;
+                        let _ = append_app_log(&app_clone, format!("process_enhance wrote='{}' replaced_existing={}", out_path.display(), replaced_existing));
                         if let Some(job_id) = &job_id_clone {
-                            append_process_job_log(job_id, format!("enhanced '{}' -> '{}'", path.display(), out_path.display()));
+                            append_process_job_log(job_id, format!("enhanced '{}' -> '{}' (replaced_existing={})", path.display(), out_path.display(), replaced_existing));
                         }
                     }
                     ProcessTask::Bw => {
@@ -658,10 +715,12 @@ fn run_process_task(
                         let sharpened = unsharp_mask_gray(&clahe, 1.0, 0.6);
                         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                         let out_path = path.parent().unwrap_or(Path::new(".")).join(format!("{}_BW.jpg", stem));
+                        let replaced_existing = out_path.exists();
                         sharpened.save(&out_path)?;
-                        let _ = append_app_log(&app_clone, format!("process_bw wrote='{}'", out_path.display()));
+                        sync_file_metadata_from(path, &out_path, false).map_err(anyhow::Error::msg)?;
+                        let _ = append_app_log(&app_clone, format!("process_bw wrote='{}' replaced_existing={}", out_path.display(), replaced_existing));
                         if let Some(job_id) = &job_id_clone {
-                            append_process_job_log(job_id, format!("bw '{}' -> '{}'", path.display(), out_path.display()));
+                            append_process_job_log(job_id, format!("bw '{}' -> '{}' (replaced_existing={})", path.display(), out_path.display(), replaced_existing));
                         }
                     }
                 }
@@ -712,7 +771,7 @@ fn run_process_task(
         .and_then(|id| process_jobs_store().lock().ok().and_then(|jobs| jobs.get(id).map(|j| j.abort_requested)))
         .unwrap_or(false);
 
-    let _ = append_app_log(&app, format!("process_{} complete processed={} out_of_focus={} errors={}", task_label, processed, out_of_focus, final_errors.len()));
+    let _ = append_app_log(&app, format!("process_{} complete processed={} out_of_focus={} errors={} scope_mode={:?}", task_label, processed, out_of_focus, final_errors.len(), scope_mode));
 
     if let Some(job_id) = &job_id {
         let failed = !final_errors.is_empty();
@@ -750,6 +809,8 @@ fn run_process_task(
 pub fn start_process_job(
     app: AppHandle,
     staging_dir: String,
+    scope_dir: Option<String>,
+    scope_mode: Option<ProcessScopeMode>,
     task: String,
 ) -> Result<String, String> {
     let task_enum = match task.to_lowercase().as_str() {
@@ -764,6 +825,8 @@ pub fn start_process_job(
         id: job_id.clone(),
         task: task_enum.clone(),
         staging_dir: staging_dir.clone(),
+        scope_dir: scope_dir.clone().unwrap_or_else(|| staging_dir.clone()),
+        scope_mode: scope_mode.clone().unwrap_or(ProcessScopeMode::FolderRecursive),
         status: ProcessJobStatus::Queued,
         created_at: now_string(),
         started_at: None,
@@ -788,7 +851,7 @@ pub fn start_process_job(
     let job_id_for_task = job_id.clone();
     async_runtime::spawn(async move {
         let _ = async_runtime::spawn_blocking(move || {
-            run_process_task(app_for_task, staging_dir, task_enum, Some(job_id_for_task))
+            run_process_task(app_for_task, staging_dir, scope_dir, scope_mode, task_enum, Some(job_id_for_task))
         })
         .await;
     });

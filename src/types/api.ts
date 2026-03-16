@@ -73,12 +73,16 @@ export interface ProcessResult {
 
 export type ProcessTask = "focus" | "enhance" | "bw";
 
+export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly";
+
 export type ProcessJobStatus = "queued" | "running" | "paused" | "aborted" | "completed" | "failed";
 
 export interface ProcessJob {
   id: string;
   task: ProcessTask;
   stagingDir: string;
+  scopeDir: string;
+  scopeMode: ProcessScopeMode;
   status: ProcessJobStatus;
   createdAt: string;
   startedAt: string | null;
