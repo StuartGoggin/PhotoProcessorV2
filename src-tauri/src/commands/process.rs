@@ -35,9 +35,13 @@ pub struct ProcessResult {
 #[serde(rename_all = "camelCase")]
 pub enum ProcessTask {
     Focus,
+    RemoveFocus,
     Enhance,
+    RemoveEnhance,
     Bw,
+    RemoveBw,
     Stabilize,
+    RemoveStabilize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,6 +326,29 @@ fn mark_blurry_filename(path: &Path, n: u32) -> PathBuf {
     path.parent().unwrap_or(Path::new(".")).join(new_name)
 }
 
+fn restore_blurry_filename(path: &Path) -> Option<PathBuf> {
+    let stem = path.file_stem().and_then(|s| s.to_str())?;
+    let marker_start = stem.rfind("{Out of Focus ")?;
+    if !stem.ends_with('}') {
+        return None;
+    }
+
+    let marker_contents = &stem[marker_start + "{Out of Focus ".len()..stem.len() - 1];
+    if marker_contents.is_empty() || !marker_contents.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+
+    let original_stem = &stem[..marker_start];
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let restored_name = if ext.is_empty() {
+        original_stem.to_string()
+    } else {
+        format!("{}.{}", original_stem, ext)
+    };
+
+    Some(path.parent().unwrap_or(Path::new(".")).join(restored_name))
+}
+
 fn apply_clahe_luma(gray: &GrayImage) -> GrayImage {
     let w = gray.width();
     let h = gray.height();
@@ -560,6 +587,59 @@ fn collect_jpgs(dir: &Path, recursive: bool) -> Vec<PathBuf> {
         .collect()
 }
 
+fn collect_focus_marked_jpgs(dir: &Path, recursive: bool) -> Vec<PathBuf> {
+    let walker = if recursive {
+        WalkDir::new(dir)
+    } else {
+        WalkDir::new(dir).max_depth(1)
+    };
+
+    walker
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| {
+                    let el = e.to_lowercase();
+                    el == "jpg" || el == "jpeg"
+                })
+                .unwrap_or(false)
+        })
+        .filter(|p| restore_blurry_filename(p).is_some())
+        .collect()
+}
+
+fn collect_named_outputs(dir: &Path, recursive: bool, suffix: &str, extension: &str) -> Vec<PathBuf> {
+    let walker = if recursive {
+        WalkDir::new(dir)
+    } else {
+        WalkDir::new(dir).max_depth(1)
+    };
+
+    walker
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .filter(|p| {
+            let ext_matches = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case(extension))
+                .unwrap_or(false);
+            let stem_matches = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|stem| stem.ends_with(suffix))
+                .unwrap_or(false);
+            ext_matches && stem_matches
+        })
+        .collect()
+}
+
 fn collect_mp4s(dir: &Path, recursive: bool) -> Vec<PathBuf> {
     let walker = if recursive {
         WalkDir::new(dir)
@@ -592,7 +672,11 @@ fn collect_mp4s(dir: &Path, recursive: bool) -> Vec<PathBuf> {
 fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec<PathBuf> {
     match task {
         ProcessTask::Focus | ProcessTask::Enhance | ProcessTask::Bw => collect_jpgs(dir, recursive),
+        ProcessTask::RemoveFocus => collect_focus_marked_jpgs(dir, recursive),
+        ProcessTask::RemoveEnhance => collect_named_outputs(dir, recursive, "_improved", "jpg"),
+        ProcessTask::RemoveBw => collect_named_outputs(dir, recursive, "_BW", "jpg"),
         ProcessTask::Stabilize => collect_mp4s(dir, recursive),
+        ProcessTask::RemoveStabilize => collect_named_outputs(dir, recursive, "_stabilized", "mp4"),
     }
 }
 
@@ -1071,9 +1155,13 @@ pub async fn run_video_stabilization(
 fn task_name(task: &ProcessTask) -> &'static str {
     match task {
         ProcessTask::Focus => "focus",
+        ProcessTask::RemoveFocus => "remove_focus",
         ProcessTask::Enhance => "enhance",
+        ProcessTask::RemoveEnhance => "remove_enhance",
         ProcessTask::Bw => "bw",
+        ProcessTask::RemoveBw => "remove_bw",
         ProcessTask::Stabilize => "stabilize",
+        ProcessTask::RemoveStabilize => "remove_stabilize",
     }
 }
 
@@ -1199,6 +1287,22 @@ fn run_process_task(
                             }
                         }
                     }
+                    ProcessTask::RemoveFocus => {
+                        let restored_path = restore_blurry_filename(path)
+                            .ok_or_else(|| anyhow::anyhow!("File name does not contain a removable out-of-focus marker"))?;
+                        if restored_path.exists() {
+                            return Err(anyhow::anyhow!(
+                                "Cannot restore '{}' because '{}' already exists",
+                                path.display(),
+                                restored_path.display()
+                            ));
+                        }
+                        fs::rename(path, &restored_path)?;
+                        let _ = append_app_log(&app_clone, format!("process_remove_focus restored='{}' to='{}'", path.display(), restored_path.display()));
+                        if let Some(job_id) = &job_id_clone {
+                            append_process_job_log(job_id, format!("restored focus marker '{}' -> '{}'", path.display(), restored_path.display()));
+                        }
+                    }
                     ProcessTask::Enhance => {
                         let img = image::open(path)?.into_rgb8();
                         let enhanced = enhance_rgb_clahe(&img);
@@ -1211,6 +1315,13 @@ fn run_process_task(
                         let _ = append_app_log(&app_clone, format!("process_enhance wrote='{}' replaced_existing={}", out_path.display(), replaced_existing));
                         if let Some(job_id) = &job_id_clone {
                             append_process_job_log(job_id, format!("enhanced '{}' -> '{}' (replaced_existing={})", path.display(), out_path.display(), replaced_existing));
+                        }
+                    }
+                    ProcessTask::RemoveEnhance => {
+                        fs::remove_file(path)?;
+                        let _ = append_app_log(&app_clone, format!("process_remove_enhance removed='{}'", path.display()));
+                        if let Some(job_id) = &job_id_clone {
+                            append_process_job_log(job_id, format!("removed enhance output '{}'", path.display()));
                         }
                     }
                     ProcessTask::Bw => {
@@ -1227,11 +1338,25 @@ fn run_process_task(
                             append_process_job_log(job_id, format!("bw '{}' -> '{}' (replaced_existing={})", path.display(), out_path.display(), replaced_existing));
                         }
                     }
+                    ProcessTask::RemoveBw => {
+                        fs::remove_file(path)?;
+                        let _ = append_app_log(&app_clone, format!("process_remove_bw removed='{}'", path.display()));
+                        if let Some(job_id) = &job_id_clone {
+                            append_process_job_log(job_id, format!("removed bw output '{}'", path.display()));
+                        }
+                    }
                     ProcessTask::Stabilize => {
                         let capabilities = ffmpeg_clone
                             .as_ref()
                             .ok_or_else(|| anyhow::anyhow!("FFmpeg capability probe was not initialised"))?;
                         stabilize_mp4(&app_clone, path, capabilities, job_id_clone.as_deref())?;
+                    }
+                    ProcessTask::RemoveStabilize => {
+                        fs::remove_file(path)?;
+                        let _ = append_app_log(&app_clone, format!("process_remove_stabilize removed='{}'", path.display()));
+                        if let Some(job_id) = &job_id_clone {
+                            append_process_job_log(job_id, format!("removed stabilized output '{}'", path.display()));
+                        }
                     }
                 }
                 Ok(())
@@ -1325,9 +1450,13 @@ pub fn start_process_job(
 ) -> Result<String, String> {
     let task_enum = match task.to_lowercase().as_str() {
         "focus" => ProcessTask::Focus,
+        "remove_focus" => ProcessTask::RemoveFocus,
         "enhance" => ProcessTask::Enhance,
+        "remove_enhance" => ProcessTask::RemoveEnhance,
         "bw" => ProcessTask::Bw,
+        "remove_bw" => ProcessTask::RemoveBw,
         "stabilize" => ProcessTask::Stabilize,
+        "remove_stabilize" => ProcessTask::RemoveStabilize,
         _ => return Err(format!("Unknown process task: {}", task)),
     };
 

@@ -7,7 +7,7 @@ A desktop photo management workflow app built with [Tauri](https://tauri.app/) (
 | Page | Description |
 |------|-------------|
 | **Import** | Copy photos from SD card to local staging, renamed by EXIF date |
-| **Post Process** | Focus detection, CLAHE enhancement, B&W conversion, MP4 stabilization |
+| **Post Process** | Focus detection, CLAHE enhancement, B&W conversion, MP4 stabilization, plus task-specific cleanup jobs for generated results |
 | **Review** | Browse staging folder, rate (stars) and mark photos for deletion |
 | **Tidy Up** | Move `{trash}`-marked files to a `Trash/` subdirectory |
 | **Transfer** | Copy staging to archive (NAS), generate + verify MD5 checksums |

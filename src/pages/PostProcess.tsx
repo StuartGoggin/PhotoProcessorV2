@@ -5,36 +5,51 @@ import type { ProcessScopeMode, ProcessTask, TreeNode } from "../types";
 import { useSettings } from "../hooks";
 
 interface TaskConfig {
-  id: ProcessTask;
   label: string;
   description: string;
   color: string;
+  runTaskId: ProcessTask;
+  removeTaskId: ProcessTask;
+  removeLabel: string;
+  removeDescription: string;
 }
 
 const TASKS: TaskConfig[] = [
   {
-    id: "focus",
     label: "Focus Detection",
     description: "Analyse JPGs for blur using Laplacian variance. Blurry files get {Out of Focus N} appended to filename.",
     color: "text-orange-400",
+    runTaskId: "focus",
+    removeTaskId: "remove_focus",
+    removeLabel: "Remove Focus Flags",
+    removeDescription: "Rename files with {Out of Focus N} back to their original filenames when the original name is free.",
   },
   {
-    id: "enhance",
     label: "JPG Enhancement",
     description: "CLAHE contrast enhancement + gentle sharpening. Saves as _improved.jpg alongside originals.",
     color: "text-blue-400",
+    runTaskId: "enhance",
+    removeTaskId: "remove_enhance",
+    removeLabel: "Remove Enhancement Outputs",
+    removeDescription: "Delete only generated _improved.jpg files inside the selected scope.",
   },
   {
-    id: "bw",
     label: "B&W Conversion",
     description: "CLAHE + sharpen in grayscale. Saves as _BW.jpg alongside originals.",
     color: "text-gray-300",
+    runTaskId: "bw",
+    removeTaskId: "remove_bw",
+    removeLabel: "Remove B&W Outputs",
+    removeDescription: "Delete only generated _BW.jpg files inside the selected scope.",
   },
   {
-    id: "stabilize",
     label: "MP4 Stabilisation",
     description: "Two-pass vid.stab stabilization for MP4s. Writes _stabilized.mp4 beside the source, preserves timestamps, reuses the same output name on reruns, and prefers NVIDIA H.264 encode when FFmpeg exposes NVENC.",
     color: "text-cyan-300",
+    runTaskId: "stabilize",
+    removeTaskId: "remove_stabilize",
+    removeLabel: "Remove Stabilised MP4s",
+    removeDescription: "Delete only generated _stabilized.mp4 files inside the selected scope.",
   },
 ];
 
@@ -78,13 +93,13 @@ export default function PostProcess() {
     void loadTree();
   }, [settings?.staging_dir]);
 
-  async function runTask(task: TaskConfig) {
+  async function runTask(taskId: ProcessTask) {
     if (!settings?.staging_dir) {
       setError("Staging directory not configured in Settings.");
       return;
     }
 
-    setQueueingTask(task.id);
+    setQueueingTask(taskId);
     setError(null);
     setMessage(null);
 
@@ -93,7 +108,7 @@ export default function PostProcess() {
         stagingDir: settings.staging_dir,
         scopeDir: scopeMode === "entireStaging" ? settings.staging_dir : (selectedScope || settings.staging_dir),
         scopeMode,
-        task: task.id,
+        task: taskId,
       });
       setMessage(`Queued post-process job: ${jobId}. Track it in Jobs tab.`);
     } catch (e) {
@@ -179,21 +194,35 @@ export default function PostProcess() {
 
       <div className="space-y-4">
         {TASKS.map((task) => {
-          const isQueueing = queueingTask === task.id;
+          const isQueueingRun = queueingTask === task.runTaskId;
+          const isQueueingRemove = queueingTask === task.removeTaskId;
 
           return (
-            <div key={task.id} className="card">
-              <div className="flex items-start justify-between mb-2">
-                <div className="flex-1">
+            <div key={task.runTaskId} className="card space-y-4">
+              <div className="flex items-start justify-between mb-2 gap-4">
+                <div className="flex-1 min-w-0">
                   <h3 className={`font-medium ${task.color}`}>{task.label}</h3>
                   <p className="text-xs text-gray-500 mt-1">{task.description}</p>
                 </div>
                 <button
                   className="btn-primary ml-4 whitespace-nowrap"
-                  onClick={() => runTask(task)}
+                  onClick={() => runTask(task.runTaskId)}
                   disabled={queueingTask !== null}
                 >
-                  {isQueueing ? "Queueing..." : "Queue Job"}
+                  {isQueueingRun ? "Queueing..." : "Queue Job"}
+                </button>
+              </div>
+              <div className="rounded-lg border border-surface-600 bg-surface-900/60 px-3 py-3 flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-red-300">{task.removeLabel}</div>
+                  <p className="text-xs text-gray-500 mt-1">{task.removeDescription}</p>
+                </div>
+                <button
+                  className="btn-danger whitespace-nowrap"
+                  onClick={() => runTask(task.removeTaskId)}
+                  disabled={queueingTask !== null}
+                >
+                  {isQueueingRemove ? "Queueing..." : "Queue Remove Job"}
                 </button>
               </div>
             </div>
