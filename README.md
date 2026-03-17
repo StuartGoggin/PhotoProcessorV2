@@ -7,7 +7,7 @@ A desktop photo management workflow app built with [Tauri](https://tauri.app/) (
 | Page | Description |
 |------|-------------|
 | **Import** | Copy photos from SD card to local staging, renamed by EXIF date |
-| **Post Process** | Focus detection, CLAHE enhancement, B&W conversion |
+| **Post Process** | Focus detection, CLAHE enhancement, B&W conversion, MP4 stabilization |
 | **Review** | Browse staging folder, rate (stars) and mark photos for deletion |
 | **Tidy Up** | Move `{trash}`-marked files to a `Trash/` subdirectory |
 | **Transfer** | Copy staging to archive (NAS), generate + verify MD5 checksums |
@@ -34,13 +34,15 @@ src-tauri/src/
   commands/
     settings.rs   load/save settings
     import.rs     SD card import with EXIF renaming
-    process.rs    Focus detection, enhancement, B&W
+    process.rs    Focus detection, enhancement, B&W, MP4 stabilization
     transfer.rs   Archive copy + MD5 verify
     tidy.rs       Trash collection
     files.rs      File rename + image read (Review page)
 ```
 
 ## Development
+
+MP4 stabilization requires an FFmpeg build with the `vidstabdetect` and `vidstabtransform` filters. Running [run.ps1](run.ps1) now bootstraps a repo-local Windows GPL build into `tools/ffmpeg/bin/ffmpeg.exe` and exports `PHOTOGOGO_FFMPEG` automatically. If the detected build also exposes `h264_nvenc`, PhotoGoGo will use NVIDIA H.264 encoding for stabilized outputs.
 
 ```bash
 # Install dependencies

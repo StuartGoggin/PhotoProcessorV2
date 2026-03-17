@@ -2,8 +2,11 @@ use image::{DynamicImage, GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -34,6 +37,7 @@ pub enum ProcessTask {
     Focus,
     Enhance,
     Bw,
+    Stabilize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +149,17 @@ fn wait_if_process_paused_or_aborted(job_id: Option<&str>) -> bool {
             }
         });
         return false;
+    }
+}
+
+fn is_process_abort_requested(job_id: Option<&str>) -> bool {
+    let Some(job_id) = job_id else { return false; };
+    match process_jobs_store().lock() {
+        Ok(jobs) => jobs
+            .get(job_id)
+            .map(|job| job.abort_requested)
+            .unwrap_or(true),
+        Err(_) => true,
     }
 }
 
@@ -545,6 +560,439 @@ fn collect_jpgs(dir: &Path, recursive: bool) -> Vec<PathBuf> {
         .collect()
 }
 
+fn collect_mp4s(dir: &Path, recursive: bool) -> Vec<PathBuf> {
+    let walker = if recursive {
+        WalkDir::new(dir)
+    } else {
+        WalkDir::new(dir).max_depth(1)
+    };
+
+    walker
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("mp4"))
+                .unwrap_or(false)
+        })
+        .filter(|p| {
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            !name.contains("_stabilized")
+        })
+        .collect()
+}
+
+fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec<PathBuf> {
+    match task {
+        ProcessTask::Focus | ProcessTask::Enhance | ProcessTask::Bw => collect_jpgs(dir, recursive),
+        ProcessTask::Stabilize => collect_mp4s(dir, recursive),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FfmpegCapabilities {
+    binary: PathBuf,
+    has_vidstab: bool,
+    has_h264_nvenc: bool,
+    nvenc_probe_error: Option<String>,
+}
+
+fn ffmpeg_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(path) = env::var_os("PHOTOGOGO_FFMPEG") {
+        candidates.push(PathBuf::from(path));
+    }
+
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            candidates.push(parent.join("ffmpeg.exe"));
+            candidates.push(parent.join("tools").join("ffmpeg").join("bin").join("ffmpeg.exe"));
+        }
+    }
+
+    candidates.push(PathBuf::from("ffmpeg"));
+    candidates
+}
+
+fn command_output(binary: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    Command::new(binary)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())
+}
+
+fn probe_h264_nvenc(binary: &Path) -> Result<(), String> {
+    let probe_root = env::temp_dir().join(format!(
+        "photogogo_nvenc_probe_{}_{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_millis()
+    ));
+    let output_path = probe_root.join("probe.mp4");
+    fs::create_dir_all(&probe_root).map_err(|e| e.to_string())?;
+
+    let output = Command::new(binary)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=size=16x16:rate=1:color=black",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p7",
+            "-cq",
+            "18",
+            "-b:v",
+            "0",
+            "-an",
+            "-y",
+        ])
+        .arg(&output_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let _ = fs::remove_file(&output_path);
+    let _ = fs::remove_dir_all(&probe_root);
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stderr.is_empty() {
+        Err(stderr)
+    } else if !stdout.is_empty() {
+        Err(stdout)
+    } else {
+        Err(format!("NVENC probe failed with status {}", output.status))
+    }
+}
+
+fn detect_ffmpeg_capabilities() -> Result<FfmpegCapabilities, String> {
+    let mut last_error = None;
+
+    for candidate in ffmpeg_candidates() {
+        match command_output(&candidate, &["-hide_banner", "-version"]) {
+            Ok(version) if version.status.success() => {
+                let filters = command_output(&candidate, &["-hide_banner", "-filters"])?;
+                let filters_stdout = String::from_utf8_lossy(&filters.stdout).to_lowercase();
+                let filters_stderr = String::from_utf8_lossy(&filters.stderr).to_lowercase();
+                let filter_blob = format!("{}\n{}", filters_stdout, filters_stderr);
+
+                let encoders = command_output(&candidate, &["-hide_banner", "-encoders"])?;
+                let encoders_stdout = String::from_utf8_lossy(&encoders.stdout).to_lowercase();
+                let encoders_stderr = String::from_utf8_lossy(&encoders.stderr).to_lowercase();
+                let encoder_blob = format!("{}\n{}", encoders_stdout, encoders_stderr);
+                let nvenc_listed = encoder_blob.contains("h264_nvenc");
+                let nvenc_probe = if nvenc_listed {
+                    probe_h264_nvenc(&candidate).err()
+                } else {
+                    None
+                };
+
+                return Ok(FfmpegCapabilities {
+                    binary: candidate,
+                    has_vidstab: filter_blob.contains("vidstabdetect") && filter_blob.contains("vidstabtransform"),
+                    has_h264_nvenc: nvenc_listed && nvenc_probe.is_none(),
+                    nvenc_probe_error: nvenc_probe,
+                });
+            }
+            Ok(version) => {
+                last_error = Some(String::from_utf8_lossy(&version.stderr).trim().to_string());
+            }
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+    }
+
+    Err(format!(
+        "FFmpeg was not found. Install FFmpeg with the vid.stab filters and place ffmpeg.exe on PATH, or set PHOTOGOGO_FFMPEG to the executable path.{}",
+        last_error
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(" Last probe error: {}", s))
+            .unwrap_or_default()
+    ))
+}
+
+fn run_ffmpeg_command(
+    binary: &Path,
+    args: &[String],
+    job_id: Option<&str>,
+    working_dir: Option<&Path>,
+) -> Result<(), String> {
+    let mut command = Command::new(binary);
+    command.args(args);
+
+    if let Some(dir) = working_dir {
+        command.current_dir(dir);
+    }
+
+    let mut child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let stderr_reader = child.stderr.take().map(|mut stderr| {
+        thread::spawn(move || {
+            let mut text = String::new();
+            let _ = stderr.read_to_string(&mut text);
+            text
+        })
+    });
+
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            let stderr_text = stderr_reader
+                .map(|handle| handle.join().unwrap_or_default())
+                .unwrap_or_default();
+
+            if status.success() {
+                return Ok(());
+            }
+
+            let message = stderr_text.trim();
+            return Err(if message.is_empty() {
+                format!("FFmpeg exited with status {}", status)
+            } else {
+                format!("FFmpeg exited with status {}: {}", status, message)
+            });
+        }
+
+        if is_process_abort_requested(job_id) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stderr_reader.map(|handle| handle.join());
+            return Err("Process job aborted while FFmpeg was running".to_string());
+        }
+
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn stabilize_mp4(
+    app: &AppHandle,
+    path: &Path,
+    capabilities: &FfmpegCapabilities,
+    job_id: Option<&str>,
+) -> anyhow::Result<()> {
+    if !capabilities.has_vidstab {
+        return Err(anyhow::anyhow!(
+            "FFmpeg is installed, but this build does not include vid.stab (vidstabdetect/vidstabtransform)."
+        ));
+    }
+
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("video");
+    let out_path = path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(format!("{}_stabilized.mp4", stem));
+    let replaced_existing = out_path.exists();
+    let temp_root = env::temp_dir();
+    let temp_tag = format!(
+        "photogogo_vidstab_{}_{}_{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_millis(),
+        done_hash(path)
+    );
+    let work_dir = temp_root.join(&temp_tag);
+    fs::create_dir_all(&work_dir)?;
+    let transform_file_name = format!("{}.trf", temp_tag);
+    let transform_path = work_dir.join(&transform_file_name);
+
+    let detect_filter = format!(
+        "vidstabdetect=stepsize=6:shakiness=4:accuracy=15:mincontrast=0.25:result={}",
+        transform_file_name
+    );
+    let transform_filter = format!(
+        "vidstabtransform=input={}:smoothing=30:optzoom=0:zoomspeed=0:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0",
+        transform_file_name
+    );
+
+    let detect_args = vec![
+        "-hide_banner".to_string(),
+        "-y".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+        "-threads".to_string(),
+        num_cpus().to_string(),
+        "-i".to_string(),
+        path.to_string_lossy().into_owned(),
+        "-vf".to_string(),
+        detect_filter,
+        "-an".to_string(),
+        "-f".to_string(),
+        "null".to_string(),
+        "-".to_string(),
+    ];
+
+    let video_encoder = if capabilities.has_h264_nvenc { "h264_nvenc" } else { "libx264" };
+    let mut transform_args = vec![
+        "-hide_banner".to_string(),
+        "-y".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+        "-threads".to_string(),
+        num_cpus().to_string(),
+        "-i".to_string(),
+        path.to_string_lossy().into_owned(),
+        "-vf".to_string(),
+        transform_filter,
+        "-map_metadata".to_string(),
+        "0".to_string(),
+        "-movflags".to_string(),
+        "+use_metadata_tags".to_string(),
+        "-c:v".to_string(),
+        video_encoder.to_string(),
+    ];
+
+    if capabilities.has_h264_nvenc {
+        transform_args.extend([
+            "-preset".to_string(),
+            "p7".to_string(),
+            "-tune".to_string(),
+            "hq".to_string(),
+            "-rc".to_string(),
+            "vbr".to_string(),
+            "-cq".to_string(),
+            "18".to_string(),
+            "-b:v".to_string(),
+            "0".to_string(),
+            "-spatial-aq".to_string(),
+            "1".to_string(),
+            "-aq-strength".to_string(),
+            "8".to_string(),
+        ]);
+    } else {
+        transform_args.extend([
+            "-preset".to_string(),
+            "slow".to_string(),
+            "-crf".to_string(),
+            "18".to_string(),
+        ]);
+    }
+
+    transform_args.extend([
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        "-c:a".to_string(),
+        "copy".to_string(),
+        out_path.to_string_lossy().into_owned(),
+    ]);
+
+    let _ = append_app_log(
+        app,
+        format!(
+            "process_stabilize analyse source='{}' transform='{}'",
+            path.display(),
+            transform_path.display()
+        ),
+    );
+    if let Some(job_id) = job_id {
+        append_process_job_log(
+            job_id,
+            format!(
+                "stabilize analyse '{}' using {} work_dir='{}'",
+                path.display(),
+                capabilities.binary.display(),
+                work_dir.display()
+            ),
+        );
+    }
+
+    run_ffmpeg_command(&capabilities.binary, &detect_args, job_id, Some(&work_dir))
+        .map_err(anyhow::Error::msg)?;
+
+    if let Some(reason) = &capabilities.nvenc_probe_error {
+        let _ = append_app_log(
+            app,
+            format!(
+                "process_stabilize nvenc_unavailable source='{}' reason='{}'",
+                path.display(),
+                reason
+            ),
+        );
+    }
+
+    let _ = append_app_log(
+        app,
+        format!(
+            "process_stabilize encode source='{}' output='{}' encoder={} gpu={}",
+            path.display(),
+            out_path.display(),
+            video_encoder,
+            capabilities.has_h264_nvenc
+        ),
+    );
+    if let Some(job_id) = job_id {
+        append_process_job_log(
+            job_id,
+            format!(
+                "stabilize encode '{}' -> '{}' encoder={} gpu={}",
+                path.display(),
+                out_path.display(),
+                video_encoder,
+                capabilities.has_h264_nvenc
+            ),
+        );
+    }
+
+    let result = run_ffmpeg_command(&capabilities.binary, &transform_args, job_id, Some(&work_dir));
+    let _ = fs::remove_file(&transform_path);
+    let _ = fs::remove_dir_all(&work_dir);
+    result.map_err(anyhow::Error::msg)?;
+
+    sync_file_metadata_from(path, &out_path, false).map_err(anyhow::Error::msg)?;
+
+    let _ = append_app_log(
+        app,
+        format!(
+            "process_stabilize wrote='{}' replaced_existing={} encoder={} gpu={}",
+            out_path.display(),
+            replaced_existing,
+            video_encoder,
+            capabilities.has_h264_nvenc
+        ),
+    );
+    if let Some(job_id) = job_id {
+        append_process_job_log(
+            job_id,
+            format!(
+                "stabilized '{}' -> '{}' (replaced_existing={} encoder={} gpu={})",
+                path.display(),
+                out_path.display(),
+                replaced_existing,
+                video_encoder,
+                capabilities.has_h264_nvenc
+            ),
+        );
+    }
+
+    Ok(())
+}
+
+fn done_hash(path: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
 fn resolve_process_scope(staging_dir: &str, scope_dir: Option<String>, scope_mode: &ProcessScopeMode) -> Result<PathBuf, String> {
     let staging_root = PathBuf::from(staging_dir);
     let scope = match scope_mode {
@@ -608,11 +1056,24 @@ pub async fn run_bw_conversion(
         .map_err(|e| format!("Process background task failed: {}", e))?
 }
 
+#[tauri::command]
+pub async fn run_video_stabilization(
+    app: AppHandle,
+    staging_dir: String,
+    scope_dir: Option<String>,
+    scope_mode: Option<ProcessScopeMode>,
+) -> Result<ProcessResult, String> {
+    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, scope_dir, scope_mode, ProcessTask::Stabilize, None))
+        .await
+        .map_err(|e| format!("Process background task failed: {}", e))?
+}
+
 fn task_name(task: &ProcessTask) -> &'static str {
     match task {
         ProcessTask::Focus => "focus",
         ProcessTask::Enhance => "enhance",
         ProcessTask::Bw => "bw",
+        ProcessTask::Stabilize => "stabilize",
     }
 }
 
@@ -627,8 +1088,8 @@ fn run_process_task(
     let scope_mode = scope_mode.unwrap_or(ProcessScopeMode::FolderRecursive);
     let scope = resolve_process_scope(&staging_dir, scope_dir.clone(), &scope_mode)?;
     let recursive = !matches!(scope_mode, ProcessScopeMode::FolderOnly);
-    let jpgs = collect_jpgs(&scope, recursive);
-    let total = jpgs.len();
+    let files = collect_process_files(&task, &scope, recursive);
+    let total = files.len();
     let done_count = Arc::new(AtomicU64::new(0));
     let oof_count = Arc::new(AtomicU64::new(0));
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -655,11 +1116,53 @@ fn run_process_task(
                 job.finished_at = Some(now_string());
                 job.current_file = "Done".to_string();
             });
-            append_process_job_log(job_id, "no supported jpg files found");
+            append_process_job_log(job_id, "no supported files found for this task");
         }
         let _ = append_app_log(&app, format!("process_{} no files scope='{}' scope_mode={:?}", task_label, scope.display(), scope_mode));
         return Ok(ProcessResult { processed: 0, out_of_focus: 0, errors: vec![] });
     }
+
+    let ffmpeg_capabilities = match task {
+        ProcessTask::Stabilize => {
+            let capabilities = detect_ffmpeg_capabilities()?;
+            if !capabilities.has_vidstab {
+                return Err("FFmpeg is installed, but this build does not include the vid.stab filters required for stabilization.".to_string());
+            }
+            let encoder = if capabilities.has_h264_nvenc { "h264_nvenc" } else { "libx264" };
+            let _ = append_app_log(
+                &app,
+                format!(
+                    "process_stabilize capability binary='{}' vidstab={} encoder={} gpu={} nvenc_probe_error={}",
+                    capabilities.binary.display(),
+                    capabilities.has_vidstab,
+                    encoder,
+                    capabilities.has_h264_nvenc,
+                    capabilities.nvenc_probe_error.as_deref().unwrap_or("none")
+                ),
+            );
+            if let Some(job_id) = &job_id {
+                append_process_job_log(
+                    job_id,
+                    format!(
+                        "ffmpeg='{}' vidstab={} encoder={} gpu={} nvenc_probe_error={}",
+                        capabilities.binary.display(),
+                        capabilities.has_vidstab,
+                        encoder,
+                        capabilities.has_h264_nvenc,
+                        capabilities.nvenc_probe_error.as_deref().unwrap_or("none")
+                    ),
+                );
+                if let Some(reason) = &capabilities.nvenc_probe_error {
+                    append_process_job_log(
+                        job_id,
+                        format!("NVENC unavailable on this machine; falling back to libx264. reason={}", reason),
+                    );
+                }
+            }
+            Some(capabilities)
+        }
+        _ => None,
+    };
 
     let app_clone = app.clone();
     let done_clone = done_count.clone();
@@ -667,6 +1170,7 @@ fn run_process_task(
     let errors_clone = errors.clone();
     let task_clone = task.clone();
     let job_id_clone = job_id.clone();
+    let ffmpeg_clone = ffmpeg_capabilities.clone();
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads((num_cpus() * 2).max(4))
@@ -674,7 +1178,7 @@ fn run_process_task(
         .map_err(|e| e.to_string())?;
 
     pool.install(|| {
-        jpgs.par_iter().for_each(|path| {
+        files.par_iter().for_each(|path| {
             if wait_if_process_paused_or_aborted(job_id_clone.as_deref()) {
                 return;
             }
@@ -722,6 +1226,12 @@ fn run_process_task(
                         if let Some(job_id) = &job_id_clone {
                             append_process_job_log(job_id, format!("bw '{}' -> '{}' (replaced_existing={})", path.display(), out_path.display(), replaced_existing));
                         }
+                    }
+                    ProcessTask::Stabilize => {
+                        let capabilities = ffmpeg_clone
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("FFmpeg capability probe was not initialised"))?;
+                        stabilize_mp4(&app_clone, path, capabilities, job_id_clone.as_deref())?;
                     }
                 }
                 Ok(())
@@ -817,6 +1327,7 @@ pub fn start_process_job(
         "focus" => ProcessTask::Focus,
         "enhance" => ProcessTask::Enhance,
         "bw" => ProcessTask::Bw,
+        "stabilize" => ProcessTask::Stabilize,
         _ => return Err(format!("Unknown process task: {}", task)),
     };
 
@@ -849,11 +1360,40 @@ pub fn start_process_job(
 
     let app_for_task = app.clone();
     let job_id_for_task = job_id.clone();
+    let job_id_for_status = job_id.clone();
+    let task_for_worker = task_enum.clone();
+    let task_for_status = task_enum.clone();
+    let app_for_status = app.clone();
     async_runtime::spawn(async move {
-        let _ = async_runtime::spawn_blocking(move || {
-            run_process_task(app_for_task, staging_dir, scope_dir, scope_mode, task_enum, Some(job_id_for_task))
+        let result = async_runtime::spawn_blocking(move || {
+            run_process_task(app_for_task, staging_dir, scope_dir, scope_mode, task_for_worker, Some(job_id_for_task))
         })
         .await;
+
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                update_process_job(&job_id_for_status, |job| {
+                    job.status = ProcessJobStatus::Failed;
+                    job.finished_at = Some(now_string());
+                    job.current_file = "Failed".to_string();
+                    job.errors.push(err.clone());
+                });
+                append_process_job_log(&job_id_for_status, format!("failed before processing: {}", err));
+                let _ = append_app_log(&app_for_status, format!("process_{} failed job_id='{}' error='{}'", task_name(&task_for_status), job_id_for_status, err));
+            }
+            Err(join_err) => {
+                let err = format!("Process background task failed: {}", join_err);
+                update_process_job(&job_id_for_status, |job| {
+                    job.status = ProcessJobStatus::Failed;
+                    job.finished_at = Some(now_string());
+                    job.current_file = "Failed".to_string();
+                    job.errors.push(err.clone());
+                });
+                append_process_job_log(&job_id_for_status, err.clone());
+                let _ = append_app_log(&app_for_status, format!("process_{} join_failed job_id='{}' error='{}'", task_name(&task_for_status), job_id_for_status, err));
+            }
+        }
     });
 
     Ok(job_id)

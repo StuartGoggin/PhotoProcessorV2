@@ -30,6 +30,12 @@ const TASKS: TaskConfig[] = [
     description: "CLAHE + sharpen in grayscale. Saves as _BW.jpg alongside originals.",
     color: "text-gray-300",
   },
+  {
+    id: "stabilize",
+    label: "MP4 Stabilisation",
+    description: "Two-pass vid.stab stabilization for MP4s. Writes _stabilized.mp4 beside the source, preserves timestamps, reuses the same output name on reruns, and prefers NVIDIA H.264 encode when FFmpeg exposes NVENC.",
+    color: "text-cyan-300",
+  },
 ];
 
 const SCOPE_MODES: Array<{ id: ProcessScopeMode; label: string; description: string }> = [
@@ -101,7 +107,7 @@ export default function PostProcess() {
     <div className="p-6 max-w-2xl mx-auto">
       <h2 className="text-2xl font-semibold text-white mb-2">Post Processing</h2>
       <p className="text-gray-400 text-sm mb-6">
-        Run analysis and enhancement operations on images in the staging directory.
+        Run analysis and enhancement operations on JPGs, plus stabilization jobs for MP4s, in the staging directory.
       </p>
 
       {settings?.staging_dir && (

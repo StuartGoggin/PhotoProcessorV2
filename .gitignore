@@ -20,3 +20,9 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+
+tools/ffmpeg/
+tools/ffmpeg-n71-test/
+*.zip
+*.exe

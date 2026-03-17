@@ -11,6 +11,7 @@ use commands::{
     process::{
         abort_process_job, clear_finished_process_jobs, list_process_jobs, pause_process_job,
         resume_process_job, run_bw_conversion, run_enhancement, run_focus_detection,
+        run_video_stabilization,
         start_process_job,
     },
     settings::{load_settings, save_settings},
@@ -42,6 +43,7 @@ pub fn run() {
             run_focus_detection,
             run_enhancement,
             run_bw_conversion,
+            run_video_stabilization,
             start_process_job,
             list_process_jobs,
             clear_finished_process_jobs,

@@ -71,7 +71,7 @@ export interface ProcessResult {
   errors: string[];
 }
 
-export type ProcessTask = "focus" | "enhance" | "bw";
+export type ProcessTask = "focus" | "enhance" | "bw" | "stabilize";
 
 export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly";
 
