@@ -1,11 +1,14 @@
 param(
     [switch]$Detach,
+    [switch]$Foreground,
     [switch]$CleanTarget,
     [switch]$SkipFfmpegInstall,
     [switch]$ForceFfmpegInstall
 )
 
 $ErrorActionPreference = "Continue"
+$ProgressPreference = "SilentlyContinue"
+$devPort = 1430
 
 function Get-PreferredFfmpegAsset {
     param(
@@ -57,6 +60,62 @@ function Test-FfmpegInstall {
     catch {
         return $false
     }
+}
+
+function Stop-ProcessesOnTcpPort {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port
+    )
+
+    $patterns = @(
+        ":$Port ",
+        ":$Port`r",
+        ":$Port`n"
+    )
+
+    $lines = netstat -ano -p tcp 2>$null
+    if (-not $lines) {
+        return @()
+    }
+
+    $pids = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($line in $lines) {
+        if (-not ($patterns | Where-Object { $line.Contains($_) })) {
+            continue
+        }
+
+        $trimmed = $line.Trim()
+        if (-not ($trimmed -match '^(TCP)\s+\S+:([0-9]+)\s+\S+\s+(\S+)\s+(\d+)$')) {
+            continue
+        }
+
+        $localPort = [int]$Matches[2]
+        $state = $Matches[3]
+        $pid = [int]$Matches[4]
+
+        if ($localPort -ne $Port) {
+            continue
+        }
+
+        if ($pid -eq $PID) {
+            continue
+        }
+
+        if ($state -in @('LISTENING', 'ESTABLISHED', 'TIME_WAIT', 'CLOSE_WAIT')) {
+            $null = $pids.Add($pid)
+        }
+    }
+
+    foreach ($pid in $pids) {
+        try {
+            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+        }
+        catch {
+        }
+    }
+
+    return @($pids)
 }
 
 function Install-RepoLocalFfmpeg {
@@ -156,39 +215,67 @@ if ($CleanTarget -and (Test-Path $env:CARGO_TARGET_DIR)) {
 
 New-Item -ItemType Directory -Force $env:CARGO_TARGET_DIR | Out-Null
 
-# Free port 1420 if in use
-Get-NetTCPConnection -LocalPort 1420 -ErrorAction SilentlyContinue | ForEach-Object {
-    Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
-}
-
-Set-Location $PSScriptRoot
-
-if (-not $SkipFfmpegInstall) {
-    try {
-        $env:PHOTOGOGO_FFMPEG = Install-RepoLocalFfmpeg -RepoRoot $PSScriptRoot -Force:$ForceFfmpegInstall
-    }
-    catch {
-        Write-Host "FFmpeg bootstrap failed: $($_.Exception.Message)" -ForegroundColor Red
-        throw
-    }
-}
-
-Write-Host "Starting PhotoGoGoV2..." -ForegroundColor Cyan
-Write-Host "Note: tauri dev is a long-running watch process; this window stays open by design." -ForegroundColor DarkCyan
-if ($env:PHOTOGOGO_FFMPEG) {
-    Write-Host "Using FFmpeg: $env:PHOTOGOGO_FFMPEG" -ForegroundColor DarkCyan
-}
-
-if ($Detach) {
-    Write-Host "Launching in a separate window (detached mode)." -ForegroundColor DarkCyan
-    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "Set-Location '$PSScriptRoot'; `$env:PATH='$env:PATH'; `$env:CARGO_TARGET_DIR='$env:CARGO_TARGET_DIR'; `$env:PHOTOGOGO_FFMPEG='$env:PHOTOGOGO_FFMPEG'; npm run tauri dev"
-    return
-}
-
 try {
+    Write-Host "Preparing PhotoGoGoV2 launcher..." -ForegroundColor Cyan
+
+    $stoppedPids = Stop-ProcessesOnTcpPort -Port $devPort
+    if ($stoppedPids.Count -gt 0) {
+        Write-Host "Freed port $devPort by stopping PID(s): $($stoppedPids -join ', ')" -ForegroundColor Yellow
+    }
+
+    Set-Location $PSScriptRoot
+    Write-Host "Working directory: $PSScriptRoot" -ForegroundColor DarkCyan
+
+    if (-not $SkipFfmpegInstall) {
+        try {
+            $env:PHOTOGOGO_FFMPEG = Install-RepoLocalFfmpeg -RepoRoot $PSScriptRoot -Force:$ForceFfmpegInstall
+        }
+        catch {
+            Write-Host "FFmpeg bootstrap failed: $($_.Exception.Message)" -ForegroundColor Red
+            throw
+        }
+    }
+
+    Write-Host "Starting PhotoGoGoV2..." -ForegroundColor Cyan
+    Write-Host "Note: tauri dev is a long-running watch process." -ForegroundColor DarkCyan
+    if ($env:PHOTOGOGO_FFMPEG) {
+        Write-Host "Using FFmpeg: $env:PHOTOGOGO_FFMPEG" -ForegroundColor DarkCyan
+    }
+
+    $launchDetached = $Detach -or -not $Foreground
+
+    if ($launchDetached) {
+        $scriptPath = Join-Path $PSScriptRoot "run.ps1"
+        $childArgs = @(
+            "-NoExit",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $scriptPath,
+            "-Foreground",
+            "-SkipFfmpegInstall"
+        )
+
+        if ($CleanTarget) {
+            $childArgs += "-CleanTarget"
+        }
+
+        Write-Host "Launching in a separate window and returning immediately." -ForegroundColor DarkCyan
+        Write-Host "Use -Foreground if you want the live tauri dev watcher in this shell." -ForegroundColor DarkCyan
+        $startArgs = @(
+            "/c",
+            "start",
+            '"PhotoGoGoV2 Dev"',
+            '"powershell.exe"'
+        ) + ($childArgs | ForEach-Object { '"{0}"' -f $_ })
+        $child = Start-Process -FilePath "cmd.exe" -ArgumentList $startArgs -WorkingDirectory $PSScriptRoot -PassThru
+        Write-Host "Issued detached launch via cmd.exe PID $($child.Id)." -ForegroundColor DarkCyan
+        return
+    }
+
+    Write-Host "Running tauri dev in the current shell." -ForegroundColor DarkCyan
     npm run tauri dev
 }
 catch {
     Write-Host "Launcher failed: $($_.Exception.Message)" -ForegroundColor Red
-    throw
+    $_ | Format-List * -Force | Out-String -Width 240 | Write-Host
+    exit 1
 }
