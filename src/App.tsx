@@ -20,19 +20,18 @@ const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "logs",        label: "Logs",          icon: "📜" },
 ];
 
-const PAGE_MAP: Record<Page, React.ReactNode> = {
-  import:      <Import />,
-  cleanup:     <Cleanup />,
-  jobs:        <Jobs />,
-  postprocess: <PostProcess />,
-  review:      <Review />,
-  transfer:    <Transfer />,
-  settings:    <Settings />,
-  logs:        <Logs />,
-};
-
 export default function App() {
   const [page, setPage] = useState<Page>("import");
+  const pageContent: Record<Page, React.ReactNode> = {
+    import: <Import />,
+    cleanup: <Cleanup />,
+    jobs: <Jobs />,
+    postprocess: <PostProcess onOpenJobs={() => setPage("jobs")} />,
+    review: <Review />,
+    transfer: <Transfer />,
+    settings: <Settings />,
+    logs: <Logs />,
+  };
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
@@ -58,7 +57,7 @@ export default function App() {
 
       {/* Main content */}
       <main className="flex-1 overflow-auto bg-surface-900">
-        {PAGE_MAP[page]}
+        {pageContent[page]}
       </main>
     </div>
   );

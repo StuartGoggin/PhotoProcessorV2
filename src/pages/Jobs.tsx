@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import { ProgressBar } from "../components";
@@ -8,12 +8,68 @@ function pct(done: number, total: number): number {
   return Math.max(0, Math.min(100, (done / total) * 100));
 }
 
+type ProcessFilter = "all" | "active" | "issues" | "finished";
+
+const PROCESS_FILTERS: Array<{ id: ProcessFilter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "active", label: "Active" },
+  { id: "issues", label: "Issues" },
+  { id: "finished", label: "Finished" },
+];
+
+const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
+  focus: "Focus Detection",
+  remove_focus: "Remove Focus Flags",
+  enhance: "JPG Enhancement",
+  remove_enhance: "Remove Enhancement Outputs",
+  bw: "B&W Conversion",
+  remove_bw: "Remove B&W Outputs",
+  stabilize: "MP4 Stabilisation",
+  remove_stabilize: "Remove Stabilised MP4s",
+};
+
+const PROCESS_SCOPE_LABELS: Record<ProcessJob["scopeMode"], string> = {
+  entireStaging: "Entire staging",
+  folderRecursive: "Folder recursively",
+  folderOnly: "This folder only",
+};
+
+const PROCESS_STATUS_STYLES: Record<ProcessJob["status"], string> = {
+  queued: "bg-blue-900/30 border-blue-700 text-blue-200",
+  running: "bg-emerald-900/30 border-emerald-700 text-emerald-200",
+  paused: "bg-amber-900/30 border-amber-700 text-amber-200",
+  aborted: "bg-red-900/30 border-red-700 text-red-200",
+  completed: "bg-surface-700 border-surface-500 text-gray-200",
+  failed: "bg-red-900/50 border-red-600 text-red-200",
+};
+
+function matchesProcessFilter(job: ProcessJob, filter: ProcessFilter): boolean {
+  switch (filter) {
+    case "active":
+      return job.status === "queued" || job.status === "running" || job.status === "paused";
+    case "issues":
+      return job.status === "failed" || job.status === "aborted";
+    case "finished":
+      return job.status === "completed" || job.status === "failed" || job.status === "aborted";
+    case "all":
+    default:
+      return true;
+  }
+}
+
+function toEpoch(value: string): number {
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : 0;
+}
+
 export default function Jobs() {
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [processJobs, setProcessJobs] = useState<ProcessJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [tail, setTail] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [processFilter, setProcessFilter] = useState<ProcessFilter>("active");
+  const [expandedProcessLogs, setExpandedProcessLogs] = useState<Record<string, boolean>>({});
 
   async function loadJobs() {
     setLoading(true);
@@ -116,6 +172,46 @@ export default function Jobs() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [tail]);
+
+  const processCounts = useMemo(() => {
+    const counts: Record<ProcessFilter, number> = {
+      all: processJobs.length,
+      active: 0,
+      issues: 0,
+      finished: 0,
+    };
+
+    for (const job of processJobs) {
+      if (job.status === "queued" || job.status === "running" || job.status === "paused") {
+        counts.active += 1;
+      }
+      if (job.status === "failed" || job.status === "aborted") {
+        counts.issues += 1;
+      }
+      if (job.status === "completed" || job.status === "failed" || job.status === "aborted") {
+        counts.finished += 1;
+      }
+    }
+
+    return counts;
+  }, [processJobs]);
+
+  const filteredProcessJobs = useMemo(() => {
+    return [...processJobs]
+      .sort((a, b) => {
+        const byCreated = toEpoch(b.createdAt) - toEpoch(a.createdAt);
+        if (byCreated !== 0) return byCreated;
+        return b.id.localeCompare(a.id);
+      })
+      .filter((job) => matchesProcessFilter(job, processFilter));
+  }, [processFilter, processJobs]);
+
+  function toggleProcessLogs(jobId: string) {
+    setExpandedProcessLogs((prev) => ({
+      ...prev,
+      [jobId]: !prev[jobId],
+    }));
+  }
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
@@ -224,17 +320,62 @@ export default function Jobs() {
 
           {processJobs.length > 0 && (
             <section className="space-y-3">
-              <h3 className="text-sm uppercase tracking-wide text-gray-400">Post-Process Jobs</h3>
-              {processJobs.map((job) => {
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h3 className="text-sm uppercase tracking-wide text-gray-400">Post-Process Jobs</h3>
+                  <p className="text-xs text-gray-500 mt-1">Newest first. Filter by status to focus on active or problem jobs.</p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {PROCESS_FILTERS.map((filter) => (
+                    <button
+                      key={filter.id}
+                      className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${processFilter === filter.id ? "border-accent bg-accent/15 text-white" : "border-surface-600 bg-surface-800 text-gray-300 hover:bg-surface-700"}`}
+                      onClick={() => setProcessFilter(filter.id)}
+                    >
+                      {filter.label} <span className="text-gray-400">({processCounts[filter.id]})</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <div className="rounded-lg border border-surface-600 bg-surface-800 px-3 py-2">
+                  <div className="text-xs text-gray-400">Total</div>
+                  <div className="text-lg font-semibold text-white">{processCounts.all}</div>
+                </div>
+                <div className="rounded-lg border border-emerald-800/70 bg-emerald-950/25 px-3 py-2">
+                  <div className="text-xs text-emerald-300">Active</div>
+                  <div className="text-lg font-semibold text-emerald-200">{processCounts.active}</div>
+                </div>
+                <div className="rounded-lg border border-red-800/70 bg-red-950/25 px-3 py-2">
+                  <div className="text-xs text-red-300">Issues</div>
+                  <div className="text-lg font-semibold text-red-200">{processCounts.issues}</div>
+                </div>
+                <div className="rounded-lg border border-surface-600 bg-surface-800 px-3 py-2">
+                  <div className="text-xs text-gray-400">Finished</div>
+                  <div className="text-lg font-semibold text-gray-200">{processCounts.finished}</div>
+                </div>
+              </div>
+
+              {filteredProcessJobs.length === 0 && (
+                <div className="card text-sm text-gray-400">No post-process jobs match the selected filter.</div>
+              )}
+
+              {filteredProcessJobs.map((job) => {
                 const progress = pct(job.done, job.total);
                 const doneLabel = job.total > 0 ? `${job.done}/${job.total}` : `${job.done}`;
+                const logsExpanded = Boolean(expandedProcessLogs[job.id]);
+                const hasLogs = job.logs.length > 0;
 
                 return (
-                  <div key={job.id} className="card space-y-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <div className="text-sm text-gray-200 font-medium">{job.id}</div>
-                      <div className="flex items-center gap-2">
-                        <div className="text-xs px-2 py-1 rounded bg-surface-700 text-gray-200">{job.status}</div>
+                  <div key={job.id} className={`card space-y-3 ${job.status === "running" ? "ring-1 ring-emerald-700/40" : ""}`}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-sm text-gray-100 font-medium">{PROCESS_TASK_LABELS[job.task] ?? job.task}</div>
+                        <div className="text-xs text-gray-500 mt-1 break-all">Job ID: {job.id}</div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                        <div className={`text-xs px-2 py-1 rounded-full border capitalize ${PROCESS_STATUS_STYLES[job.status]}`}>{job.status}</div>
                         {(job.status === "running" || job.status === "queued") && (
                           <button className="btn-secondary" onClick={() => pauseProcessJob(job.id)}>
                             Pause
@@ -254,9 +395,11 @@ export default function Jobs() {
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-400">
-                      <div>Task: <span className="text-gray-200">{job.task}</span></div>
                       <div>Staging: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
-                      <div>Scope mode: <span className="text-gray-200">{job.scopeMode}</span></div>
+                      <div>Scope mode: <span className="text-gray-200">{PROCESS_SCOPE_LABELS[job.scopeMode] ?? job.scopeMode}</span></div>
+                      <div>Progress: <span className="text-gray-200">{doneLabel} ({progress.toFixed(0)}%)</span></div>
+                      <div>Processed: <span className="text-gray-200">{job.processed}</span></div>
+                      <div>Out of focus flagged: <span className="text-gray-200">{job.outOfFocus}</span></div>
                       <div className="md:col-span-2">Scope: <span className="text-gray-200 break-all">{job.scopeDir}</span></div>
                     </div>
 
@@ -274,6 +417,7 @@ export default function Jobs() {
 
                     {job.errors.length > 0 && (
                       <div className="text-xs text-red-300 bg-red-900/20 border border-red-700 rounded p-2 max-h-24 overflow-auto">
+                        <div className="font-medium mb-1">Errors ({job.errors.length})</div>
                         {job.errors.map((line, idx) => (
                           <div key={idx}>{line}</div>
                         ))}
@@ -281,13 +425,24 @@ export default function Jobs() {
                     )}
 
                     <div className="space-y-1">
-                      <label htmlFor={`process-job-console-${job.id}`} className="text-xs text-gray-400">Job Console</label>
-                      <textarea
-                        id={`process-job-console-${job.id}`}
-                        readOnly
-                        value={job.logs.join("\n")}
-                        className="w-full h-32 resize-y overflow-auto bg-surface-900 border border-surface-600 rounded-lg p-2 text-xs text-green-300 font-mono"
-                      />
+                      <div className="flex items-center justify-between gap-2">
+                        <label htmlFor={`process-job-console-${job.id}`} className="text-xs text-gray-400">Job Console</label>
+                        <button
+                          className="btn-secondary px-3 py-1 text-xs"
+                          onClick={() => toggleProcessLogs(job.id)}
+                          disabled={!hasLogs}
+                        >
+                          {!hasLogs ? "No Logs Yet" : logsExpanded ? "Hide Logs" : `Show Logs (${job.logs.length})`}
+                        </button>
+                      </div>
+                      {logsExpanded && (
+                        <textarea
+                          id={`process-job-console-${job.id}`}
+                          readOnly
+                          value={job.logs.join("\n")}
+                          className="w-full h-32 resize-y overflow-auto bg-surface-900 border border-surface-600 rounded-lg p-2 text-xs text-green-300 font-mono"
+                        />
+                      )}
                     </div>
                   </div>
                 );
