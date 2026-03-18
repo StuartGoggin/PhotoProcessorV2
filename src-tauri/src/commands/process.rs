@@ -91,6 +91,17 @@ fn process_jobs_store() -> &'static Mutex<HashMap<String, ProcessJob>> {
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[derive(Debug, Clone)]
+struct EnhanceParams {
+    contrast_level: f32,
+    sharpness_level: f32,
+}
+
+fn enhance_params_store() -> &'static Mutex<HashMap<String, EnhanceParams>> {
+    static STORE: OnceLock<Mutex<HashMap<String, EnhanceParams>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn next_process_job_id() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -1306,15 +1317,30 @@ fn run_process_task(
                     ProcessTask::Enhance => {
                         let img = image::open(path)?.into_rgb8();
                         let enhanced = enhance_rgb_clahe(&img);
-                        let sharpened = unsharp_mask_rgb(&enhanced, 1.0, 0.5);
+                        
+                        // Retrieve enhancement parameters from job ID, or use defaults
+                        let params = if let Some(job_id) = &job_id_clone {
+                            if let Ok(params_store) = enhance_params_store().lock() {
+                                params_store.get(job_id).cloned()
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        
+                        let contrast_level = params.as_ref().map(|p| p.contrast_level).unwrap_or(1.0);
+                        let sharpness_level = params.as_ref().map(|p| p.sharpness_level).unwrap_or(0.5);
+                        let sharpened = unsharp_mask_rgb(&enhanced, contrast_level, sharpness_level);
+                        
                         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                         let out_path = path.parent().unwrap_or(Path::new(".")).join(format!("{}_improved.jpg", stem));
                         let replaced_existing = out_path.exists();
                         sharpened.save(&out_path)?;
                         sync_file_metadata_from(path, &out_path, false).map_err(anyhow::Error::msg)?;
-                        let _ = append_app_log(&app_clone, format!("process_enhance wrote='{}' replaced_existing={}", out_path.display(), replaced_existing));
+                        let _ = append_app_log(&app_clone, format!("process_enhance wrote='{}' replaced_existing={} contrast={:.2} sharpness={:.2}", out_path.display(), replaced_existing, contrast_level, sharpness_level));
                         if let Some(job_id) = &job_id_clone {
-                            append_process_job_log(job_id, format!("enhanced '{}' -> '{}' (replaced_existing={})", path.display(), out_path.display(), replaced_existing));
+                            append_process_job_log(job_id, format!("enhanced '{}' -> '{}' (contrast={:.2}x sharpness={:.2})", path.display(), out_path.display(), contrast_level, sharpness_level));
                         }
                     }
                     ProcessTask::RemoveEnhance => {
@@ -1447,6 +1473,8 @@ pub fn start_process_job(
     scope_dir: Option<String>,
     scope_mode: Option<ProcessScopeMode>,
     task: String,
+    enhance_contrast_level: Option<f32>,
+    enhance_sharpness_level: Option<f32>,
 ) -> Result<String, String> {
     let task_enum = match task.to_lowercase().as_str() {
         "focus" => ProcessTask::Focus,
@@ -1485,6 +1513,17 @@ pub fn start_process_job(
     {
         let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
         jobs.insert(job_id.clone(), job);
+    }
+
+    // Store enhancement parameters if provided
+    if enhance_contrast_level.is_some() || enhance_sharpness_level.is_some() {
+        let params = EnhanceParams {
+            contrast_level: enhance_contrast_level.unwrap_or(1.0),
+            sharpness_level: enhance_sharpness_level.unwrap_or(0.5),
+        };
+        if let Ok(mut params_store) = enhance_params_store().lock() {
+            params_store.insert(job_id.clone(), params);
+        }
     }
 
     let app_for_task = app.clone();

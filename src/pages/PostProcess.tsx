@@ -85,6 +85,8 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [selectedScope, setSelectedScope] = useState<string>("");
   const [scopeMode, setScopeMode] = useState<ProcessScopeMode>("entireStaging");
+  const [enhanceContrastLevel, setEnhanceContrastLevel] = useState(1.0);
+  const [enhanceSharpnessLevel, setEnhanceSharpnessLevel] = useState(0.5);
 
   const canQueue = Boolean(settings?.staging_dir);
   const effectiveScope = useMemo(() => {
@@ -121,7 +123,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
     void loadTree();
   }, [settings?.staging_dir]);
 
-  async function runTask(taskId: ProcessTask) {
+  async function runTask(taskId: ProcessTask, params?: Record<string, unknown>) {
     if (!settings?.staging_dir) {
       setError("Staging directory not configured in Settings.");
       return;
@@ -146,6 +148,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
         scopeDir: effectiveScope,
         scopeMode,
         task: taskId,
+        ...params,
       });
       setMessage(`Queued ${actionLabel}. Job ID: ${jobId}.`);
       setLastQueuedJobId(jobId);
@@ -259,6 +262,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
         {TASKS.map((task) => {
           const isQueueingRun = queueingTask === task.runTaskId;
           const isQueueingRemove = queueingTask === task.removeTaskId;
+          const isEnhanceTask = task.runTaskId === "enhance";
 
           return (
             <div key={task.runTaskId} className="card space-y-4">
@@ -266,6 +270,66 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                 <h3 className={`font-medium ${task.color}`}>{task.label}</h3>
                 <p className="text-sm text-gray-400">{task.description}</p>
               </div>
+
+              {/* Enhancement parameters section */}
+              {isEnhanceTask && (
+                <div className="bg-blue-950/30 border border-blue-700/50 rounded-lg p-4 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-medium text-blue-300">Enhancement Parameters</h4>
+                    <button
+                      onClick={() => {
+                        setEnhanceContrastLevel(1.4);
+                        setEnhanceSharpnessLevel(0.75);
+                      }}
+                      className="text-xs px-2.5 py-1 bg-emerald-900/40 hover:bg-emerald-900/60 border border-emerald-700 text-emerald-200 rounded transition-colors"
+                    >
+                      ✨ Best Practice
+                    </button>
+                  </div>
+                  <p className="text-xs text-blue-300/70 bg-blue-900/20 rounded px-2 py-1.5">
+                    <strong>Best Practice</strong> applies contrast <strong>1.40x</strong> and sharpening <strong>0.75</strong> for excellent results. Adjust sliders below for custom settings.
+                  </p>
+                  
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-medium text-gray-300">Contrast Enhancement</label>
+                      <span className="text-xs px-2 py-1 bg-blue-900/50 rounded text-blue-200">
+                        {enhanceContrastLevel.toFixed(2)}x
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="2.0"
+                      step="0.1"
+                      value={enhanceContrastLevel}
+                      onChange={(e) => setEnhanceContrastLevel(parseFloat(e.target.value))}
+                      className="w-full h-2 bg-surface-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    />
+                    <p className="text-xs text-gray-500">0.5 = subtle, 1.0 = standard, 1.4 = best practice, 2.0 = aggressive</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-medium text-gray-300">Sharpening Strength</label>
+                      <span className="text-xs px-2 py-1 bg-blue-900/50 rounded text-blue-200">
+                        {enhanceSharpnessLevel.toFixed(2)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.0"
+                      max="1.0"
+                      step="0.1"
+                      value={enhanceSharpnessLevel}
+                      onChange={(e) => setEnhanceSharpnessLevel(parseFloat(e.target.value))}
+                      className="w-full h-2 bg-surface-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    />
+                    <p className="text-xs text-gray-500">0.0 = none, 0.3 = light, 0.5 = default, 0.75 = best practice, 1.0 = strong</p>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="rounded-lg border border-surface-600 bg-surface-900/60 px-3 py-3 space-y-3">
                   <div>
@@ -274,7 +338,12 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                   </div>
                   <button
                     className="btn-primary w-full md:w-auto"
-                    onClick={() => runTask(task.runTaskId)}
+                    onClick={() => {
+                      const params = isEnhanceTask
+                        ? { enhanceContrastLevel, enhanceSharpnessLevel }
+                        : undefined;
+                      void runTask(task.runTaskId, params);
+                    }}
                     disabled={queueingTask !== null || !canQueue}
                   >
                     {isQueueingRun ? "Queueing..." : "Queue Job"}
