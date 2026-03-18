@@ -3,7 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Settings } from "../types";
 
-const FIELDS: { key: keyof Settings; label: string; help: string }[] = [
+type PathSettingKey = "source_root" | "staging_dir" | "archive_dir";
+
+const FIELDS: { key: PathSettingKey; label: string; help: string }[] = [
   {
     key: "source_root",
     label: "Source Root (SD Card)",
@@ -21,20 +23,40 @@ const FIELDS: { key: keyof Settings; label: string; help: string }[] = [
   },
 ];
 
+function parseNonNegativeInt(raw: string): number {
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || Number.isNaN(parsed) || parsed < 0) {
+    return 0;
+  }
+  return parsed;
+}
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings>({
     source_root: "",
     staging_dir: "",
     archive_dir: "",
+    stabilize_max_parallel_jobs: 0,
+    stabilize_ffmpeg_threads_per_job: 0,
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    invoke<Settings>("load_settings").then(setSettings).catch((e) => setError(String(e)));
+    invoke<Settings>("load_settings")
+      .then((loaded) =>
+        setSettings({
+          source_root: loaded.source_root ?? "",
+          staging_dir: loaded.staging_dir ?? "",
+          archive_dir: loaded.archive_dir ?? "",
+          stabilize_max_parallel_jobs: loaded.stabilize_max_parallel_jobs ?? 0,
+          stabilize_ffmpeg_threads_per_job: loaded.stabilize_ffmpeg_threads_per_job ?? 0,
+        })
+      )
+      .catch((e) => setError(String(e)));
   }, []);
 
-  async function pickDir(field: keyof Settings) {
+  async function pickDir(field: PathSettingKey) {
     setError(null);
 
     try {
@@ -84,6 +106,92 @@ export default function SettingsPage() {
             </div>
           </div>
         ))}
+
+        <div className="card space-y-4">
+          <div>
+            <h3 className="text-sm font-medium text-white">Video Stabilization Load Management</h3>
+            <p className="text-xs text-gray-500 mt-1">
+              Control CPU and memory pressure for stabilization jobs. Set either value to <strong>0</strong> to use automatic tuning.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-sm text-gray-300">Max Parallel Stabilize Jobs</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                className="input-field mt-1"
+                value={settings.stabilize_max_parallel_jobs}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    stabilize_max_parallel_jobs: parseNonNegativeInt(e.target.value),
+                  }))
+                }
+              />
+              <span className="text-xs text-gray-500">0 = Auto. Typical safe values: 1-2.</span>
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-gray-300">FFmpeg Threads Per Stabilize Job</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                className="input-field mt-1"
+                value={settings.stabilize_ffmpeg_threads_per_job}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    stabilize_ffmpeg_threads_per_job: parseNonNegativeInt(e.target.value),
+                  }))
+                }
+              />
+              <span className="text-xs text-gray-500">0 = Auto. Typical safe values: 2-6.</span>
+            </label>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  stabilize_max_parallel_jobs: 0,
+                  stabilize_ffmpeg_threads_per_job: 0,
+                }))
+              }
+            >
+              Auto (Recommended)
+            </button>
+            <button
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  stabilize_max_parallel_jobs: 1,
+                  stabilize_ffmpeg_threads_per_job: 2,
+                }))
+              }
+            >
+              Low Load
+            </button>
+            <button
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  stabilize_max_parallel_jobs: 2,
+                  stabilize_ffmpeg_threads_per_job: 3,
+                }))
+              }
+            >
+              Balanced
+            </button>
+          </div>
+        </div>
       </div>
 
       <div className="mt-6 flex items-center gap-3">

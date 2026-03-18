@@ -7,6 +7,8 @@ export interface Settings {
   source_root: string;
   staging_dir: string;
   archive_dir: string;
+  stabilize_max_parallel_jobs: number;
+  stabilize_ffmpeg_threads_per_job: number;
 }
 
 export interface ImportProgress {
@@ -75,6 +77,8 @@ export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance
 
 export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly";
 
+export type StabilizationMode = "maxFrame" | "edgeSafe" | "aggressiveCrop";
+
 export type ProcessJobStatus = "queued" | "running" | "paused" | "aborted" | "completed" | "failed";
 
 export interface ProcessJob {
@@ -92,6 +96,7 @@ export interface ProcessJob {
   processed: number;
   outOfFocus: number;
   currentFile: string;
+  stabilizationMode?: StabilizationMode;
   errors: string[];
   logs: string[];
   pauseRequested: boolean;

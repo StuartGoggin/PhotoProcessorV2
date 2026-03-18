@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileTree } from "../components";
-import type { ProcessScopeMode, ProcessTask, TreeNode } from "../types";
+import type { ProcessScopeMode, ProcessTask, StabilizationMode, TreeNode } from "../types";
 import { useSettings } from "../hooks";
 
 interface TaskConfig {
@@ -48,7 +48,7 @@ const TASKS: TaskConfig[] = [
   },
   {
     label: "MP4 Stabilisation",
-    description: "Two-pass vid.stab stabilization for MP4s. Writes _stabilized.mp4 beside the source, preserves timestamps, reuses the same output name on reruns, and prefers NVIDIA H.264 encode when FFmpeg exposes NVENC.",
+    description: "Two-pass vid.stab stabilization for MP4s with edge-safe auto-zoom to hide black borders. Writes _stabilized.mp4 beside the source, preserves timestamps, reuses the same output name on reruns, and prefers NVIDIA H.264 encode when FFmpeg exposes NVENC.",
     color: "text-cyan-300",
     runTaskId: "stabilize",
     removeTaskId: "remove_stabilize",
@@ -61,6 +61,24 @@ const SCOPE_MODES: Array<{ id: ProcessScopeMode; label: string; description: str
   { id: "entireStaging", label: "Entire staging", description: "Ignore selected folder and process the whole staging tree." },
   { id: "folderRecursive", label: "Folder recursively", description: "Process the selected folder and all of its subfolders." },
   { id: "folderOnly", label: "This folder only", description: "Process only files directly inside the selected folder." },
+];
+
+const STABILIZATION_MODES: Array<{ id: StabilizationMode; label: string; description: string }> = [
+  {
+    id: "maxFrame",
+    label: "Max Frame",
+    description: "Keeps most of the original frame. May show edge artifacts in very shaky clips.",
+  },
+  {
+    id: "edgeSafe",
+    label: "Edge-Safe",
+    description: "Recommended. Auto-zooms enough to hide most black borders while preserving detail.",
+  },
+  {
+    id: "aggressiveCrop",
+    label: "Aggressive Crop",
+    description: "Strongest edge removal for highly shaky footage. Crops more of the frame.",
+  },
 ];
 
 function resolveTaskAction(taskId: ProcessTask): { actionLabel: string; isCleanup: boolean } {
@@ -87,6 +105,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
   const [scopeMode, setScopeMode] = useState<ProcessScopeMode>("entireStaging");
   const [enhanceContrastLevel, setEnhanceContrastLevel] = useState(1.0);
   const [enhanceSharpnessLevel, setEnhanceSharpnessLevel] = useState(0.5);
+  const [stabilizationMode, setStabilizationMode] = useState<StabilizationMode>("edgeSafe");
 
   const canQueue = Boolean(settings?.staging_dir);
   const effectiveScope = useMemo(() => {
@@ -263,6 +282,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
           const isQueueingRun = queueingTask === task.runTaskId;
           const isQueueingRemove = queueingTask === task.removeTaskId;
           const isEnhanceTask = task.runTaskId === "enhance";
+          const isStabilizeTask = task.runTaskId === "stabilize";
 
           return (
             <div key={task.runTaskId} className="card space-y-4">
@@ -330,6 +350,39 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                 </div>
               )}
 
+              {isStabilizeTask && (
+                <div className="bg-cyan-950/30 border border-cyan-700/50 rounded-lg p-4 space-y-4">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <h4 className="text-sm font-medium text-cyan-300">Stabilization Framing</h4>
+                    <span className="text-xs px-2 py-1 rounded bg-cyan-900/40 border border-cyan-700 text-cyan-200">
+                      Recommended: Edge-Safe
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                    {STABILIZATION_MODES.map((mode) => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => setStabilizationMode(mode.id)}
+                        className={`text-left rounded-lg border px-3 py-2 transition-colors ${
+                          stabilizationMode === mode.id
+                            ? "border-cyan-500 bg-cyan-900/30 text-white"
+                            : "border-surface-600 bg-surface-900/60 text-gray-300 hover:bg-surface-800"
+                        }`}
+                      >
+                        <div className="text-sm font-medium">{mode.label}</div>
+                        <div className="text-xs text-gray-400 mt-1">{mode.description}</div>
+                      </button>
+                    ))}
+                  </div>
+
+                  <p className="text-xs text-cyan-200/80 bg-cyan-900/20 rounded px-2 py-1.5">
+                    Selected mode: <strong>{STABILIZATION_MODES.find((mode) => mode.id === stabilizationMode)?.label}</strong>
+                  </p>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="rounded-lg border border-surface-600 bg-surface-900/60 px-3 py-3 space-y-3">
                   <div>
@@ -341,7 +394,9 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                     onClick={() => {
                       const params = isEnhanceTask
                         ? { enhanceContrastLevel, enhanceSharpnessLevel }
-                        : undefined;
+                        : isStabilizeTask
+                          ? { stabilizationMode }
+                          : undefined;
                       void runTask(task.runTaskId, params);
                     }}
                     disabled={queueingTask !== null || !canQueue}

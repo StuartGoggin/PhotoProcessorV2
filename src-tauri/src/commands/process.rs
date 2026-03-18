@@ -15,6 +15,7 @@ use tauri::async_runtime;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
 use crate::utils::{append_app_log, num_cpus, sync_file_metadata_from};
+use super::settings::load_settings;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessProgress {
@@ -80,6 +81,7 @@ pub struct ProcessJob {
     pub processed: usize,
     pub out_of_focus: usize,
     pub current_file: String,
+    pub stabilization_mode: Option<StabilizationMode>,
     pub errors: Vec<String>,
     pub logs: Vec<String>,
     pub pause_requested: bool,
@@ -97,9 +99,102 @@ struct EnhanceParams {
     sharpness_level: f32,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StabilizationMode {
+    MaxFrame,
+    EdgeSafe,
+    AggressiveCrop,
+}
+
+impl StabilizationMode {
+    fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "maxframe" | "max_frame" | "max-frame" => Some(Self::MaxFrame),
+            "edgesafe" | "edge_safe" | "edge-safe" => Some(Self::EdgeSafe),
+            "aggressivecrop" | "aggressive_crop" | "aggressive-crop" => Some(Self::AggressiveCrop),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MaxFrame => "maxFrame",
+            Self::EdgeSafe => "edgeSafe",
+            Self::AggressiveCrop => "aggressiveCrop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StabilizeParams {
+    mode: StabilizationMode,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StabilizeLoadPolicy {
+    max_parallel_jobs: usize,
+    ffmpeg_threads_per_job: usize,
+}
+
 fn enhance_params_store() -> &'static Mutex<HashMap<String, EnhanceParams>> {
     static STORE: OnceLock<Mutex<HashMap<String, EnhanceParams>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn stabilize_params_store() -> &'static Mutex<HashMap<String, StabilizeParams>> {
+    static STORE: OnceLock<Mutex<HashMap<String, StabilizeParams>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn parse_positive_env_usize(name: &str) -> Option<usize> {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn stabilization_load_policy(app: Option<&AppHandle>) -> StabilizeLoadPolicy {
+    let cores = num_cpus().max(1);
+
+    let (settings_parallel, settings_threads) = app
+        .and_then(|handle| load_settings(handle.clone()).ok())
+        .map(|settings| {
+            (
+                if settings.stabilize_max_parallel_jobs > 0 {
+                    Some(settings.stabilize_max_parallel_jobs)
+                } else {
+                    None
+                },
+                if settings.stabilize_ffmpeg_threads_per_job > 0 {
+                    Some(settings.stabilize_ffmpeg_threads_per_job)
+                } else {
+                    None
+                },
+            )
+        })
+        .unwrap_or((None, None));
+
+    // Conservative defaults: avoid running many heavy ffmpeg processes in parallel.
+    let default_parallel_jobs = if cores >= 12 { 2 } else { 1 };
+    let max_parallel_jobs = parse_positive_env_usize("PHOTOGOGO_STABILIZE_MAX_PARALLEL")
+        .or(settings_parallel)
+        .unwrap_or(default_parallel_jobs)
+        .clamp(1, cores);
+
+    // Budget ffmpeg threads to roughly 70% of available cores, then split per parallel job.
+    let thread_budget = ((cores * 7) / 10).max(1);
+    let default_threads_per_job = (thread_budget / max_parallel_jobs).max(1).min(6);
+    let requested_threads = parse_positive_env_usize("PHOTOGOGO_STABILIZE_FFMPEG_THREADS")
+        .or(settings_threads)
+        .unwrap_or(default_threads_per_job);
+    let max_threads_per_job = (cores / max_parallel_jobs).max(1);
+    let ffmpeg_threads_per_job = requested_threads.clamp(1, max_threads_per_job);
+
+    StabilizeLoadPolicy {
+        max_parallel_jobs,
+        ffmpeg_threads_per_job,
+    }
 }
 
 fn next_process_job_id() -> String {
@@ -885,6 +980,8 @@ fn stabilize_mp4(
     path: &Path,
     capabilities: &FfmpegCapabilities,
     job_id: Option<&str>,
+    stabilization_mode: StabilizationMode,
+    ffmpeg_threads: usize,
 ) -> anyhow::Result<()> {
     if !capabilities.has_vidstab {
         return Err(anyhow::anyhow!(
@@ -914,10 +1011,22 @@ fn stabilize_mp4(
         "vidstabdetect=stepsize=6:shakiness=4:accuracy=15:mincontrast=0.25:result={}",
         transform_file_name
     );
-    let transform_filter = format!(
-        "vidstabtransform=input={}:smoothing=30:optzoom=0:zoomspeed=0:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0",
-        transform_file_name
-    );
+    let transform_filter = match stabilization_mode {
+        StabilizationMode::MaxFrame => format!(
+            "vidstabtransform=input={}:smoothing=30:zoom=0:optzoom=0:zoomspeed=0:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0",
+            transform_file_name
+        ),
+        // Balanced default: suppresses most edge artifacts while preserving field of view.
+        StabilizationMode::EdgeSafe => format!(
+            "vidstabtransform=input={}:smoothing=30:zoom=4:optzoom=2:zoomspeed=0.25:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0",
+            transform_file_name
+        ),
+        // Strongest framing protection for shaky clips.
+        StabilizationMode::AggressiveCrop => format!(
+            "vidstabtransform=input={}:smoothing=32:zoom=8:optzoom=2:zoomspeed=0.4:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0",
+            transform_file_name
+        ),
+    };
 
     let detect_args = vec![
         "-hide_banner".to_string(),
@@ -925,7 +1034,7 @@ fn stabilize_mp4(
         "-loglevel".to_string(),
         "error".to_string(),
         "-threads".to_string(),
-        num_cpus().to_string(),
+        ffmpeg_threads.to_string(),
         "-i".to_string(),
         path.to_string_lossy().into_owned(),
         "-vf".to_string(),
@@ -943,7 +1052,7 @@ fn stabilize_mp4(
         "-loglevel".to_string(),
         "error".to_string(),
         "-threads".to_string(),
-        num_cpus().to_string(),
+        ffmpeg_threads.to_string(),
         "-i".to_string(),
         path.to_string_lossy().into_owned(),
         "-vf".to_string(),
@@ -1002,10 +1111,11 @@ fn stabilize_mp4(
         append_process_job_log(
             job_id,
             format!(
-                "stabilize analyse '{}' using {} work_dir='{}'",
+                "stabilize analyse '{}' using {} work_dir='{}' ffmpeg_threads={}",
                 path.display(),
                 capabilities.binary.display(),
-                work_dir.display()
+                work_dir.display(),
+                ffmpeg_threads
             ),
         );
     }
@@ -1027,22 +1137,26 @@ fn stabilize_mp4(
     let _ = append_app_log(
         app,
         format!(
-            "process_stabilize encode source='{}' output='{}' encoder={} gpu={}",
+            "process_stabilize encode source='{}' output='{}' encoder={} gpu={} mode={} ffmpeg_threads={}",
             path.display(),
             out_path.display(),
             video_encoder,
-            capabilities.has_h264_nvenc
+            capabilities.has_h264_nvenc,
+            stabilization_mode.as_str(),
+            ffmpeg_threads
         ),
     );
     if let Some(job_id) = job_id {
         append_process_job_log(
             job_id,
             format!(
-                "stabilize encode '{}' -> '{}' encoder={} gpu={}",
+                "stabilize encode '{}' -> '{}' encoder={} gpu={} mode={} ffmpeg_threads={}",
                 path.display(),
                 out_path.display(),
                 video_encoder,
-                capabilities.has_h264_nvenc
+                capabilities.has_h264_nvenc,
+                stabilization_mode.as_str(),
+                ffmpeg_threads
             ),
         );
     }
@@ -1068,12 +1182,13 @@ fn stabilize_mp4(
         append_process_job_log(
             job_id,
             format!(
-                "stabilized '{}' -> '{}' (replaced_existing={} encoder={} gpu={})",
+                "stabilized '{}' -> '{}' (replaced_existing={} encoder={} gpu={} mode={})",
                 path.display(),
                 out_path.display(),
                 replaced_existing,
                 video_encoder,
-                capabilities.has_h264_nvenc
+                capabilities.has_h264_nvenc,
+                stabilization_mode.as_str()
             ),
         );
     }
@@ -1263,6 +1378,57 @@ fn run_process_task(
         _ => None,
     };
 
+    let stabilization_mode = if matches!(task, ProcessTask::Stabilize) {
+        let mode = job_id
+            .as_deref()
+            .and_then(|id| {
+                stabilize_params_store()
+                    .lock()
+                    .ok()
+                    .and_then(|store| store.get(id).copied().map(|params| params.mode))
+            })
+            .unwrap_or(StabilizationMode::EdgeSafe);
+
+        if let Some(job_id) = &job_id {
+            append_process_job_log(job_id, format!("stabilization mode={}", mode.as_str()));
+        }
+
+        Some(mode)
+    } else {
+        None
+    };
+
+    let stabilize_load_policy = if matches!(task, ProcessTask::Stabilize) {
+        let policy = stabilization_load_policy(Some(&app));
+        let cores = num_cpus().max(1);
+
+        let _ = append_app_log(
+            &app,
+            format!(
+                "process_stabilize load_policy cores={} max_parallel_jobs={} ffmpeg_threads_per_job={}",
+                cores,
+                policy.max_parallel_jobs,
+                policy.ffmpeg_threads_per_job
+            ),
+        );
+
+        if let Some(job_id) = &job_id {
+            append_process_job_log(
+                job_id,
+                format!(
+                    "load policy: cores={} parallel_jobs={} ffmpeg_threads_per_job={} (source: settings or auto; env override via PHOTOGOGO_STABILIZE_MAX_PARALLEL / PHOTOGOGO_STABILIZE_FFMPEG_THREADS)",
+                    cores,
+                    policy.max_parallel_jobs,
+                    policy.ffmpeg_threads_per_job
+                ),
+            );
+        }
+
+        Some(policy)
+    } else {
+        None
+    };
+
     let app_clone = app.clone();
     let done_clone = done_count.clone();
     let oof_clone = oof_count.clone();
@@ -1271,8 +1437,16 @@ fn run_process_task(
     let job_id_clone = job_id.clone();
     let ffmpeg_clone = ffmpeg_capabilities.clone();
 
+    let worker_threads = if matches!(task, ProcessTask::Stabilize) {
+        stabilize_load_policy
+            .map(|policy| policy.max_parallel_jobs)
+            .unwrap_or(1)
+    } else {
+        (num_cpus() * 2).max(4)
+    };
+
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads((num_cpus() * 2).max(4))
+        .num_threads(worker_threads)
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -1375,7 +1549,18 @@ fn run_process_task(
                         let capabilities = ffmpeg_clone
                             .as_ref()
                             .ok_or_else(|| anyhow::anyhow!("FFmpeg capability probe was not initialised"))?;
-                        stabilize_mp4(&app_clone, path, capabilities, job_id_clone.as_deref())?;
+                        let mode = stabilization_mode.unwrap_or(StabilizationMode::EdgeSafe);
+                        let ffmpeg_threads = stabilize_load_policy
+                            .map(|policy| policy.ffmpeg_threads_per_job)
+                            .unwrap_or(2);
+                        stabilize_mp4(
+                            &app_clone,
+                            path,
+                            capabilities,
+                            job_id_clone.as_deref(),
+                            mode,
+                            ffmpeg_threads,
+                        )?;
                     }
                     ProcessTask::RemoveStabilize => {
                         fs::remove_file(path)?;
@@ -1475,6 +1660,7 @@ pub fn start_process_job(
     task: String,
     enhance_contrast_level: Option<f32>,
     enhance_sharpness_level: Option<f32>,
+    stabilization_mode: Option<String>,
 ) -> Result<String, String> {
     let task_enum = match task.to_lowercase().as_str() {
         "focus" => ProcessTask::Focus,
@@ -1486,6 +1672,24 @@ pub fn start_process_job(
         "stabilize" => ProcessTask::Stabilize,
         "remove_stabilize" => ProcessTask::RemoveStabilize,
         _ => return Err(format!("Unknown process task: {}", task)),
+    };
+
+    let parsed_stabilization_mode = match stabilization_mode.as_deref() {
+        Some(raw) => Some(
+            StabilizationMode::parse(raw)
+                .ok_or_else(|| format!("Unknown stabilization mode: {}", raw))?,
+        ),
+        None => None,
+    };
+
+    if parsed_stabilization_mode.is_some() && !matches!(task_enum, ProcessTask::Stabilize) {
+        return Err("stabilization_mode is only supported for the stabilize task".to_string());
+    }
+
+    let queued_stabilization_mode = if matches!(task_enum, ProcessTask::Stabilize) {
+        Some(parsed_stabilization_mode.unwrap_or(StabilizationMode::EdgeSafe))
+    } else {
+        None
     };
 
     let job_id = next_process_job_id();
@@ -1504,6 +1708,7 @@ pub fn start_process_job(
         processed: 0,
         out_of_focus: 0,
         current_file: "Queued".to_string(),
+        stabilization_mode: queued_stabilization_mode,
         errors: vec![],
         logs: vec![format!("[{}] queued", now_string())],
         pause_requested: false,
@@ -1524,6 +1729,14 @@ pub fn start_process_job(
         if let Ok(mut params_store) = enhance_params_store().lock() {
             params_store.insert(job_id.clone(), params);
         }
+    }
+
+    if matches!(task_enum, ProcessTask::Stabilize) {
+        let mode = queued_stabilization_mode.unwrap_or(StabilizationMode::EdgeSafe);
+        if let Ok(mut params_store) = stabilize_params_store().lock() {
+            params_store.insert(job_id.clone(), StabilizeParams { mode });
+        }
+        append_process_job_log(&job_id, format!("queued stabilization mode={}", mode.as_str()));
     }
 
     let app_for_task = app.clone();
@@ -1561,6 +1774,13 @@ pub fn start_process_job(
                 append_process_job_log(&job_id_for_status, err.clone());
                 let _ = append_app_log(&app_for_status, format!("process_{} join_failed job_id='{}' error='{}'", task_name(&task_for_status), job_id_for_status, err));
             }
+        }
+
+        if let Ok(mut enhance_store) = enhance_params_store().lock() {
+            enhance_store.remove(&job_id_for_status);
+        }
+        if let Ok(mut stabilize_store) = stabilize_params_store().lock() {
+            stabilize_store.remove(&job_id_for_status);
         }
     });
 

@@ -3,6 +3,12 @@ import type { ImportJob, ProcessJob } from "../types";
 
 type Job = ImportJob | ProcessJob;
 
+const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {
+  maxFrame: "Max Frame",
+  edgeSafe: "Edge-Safe",
+  aggressiveCrop: "Aggressive Crop",
+};
+
 interface JobConsoleProps {
   job: Job | null;
   onClose?: () => void;
@@ -29,6 +35,10 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
   const isProcessJob = "task" in job;
   const taskLabel = isProcessJob ? job.task : "import";
   const hasLogs = job.logs && job.logs.length > 0;
+  const stabilizationModeLabel =
+    isProcessJob && job.task === "stabilize" && job.stabilizationMode
+      ? STABILIZATION_MODE_LABELS[job.stabilizationMode]
+      : null;
 
   return (
     <div className="flex flex-col h-full gap-3 p-4 overflow-hidden">
@@ -39,6 +49,9 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
             <h3 className="text-sm font-semibold text-white">
               {isProcessJob ? `Task: ${taskLabel}` : "Import Job"}
             </h3>
+            {stabilizationModeLabel && (
+              <p className="text-xs text-cyan-300 mt-0.5">Mode: {stabilizationModeLabel}</p>
+            )}
             <p className="text-xs text-gray-400">
               Job ID: <span className="font-mono">{job.id.slice(0, 8)}</span>
             </p>

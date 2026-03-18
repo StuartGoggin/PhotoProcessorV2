@@ -23,6 +23,12 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   remove_stabilize: "Remove Stabilize",
 };
 
+const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {
+  maxFrame: "Max Frame",
+  edgeSafe: "Edge-Safe",
+  aggressiveCrop: "Aggressive Crop",
+};
+
 const STATUS_COLORS: Record<Job["status"], { bg: string; text: string; border: string }> = {
   queued: { bg: "bg-blue-950", text: "text-blue-200", border: "border-blue-700" },
   running: { bg: "bg-emerald-950", text: "text-emerald-200", border: "border-emerald-700" },
@@ -62,6 +68,10 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
   const title = isProcessJob ? PROCESS_TASK_LABELS[job.task] : "Import";
   const detail = isProcessJob ? job.scopeMode : job.reprocessExisting ? "Reprocess" : "Import";
   const duration = formatDuration(job.startedAt, job.finishedAt);
+  const stabilizationModeLabel =
+    isProcessJob && job.task === "stabilize" && job.stabilizationMode
+      ? STABILIZATION_MODE_LABELS[job.stabilizationMode]
+      : null;
 
   return (
     <div
@@ -80,6 +90,11 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-white truncate">{title}</div>
           <div className="text-xs text-gray-400 truncate">{detail}</div>
+          {stabilizationModeLabel && (
+            <div className="mt-1 inline-flex items-center rounded border border-cyan-700 bg-cyan-900/30 px-2 py-0.5 text-[10px] font-medium text-cyan-200">
+              {stabilizationModeLabel}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {job.status === "completed" && <span className="text-emerald-400 text-lg">✓</span>}

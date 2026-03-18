@@ -5,10 +5,13 @@ use tauri::AppHandle;
 use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub source_root: String,
     pub staging_dir: String,
     pub archive_dir: String,
+    pub stabilize_max_parallel_jobs: usize,
+    pub stabilize_ffmpeg_threads_per_job: usize,
 }
 
 impl Default for Settings {
@@ -17,6 +20,8 @@ impl Default for Settings {
             source_root: String::new(),
             staging_dir: String::new(),
             archive_dir: String::new(),
+            stabilize_max_parallel_jobs: 0,
+            stabilize_ffmpeg_threads_per_job: 0,
         }
     }
 }
