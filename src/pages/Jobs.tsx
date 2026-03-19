@@ -34,6 +34,18 @@ const PROCESS_SCOPE_LABELS: Record<ProcessJob["scopeMode"], string> = {
   folderOnly: "This folder only",
 };
 
+const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {
+  maxFrame: "Max Frame",
+  edgeSafe: "Edge-Safe",
+  aggressiveCrop: "Aggressive Crop",
+};
+
+const STABILIZATION_STRENGTH_LABELS: Record<NonNullable<ProcessJob["stabilizationStrength"]>, string> = {
+  gentle: "Gentle",
+  balanced: "Balanced",
+  strong: "Strong",
+};
+
 const PROCESS_STATUS_STYLES: Record<ProcessJob["status"], string> = {
   queued: "bg-blue-900/30 border-blue-700 text-blue-200",
   running: "bg-emerald-900/30 border-emerald-700 text-emerald-200",
@@ -60,6 +72,21 @@ function matchesProcessFilter(job: ProcessJob, filter: ProcessFilter): boolean {
 function toEpoch(value: string): number {
   const time = Date.parse(value);
   return Number.isFinite(time) ? time : 0;
+}
+
+function summarizeLabels(values: string[]): Array<{ label: string; count: number }> {
+  const counts = new Map<string, number>();
+
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      return a[0].localeCompare(b[0]);
+    })
+    .map(([label, count]) => ({ label, count }));
 }
 
 export default function Jobs() {
@@ -205,6 +232,53 @@ export default function Jobs() {
       })
       .filter((job) => matchesProcessFilter(job, processFilter));
   }, [processFilter, processJobs]);
+
+  const stabilizeOverview = useMemo(() => {
+    const stabilizeJobs = processJobs.filter((job) => job.task === "stabilize");
+    const activeCount = stabilizeJobs.filter((job) =>
+      job.status === "queued" || job.status === "running" || job.status === "paused"
+    ).length;
+
+    const modes = summarizeLabels(
+      stabilizeJobs.map((job) =>
+        job.stabilizationMode ? STABILIZATION_MODE_LABELS[job.stabilizationMode] : "Unspecified"
+      )
+    );
+
+    const strengths = summarizeLabels(
+      stabilizeJobs.map((job) =>
+        job.stabilizationStrength ? STABILIZATION_STRENGTH_LABELS[job.stabilizationStrength] : "Unspecified"
+      )
+    );
+
+    const bitratePolicies = summarizeLabels(
+      stabilizeJobs.map((job) =>
+        typeof job.preserveSourceBitrate === "boolean"
+          ? job.preserveSourceBitrate
+            ? "Preserve source bitrate"
+            : "Encoder quality mode"
+          : "Unspecified"
+      )
+    );
+
+    const threading = summarizeLabels(
+      stabilizeJobs.map((job) =>
+        typeof job.stabilizeMaxParallelJobsUsed === "number" ||
+        typeof job.stabilizeFfmpegThreadsPerJobUsed === "number"
+          ? `${job.stabilizeMaxParallelJobsUsed ?? "-"} parallel jobs • ${job.stabilizeFfmpegThreadsPerJobUsed ?? "-"} ffmpeg threads/job`
+          : "Not yet applied"
+      )
+    );
+
+    return {
+      total: stabilizeJobs.length,
+      active: activeCount,
+      modes,
+      strengths,
+      bitratePolicies,
+      threading,
+    };
+  }, [processJobs]);
 
   function toggleProcessLogs(jobId: string) {
     setExpandedProcessLogs((prev) => ({
@@ -357,6 +431,63 @@ export default function Jobs() {
                 </div>
               </div>
 
+              {stabilizeOverview.total > 0 && (
+                <div className="rounded-lg border border-cyan-900/70 bg-cyan-950/20 px-3 py-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="text-xs uppercase tracking-wide text-cyan-300">Stabilize Snapshot</div>
+                    <div className="text-[11px] text-cyan-200/90">
+                      {stabilizeOverview.active} active • {stabilizeOverview.total} total
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                    <div className="rounded border border-cyan-900/70 bg-cyan-950/25 px-2 py-2">
+                      <div className="text-cyan-200/90 mb-1">Mode</div>
+                      <div className="flex flex-wrap gap-1">
+                        {stabilizeOverview.modes.map((entry) => (
+                          <span key={`mode-${entry.label}`} className="inline-flex items-center rounded border border-cyan-800 bg-cyan-900/30 px-2 py-0.5 text-[11px] text-cyan-100">
+                            {entry.label} ({entry.count})
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded border border-teal-900/70 bg-teal-950/25 px-2 py-2">
+                      <div className="text-teal-200/90 mb-1">Strength</div>
+                      <div className="flex flex-wrap gap-1">
+                        {stabilizeOverview.strengths.map((entry) => (
+                          <span key={`strength-${entry.label}`} className="inline-flex items-center rounded border border-teal-800 bg-teal-900/30 px-2 py-0.5 text-[11px] text-teal-100">
+                            {entry.label} ({entry.count})
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded border border-sky-900/70 bg-sky-950/25 px-2 py-2">
+                      <div className="text-sky-200/90 mb-1">Bitrate Policy</div>
+                      <div className="flex flex-wrap gap-1">
+                        {stabilizeOverview.bitratePolicies.map((entry) => (
+                          <span key={`bitrate-${entry.label}`} className="inline-flex items-center rounded border border-sky-800 bg-sky-900/30 px-2 py-0.5 text-[11px] text-sky-100">
+                            {entry.label} ({entry.count})
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded border border-indigo-900/70 bg-indigo-950/25 px-2 py-2">
+                      <div className="text-indigo-200/90 mb-1">Threading In Use</div>
+                      <div className="flex flex-wrap gap-1">
+                        {stabilizeOverview.threading.map((entry) => (
+                          <span key={`threading-${entry.label}`} className="inline-flex items-center rounded border border-indigo-800 bg-indigo-900/30 px-2 py-0.5 text-[11px] text-indigo-100">
+                            {entry.label} ({entry.count})
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {filteredProcessJobs.length === 0 && (
                 <div className="card text-sm text-gray-400">No post-process jobs match the selected filter.</div>
               )}
@@ -366,12 +497,51 @@ export default function Jobs() {
                 const doneLabel = job.total > 0 ? `${job.done}/${job.total}` : `${job.done}`;
                 const logsExpanded = Boolean(expandedProcessLogs[job.id]);
                 const hasLogs = job.logs.length > 0;
+                const stabilizationModeLabel =
+                  job.task === "stabilize" && job.stabilizationMode
+                    ? STABILIZATION_MODE_LABELS[job.stabilizationMode]
+                    : null;
+                const stabilizationStrengthLabel =
+                  job.task === "stabilize" && job.stabilizationStrength
+                    ? STABILIZATION_STRENGTH_LABELS[job.stabilizationStrength]
+                    : null;
+                const bitratePolicyLabel =
+                  job.task === "stabilize" && typeof job.preserveSourceBitrate === "boolean"
+                    ? job.preserveSourceBitrate
+                      ? "Preserve source bitrate"
+                      : "Encoder quality mode"
+                    : null;
+                const threadingLabel =
+                  job.task === "stabilize" &&
+                  (typeof job.stabilizeMaxParallelJobsUsed === "number" ||
+                    typeof job.stabilizeFfmpegThreadsPerJobUsed === "number")
+                    ? `${job.stabilizeMaxParallelJobsUsed ?? "-"} parallel jobs • ${job.stabilizeFfmpegThreadsPerJobUsed ?? "-"} ffmpeg threads/job`
+                    : null;
 
                 return (
                   <div key={job.id} className={`card space-y-3 ${job.status === "running" ? "ring-1 ring-emerald-700/40" : ""}`}>
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <div className="text-sm text-gray-100 font-medium">{PROCESS_TASK_LABELS[job.task] ?? job.task}</div>
+                        {(stabilizationModeLabel || stabilizationStrengthLabel || bitratePolicyLabel) && (
+                          <div className="mt-1 flex flex-wrap items-center gap-1">
+                            {stabilizationModeLabel && (
+                              <span className="inline-flex items-center rounded border border-cyan-700 bg-cyan-900/30 px-2 py-0.5 text-[10px] font-medium text-cyan-200">
+                                {stabilizationModeLabel}
+                              </span>
+                            )}
+                            {stabilizationStrengthLabel && (
+                              <span className="inline-flex items-center rounded border border-teal-700 bg-teal-900/30 px-2 py-0.5 text-[10px] font-medium text-teal-200">
+                                {stabilizationStrengthLabel}
+                              </span>
+                            )}
+                            {bitratePolicyLabel && (
+                              <span className="inline-flex items-center rounded border border-sky-700 bg-sky-900/30 px-2 py-0.5 text-[10px] font-medium text-sky-200">
+                                {bitratePolicyLabel}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <div className="text-xs text-gray-500 mt-1 break-all">Job ID: {job.id}</div>
                       </div>
                       <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -400,6 +570,10 @@ export default function Jobs() {
                       <div>Progress: <span className="text-gray-200">{doneLabel} ({progress.toFixed(0)}%)</span></div>
                       <div>Processed: <span className="text-gray-200">{job.processed}</span></div>
                       <div>Out of focus flagged: <span className="text-gray-200">{job.outOfFocus}</span></div>
+                      {bitratePolicyLabel && <div>Bitrate policy: <span className="text-gray-200">{bitratePolicyLabel}</span></div>}
+                      {threadingLabel && (
+                        <div className="md:col-span-2">Threading in use: <span className="text-gray-200">{threadingLabel}</span></div>
+                      )}
                       <div className="md:col-span-2">Scope: <span className="text-gray-200 break-all">{job.scopeDir}</span></div>
                     </div>
 

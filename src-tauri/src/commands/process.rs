@@ -82,6 +82,10 @@ pub struct ProcessJob {
     pub out_of_focus: usize,
     pub current_file: String,
     pub stabilization_mode: Option<StabilizationMode>,
+    pub stabilization_strength: Option<StabilizationStrength>,
+    pub preserve_source_bitrate: Option<bool>,
+    pub stabilize_max_parallel_jobs_used: Option<usize>,
+    pub stabilize_ffmpeg_threads_per_job_used: Option<usize>,
     pub errors: Vec<String>,
     pub logs: Vec<String>,
     pub pause_requested: bool,
@@ -126,9 +130,38 @@ impl StabilizationMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StabilizationStrength {
+    Gentle,
+    Balanced,
+    Strong,
+}
+
+impl StabilizationStrength {
+    fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "gentle" => Some(Self::Gentle),
+            "balanced" => Some(Self::Balanced),
+            "strong" => Some(Self::Strong),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Gentle => "gentle",
+            Self::Balanced => "balanced",
+            Self::Strong => "strong",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct StabilizeParams {
     mode: StabilizationMode,
+    strength: StabilizationStrength,
+    preserve_source_bitrate: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -919,6 +952,64 @@ fn detect_ffmpeg_capabilities() -> Result<FfmpegCapabilities, String> {
     ))
 }
 
+fn ffprobe_candidates_for_ffmpeg(ffmpeg_binary: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(parent) = ffmpeg_binary.parent() {
+        candidates.push(parent.join("ffprobe.exe"));
+        candidates.push(parent.join("ffprobe"));
+    }
+
+    if let Some(file_name) = ffmpeg_binary.file_name().and_then(|name| name.to_str()) {
+        if file_name.eq_ignore_ascii_case("ffmpeg.exe") {
+            candidates.push(ffmpeg_binary.with_file_name("ffprobe.exe"));
+        } else if file_name == "ffmpeg" {
+            candidates.push(ffmpeg_binary.with_file_name("ffprobe"));
+        }
+    }
+
+    candidates.push(PathBuf::from("ffprobe"));
+    candidates
+}
+
+fn probe_video_bitrate_bps(ffmpeg_binary: &Path, input_path: &Path) -> Option<u64> {
+    for ffprobe_binary in ffprobe_candidates_for_ffmpeg(ffmpeg_binary) {
+        let output = Command::new(&ffprobe_binary)
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=bit_rate:format=bit_rate",
+                "-of",
+                "default=nokey=1:noprint_wrappers=1",
+            ])
+            .arg(input_path)
+            .output();
+
+        let Ok(output) = output else { continue; };
+        if !output.status.success() {
+            continue;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let value = line.trim();
+            if value.is_empty() || value.eq_ignore_ascii_case("n/a") {
+                continue;
+            }
+            if let Ok(parsed) = value.parse::<u64>() {
+                if parsed > 0 {
+                    return Some(parsed);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn run_ffmpeg_command(
     binary: &Path,
     args: &[String],
@@ -981,6 +1072,8 @@ fn stabilize_mp4(
     capabilities: &FfmpegCapabilities,
     job_id: Option<&str>,
     stabilization_mode: StabilizationMode,
+    stabilization_strength: StabilizationStrength,
+    preserve_source_bitrate: bool,
     ffmpeg_threads: usize,
 ) -> anyhow::Result<()> {
     if !capabilities.has_vidstab {
@@ -1007,26 +1100,51 @@ fn stabilize_mp4(
     let transform_file_name = format!("{}.trf", temp_tag);
     let transform_path = work_dir.join(&transform_file_name);
 
+    let source_video_bitrate_bps = probe_video_bitrate_bps(&capabilities.binary, path);
+    let target_video_bitrate_bps = if preserve_source_bitrate {
+        source_video_bitrate_bps.filter(|bps| *bps >= 200_000)
+    } else {
+        None
+    };
+    let maxrate_bps = target_video_bitrate_bps.map(|bps| bps.saturating_mul(115) / 100);
+    let bufsize_bps = target_video_bitrate_bps.map(|bps| bps.saturating_mul(2));
+
+    let (detect_stepsize, detect_shakiness, detect_accuracy, transform_smoothing) =
+        match stabilization_strength {
+            StabilizationStrength::Gentle => (8, 3, 10, 18),
+            StabilizationStrength::Balanced => (6, 4, 15, 30),
+            StabilizationStrength::Strong => (4, 6, 15, 48),
+        };
+
     let detect_filter = format!(
-        "vidstabdetect=stepsize=6:shakiness=4:accuracy=15:mincontrast=0.25:result={}",
+        "vidstabdetect=stepsize={}:shakiness={}:accuracy={}:mincontrast=0.25:result={}",
+        detect_stepsize,
+        detect_shakiness,
+        detect_accuracy,
         transform_file_name
     );
-    let transform_filter = match stabilization_mode {
-        StabilizationMode::MaxFrame => format!(
-            "vidstabtransform=input={}:smoothing=30:zoom=0:optzoom=0:zoomspeed=0:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0",
-            transform_file_name
-        ),
-        // Balanced default: suppresses most edge artifacts while preserving field of view.
-        StabilizationMode::EdgeSafe => format!(
-            "vidstabtransform=input={}:smoothing=30:zoom=4:optzoom=2:zoomspeed=0.25:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0",
-            transform_file_name
-        ),
-        // Strongest framing protection for shaky clips.
-        StabilizationMode::AggressiveCrop => format!(
-            "vidstabtransform=input={}:smoothing=32:zoom=8:optzoom=2:zoomspeed=0.4:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0",
-            transform_file_name
-        ),
+    let (zoom, optzoom, zoomspeed) = match stabilization_mode {
+        StabilizationMode::MaxFrame => (0.0_f32, 0, 0.0_f32),
+        StabilizationMode::EdgeSafe => (4.0_f32, 2, 0.25_f32),
+        StabilizationMode::AggressiveCrop => (8.0_f32, 2, 0.4_f32),
     };
+    let transform_filter = format!(
+        "vidstabtransform=input={}:smoothing={}:zoom={:.2}:optzoom={}:zoomspeed={:.2}:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0",
+        transform_file_name,
+        transform_smoothing,
+        zoom,
+        optzoom,
+        zoomspeed
+    );
+
+    let quality_mode = if preserve_source_bitrate {
+        "preserve_source_bitrate"
+    } else {
+        "quality_priority"
+    };
+
+    let base_cq = if preserve_source_bitrate { "16" } else { "18" };
+    let base_crf = if preserve_source_bitrate { "16" } else { "18" };
 
     let detect_args = vec![
         "-hide_banner".to_string(),
@@ -1074,22 +1192,69 @@ fn stabilize_mp4(
             "-rc".to_string(),
             "vbr".to_string(),
             "-cq".to_string(),
-            "18".to_string(),
-            "-b:v".to_string(),
-            "0".to_string(),
+            base_cq.to_string(),
             "-spatial-aq".to_string(),
             "1".to_string(),
             "-aq-strength".to_string(),
             "8".to_string(),
         ]);
+
+        if let (Some(target_bitrate_bps), Some(maxrate_bps), Some(bufsize_bps)) =
+            (target_video_bitrate_bps, maxrate_bps, bufsize_bps)
+        {
+            transform_args.extend([
+                "-b:v".to_string(),
+                target_bitrate_bps.to_string(),
+                "-maxrate".to_string(),
+                maxrate_bps.to_string(),
+                "-bufsize".to_string(),
+                bufsize_bps.to_string(),
+            ]);
+        } else {
+            transform_args.extend(["-b:v".to_string(), "0".to_string()]);
+        }
     } else {
         transform_args.extend([
             "-preset".to_string(),
             "slow".to_string(),
             "-crf".to_string(),
-            "18".to_string(),
+            base_crf.to_string(),
         ]);
+
+        if let (Some(target_bitrate_bps), Some(maxrate_bps), Some(bufsize_bps)) =
+            (target_video_bitrate_bps, maxrate_bps, bufsize_bps)
+        {
+            transform_args.extend([
+                "-b:v".to_string(),
+                target_bitrate_bps.to_string(),
+                "-maxrate".to_string(),
+                maxrate_bps.to_string(),
+                "-bufsize".to_string(),
+                bufsize_bps.to_string(),
+            ]);
+        }
     }
+
+    let bitrate_policy = if let (Some(target_bitrate_bps), Some(maxrate_bps), Some(bufsize_bps)) =
+        (target_video_bitrate_bps, maxrate_bps, bufsize_bps)
+    {
+        format!(
+            "quality_mode={} source_bitrate={}bps target_bitrate={}bps maxrate={}bps bufsize={}bps",
+            quality_mode,
+            source_video_bitrate_bps.unwrap_or(target_bitrate_bps),
+            target_bitrate_bps,
+            maxrate_bps,
+            bufsize_bps
+        )
+    } else {
+        format!(
+            "quality_mode={} source_bitrate={} target_bitrate=encoder_quality",
+            quality_mode,
+            source_video_bitrate_bps
+                .map(|bps| format!("{}bps", bps))
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+    };
 
     transform_args.extend([
         "-pix_fmt".to_string(),
@@ -1111,11 +1276,15 @@ fn stabilize_mp4(
         append_process_job_log(
             job_id,
             format!(
-                "stabilize analyse '{}' using {} work_dir='{}' ffmpeg_threads={}",
+                "stabilize analyse '{}' using {} work_dir='{}' mode={} strength={} preserve_source_bitrate={} ffmpeg_threads={} {}",
                 path.display(),
                 capabilities.binary.display(),
                 work_dir.display(),
-                ffmpeg_threads
+                stabilization_mode.as_str(),
+                stabilization_strength.as_str(),
+                preserve_source_bitrate,
+                ffmpeg_threads,
+                &bitrate_policy
             ),
         );
     }
@@ -1137,26 +1306,32 @@ fn stabilize_mp4(
     let _ = append_app_log(
         app,
         format!(
-            "process_stabilize encode source='{}' output='{}' encoder={} gpu={} mode={} ffmpeg_threads={}",
+            "process_stabilize encode source='{}' output='{}' encoder={} gpu={} mode={} strength={} preserve_source_bitrate={} ffmpeg_threads={} {}",
             path.display(),
             out_path.display(),
             video_encoder,
             capabilities.has_h264_nvenc,
             stabilization_mode.as_str(),
-            ffmpeg_threads
+            stabilization_strength.as_str(),
+            preserve_source_bitrate,
+            ffmpeg_threads,
+            &bitrate_policy
         ),
     );
     if let Some(job_id) = job_id {
         append_process_job_log(
             job_id,
             format!(
-                "stabilize encode '{}' -> '{}' encoder={} gpu={} mode={} ffmpeg_threads={}",
+                "stabilize encode '{}' -> '{}' encoder={} gpu={} mode={} strength={} preserve_source_bitrate={} ffmpeg_threads={} {}",
                 path.display(),
                 out_path.display(),
                 video_encoder,
                 capabilities.has_h264_nvenc,
                 stabilization_mode.as_str(),
-                ffmpeg_threads
+                stabilization_strength.as_str(),
+                preserve_source_bitrate,
+                ffmpeg_threads,
+                &bitrate_policy
             ),
         );
     }
@@ -1182,13 +1357,15 @@ fn stabilize_mp4(
         append_process_job_log(
             job_id,
             format!(
-                "stabilized '{}' -> '{}' (replaced_existing={} encoder={} gpu={} mode={})",
+                "stabilized '{}' -> '{}' (replaced_existing={} encoder={} gpu={} mode={} strength={} preserve_source_bitrate={})",
                 path.display(),
                 out_path.display(),
                 replaced_existing,
                 video_encoder,
                 capabilities.has_h264_nvenc,
-                stabilization_mode.as_str()
+                stabilization_mode.as_str(),
+                stabilization_strength.as_str(),
+                preserve_source_bitrate
             ),
         );
     }
@@ -1378,22 +1555,34 @@ fn run_process_task(
         _ => None,
     };
 
-    let stabilization_mode = if matches!(task, ProcessTask::Stabilize) {
-        let mode = job_id
+    let stabilization_params = if matches!(task, ProcessTask::Stabilize) {
+        let params = job_id
             .as_deref()
             .and_then(|id| {
                 stabilize_params_store()
                     .lock()
                     .ok()
-                    .and_then(|store| store.get(id).copied().map(|params| params.mode))
+                    .and_then(|store| store.get(id).copied())
             })
-            .unwrap_or(StabilizationMode::EdgeSafe);
+            .unwrap_or(StabilizeParams {
+                mode: StabilizationMode::EdgeSafe,
+                strength: StabilizationStrength::Balanced,
+                preserve_source_bitrate: true,
+            });
 
         if let Some(job_id) = &job_id {
-            append_process_job_log(job_id, format!("stabilization mode={}", mode.as_str()));
+            append_process_job_log(
+                job_id,
+                format!(
+                    "stabilization params mode={} strength={} preserve_source_bitrate={}",
+                    params.mode.as_str(),
+                    params.strength.as_str(),
+                    params.preserve_source_bitrate
+                ),
+            );
         }
 
-        Some(mode)
+        Some(params)
     } else {
         None
     };
@@ -1422,6 +1611,10 @@ fn run_process_task(
                     policy.ffmpeg_threads_per_job
                 ),
             );
+            update_process_job(job_id, |job| {
+                job.stabilize_max_parallel_jobs_used = Some(policy.max_parallel_jobs);
+                job.stabilize_ffmpeg_threads_per_job_used = Some(policy.ffmpeg_threads_per_job);
+            });
         }
 
         Some(policy)
@@ -1549,7 +1742,11 @@ fn run_process_task(
                         let capabilities = ffmpeg_clone
                             .as_ref()
                             .ok_or_else(|| anyhow::anyhow!("FFmpeg capability probe was not initialised"))?;
-                        let mode = stabilization_mode.unwrap_or(StabilizationMode::EdgeSafe);
+                        let params = stabilization_params.unwrap_or(StabilizeParams {
+                            mode: StabilizationMode::EdgeSafe,
+                            strength: StabilizationStrength::Balanced,
+                            preserve_source_bitrate: true,
+                        });
                         let ffmpeg_threads = stabilize_load_policy
                             .map(|policy| policy.ffmpeg_threads_per_job)
                             .unwrap_or(2);
@@ -1558,7 +1755,9 @@ fn run_process_task(
                             path,
                             capabilities,
                             job_id_clone.as_deref(),
-                            mode,
+                            params.mode,
+                            params.strength,
+                            params.preserve_source_bitrate,
                             ffmpeg_threads,
                         )?;
                     }
@@ -1661,6 +1860,8 @@ pub fn start_process_job(
     enhance_contrast_level: Option<f32>,
     enhance_sharpness_level: Option<f32>,
     stabilization_mode: Option<String>,
+    stabilization_strength: Option<String>,
+    preserve_source_bitrate: Option<bool>,
 ) -> Result<String, String> {
     let task_enum = match task.to_lowercase().as_str() {
         "focus" => ProcessTask::Focus,
@@ -1682,12 +1883,36 @@ pub fn start_process_job(
         None => None,
     };
 
-    if parsed_stabilization_mode.is_some() && !matches!(task_enum, ProcessTask::Stabilize) {
-        return Err("stabilization_mode is only supported for the stabilize task".to_string());
+    let parsed_stabilization_strength = match stabilization_strength.as_deref() {
+        Some(raw) => Some(
+            StabilizationStrength::parse(raw)
+                .ok_or_else(|| format!("Unknown stabilization strength: {}", raw))?,
+        ),
+        None => None,
+    };
+
+    if !matches!(task_enum, ProcessTask::Stabilize)
+        && (parsed_stabilization_mode.is_some()
+            || parsed_stabilization_strength.is_some()
+            || preserve_source_bitrate.is_some())
+    {
+        return Err("stabilization options are only supported for the stabilize task".to_string());
     }
 
     let queued_stabilization_mode = if matches!(task_enum, ProcessTask::Stabilize) {
         Some(parsed_stabilization_mode.unwrap_or(StabilizationMode::EdgeSafe))
+    } else {
+        None
+    };
+
+    let queued_stabilization_strength = if matches!(task_enum, ProcessTask::Stabilize) {
+        Some(parsed_stabilization_strength.unwrap_or(StabilizationStrength::Balanced))
+    } else {
+        None
+    };
+
+    let queued_preserve_source_bitrate = if matches!(task_enum, ProcessTask::Stabilize) {
+        Some(preserve_source_bitrate.unwrap_or(true))
     } else {
         None
     };
@@ -1709,6 +1934,10 @@ pub fn start_process_job(
         out_of_focus: 0,
         current_file: "Queued".to_string(),
         stabilization_mode: queued_stabilization_mode,
+        stabilization_strength: queued_stabilization_strength,
+        preserve_source_bitrate: queued_preserve_source_bitrate,
+        stabilize_max_parallel_jobs_used: None,
+        stabilize_ffmpeg_threads_per_job_used: None,
         errors: vec![],
         logs: vec![format!("[{}] queued", now_string())],
         pause_requested: false,
@@ -1733,10 +1962,27 @@ pub fn start_process_job(
 
     if matches!(task_enum, ProcessTask::Stabilize) {
         let mode = queued_stabilization_mode.unwrap_or(StabilizationMode::EdgeSafe);
+        let strength = queued_stabilization_strength.unwrap_or(StabilizationStrength::Balanced);
+        let preserve = queued_preserve_source_bitrate.unwrap_or(true);
         if let Ok(mut params_store) = stabilize_params_store().lock() {
-            params_store.insert(job_id.clone(), StabilizeParams { mode });
+            params_store.insert(
+                job_id.clone(),
+                StabilizeParams {
+                    mode,
+                    strength,
+                    preserve_source_bitrate: preserve,
+                },
+            );
         }
-        append_process_job_log(&job_id, format!("queued stabilization mode={}", mode.as_str()));
+        append_process_job_log(
+            &job_id,
+            format!(
+                "queued stabilization mode={} strength={} preserve_source_bitrate={}",
+                mode.as_str(),
+                strength.as_str(),
+                preserve
+            ),
+        );
     }
 
     let app_for_task = app.clone();

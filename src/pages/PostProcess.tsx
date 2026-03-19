@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileTree } from "../components";
-import type { ProcessScopeMode, ProcessTask, StabilizationMode, TreeNode } from "../types";
+import type { ProcessScopeMode, ProcessTask, StabilizationMode, StabilizationStrength, TreeNode } from "../types";
 import { useSettings } from "../hooks";
 
 interface TaskConfig {
@@ -81,6 +81,24 @@ const STABILIZATION_MODES: Array<{ id: StabilizationMode; label: string; descrip
   },
 ];
 
+const STABILIZATION_STRENGTHS: Array<{ id: StabilizationStrength; label: string; description: string }> = [
+  {
+    id: "gentle",
+    label: "Gentle",
+    description: "Light correction with minimal warping. Best for already stable clips.",
+  },
+  {
+    id: "balanced",
+    label: "Balanced",
+    description: "Recommended default. Strong enough for most handheld movement.",
+  },
+  {
+    id: "strong",
+    label: "Strong",
+    description: "Maximum correction for very shaky footage. Can introduce more crop/warp.",
+  },
+];
+
 function resolveTaskAction(taskId: ProcessTask): { actionLabel: string; isCleanup: boolean } {
   for (const task of TASKS) {
     if (task.runTaskId === taskId) {
@@ -106,6 +124,8 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
   const [enhanceContrastLevel, setEnhanceContrastLevel] = useState(1.0);
   const [enhanceSharpnessLevel, setEnhanceSharpnessLevel] = useState(0.5);
   const [stabilizationMode, setStabilizationMode] = useState<StabilizationMode>("edgeSafe");
+  const [stabilizationStrength, setStabilizationStrength] = useState<StabilizationStrength>("balanced");
+  const [preserveSourceBitrate, setPreserveSourceBitrate] = useState(true);
 
   const canQueue = Boolean(settings?.staging_dir);
   const effectiveScope = useMemo(() => {
@@ -353,32 +373,74 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
               {isStabilizeTask && (
                 <div className="bg-cyan-950/30 border border-cyan-700/50 rounded-lg p-4 space-y-4">
                   <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <h4 className="text-sm font-medium text-cyan-300">Stabilization Framing</h4>
+                    <h4 className="text-sm font-medium text-cyan-300">Stabilization Controls</h4>
                     <span className="text-xs px-2 py-1 rounded bg-cyan-900/40 border border-cyan-700 text-cyan-200">
-                      Recommended: Edge-Safe
+                      Recommended: Edge-Safe + Balanced
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                    {STABILIZATION_MODES.map((mode) => (
-                      <button
-                        key={mode.id}
-                        type="button"
-                        onClick={() => setStabilizationMode(mode.id)}
-                        className={`text-left rounded-lg border px-3 py-2 transition-colors ${
-                          stabilizationMode === mode.id
-                            ? "border-cyan-500 bg-cyan-900/30 text-white"
-                            : "border-surface-600 bg-surface-900/60 text-gray-300 hover:bg-surface-800"
-                        }`}
-                      >
-                        <div className="text-sm font-medium">{mode.label}</div>
-                        <div className="text-xs text-gray-400 mt-1">{mode.description}</div>
-                      </button>
-                    ))}
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-cyan-200/80 mb-2">Cropping / Framing Mode</div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                      {STABILIZATION_MODES.map((mode) => (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          onClick={() => setStabilizationMode(mode.id)}
+                          className={`text-left rounded-lg border px-3 py-2 transition-colors ${
+                            stabilizationMode === mode.id
+                              ? "border-cyan-500 bg-cyan-900/30 text-white"
+                              : "border-surface-600 bg-surface-900/60 text-gray-300 hover:bg-surface-800"
+                          }`}
+                        >
+                          <div className="text-sm font-medium">{mode.label}</div>
+                          <div className="text-xs text-gray-400 mt-1">{mode.description}</div>
+                        </button>
+                      ))}
+                    </div>
                   </div>
+
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-cyan-200/80 mb-2">Stabilization Strength</div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                      {STABILIZATION_STRENGTHS.map((strength) => (
+                        <button
+                          key={strength.id}
+                          type="button"
+                          onClick={() => setStabilizationStrength(strength.id)}
+                          className={`text-left rounded-lg border px-3 py-2 transition-colors ${
+                            stabilizationStrength === strength.id
+                              ? "border-teal-500 bg-teal-900/30 text-white"
+                              : "border-surface-600 bg-surface-900/60 text-gray-300 hover:bg-surface-800"
+                          }`}
+                        >
+                          <div className="text-sm font-medium">{strength.label}</div>
+                          <div className="text-xs text-gray-400 mt-1">{strength.description}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <label className="flex items-start gap-3 rounded-lg border border-surface-600 bg-surface-900/60 px-3 py-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-4 w-4"
+                      checked={preserveSourceBitrate}
+                      onChange={(e) => setPreserveSourceBitrate(e.target.checked)}
+                    />
+                    <span className="text-xs text-gray-300">
+                      <span className="font-medium text-cyan-200">Preserve source bitrate</span>
+                      <br />
+                      Keep output bitrate close to the source clip when available. Turn off to prioritize encoder quality settings.
+                    </span>
+                  </label>
 
                   <p className="text-xs text-cyan-200/80 bg-cyan-900/20 rounded px-2 py-1.5">
                     Selected mode: <strong>{STABILIZATION_MODES.find((mode) => mode.id === stabilizationMode)?.label}</strong>
+                    {" • "}
+                    Strength: <strong>{STABILIZATION_STRENGTHS.find((strength) => strength.id === stabilizationStrength)?.label}</strong>
+                    {" • "}
+                    Bitrate policy: <strong>{preserveSourceBitrate ? "Preserve source" : "Encoder quality"}</strong>
                   </p>
                 </div>
               )}
@@ -395,7 +457,11 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                       const params = isEnhanceTask
                         ? { enhanceContrastLevel, enhanceSharpnessLevel }
                         : isStabilizeTask
-                          ? { stabilizationMode }
+                          ? {
+                              stabilizationMode,
+                              stabilizationStrength,
+                              preserveSourceBitrate,
+                            }
                           : undefined;
                       void runTask(task.runTaskId, params);
                     }}

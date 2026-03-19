@@ -29,6 +29,12 @@ const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMod
   aggressiveCrop: "Aggressive Crop",
 };
 
+const STABILIZATION_STRENGTH_LABELS: Record<NonNullable<ProcessJob["stabilizationStrength"]>, string> = {
+  gentle: "Gentle",
+  balanced: "Balanced",
+  strong: "Strong",
+};
+
 const STATUS_COLORS: Record<Job["status"], { bg: string; text: string; border: string }> = {
   queued: { bg: "bg-blue-950", text: "text-blue-200", border: "border-blue-700" },
   running: { bg: "bg-emerald-950", text: "text-emerald-200", border: "border-emerald-700" },
@@ -64,13 +70,31 @@ function formatDuration(startStr: string | null, endStr: string | null): string 
 export default function JobTile({ job, isSelected = false, onClick }: JobTileProps) {
   const progress = pct(job.done, job.total);
   const colors = STATUS_COLORS[job.status];
-  const isProcessJob = "task" in job;
-  const title = isProcessJob ? PROCESS_TASK_LABELS[job.task] : "Import";
-  const detail = isProcessJob ? job.scopeMode : job.reprocessExisting ? "Reprocess" : "Import";
+  const processJob = isProcessJob(job) ? job : null;
+  const importJob = !isProcessJob(job) ? job : null;
+  const title = processJob ? PROCESS_TASK_LABELS[processJob.task] : "Import";
+  const detail = processJob ? processJob.scopeMode : importJob?.reprocessExisting ? "Reprocess" : "Import";
   const duration = formatDuration(job.startedAt, job.finishedAt);
   const stabilizationModeLabel =
-    isProcessJob && job.task === "stabilize" && job.stabilizationMode
-      ? STABILIZATION_MODE_LABELS[job.stabilizationMode]
+    processJob && processJob.task === "stabilize" && processJob.stabilizationMode
+      ? STABILIZATION_MODE_LABELS[processJob.stabilizationMode]
+      : null;
+  const stabilizationStrengthLabel =
+    processJob && processJob.task === "stabilize" && processJob.stabilizationStrength
+      ? STABILIZATION_STRENGTH_LABELS[processJob.stabilizationStrength]
+      : null;
+  const bitratePolicyLabel =
+    processJob && processJob.task === "stabilize" && typeof processJob.preserveSourceBitrate === "boolean"
+      ? processJob.preserveSourceBitrate
+        ? "Preserve bitrate"
+        : "Encoder quality"
+      : null;
+  const threadingLabel =
+    processJob &&
+    processJob.task === "stabilize" &&
+    (typeof processJob.stabilizeMaxParallelJobsUsed === "number" ||
+      typeof processJob.stabilizeFfmpegThreadsPerJobUsed === "number")
+      ? `${processJob.stabilizeMaxParallelJobsUsed ?? "-"} jobs • ${processJob.stabilizeFfmpegThreadsPerJobUsed ?? "-"} threads/job`
       : null;
 
   return (
@@ -90,11 +114,23 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-white truncate">{title}</div>
           <div className="text-xs text-gray-400 truncate">{detail}</div>
-          {stabilizationModeLabel && (
-            <div className="mt-1 inline-flex items-center rounded border border-cyan-700 bg-cyan-900/30 px-2 py-0.5 text-[10px] font-medium text-cyan-200">
-              {stabilizationModeLabel}
-            </div>
-          )}
+          <div className="mt-1 flex flex-wrap gap-1">
+            {stabilizationModeLabel && (
+              <div className="inline-flex items-center rounded border border-cyan-700 bg-cyan-900/30 px-2 py-0.5 text-[10px] font-medium text-cyan-200">
+                {stabilizationModeLabel}
+              </div>
+            )}
+            {stabilizationStrengthLabel && (
+              <div className="inline-flex items-center rounded border border-teal-700 bg-teal-900/30 px-2 py-0.5 text-[10px] font-medium text-teal-200">
+                {stabilizationStrengthLabel}
+              </div>
+            )}
+            {bitratePolicyLabel && (
+              <div className="inline-flex items-center rounded border border-sky-700 bg-sky-900/30 px-2 py-0.5 text-[10px] font-medium text-sky-200">
+                {bitratePolicyLabel}
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {job.status === "completed" && <span className="text-emerald-400 text-lg">✓</span>}
@@ -116,7 +152,7 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
           )}
           {job.total === 0 || job.done === 0 ? (
             <div className="text-xs text-amber-300 bg-amber-950/30 rounded px-2 py-1 text-center">
-              {isProcessJob ? "No files matched criteria" : "No files processed"}
+              {processJob ? "No files matched criteria" : "No files processed"}
             </div>
           ) : (
             <div className="w-full h-1.5 bg-emerald-600/30 rounded-full overflow-hidden">
@@ -147,29 +183,35 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
       {/* Stats */}
       {job.status !== "completed" && (
         <div className="grid grid-cols-2 gap-2 pt-1 text-xs">
-          {isProcessJob ? (
+          {processJob ? (
             <>
               <div className="bg-surface-700/40 rounded px-2 py-1">
                 <div className="text-gray-500">Processed</div>
-                <div className="font-semibold text-white">{job.processed}</div>
+                <div className="font-semibold text-white">{processJob.processed}</div>
               </div>
               <div className="bg-surface-700/40 rounded px-2 py-1">
                 <div className="text-gray-500">Out of Focus</div>
-                <div className="font-semibold text-yellow-300">{job.outOfFocus}</div>
+                <div className="font-semibold text-yellow-300">{processJob.outOfFocus}</div>
               </div>
             </>
           ) : (
             <>
               <div className="bg-surface-700/40 rounded px-2 py-1">
                 <div className="text-gray-500">Imported</div>
-                <div className="font-semibold text-white">{job.imported}</div>
+                <div className="font-semibold text-white">{importJob?.imported ?? 0}</div>
               </div>
               <div className="bg-surface-700/40 rounded px-2 py-1">
                 <div className="text-gray-500">Speed</div>
-                <div className="font-semibold text-white">{job.speedMbps.toFixed(1)} MB/s</div>
+                <div className="font-semibold text-white">{(importJob?.speedMbps ?? 0).toFixed(1)} MB/s</div>
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {threadingLabel && (
+        <div className="pt-1 border-t border-surface-600">
+          <div className="text-xs text-cyan-300">Threading: {threadingLabel}</div>
         </div>
       )}
 
@@ -184,26 +226,26 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
       {job.status === "completed" && job.done > 0 && (
         <div className="pt-1 border-t border-surface-600">
           <div className="grid grid-cols-2 gap-2 text-xs">
-            {isProcessJob ? (
+            {processJob ? (
               <>
                 <div>
                   <span className="text-gray-500">Processed:</span>
-                  <span className="ml-1 font-semibold text-emerald-300">{job.processed}</span>
+                  <span className="ml-1 font-semibold text-emerald-300">{processJob.processed}</span>
                 </div>
                 <div>
                   <span className="text-gray-500">Out of Focus:</span>
-                  <span className="ml-1 font-semibold text-yellow-300">{job.outOfFocus}</span>
+                  <span className="ml-1 font-semibold text-yellow-300">{processJob.outOfFocus}</span>
                 </div>
               </>
             ) : (
               <>
                 <div>
                   <span className="text-gray-500">Imported:</span>
-                  <span className="ml-1 font-semibold text-emerald-300">{job.imported}</span>
+                  <span className="ml-1 font-semibold text-emerald-300">{importJob?.imported ?? 0}</span>
                 </div>
                 <div>
                   <span className="text-gray-500">Skipped:</span>
-                  <span className="ml-1 font-semibold text-amber-300">{job.skipped ?? 0}</span>
+                  <span className="ml-1 font-semibold text-amber-300">{importJob?.skipped ?? 0}</span>
                 </div>
               </>
             )}

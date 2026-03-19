@@ -79,6 +79,8 @@ export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly
 
 export type StabilizationMode = "maxFrame" | "edgeSafe" | "aggressiveCrop";
 
+export type StabilizationStrength = "gentle" | "balanced" | "strong";
+
 export type ProcessJobStatus = "queued" | "running" | "paused" | "aborted" | "completed" | "failed";
 
 export interface ProcessJob {
@@ -97,6 +99,10 @@ export interface ProcessJob {
   outOfFocus: number;
   currentFile: string;
   stabilizationMode?: StabilizationMode;
+  stabilizationStrength?: StabilizationStrength;
+  preserveSourceBitrate?: boolean;
+  stabilizeMaxParallelJobsUsed?: number;
+  stabilizeFfmpegThreadsPerJobUsed?: number;
   errors: string[];
   logs: string[];
   pauseRequested: boolean;

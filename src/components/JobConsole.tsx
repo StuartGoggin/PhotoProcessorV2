@@ -3,10 +3,20 @@ import type { ImportJob, ProcessJob } from "../types";
 
 type Job = ImportJob | ProcessJob;
 
+function isProcessJob(job: Job): job is ProcessJob {
+  return "task" in job;
+}
+
 const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {
   maxFrame: "Max Frame",
   edgeSafe: "Edge-Safe",
   aggressiveCrop: "Aggressive Crop",
+};
+
+const STABILIZATION_STRENGTH_LABELS: Record<NonNullable<ProcessJob["stabilizationStrength"]>, string> = {
+  gentle: "Gentle",
+  balanced: "Balanced",
+  strong: "Strong",
 };
 
 interface JobConsoleProps {
@@ -32,12 +42,30 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
     );
   }
 
-  const isProcessJob = "task" in job;
-  const taskLabel = isProcessJob ? job.task : "import";
+  const processJob = isProcessJob(job) ? job : null;
+  const importJob = !isProcessJob(job) ? job : null;
+  const taskLabel = processJob ? processJob.task : "import";
   const hasLogs = job.logs && job.logs.length > 0;
   const stabilizationModeLabel =
-    isProcessJob && job.task === "stabilize" && job.stabilizationMode
-      ? STABILIZATION_MODE_LABELS[job.stabilizationMode]
+    processJob && processJob.task === "stabilize" && processJob.stabilizationMode
+      ? STABILIZATION_MODE_LABELS[processJob.stabilizationMode]
+      : null;
+  const stabilizationStrengthLabel =
+    processJob && processJob.task === "stabilize" && processJob.stabilizationStrength
+      ? STABILIZATION_STRENGTH_LABELS[processJob.stabilizationStrength]
+      : null;
+  const bitratePolicyLabel =
+    processJob && processJob.task === "stabilize" && typeof processJob.preserveSourceBitrate === "boolean"
+      ? processJob.preserveSourceBitrate
+        ? "Preserve source bitrate"
+        : "Encoder quality mode"
+      : null;
+  const threadingLabel =
+    processJob &&
+    processJob.task === "stabilize" &&
+    (typeof processJob.stabilizeMaxParallelJobsUsed === "number" ||
+      typeof processJob.stabilizeFfmpegThreadsPerJobUsed === "number")
+      ? `${processJob.stabilizeMaxParallelJobsUsed ?? "-"} parallel jobs, ${processJob.stabilizeFfmpegThreadsPerJobUsed ?? "-"} ffmpeg threads/job`
       : null;
 
   return (
@@ -47,10 +75,19 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
         <div className="flex items-center justify-between mb-2">
           <div>
             <h3 className="text-sm font-semibold text-white">
-              {isProcessJob ? `Task: ${taskLabel}` : "Import Job"}
+              {processJob ? `Task: ${taskLabel}` : "Import Job"}
             </h3>
             {stabilizationModeLabel && (
               <p className="text-xs text-cyan-300 mt-0.5">Mode: {stabilizationModeLabel}</p>
+            )}
+            {stabilizationStrengthLabel && (
+              <p className="text-xs text-teal-300 mt-0.5">Strength: {stabilizationStrengthLabel}</p>
+            )}
+            {bitratePolicyLabel && (
+              <p className="text-xs text-sky-300 mt-0.5">Bitrate: {bitratePolicyLabel}</p>
+            )}
+            {threadingLabel && (
+              <p className="text-xs text-cyan-200/90 mt-0.5">Threading in use: {threadingLabel}</p>
             )}
             <p className="text-xs text-gray-400">
               Job ID: <span className="font-mono">{job.id.slice(0, 8)}</span>
@@ -82,26 +119,26 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
             <div className="text-gray-500 mb-0.5">Progress</div>
             <div className="font-semibold text-white">{job.done}/{job.total}</div>
           </div>
-          {isProcessJob ? (
+          {processJob ? (
             <>
               <div className="bg-surface-800 rounded px-2 py-1.5">
                 <div className="text-gray-500 mb-0.5">Processed</div>
-                <div className="font-semibold text-white">{job.processed}</div>
+                <div className="font-semibold text-white">{processJob.processed}</div>
               </div>
               <div className="bg-surface-800 rounded px-2 py-1.5">
                 <div className="text-gray-500 mb-0.5">Out of Focus</div>
-                <div className="font-semibold text-yellow-300">{job.outOfFocus}</div>
+                <div className="font-semibold text-yellow-300">{processJob.outOfFocus}</div>
               </div>
             </>
           ) : (
             <>
               <div className="bg-surface-800 rounded px-2 py-1.5">
                 <div className="text-gray-500 mb-0.5">Imported</div>
-                <div className="font-semibold text-white">{job.imported}</div>
+                <div className="font-semibold text-white">{importJob?.imported ?? 0}</div>
               </div>
               <div className="bg-surface-800 rounded px-2 py-1.5">
                 <div className="text-gray-500 mb-0.5">Speed</div>
-                <div className="font-semibold text-white">{job.speedMbps.toFixed(1)} MB/s</div>
+                <div className="font-semibold text-white">{(importJob?.speedMbps ?? 0).toFixed(1)} MB/s</div>
               </div>
             </>
           )}
