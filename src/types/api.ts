@@ -39,6 +39,47 @@ export interface SourceShortcut {
   label: string;
 }
 
+export interface EventTypeDefinition {
+  name: string;
+  locations: string[];
+}
+
+export interface EventNamingCatalog {
+  eventTypes: EventTypeDefinition[];
+  peopleTags: string[];
+  groupTags: string[];
+  generalTags: string[];
+}
+
+export interface ScanEventNamingLibraryResult {
+  catalog: EventNamingCatalog;
+  discoveredDirectories: number;
+}
+
+export interface EventDayDirectory {
+  path: string;
+  relativePath: string;
+  name: string;
+  year: number;
+  month: number;
+  day: number;
+  dateKey: string;
+  hasCustomName: boolean;
+}
+
+export interface RenamedEventDirectory {
+  oldPath: string;
+  newPath: string;
+  oldName: string;
+  newName: string;
+  day: number;
+}
+
+export interface ApplyEventNamingResult {
+  renamed: RenamedEventDirectory[];
+  catalog: EventNamingCatalog;
+}
+
 export type ImportJobStatus = "queued" | "running" | "paused" | "aborted" | "completed" | "failed";
 
 export interface ImportJob {
@@ -79,11 +120,11 @@ export interface ProcessProgress {
 
 export interface ProcessResult {
   processed: number;
-  out_of_focus: number;
+  result_count: number;
   errors: string[];
 }
 
-export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize";
+export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming";
 
 export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly";
 
@@ -106,7 +147,7 @@ export interface ProcessJob {
   total: number;
   done: number;
   processed: number;
-  outOfFocus: number;
+  resultCount: number;
   currentFile: string;
   stabilizationMode?: StabilizationMode;
   stabilizationStrength?: StabilizationStrength;

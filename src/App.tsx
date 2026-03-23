@@ -3,6 +3,7 @@ import type { Page } from "./types";
 import { useJobsMonitor } from "./hooks";
 import { JobsPanel } from "./components";
 import Import from "./pages/Import";
+import NameEvents from "./pages/NameEvents";
 import Cleanup from "./pages/Cleanup";
 import Jobs from "./pages/Jobs";
 import PostProcess from "./pages/PostProcess";
@@ -13,6 +14,7 @@ import Logs from "./pages/Logs";
 
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "import",      label: "Import",       icon: "📥" },
+  { id: "nameevents",  label: "Name Events",  icon: "🏷️" },
   { id: "postprocess", label: "Post Process",  icon: "⚙️" },
   { id: "review",      label: "Review",        icon: "🖼️" },
   { id: "transfer",    label: "Transfer",      icon: "📤" },
@@ -28,6 +30,7 @@ export default function App() {
 
   const pageContent: Record<Page, React.ReactNode> = {
     import: <Import />,
+    nameevents: <NameEvents />,
     cleanup: <Cleanup />,
     jobs: <Jobs />,
     postprocess: <PostProcess onOpenJobs={() => setPage("jobs")} />,

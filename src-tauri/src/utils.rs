@@ -6,6 +6,8 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::Duration;
 use tauri::AppHandle;
 use tauri::Manager;
 #[cfg(target_os = "windows")]
@@ -17,6 +19,11 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileAttributesW, SetFileAttributesW, SetFileTime, FILE_ATTRIBUTE_HIDDEN,
     FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FILE_WRITE_ATTRIBUTES, OPEN_EXISTING,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::RestartManager::{
+    RmEndSession, RmGetList, RmRegisterResources, RmStartSession, RM_PROCESS_INFO,
+    CCH_RM_MAX_APP_NAME, CCH_RM_MAX_SVC_NAME, CCH_RM_SESSION_KEY,
 };
 
 /// Returns the number of logical CPUs available, falling back to 4.
@@ -95,6 +102,194 @@ pub fn unique_dest(base: PathBuf) -> PathBuf {
         }
         i += 1;
     }
+}
+
+pub fn rename_path_with_retry(source: &Path, target: &Path) -> Result<(), String> {
+    const MAX_ATTEMPTS: usize = 8;
+    const BASE_DELAY_MS: u64 = 120;
+
+    let mut last_error: Option<std::io::Error> = None;
+
+    for attempt in 0..MAX_ATTEMPTS {
+        match fs::rename(source, target) {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                let should_retry = matches!(err.kind(), std::io::ErrorKind::PermissionDenied)
+                    || err.raw_os_error() == Some(5)
+                    || err.raw_os_error() == Some(32);
+
+                last_error = Some(err);
+
+                if !should_retry || attempt + 1 == MAX_ATTEMPTS {
+                    break;
+                }
+
+                let delay = BASE_DELAY_MS * (attempt as u64 + 1);
+                thread::sleep(Duration::from_millis(delay));
+            }
+        }
+    }
+
+    let err = last_error.unwrap_or_else(|| std::io::Error::other("rename failed"));
+    let mut message = format!(
+        "Failed to rename '{}' to '{}': {}",
+        source.display(),
+        target.display(),
+        err
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        if matches!(err.kind(), std::io::ErrorKind::PermissionDenied)
+            || err.raw_os_error() == Some(5)
+            || err.raw_os_error() == Some(32)
+        {
+            message.push_str(" A file explorer window, terminal working directory, preview pane, or another process is likely holding the source or target folder open.");
+        }
+    }
+
+    Err(message)
+}
+
+pub fn is_retryable_windows_lock_error(err: &std::io::Error) -> bool {
+    matches!(err.kind(), std::io::ErrorKind::PermissionDenied)
+        || err.raw_os_error() == Some(5)
+        || err.raw_os_error() == Some(32)
+}
+
+pub fn format_rename_error(source: &Path, target: &Path, err: &std::io::Error) -> String {
+    let mut message = format!(
+        "Failed to rename '{}' to '{}': {}",
+        source.display(),
+        target.display(),
+        err
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        if is_retryable_windows_lock_error(err) {
+            message.push_str(" A file explorer window, terminal working directory, preview pane, or another process is likely holding the source or target folder open.");
+        }
+    }
+
+    message
+}
+
+#[cfg(target_os = "windows")]
+fn widestring_to_string(buffer: &[u16]) -> String {
+    let end = buffer.iter().position(|value| *value == 0).unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..end]).trim().to_string()
+}
+
+#[cfg(target_os = "windows")]
+pub fn describe_locking_processes(paths: &[&Path]) -> Result<Vec<String>, String> {
+    if paths.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut session_handle = 0u32;
+    let mut session_key = [0u16; CCH_RM_SESSION_KEY as usize + 1];
+    let start_result = unsafe { RmStartSession(&mut session_handle, 0, session_key.as_mut_ptr()) };
+    if start_result != 0 {
+        return Err(format!("Restart Manager session start failed: {}", start_result));
+    }
+
+    struct SessionGuard(u32);
+    impl Drop for SessionGuard {
+        fn drop(&mut self) {
+            unsafe {
+                RmEndSession(self.0);
+            }
+        }
+    }
+    let _guard = SessionGuard(session_handle);
+
+    let wide_paths: Vec<Vec<u16>> = paths
+        .iter()
+        .map(|path| {
+            let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+            wide.push(0);
+            wide
+        })
+        .collect();
+    let path_ptrs: Vec<*const u16> = wide_paths.iter().map(|path| path.as_ptr()).collect();
+
+    let register_result = unsafe {
+        RmRegisterResources(
+            session_handle,
+            path_ptrs.len() as u32,
+            path_ptrs.as_ptr(),
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if register_result != 0 {
+        return Err(format!("Restart Manager resource registration failed: {}", register_result));
+    }
+
+    let mut proc_info_needed = 0u32;
+    let mut proc_info_count = 0u32;
+    let mut reboot_reasons = 0u32;
+
+    let first_result = unsafe {
+        RmGetList(
+            session_handle,
+            &mut proc_info_needed,
+            &mut proc_info_count,
+            std::ptr::null_mut(),
+            &mut reboot_reasons,
+        )
+    };
+
+    const ERROR_MORE_DATA: u32 = 234;
+    if first_result != ERROR_MORE_DATA && first_result != 0 {
+        return Err(format!("Restart Manager query failed: {}", first_result));
+    }
+
+    if proc_info_needed == 0 {
+        return Ok(vec![]);
+    }
+
+    let mut processes = vec![unsafe { std::mem::zeroed::<RM_PROCESS_INFO>() }; proc_info_needed as usize];
+    proc_info_count = proc_info_needed;
+
+    let second_result = unsafe {
+        RmGetList(
+            session_handle,
+            &mut proc_info_needed,
+            &mut proc_info_count,
+            processes.as_mut_ptr(),
+            &mut reboot_reasons,
+        )
+    };
+    if second_result != 0 {
+        return Err(format!("Restart Manager process read failed: {}", second_result));
+    }
+
+    let mut descriptions = Vec::new();
+    for info in processes.into_iter().take(proc_info_count as usize) {
+        let app_name = widestring_to_string(&info.strAppName[..CCH_RM_MAX_APP_NAME as usize + 1]);
+        let service_name = widestring_to_string(&info.strServiceShortName[..CCH_RM_MAX_SVC_NAME as usize + 1]);
+        let label = if !app_name.is_empty() {
+            app_name
+        } else if !service_name.is_empty() {
+            service_name
+        } else {
+            "Unknown process".to_string()
+        };
+        descriptions.push(format!("{} (PID {})", label, info.Process.dwProcessId));
+    }
+
+    descriptions.sort();
+    descriptions.dedup();
+    Ok(descriptions)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn describe_locking_processes(_paths: &[&Path]) -> Result<Vec<String>, String> {
+    Ok(vec![])
 }
 
 fn log_write_guard() -> &'static Mutex<()> {

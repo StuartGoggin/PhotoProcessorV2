@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import { ProgressBar } from "../components";
+import { getProcessAttemptLabel, getProcessResultLabel, getProcessResultToken } from "../utils";
 
 function pct(done: number, total: number): number {
   if (total <= 0) return 0;
@@ -26,6 +27,8 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   remove_bw: "Remove B&W Outputs",
   stabilize: "MP4 Stabilisation",
   remove_stabilize: "Remove Stabilised MP4s",
+  scan_archive_naming: "Archive Naming Scan",
+  apply_event_naming: "Apply Event Naming",
 };
 
 const PROCESS_SCOPE_LABELS: Record<ProcessJob["scopeMode"], string> = {
@@ -589,8 +592,8 @@ export default function Jobs() {
                       <div>Staging: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
                       <div>Scope mode: <span className="text-gray-200">{PROCESS_SCOPE_LABELS[job.scopeMode] ?? job.scopeMode}</span></div>
                       <div>Progress: <span className="text-gray-200">{doneLabel} ({progress.toFixed(0)}%)</span></div>
-                      <div>Processed: <span className="text-gray-200">{job.processed}</span></div>
-                      <div>Out of focus flagged: <span className="text-gray-200">{job.outOfFocus}</span></div>
+                      <div>{getProcessAttemptLabel(job.task)}: <span className="text-gray-200">{job.processed}</span></div>
+                      <div>{getProcessResultLabel(job.task)}: <span className="text-gray-200">{job.resultCount}</span></div>
                       {bitratePolicyLabel && <div>Bitrate policy: <span className="text-gray-200">{bitratePolicyLabel}</span></div>}
                       {threadingLabel && (
                         <div className="md:col-span-2">Threading in use: <span className="text-gray-200">{threadingLabel}</span></div>
@@ -603,7 +606,7 @@ export default function Jobs() {
                         total={job.total || 1}
                         done={Math.min(job.done, job.total || 1)}
                         label={job.currentFile || ""}
-                        extra={`${doneLabel} • processed ${job.processed} • out_of_focus ${job.outOfFocus} • ${progress.toFixed(0)}%`}
+                        extra={`${doneLabel} • ${getProcessAttemptLabel(job.task).toLowerCase()} ${job.processed} • ${getProcessResultToken(job.task)} ${job.resultCount} • ${progress.toFixed(0)}%`}
                       />
                       {job.currentFile && (
                         <div className="mt-1 text-xs text-gray-500 truncate">Current: {job.currentFile}</div>

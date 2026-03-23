@@ -79,7 +79,7 @@ function Stop-ProcessesOnTcpPort {
         return @()
     }
 
-    $pids = [System.Collections.Generic.HashSet[int]]::new()
+    $portOwnerIds = [System.Collections.Generic.HashSet[int]]::new()
     foreach ($line in $lines) {
         if (-not ($patterns | Where-Object { $line.Contains($_) })) {
             continue
@@ -92,30 +92,30 @@ function Stop-ProcessesOnTcpPort {
 
         $localPort = [int]$Matches[2]
         $state = $Matches[3]
-        $pid = [int]$Matches[4]
+        $ownerId = [int]$Matches[4]
 
         if ($localPort -ne $Port) {
             continue
         }
 
-        if ($pid -eq $PID) {
+        if ($ownerId -eq $PID) {
             continue
         }
 
         if ($state -in @('LISTENING', 'ESTABLISHED', 'TIME_WAIT', 'CLOSE_WAIT')) {
-            $null = $pids.Add($pid)
+            $null = $portOwnerIds.Add($ownerId)
         }
     }
 
-    foreach ($pid in $pids) {
+    foreach ($ownerId in $portOwnerIds) {
         try {
-            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $ownerId -Force -ErrorAction SilentlyContinue
         }
         catch {
         }
     }
 
-    return @($pids)
+    return @($portOwnerIds)
 }
 
 function Install-RepoLocalFfmpeg {

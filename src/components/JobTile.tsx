@@ -1,4 +1,5 @@
 import type { ImportJob, ProcessJob } from "../types";
+import { getProcessAttemptLabel, getProcessResultLabel } from "../utils";
 
 type Job = ImportJob | ProcessJob;
 
@@ -21,6 +22,8 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   remove_bw: "Remove B&W",
   stabilize: "Stabilize",
   remove_stabilize: "Remove Stabilize",
+  scan_archive_naming: "Archive Scan",
+  apply_event_naming: "Name Folders",
 };
 
 const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {
@@ -73,7 +76,13 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
   const processJob = isProcessJob(job) ? job : null;
   const importJob = !isProcessJob(job) ? job : null;
   const title = processJob ? PROCESS_TASK_LABELS[processJob.task] : "Import";
-  const detail = processJob ? processJob.scopeMode : importJob?.reprocessExisting ? "Reprocess" : "Import";
+  const detail = processJob
+    ? processJob.task === "scan_archive_naming"
+      ? "Archive library"
+      : processJob.task === "apply_event_naming"
+        ? "Queued rename"
+      : processJob.scopeMode
+    : importJob?.reprocessExisting ? "Reprocess" : "Import";
   const duration = formatDuration(job.startedAt, job.finishedAt);
   const stabilizationModeLabel =
     processJob && processJob.task === "stabilize" && processJob.stabilizationMode
@@ -184,12 +193,12 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
           {processJob ? (
             <>
               <div className="bg-surface-700/40 rounded px-2 py-1">
-                <div className="text-gray-500">Processed</div>
+                <div className="text-gray-500">{getProcessAttemptLabel(processJob.task)}</div>
                 <div className="font-semibold text-white">{processJob.processed}</div>
               </div>
               <div className="bg-surface-700/40 rounded px-2 py-1">
-                <div className="text-gray-500">Out of Focus</div>
-                <div className="font-semibold text-yellow-300">{processJob.outOfFocus}</div>
+                <div className="text-gray-500">{getProcessResultLabel(processJob.task)}</div>
+                <div className="font-semibold text-yellow-300">{processJob.resultCount}</div>
               </div>
             </>
           ) : (
@@ -235,12 +244,12 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
             {processJob ? (
               <>
                 <div>
-                  <span className="text-gray-500">Processed:</span>
+                  <span className="text-gray-500">{getProcessAttemptLabel(processJob.task)}:</span>
                   <span className="ml-1 font-semibold text-emerald-300">{processJob.processed}</span>
                 </div>
                 <div>
-                  <span className="text-gray-500">Out of Focus:</span>
-                  <span className="ml-1 font-semibold text-yellow-300">{processJob.outOfFocus}</span>
+                  <span className="text-gray-500">{getProcessResultLabel(processJob.task)}:</span>
+                  <span className="ml-1 font-semibold text-yellow-300">{processJob.resultCount}</span>
                 </div>
               </>
             ) : (

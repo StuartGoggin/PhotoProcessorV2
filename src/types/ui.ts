@@ -2,6 +2,7 @@
 
 export type Page =
   | "import"
+  | "nameevents"
   | "cleanup"
   | "jobs"
   | "postprocess"

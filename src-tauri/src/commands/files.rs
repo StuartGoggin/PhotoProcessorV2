@@ -1,6 +1,6 @@
 //! Commands for file-level operations used by the Review page.
 
-use crate::utils::base64_encode;
+use crate::utils::{base64_encode, rename_path_with_retry};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -11,7 +11,7 @@ pub async fn rename_file(old_path: String, new_name: String) -> Result<String, S
     let old = PathBuf::from(&old_path);
     let parent = old.parent().ok_or("No parent directory")?;
     let new = parent.join(&new_name);
-    fs::rename(&old, &new).map_err(|e| e.to_string())?;
+    rename_path_with_retry(&old, &new)?;
     Ok(new.to_string_lossy().into_owned())
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ImportJob, ProcessJob } from "../types";
+import { getProcessAttemptLabel, getProcessResultLabel } from "../utils";
 
 type Job = ImportJob | ProcessJob;
 
@@ -17,6 +18,19 @@ const STABILIZATION_STRENGTH_LABELS: Record<NonNullable<ProcessJob["stabilizatio
   gentle: "Gentle",
   balanced: "Balanced",
   strong: "Strong",
+};
+
+const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
+  focus: "Focus Detection",
+  remove_focus: "Remove Focus Flags",
+  enhance: "JPG Enhancement",
+  remove_enhance: "Remove Enhancement Outputs",
+  bw: "B&W Conversion",
+  remove_bw: "Remove B&W Outputs",
+  stabilize: "MP4 Stabilisation",
+  remove_stabilize: "Remove Stabilised MP4s",
+  scan_archive_naming: "Archive Naming Scan",
+  apply_event_naming: "Apply Event Naming",
 };
 
 interface JobConsoleProps {
@@ -44,7 +58,7 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
 
   const processJob = isProcessJob(job) ? job : null;
   const importJob = !isProcessJob(job) ? job : null;
-  const taskLabel = processJob ? processJob.task : "import";
+  const taskLabel = processJob ? PROCESS_TASK_LABELS[processJob.task] : "Import";
   const hasLogs = job.logs && job.logs.length > 0;
   const stabilizationModeLabel =
     processJob && processJob.task === "stabilize" && processJob.stabilizationMode
@@ -132,12 +146,12 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
           {processJob ? (
             <>
               <div className="bg-surface-800 rounded px-2 py-1.5">
-                <div className="text-gray-500 mb-0.5">Processed</div>
+                <div className="text-gray-500 mb-0.5">{getProcessAttemptLabel(processJob.task)}</div>
                 <div className="font-semibold text-white">{processJob.processed}</div>
               </div>
               <div className="bg-surface-800 rounded px-2 py-1.5">
-                <div className="text-gray-500 mb-0.5">Out of Focus</div>
-                <div className="font-semibold text-yellow-300">{processJob.outOfFocus}</div>
+                <div className="text-gray-500 mb-0.5">{getProcessResultLabel(processJob.task)}</div>
+                <div className="font-semibold text-yellow-300">{processJob.resultCount}</div>
               </div>
             </>
           ) : (

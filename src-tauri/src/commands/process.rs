@@ -14,7 +14,15 @@ use std::time::Duration;
 use tauri::async_runtime;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
-use crate::utils::{append_app_log, num_cpus, sync_file_metadata_from};
+use crate::utils::{
+    append_app_log, describe_locking_processes, format_rename_error,
+    is_retryable_windows_lock_error, num_cpus, sync_file_metadata_from,
+};
+use super::naming::{
+    apply_event_naming_plan_once, build_event_naming_plans, load_catalog_internal,
+    merge_event_naming_request_into_catalog, save_catalog_internal, scan_catalog_from_root,
+    ApplyEventNamingRequest,
+};
 use super::settings::load_settings;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +36,7 @@ pub struct ProcessProgress {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessResult {
     pub processed: usize,
-    pub out_of_focus: usize,
+    pub result_count: usize,
     pub errors: Vec<String>,
 }
 
@@ -43,6 +51,8 @@ pub enum ProcessTask {
     RemoveBw,
     Stabilize,
     RemoveStabilize,
+    ScanArchiveNaming,
+    ApplyEventNaming,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,7 +89,7 @@ pub struct ProcessJob {
     pub total: usize,
     pub done: usize,
     pub processed: usize,
-    pub out_of_focus: usize,
+    pub result_count: usize,
     pub current_file: String,
     pub stabilization_mode: Option<StabilizationMode>,
     pub stabilization_strength: Option<StabilizationStrength>,
@@ -92,8 +102,215 @@ pub struct ProcessJob {
     pub abort_requested: bool,
 }
 
+fn run_archive_naming_scan_task(
+    app: AppHandle,
+    archive_root: String,
+    scope_dir: Option<String>,
+    scope_mode: Option<ProcessScopeMode>,
+    job_id: Option<String>,
+) -> Result<ProcessResult, String> {
+    let scope_mode = scope_mode.unwrap_or(ProcessScopeMode::FolderRecursive);
+    let scope = resolve_process_scope(&archive_root, scope_dir, &scope_mode)?;
+    let task_label = task_name(&ProcessTask::ScanArchiveNaming);
+    let existing_catalog = load_catalog_internal(&app).unwrap_or_default();
+    let progress_job_id = job_id.clone();
+
+    if let Some(job_id) = &job_id {
+        update_process_job(job_id, |job| {
+            job.status = ProcessJobStatus::Running;
+            job.started_at = Some(now_string());
+            job.current_file = "Starting".to_string();
+            job.scope_dir = scope.to_string_lossy().into_owned();
+            job.scope_mode = scope_mode.clone();
+        });
+        append_process_job_log(
+            job_id,
+            format!(
+                "start task={} archive_root='{}' scope='{}' scope_mode={:?}",
+                task_label,
+                archive_root,
+                scope.display(),
+                scope_mode
+            ),
+        );
+    }
+
+    let _ = append_app_log(
+        &app,
+        format!(
+            "process_{} start archive_root='{}' scope='{}' scope_mode={:?}",
+            task_label,
+            archive_root,
+            scope.display(),
+            scope_mode
+        ),
+    );
+
+    let mut total_candidates = 0usize;
+    let mut last_done = 0usize;
+    let discovered_total = 0usize;
+
+    let scan_result = scan_catalog_from_root(existing_catalog, &scope, |index, total, path| {
+            if wait_if_process_paused_or_aborted(progress_job_id.as_deref()) {
+                return Err("Archive scan aborted".to_string());
+            }
+
+            total_candidates = total;
+            let current_file = path
+                .strip_prefix(&scope)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+
+            if let Some(job_id) = &progress_job_id {
+                update_process_job(job_id, |job| {
+                    job.status = ProcessJobStatus::Running;
+                    if job.started_at.is_none() {
+                        job.started_at = Some(now_string());
+                    }
+                    job.total = total;
+                    job.done = index;
+                    job.processed = index;
+                    job.result_count = discovered_total;
+                    job.current_file = current_file.clone();
+                    job.scope_dir = scope.to_string_lossy().into_owned();
+                    job.scope_mode = scope_mode.clone();
+                });
+            }
+
+            let _ = app.emit(
+                "process-progress",
+                ProcessProgress {
+                    total,
+                    done: index,
+                    current_file: current_file,
+                    phase: task_label.to_string(),
+                },
+            );
+
+            last_done = index;
+            Ok(())
+        });
+
+    let (catalog, discovered_directories, scanned_directories) = match scan_result {
+        Ok(result) => result,
+        Err(err) if err == "Archive scan aborted" => {
+            if let Some(job_id) = &job_id {
+                update_process_job(job_id, |job| {
+                    job.status = ProcessJobStatus::Aborted;
+                    job.finished_at = Some(now_string());
+                    job.done = last_done;
+                    job.processed = last_done;
+                    job.current_file = "Aborted".to_string();
+                });
+                append_process_job_log(job_id, format!("aborted scanned={} matched_named_directories={}", last_done, discovered_total));
+            }
+            let _ = append_app_log(
+                &app,
+                format!(
+                    "process_{} aborted scanned={} matched_named_directories={} scope_mode={:?}",
+                    task_label,
+                    last_done,
+                    discovered_total,
+                    scope_mode
+                ),
+            );
+            return Ok(ProcessResult {
+                processed: last_done,
+                result_count: discovered_total,
+                errors: vec![],
+            });
+        }
+        Err(err) => return Err(err),
+    };
+
+    save_catalog_internal(&app, &catalog)?;
+
+    let was_aborted = job_id
+        .as_ref()
+        .and_then(|id| process_jobs_store().lock().ok().and_then(|jobs| jobs.get(id).map(|j| j.abort_requested)))
+        .unwrap_or(false);
+
+    if let Some(job_id) = &job_id {
+        let final_current = if scanned_directories == 0 {
+            "No candidate day folders found".to_string()
+        } else {
+            "Done".to_string()
+        };
+        update_process_job(job_id, |job| {
+            job.total = total_candidates;
+            job.done = scanned_directories;
+            job.processed = scanned_directories;
+            job.result_count = discovered_directories;
+            job.current_file = final_current.clone();
+            job.finished_at = Some(now_string());
+            job.status = if was_aborted {
+                ProcessJobStatus::Aborted
+            } else {
+                ProcessJobStatus::Completed
+            };
+        });
+
+        if scanned_directories == 0 {
+            append_process_job_log(job_id, "no day folders found in archive scope");
+        } else if was_aborted {
+            append_process_job_log(
+                job_id,
+                format!(
+                    "aborted scanned={} matched_named_directories={}",
+                    scanned_directories,
+                    discovered_directories
+                ),
+            );
+        } else {
+            append_process_job_log(
+                job_id,
+                format!(
+                    "complete scanned={} matched_named_directories={}",
+                    scanned_directories,
+                    discovered_directories
+                ),
+            );
+        }
+    }
+
+    let _ = append_app_log(
+        &app,
+        format!(
+            "process_{} complete scanned={} matched_named_directories={} scope_mode={:?}",
+            task_label,
+            scanned_directories,
+            discovered_directories,
+            scope_mode
+        ),
+    );
+
+    if scanned_directories > last_done {
+        let _ = app.emit(
+            "process-progress",
+            ProcessProgress {
+                total: scanned_directories,
+                done: scanned_directories,
+                current_file: "Done".to_string(),
+                phase: task_label.to_string(),
+            },
+        );
+    }
+
+    Ok(ProcessResult {
+        processed: scanned_directories,
+        result_count: discovered_directories,
+        errors: vec![],
+    })
+}
+
 fn process_jobs_store() -> &'static Mutex<HashMap<String, ProcessJob>> {
     static STORE: OnceLock<Mutex<HashMap<String, ProcessJob>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn naming_requests_store() -> &'static Mutex<HashMap<String, ApplyEventNamingRequest>> {
+    static STORE: OnceLock<Mutex<HashMap<String, ApplyEventNamingRequest>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -816,6 +1033,7 @@ fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec
         ProcessTask::RemoveBw => collect_named_outputs(dir, recursive, "_BW", "jpg"),
         ProcessTask::Stabilize => collect_mp4s(dir, recursive),
         ProcessTask::RemoveStabilize => collect_named_outputs(dir, recursive, "_stabilized", "mp4"),
+        ProcessTask::ScanArchiveNaming | ProcessTask::ApplyEventNaming => vec![],
     }
 }
 
@@ -1465,7 +1683,257 @@ fn task_name(task: &ProcessTask) -> &'static str {
         ProcessTask::RemoveBw => "remove_bw",
         ProcessTask::Stabilize => "stabilize",
         ProcessTask::RemoveStabilize => "remove_stabilize",
+        ProcessTask::ScanArchiveNaming => "scan_archive_naming",
+        ProcessTask::ApplyEventNaming => "apply_event_naming",
     }
+}
+
+fn task_result_label(task: &ProcessTask) -> &'static str {
+    match task {
+        ProcessTask::Focus => "flagged",
+        ProcessTask::RemoveFocus => "restored",
+        ProcessTask::Enhance => "enhanced",
+        ProcessTask::RemoveEnhance => "removed",
+        ProcessTask::Bw => "converted",
+        ProcessTask::RemoveBw => "removed",
+        ProcessTask::Stabilize => "stabilized",
+        ProcessTask::RemoveStabilize => "removed",
+        ProcessTask::ScanArchiveNaming => "matched",
+        ProcessTask::ApplyEventNaming => "renamed",
+    }
+}
+
+fn run_event_naming_task(
+    app: AppHandle,
+    staging_dir: String,
+    request: ApplyEventNamingRequest,
+    job_id: Option<String>,
+) -> Result<ProcessResult, String> {
+    let plans = build_event_naming_plans(&request)?;
+    let total = plans.len();
+    let task_label = task_name(&ProcessTask::ApplyEventNaming);
+    let mut processed_count = 0usize;
+    let mut renamed_count = 0usize;
+
+    if let Some(job_id) = &job_id {
+        update_process_job(job_id, |job| {
+            job.status = ProcessJobStatus::Running;
+            job.started_at = Some(now_string());
+            job.current_file = "Starting".to_string();
+            job.total = total;
+            job.scope_dir = staging_dir.clone();
+            job.scope_mode = ProcessScopeMode::FolderOnly;
+        });
+        append_process_job_log(
+            job_id,
+            format!(
+                "start task={} selected_directories={} staging='{}'",
+                task_label,
+                total,
+                staging_dir
+            ),
+        );
+    }
+
+    let _ = append_app_log(
+        &app,
+        format!(
+            "process_{} start staging='{}' selected_directories={}",
+            task_label,
+            staging_dir,
+            total
+        ),
+    );
+
+    if total == 0 {
+        return Err("No directories selected".to_string());
+    }
+
+    for (index, plan) in plans.iter().enumerate() {
+        if wait_if_process_paused_or_aborted(job_id.as_deref()) {
+            if let Some(job_id) = &job_id {
+                update_process_job(job_id, |job| {
+                    job.status = ProcessJobStatus::Aborted;
+                    job.finished_at = Some(now_string());
+                    job.done = processed_count;
+                    job.processed = processed_count;
+                    job.result_count = renamed_count;
+                    job.current_file = "Aborted".to_string();
+                });
+                append_process_job_log(
+                    job_id,
+                    format!("aborted processed={} renamed={}", processed_count, renamed_count),
+                );
+            }
+            let _ = append_app_log(
+                &app,
+                format!(
+                    "process_{} aborted processed={} renamed={}",
+                    task_label,
+                    processed_count,
+                    renamed_count,
+                ),
+            );
+            return Ok(ProcessResult {
+                processed: processed_count,
+                result_count: renamed_count,
+                errors: vec![],
+            });
+        }
+
+        let current_file = format!("{} -> {}", plan.old_name, plan.new_name);
+        if let Some(job_id) = &job_id {
+            update_process_job(job_id, |job| {
+                job.current_file = current_file.clone();
+                job.done = index;
+                job.processed = processed_count;
+                job.result_count = renamed_count;
+            });
+        }
+
+        let renamed = loop {
+            match apply_event_naming_plan_once(plan) {
+                Ok(result) => break result,
+                Err(err) if is_retryable_windows_lock_error(&err) => {
+                    let lock_targets: Vec<&Path> = vec![
+                        plan.old_path.as_path(),
+                        plan.old_path.parent().unwrap_or(plan.old_path.as_path()),
+                    ];
+                    let lockers = describe_locking_processes(&lock_targets).unwrap_or_default();
+                    let locker_summary = if lockers.is_empty() {
+                        "no locking process identified".to_string()
+                    } else {
+                        lockers.join(", ")
+                    };
+                    let error_message = format_rename_error(&plan.old_path, &plan.new_path, &err);
+
+                    if let Some(job_id) = &job_id {
+                        append_process_job_log(
+                            job_id,
+                            format!(
+                                "rename blocked '{}' -> '{}' ; lockers: {} ; retrying in 60 seconds",
+                                plan.old_path.display(),
+                                plan.new_path.display(),
+                                locker_summary
+                            ),
+                        );
+                        update_process_job(job_id, |job| {
+                            job.current_file = format!("Locked: {}", plan.old_name);
+                        });
+                    }
+
+                    let _ = append_app_log(
+                        &app,
+                        format!(
+                            "process_{} locked '{}' -> '{}' lockers={} message='{}'",
+                            task_label,
+                            plan.old_path.display(),
+                            plan.new_path.display(),
+                            locker_summary,
+                            error_message
+                        ),
+                    );
+
+                    for remaining in (1..=60).rev() {
+                        if wait_if_process_paused_or_aborted(job_id.as_deref()) {
+                            if let Some(job_id) = &job_id {
+                                update_process_job(job_id, |job| {
+                                    job.status = ProcessJobStatus::Aborted;
+                                    job.finished_at = Some(now_string());
+                                    job.done = processed_count;
+                                    job.processed = processed_count;
+                                    job.result_count = renamed_count;
+                                    job.current_file = "Aborted".to_string();
+                                });
+                                append_process_job_log(
+                                    job_id,
+                                    format!("aborted processed={} renamed={}", processed_count, renamed_count),
+                                );
+                            }
+                            return Ok(ProcessResult {
+                                processed: processed_count,
+                                result_count: renamed_count,
+                                errors: vec![],
+                            });
+                        }
+
+                        if let Some(job_id) = &job_id {
+                            update_process_job(job_id, |job| {
+                                job.current_file = format!("Locked: {} (retry in {}s)", plan.old_name, remaining);
+                            });
+                        }
+                        thread::sleep(Duration::from_secs(1));
+                    }
+                }
+                Err(err) => {
+                    return Err(format_rename_error(&plan.old_path, &plan.new_path, &err));
+                }
+            }
+        };
+        processed_count += 1;
+        if renamed.old_path != renamed.new_path {
+            renamed_count += 1;
+        }
+
+        if let Some(job_id) = &job_id {
+            if renamed.old_path == renamed.new_path {
+                append_process_job_log(job_id, format!("unchanged '{}'", renamed.old_path));
+            } else {
+                append_process_job_log(job_id, format!("renamed '{}' -> '{}'", renamed.old_path, renamed.new_path));
+            }
+
+            update_process_job(job_id, |job| {
+                job.done = index + 1;
+                job.processed = processed_count;
+                job.result_count = renamed_count;
+                job.current_file = renamed.new_name.clone();
+            });
+        }
+
+        let _ = app.emit(
+            "process-progress",
+            ProcessProgress {
+                total,
+                done: index + 1,
+                current_file: renamed.new_name.clone(),
+                phase: task_label.to_string(),
+            },
+        );
+    }
+
+    let catalog = merge_event_naming_request_into_catalog(&app, &request)?;
+    let _ = catalog;
+
+    if let Some(job_id) = &job_id {
+        update_process_job(job_id, |job| {
+            job.status = ProcessJobStatus::Completed;
+            job.finished_at = Some(now_string());
+            job.done = processed_count;
+            job.processed = processed_count;
+            job.result_count = renamed_count;
+            job.current_file = "Done".to_string();
+        });
+        append_process_job_log(
+            job_id,
+            format!("complete processed={} renamed={}", processed_count, renamed_count),
+        );
+    }
+
+    let _ = append_app_log(
+        &app,
+        format!(
+            "process_{} complete processed={} renamed={}",
+            task_label,
+            processed_count,
+            renamed_count,
+        ),
+    );
+
+    Ok(ProcessResult {
+        processed: processed_count,
+        result_count: renamed_count,
+        errors: vec![],
+    })
 }
 
 fn run_process_task(
@@ -1476,13 +1944,25 @@ fn run_process_task(
     task: ProcessTask,
     job_id: Option<String>,
 ) -> Result<ProcessResult, String> {
+    if matches!(task, ProcessTask::ScanArchiveNaming) {
+        return run_archive_naming_scan_task(app, staging_dir, scope_dir, scope_mode, job_id);
+    }
+
+    if matches!(task, ProcessTask::ApplyEventNaming) {
+        let request = job_id
+            .as_ref()
+            .and_then(|id| naming_requests_store().lock().ok().and_then(|store| store.get(id).cloned()))
+            .ok_or_else(|| "Missing apply-event-naming request parameters for queued job".to_string())?;
+        return run_event_naming_task(app, staging_dir, request, job_id);
+    }
+
     let scope_mode = scope_mode.unwrap_or(ProcessScopeMode::FolderRecursive);
     let scope = resolve_process_scope(&staging_dir, scope_dir.clone(), &scope_mode)?;
     let recursive = !matches!(scope_mode, ProcessScopeMode::FolderOnly);
     let files = collect_process_files(&task, &scope, recursive);
     let total = files.len();
     let done_count = Arc::new(AtomicU64::new(0));
-    let oof_count = Arc::new(AtomicU64::new(0));
+    let result_count = Arc::new(AtomicU64::new(0));
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
 
     let task_label = task_name(&task);
@@ -1510,7 +1990,7 @@ fn run_process_task(
             append_process_job_log(job_id, "no supported files found for this task");
         }
         let _ = append_app_log(&app, format!("process_{} no files scope='{}' scope_mode={:?}", task_label, scope.display(), scope_mode));
-        return Ok(ProcessResult { processed: 0, out_of_focus: 0, errors: vec![] });
+        return Ok(ProcessResult { processed: 0, result_count: 0, errors: vec![] });
     }
 
     let ffmpeg_capabilities = match task {
@@ -1624,7 +2104,7 @@ fn run_process_task(
 
     let app_clone = app.clone();
     let done_clone = done_count.clone();
-    let oof_clone = oof_count.clone();
+    let result_clone = result_count.clone();
     let errors_clone = errors.clone();
     let task_clone = task.clone();
     let job_id_clone = job_id.clone();
@@ -1658,7 +2138,7 @@ fn run_process_task(
                             let n = ((10.0 - max_score).round() as u32).clamp(1, 10);
                             let new_path = mark_blurry_filename(path, n);
                             fs::rename(path, &new_path)?;
-                            oof_clone.fetch_add(1, Ordering::Relaxed);
+                            result_clone.fetch_add(1, Ordering::Relaxed);
                             let _ = append_app_log(&app_clone, format!("process_focus marked_blurry from='{}' to='{}'", path.display(), new_path.display()));
                             if let Some(job_id) = &job_id_clone {
                                 append_process_job_log(job_id, format!("marked blurry '{}' -> '{}'", path.display(), new_path.display()));
@@ -1676,6 +2156,7 @@ fn run_process_task(
                             ));
                         }
                         fs::rename(path, &restored_path)?;
+                        result_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = append_app_log(&app_clone, format!("process_remove_focus restored='{}' to='{}'", path.display(), restored_path.display()));
                         if let Some(job_id) = &job_id_clone {
                             append_process_job_log(job_id, format!("restored focus marker '{}' -> '{}'", path.display(), restored_path.display()));
@@ -1705,6 +2186,7 @@ fn run_process_task(
                         let replaced_existing = out_path.exists();
                         sharpened.save(&out_path)?;
                         sync_file_metadata_from(path, &out_path, false).map_err(anyhow::Error::msg)?;
+                        result_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = append_app_log(&app_clone, format!("process_enhance wrote='{}' replaced_existing={} contrast={:.2} sharpness={:.2}", out_path.display(), replaced_existing, contrast_level, sharpness_level));
                         if let Some(job_id) = &job_id_clone {
                             append_process_job_log(job_id, format!("enhanced '{}' -> '{}' (contrast={:.2}x sharpness={:.2})", path.display(), out_path.display(), contrast_level, sharpness_level));
@@ -1712,6 +2194,7 @@ fn run_process_task(
                     }
                     ProcessTask::RemoveEnhance => {
                         fs::remove_file(path)?;
+                        result_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = append_app_log(&app_clone, format!("process_remove_enhance removed='{}'", path.display()));
                         if let Some(job_id) = &job_id_clone {
                             append_process_job_log(job_id, format!("removed enhance output '{}'", path.display()));
@@ -1726,6 +2209,7 @@ fn run_process_task(
                         let replaced_existing = out_path.exists();
                         sharpened.save(&out_path)?;
                         sync_file_metadata_from(path, &out_path, false).map_err(anyhow::Error::msg)?;
+                        result_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = append_app_log(&app_clone, format!("process_bw wrote='{}' replaced_existing={}", out_path.display(), replaced_existing));
                         if let Some(job_id) = &job_id_clone {
                             append_process_job_log(job_id, format!("bw '{}' -> '{}' (replaced_existing={})", path.display(), out_path.display(), replaced_existing));
@@ -1733,6 +2217,7 @@ fn run_process_task(
                     }
                     ProcessTask::RemoveBw => {
                         fs::remove_file(path)?;
+                        result_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = append_app_log(&app_clone, format!("process_remove_bw removed='{}'", path.display()));
                         if let Some(job_id) = &job_id_clone {
                             append_process_job_log(job_id, format!("removed bw output '{}'", path.display()));
@@ -1760,14 +2245,18 @@ fn run_process_task(
                             params.preserve_source_bitrate,
                             ffmpeg_threads,
                         )?;
+                        result_clone.fetch_add(1, Ordering::Relaxed);
                     }
                     ProcessTask::RemoveStabilize => {
                         fs::remove_file(path)?;
+                        result_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = append_app_log(&app_clone, format!("process_remove_stabilize removed='{}'", path.display()));
                         if let Some(job_id) = &job_id_clone {
                             append_process_job_log(job_id, format!("removed stabilized output '{}'", path.display()));
                         }
                     }
+                    ProcessTask::ScanArchiveNaming => {}
+                    ProcessTask::ApplyEventNaming => {}
                 }
                 Ok(())
             })();
@@ -1801,7 +2290,7 @@ fn run_process_task(
                 update_process_job(job_id, |job| {
                     job.done = done as usize;
                     job.processed = done as usize;
-                    job.out_of_focus = oof_clone.load(Ordering::Relaxed) as usize;
+                    job.result_count = result_clone.load(Ordering::Relaxed) as usize;
                     job.current_file = current_file.clone();
                 });
             }
@@ -1810,13 +2299,13 @@ fn run_process_task(
 
     let final_errors = errors.lock().unwrap().clone();
     let processed = done_count.load(Ordering::Relaxed) as usize;
-    let out_of_focus = oof_count.load(Ordering::Relaxed) as usize;
+    let result_total = result_count.load(Ordering::Relaxed) as usize;
     let was_aborted = job_id
         .as_ref()
         .and_then(|id| process_jobs_store().lock().ok().and_then(|jobs| jobs.get(id).map(|j| j.abort_requested)))
         .unwrap_or(false);
 
-    let _ = append_app_log(&app, format!("process_{} complete processed={} out_of_focus={} errors={} scope_mode={:?}", task_label, processed, out_of_focus, final_errors.len(), scope_mode));
+    let _ = append_app_log(&app, format!("process_{} complete processed={} {}={} errors={} scope_mode={:?}", task_label, processed, task_result_label(&task), result_total, final_errors.len(), scope_mode));
 
     if let Some(job_id) = &job_id {
         let failed = !final_errors.is_empty();
@@ -1831,21 +2320,21 @@ fn run_process_task(
             job.finished_at = Some(now_string());
             job.done = processed;
             job.processed = processed;
-            job.out_of_focus = out_of_focus;
+            job.result_count = result_total;
             job.errors = final_errors.clone();
             job.current_file = "Done".to_string();
         });
 
         if was_aborted {
-            append_process_job_log(job_id, format!("aborted processed={} out_of_focus={} errors={}", processed, out_of_focus, final_errors.len()));
+            append_process_job_log(job_id, format!("aborted processed={} {}={} errors={}", processed, task_result_label(&task), result_total, final_errors.len()));
         } else {
-            append_process_job_log(job_id, format!("complete processed={} out_of_focus={} errors={}", processed, out_of_focus, final_errors.len()));
+            append_process_job_log(job_id, format!("complete processed={} {}={} errors={}", processed, task_result_label(&task), result_total, final_errors.len()));
         }
     }
 
     Ok(ProcessResult {
         processed,
-        out_of_focus,
+        result_count: result_total,
         errors: final_errors,
     })
 }
@@ -1872,6 +2361,7 @@ pub fn start_process_job(
         "remove_bw" => ProcessTask::RemoveBw,
         "stabilize" => ProcessTask::Stabilize,
         "remove_stabilize" => ProcessTask::RemoveStabilize,
+        "scan_archive_naming" => ProcessTask::ScanArchiveNaming,
         _ => return Err(format!("Unknown process task: {}", task)),
     };
 
@@ -1931,7 +2421,7 @@ pub fn start_process_job(
         total: 0,
         done: 0,
         processed: 0,
-        out_of_focus: 0,
+        result_count: 0,
         current_file: "Queued".to_string(),
         stabilization_mode: queued_stabilization_mode,
         stabilization_strength: queued_stabilization_strength,
@@ -2027,6 +2517,109 @@ pub fn start_process_job(
         }
         if let Ok(mut stabilize_store) = stabilize_params_store().lock() {
             stabilize_store.remove(&job_id_for_status);
+        }
+    });
+
+    Ok(job_id)
+}
+
+#[tauri::command]
+pub fn start_event_naming_job(
+    app: AppHandle,
+    staging_dir: String,
+    request: ApplyEventNamingRequest,
+) -> Result<String, String> {
+    let job_id = next_process_job_id();
+    let selected_count = request.directories.len();
+
+    let job = ProcessJob {
+        id: job_id.clone(),
+        task: ProcessTask::ApplyEventNaming,
+        staging_dir: staging_dir.clone(),
+        scope_dir: staging_dir.clone(),
+        scope_mode: ProcessScopeMode::FolderOnly,
+        status: ProcessJobStatus::Queued,
+        created_at: now_string(),
+        started_at: None,
+        finished_at: None,
+        total: selected_count,
+        done: 0,
+        processed: 0,
+        result_count: 0,
+        current_file: "Queued".to_string(),
+        stabilization_mode: None,
+        stabilization_strength: None,
+        preserve_source_bitrate: None,
+        stabilize_max_parallel_jobs_used: None,
+        stabilize_ffmpeg_threads_per_job_used: None,
+        errors: vec![],
+        logs: vec![format!("[{}] queued apply_event_naming selected_directories={}", now_string(), selected_count)],
+        pause_requested: false,
+        abort_requested: false,
+    };
+
+    {
+        let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
+        jobs.insert(job_id.clone(), job);
+    }
+
+    {
+        let mut requests = naming_requests_store().lock().map_err(|e| e.to_string())?;
+        requests.insert(job_id.clone(), request);
+    }
+
+    let app_for_task = app.clone();
+    let app_for_status = app.clone();
+    let job_id_for_task = job_id.clone();
+    let job_id_for_status = job_id.clone();
+    let staging_dir_for_task = staging_dir.clone();
+
+    async_runtime::spawn(async move {
+        let result = async_runtime::spawn_blocking(move || {
+            run_process_task(
+                app_for_task,
+                staging_dir_for_task,
+                Some(staging_dir.clone()),
+                Some(ProcessScopeMode::FolderOnly),
+                ProcessTask::ApplyEventNaming,
+                Some(job_id_for_task),
+            )
+        })
+        .await;
+
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                update_process_job(&job_id_for_status, |job| {
+                    job.status = ProcessJobStatus::Failed;
+                    job.finished_at = Some(now_string());
+                    job.current_file = "Failed".to_string();
+                    job.errors.push(err.clone());
+                });
+                append_process_job_log(&job_id_for_status, format!("failed before processing: {}", err));
+                let _ = append_app_log(
+                    &app_for_status,
+                    format!("process_apply_event_naming failed job_id='{}' error='{}'", job_id_for_status, err),
+                );
+            }
+            Err(join_err) => {
+                let err = format!("Process background task failed: {}", join_err);
+                update_process_job(&job_id_for_status, |job| {
+                    job.status = ProcessJobStatus::Failed;
+                    job.finished_at = Some(now_string());
+                    job.current_file = "Failed".to_string();
+                    job.errors.push(err.clone());
+                });
+                append_process_job_log(&job_id_for_status, err.clone());
+                let _ = append_app_log(
+                    &app_for_status,
+                    format!("process_apply_event_naming join_failed job_id='{}' error='{}'", job_id_for_status, err),
+                );
+            }
+        }
+
+        if let Ok(mut requests) = naming_requests_store().lock() {
+            requests.remove(&job_id_for_status);
         }
     });
 
