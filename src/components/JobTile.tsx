@@ -163,14 +163,12 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
       ) : (
         // For active jobs, show progress bar
         <div className="space-y-1">
-          <div className="w-full h-1.5 bg-surface-700 rounded-full overflow-hidden">
-            <div
-              className={`h-full transition-all duration-300 rounded-full ${
-                job.status === "running" ? "bg-emerald-500" : job.status === "paused" ? "bg-amber-500" : "bg-blue-500"
-              }`}
-              style={{ width: `${Math.max(5, progress)}%` }}
-            />
-          </div>
+          <progress
+            className={`progress-native ${job.status === "running" ? "progress-emerald" : job.status === "paused" ? "progress-amber" : "progress-blue"}`}
+            max={Math.max(job.total, 1)}
+            value={Math.min(Math.max(job.done, 0), Math.max(job.total, 1))}
+            aria-label={`${title} progress`}
+          />
           <div className="flex justify-between items-center px-1">
             <span className="text-xs text-gray-400">{progress.toFixed(0)}%</span>
             <span className="text-xs text-gray-400">
@@ -201,8 +199,16 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
                 <div className="font-semibold text-white">{importJob?.imported ?? 0}</div>
               </div>
               <div className="bg-surface-700/40 rounded px-2 py-1">
-                <div className="text-gray-500">Speed</div>
-                <div className="font-semibold text-white">{(importJob?.speedMbps ?? 0).toFixed(1)} MB/s</div>
+                <div className="text-gray-500">Attempted</div>
+                <div className="font-semibold text-white">{importJob ? `${importJob.done}/${importJob.total}` : "0/0"}</div>
+              </div>
+              <div className="bg-surface-700/40 rounded px-2 py-1">
+                <div className="text-gray-500">Ignored</div>
+                <div className="font-semibold text-sky-300">{importJob?.ignoredFileTotal ?? 0}</div>
+              </div>
+              <div className="bg-surface-700/40 rounded px-2 py-1">
+                <div className="text-gray-500">Unsupported</div>
+                <div className="font-semibold text-orange-300">{importJob?.unsupportedFileTotal ?? 0}</div>
               </div>
             </>
           )}
@@ -240,12 +246,24 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
             ) : (
               <>
                 <div>
+                  <span className="text-gray-500">Source:</span>
+                  <span className="ml-1 font-semibold text-sky-300">{importJob?.sourceFileTotal ?? 0}</span>
+                </div>
+                <div>
                   <span className="text-gray-500">Imported:</span>
                   <span className="ml-1 font-semibold text-emerald-300">{importJob?.imported ?? 0}</span>
                 </div>
                 <div>
                   <span className="text-gray-500">Skipped:</span>
                   <span className="ml-1 font-semibold text-amber-300">{importJob?.skipped ?? 0}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Ignored:</span>
+                  <span className="ml-1 font-semibold text-sky-300">{importJob?.ignoredFileTotal ?? 0}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Unsupported:</span>
+                  <span className="ml-1 font-semibold text-orange-300">{importJob?.unsupportedFileTotal ?? 0}</span>
                 </div>
               </>
             )}

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::async_runtime;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
-use crate::utils::{append_app_log, compute_md5, num_cpus, sync_file_metadata_from};
+use crate::utils::{append_app_log, append_log_line, compute_md5, num_cpus, sync_file_metadata_from};
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
@@ -43,6 +43,10 @@ pub struct ImportProgress {
 pub struct ImportResult {
     pub imported: usize,
     pub skipped: usize,
+    pub source_file_total: usize,
+    pub ignored_file_total: usize,
+    pub ignored_legacy_md5_sidecar_total: usize,
+    pub unsupported_file_total: usize,
     pub errors: Vec<String>,
 }
 
@@ -76,11 +80,17 @@ pub struct ImportJob {
     pub id: String,
     pub source_dir: String,
     pub staging_dir: String,
+    pub log_file_path: String,
+    pub manifest_file_path: String,
     pub reprocess_existing: bool,
     pub status: ImportJobStatus,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    pub source_file_total: usize,
+    pub ignored_file_total: usize,
+    pub ignored_legacy_md5_sidecar_total: usize,
+    pub unsupported_file_total: usize,
     pub total: usize,
     pub done: usize,
     pub skipped: usize,
@@ -93,6 +103,33 @@ pub struct ImportJob {
     pub logs: Vec<String>,
     pub pause_requested: bool,
     pub abort_requested: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportManifestEntry {
+    pub timestamp: String,
+    pub kind: String,
+    pub phase: Option<String>,
+    pub outcome: Option<String>,
+    pub status: Option<String>,
+    pub source_path: Option<String>,
+    pub destination_path: Option<String>,
+    pub duplicate_of: Option<String>,
+    pub md5: Option<String>,
+    pub md5_source: Option<String>,
+    pub dt_source: Option<String>,
+    pub size: Option<u64>,
+    pub reason: Option<String>,
+    pub message: Option<String>,
+    pub source_file_total: Option<usize>,
+    pub attempted_total: Option<usize>,
+    pub ignored_file_total: Option<usize>,
+    pub ignored_legacy_md5_sidecar_total: Option<usize>,
+    pub unsupported_file_total: Option<usize>,
+    pub imported_total: Option<usize>,
+    pub skipped_total: Option<usize>,
+    pub error_total: Option<usize>,
 }
 
 fn jobs_store() -> &'static Mutex<HashMap<String, ImportJob>> {
@@ -192,13 +229,40 @@ fn update_job(job_id: &str, mutator: impl FnOnce(&mut ImportJob)) {
 
 fn append_job_log(job_id: &str, message: impl AsRef<str>) {
     let ts = now_string();
+    let line = format!("[{}] {}", ts, message.as_ref());
+    let mut log_file_path = None::<String>;
     update_job(job_id, |job| {
-        job.logs.push(format!("[{}] {}", ts, message.as_ref()));
+        job.logs.push(line.clone());
+        log_file_path = Some(job.log_file_path.clone());
         if job.logs.len() > 2000 {
             let to_drop = job.logs.len() - 2000;
             job.logs.drain(0..to_drop);
         }
     });
+
+    if let Some(path) = log_file_path.filter(|path| !path.is_empty()) {
+        let _ = append_log_line(Path::new(&path), &line);
+    }
+}
+
+fn import_job_log_path(staging_dir: &str, job_id: &str) -> String {
+    Path::new(staging_dir)
+        .join(format!("{}.log", job_id))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn import_job_manifest_path(staging_dir: &str, job_id: &str) -> String {
+    Path::new(staging_dir)
+        .join(format!("{}.manifest.jsonl", job_id))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn append_manifest_entry(manifest_path: &Path, entry: &ImportManifestEntry) {
+    if let Ok(line) = serde_json::to_string(entry) {
+        let _ = append_log_line(manifest_path, line);
+    }
 }
 
 fn wait_if_paused_or_aborted(job_id: Option<&str>) -> bool {
@@ -299,6 +363,50 @@ fn is_supported(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|e| SUPPORTED_EXTENSIONS.contains(&e.to_lowercase().as_str()))
         .unwrap_or(false)
+}
+
+fn is_md5_sidecar_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("md5"))
+        .unwrap_or(false)
+}
+
+fn ignored_source_file_reason(path: &Path) -> Option<&'static str> {
+    if is_md5_sidecar_file(path) {
+        return Some("legacy_md5_sidecar");
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+
+    match ext.as_deref() {
+        Some("ctg") => return Some("camera_catalog"),
+        Some("dat") => return Some("camera_metadata"),
+        _ => {}
+    }
+
+    let in_system_volume_information = path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("System Volume Information")
+    });
+    if in_system_volume_information {
+        return Some("system_metadata");
+    }
+
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if filename.eq_ignore_ascii_case("IndexerVolumeGuid") {
+        return Some("system_metadata");
+    }
+
+    None
 }
 
 fn extract_exif_date(path: &Path) -> Option<chrono::NaiveDateTime> {
@@ -652,14 +760,24 @@ fn read_md5_sidecar_for_file(file_path: &Path) -> Option<String> {
     read_md5_hash_from_sidecar(&md5_sidecar_path(file_path), expected_filename)
 }
 
-fn md5_for_file_prefer_sidecar(file_path: &Path) -> Result<(String, bool), String> {
-    if let Some(hash) = read_md5_sidecar_for_file(file_path) {
-        return Ok((hash, true));
+fn md5_for_file(file_path: &Path, allow_sidecar: bool) -> Result<(String, bool), String> {
+    if allow_sidecar {
+        if let Some(hash) = read_md5_sidecar_for_file(file_path) {
+            return Ok((hash, true));
+        }
     }
 
     compute_md5(file_path)
         .map(|hash| (hash, false))
         .map_err(|e| e.to_string())
+}
+
+fn md5_for_file_prefer_sidecar(file_path: &Path) -> Result<(String, bool), String> {
+    if let Some(hash) = read_md5_sidecar_for_file(file_path) {
+        return Ok((hash, true));
+    }
+
+    md5_for_file(file_path, false)
 }
 
 fn write_md5_sidecar(file_path: &Path, md5: &str) -> Result<(), String> {
@@ -674,8 +792,8 @@ fn write_md5_sidecar(file_path: &Path, md5: &str) -> Result<(), String> {
 
 fn load_existing_staging_md5_hashes(
     staging_dir: &Path,
-) -> HashSet<String> {
-    let mut hashes = HashSet::new();
+) -> HashMap<String, PathBuf> {
+    let mut hashes = HashMap::new();
 
     if !staging_dir.exists() {
         return hashes;
@@ -703,7 +821,7 @@ fn load_existing_staging_md5_hashes(
 
         let expected_filename = media_path.file_name().and_then(|n| n.to_str());
         if let Some(hash) = read_md5_hash_from_sidecar(path, expected_filename) {
-            hashes.insert(hash);
+            hashes.entry(hash).or_insert(media_path);
         }
     }
 
@@ -738,14 +856,19 @@ fn build_staging_size_index(staging_dir: &Path) -> HashMap<u64, Vec<PathBuf>> {
 }
 
 fn staging_has_same_content(
-    staging_hashes: &HashSet<String>,
+    staging_hashes: &HashMap<String, PathBuf>,
     staging_size_index: &HashMap<u64, Vec<PathBuf>>,
     src_size: u64,
     src_md5: &str,
     ignore_path: Option<&Path>,
-) -> Result<bool, String> {
-    if staging_hashes.contains(src_md5) {
-        return Ok(true);
+) -> Result<Option<PathBuf>, String> {
+    if let Some(existing_path) = staging_hashes.get(src_md5) {
+        let should_ignore = ignore_path
+            .map(|ignore| ignore == existing_path.as_path())
+            .unwrap_or(false);
+        if !should_ignore {
+            return Ok(Some(existing_path.clone()));
+        }
     }
 
     if let Some(candidates) = staging_size_index.get(&src_size) {
@@ -762,12 +885,12 @@ fn staging_has_same_content(
             };
 
             if candidate_md5 == src_md5 {
-                return Ok(true);
+                return Ok(Some(candidate.clone()));
             }
         }
     }
 
-    Ok(false)
+    Ok(None)
 }
 
 
@@ -790,6 +913,9 @@ fn run_import(
     }
 
     let mode = if opts.reprocess_existing { "reprocess" } else { "import" };
+    let manifest_path = job_id
+        .as_ref()
+        .map(|id| PathBuf::from(import_job_manifest_path(&staging_dir, id)));
     let _ = append_app_log(
         &app,
         format!(
@@ -814,40 +940,253 @@ fn run_import(
         ));
     }
 
-    // Single-pass directory walk to collect all supported files
-    let all_files: Vec<PathBuf> = WalkDir::new(&source)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.into_path())
-        .filter(|p| is_supported(p))
-        .collect();
+    // Single-pass directory walk to count all files and collect supported import candidates.
+    let mut source_file_total = 0usize;
+    let mut ignored_file_total = 0usize;
+    let mut ignored_md5_sidecar_total = 0usize;
+    let mut all_files = Vec::<PathBuf>::new();
+    for entry in WalkDir::new(&source).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let path = entry.into_path();
+        if let Some(reason) = ignored_source_file_reason(&path) {
+            ignored_file_total += 1;
+            if reason == "legacy_md5_sidecar" {
+                ignored_md5_sidecar_total += 1;
+            }
+            if let Some(manifest_path) = &manifest_path {
+                append_manifest_entry(
+                    manifest_path,
+                    &ImportManifestEntry {
+                        timestamp: now_string(),
+                        kind: "file".to_string(),
+                        phase: Some("scan".to_string()),
+                        outcome: Some("ignored".to_string()),
+                        status: None,
+                        source_path: Some(path.to_string_lossy().to_string()),
+                        destination_path: None,
+                        duplicate_of: None,
+                        md5: None,
+                        md5_source: None,
+                        dt_source: None,
+                        size: fs::metadata(&path).ok().map(|m| m.len()),
+                        reason: Some(reason.to_string()),
+                        message: None,
+                        source_file_total: None,
+                        attempted_total: None,
+                        ignored_file_total: None,
+                        ignored_legacy_md5_sidecar_total: None,
+                        unsupported_file_total: None,
+                        imported_total: None,
+                        skipped_total: None,
+                        error_total: None,
+                    },
+                );
+            }
+            continue;
+        }
+
+        source_file_total += 1;
+        if is_supported(&path) {
+            all_files.push(path);
+        } else if let Some(manifest_path) = &manifest_path {
+            append_manifest_entry(
+                manifest_path,
+                &ImportManifestEntry {
+                    timestamp: now_string(),
+                    kind: "file".to_string(),
+                    phase: Some("scan".to_string()),
+                    outcome: Some("unsupported".to_string()),
+                    status: None,
+                    source_path: Some(path.to_string_lossy().to_string()),
+                    destination_path: None,
+                    duplicate_of: None,
+                    md5: None,
+                    md5_source: None,
+                    dt_source: None,
+                    size: fs::metadata(&path).ok().map(|m| m.len()),
+                    reason: Some(
+                        path.extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| format!("unsupported_extension:{}", e.to_ascii_lowercase()))
+                            .unwrap_or_else(|| "unsupported_extension:[no extension]".to_string()),
+                    ),
+                    message: None,
+                    source_file_total: None,
+                    attempted_total: None,
+                    ignored_file_total: None,
+                    ignored_legacy_md5_sidecar_total: None,
+                    unsupported_file_total: None,
+                    imported_total: None,
+                    skipped_total: None,
+                    error_total: None,
+                },
+            );
+        }
+    }
 
     let total = all_files.len();
+    let unsupported_file_total = source_file_total.saturating_sub(total);
     if let Some(job_id) = &job_id {
         update_job(job_id, |job| {
+            job.source_file_total = source_file_total;
+            job.ignored_file_total = ignored_file_total;
+            job.ignored_legacy_md5_sidecar_total = ignored_md5_sidecar_total;
+            job.unsupported_file_total = unsupported_file_total;
             job.total = total;
         });
+        append_job_log(job_id, format!(
+            "summary start source_files={} attempted={} ignored={} legacy_source_md5={} unsupported={} mode={} source='{}' staging='{}'",
+            source_file_total,
+            total,
+            ignored_file_total,
+            ignored_md5_sidecar_total,
+            unsupported_file_total,
+            mode,
+            source.display(),
+            staging.display()
+        ));
+        append_job_log(job_id, format!(
+            "source scan files={} attempted={} ignored={} unsupported={}",
+            source_file_total,
+            total,
+            ignored_file_total,
+            unsupported_file_total
+        ));
+        if !opts.reprocess_existing && ignored_md5_sidecar_total > 0 {
+            append_job_log(job_id, format!(
+                "warning ignored {} legacy .md5 sidecar files in source; source media is hashed directly and source .md5 files are not trusted",
+                ignored_md5_sidecar_total
+            ));
+        }
+    }
+    let _ = append_app_log(
+        &app,
+        format!(
+            "{} source_scan source_files={} attempted_files={} ignored_files={} unsupported_files={}",
+            mode,
+            source_file_total,
+            total,
+            ignored_file_total,
+            unsupported_file_total
+        ),
+    );
+    if let Some(manifest_path) = &manifest_path {
+        append_manifest_entry(
+            manifest_path,
+            &ImportManifestEntry {
+                timestamp: now_string(),
+                kind: "summary".to_string(),
+                phase: Some("start".to_string()),
+                outcome: None,
+                status: Some("running".to_string()),
+                source_path: Some(source.to_string_lossy().to_string()),
+                destination_path: Some(staging.to_string_lossy().to_string()),
+                duplicate_of: None,
+                md5: None,
+                md5_source: None,
+                dt_source: None,
+                size: None,
+                reason: None,
+                message: Some("initial source scan complete".to_string()),
+                source_file_total: Some(source_file_total),
+                attempted_total: Some(total),
+                ignored_file_total: Some(ignored_file_total),
+                ignored_legacy_md5_sidecar_total: Some(ignored_md5_sidecar_total),
+                unsupported_file_total: Some(unsupported_file_total),
+                imported_total: Some(0),
+                skipped_total: Some(0),
+                error_total: Some(0),
+            },
+        );
+    }
+    if !opts.reprocess_existing && ignored_md5_sidecar_total > 0 {
+        let _ = append_app_log(
+            &app,
+            format!(
+                "{} source_scan ignored_md5_sidecars={} source='{}'",
+                mode,
+                ignored_md5_sidecar_total,
+                source.display()
+            ),
+        );
     }
     if total == 0 {
-        let _ = append_app_log(&app, format!("{}: no supported files found", mode));
+        let _ = append_app_log(
+            &app,
+            format!(
+                "{}: no supported files found among {} source files",
+                mode,
+                source_file_total
+            ),
+        );
 
         if let Some(job_id) = &job_id {
             update_job(job_id, |job| {
                 job.status = ImportJobStatus::Completed;
                 job.finished_at = Some(now_string());
+                job.source_file_total = source_file_total;
+                job.ignored_file_total = ignored_file_total;
+                job.ignored_legacy_md5_sidecar_total = ignored_md5_sidecar_total;
+                job.unsupported_file_total = unsupported_file_total;
                 job.total = 0;
                 job.done = 0;
                 job.skipped = 0;
                 job.imported = 0;
                 job.errors.clear();
             });
-            append_job_log(job_id, "no supported files found");
+            append_job_log(job_id, format!(
+                "summary end source_files={} attempted=0/0 ignored={} legacy_source_md5={} unsupported={} imported=0 skipped=0 errors=0 status=completed",
+                source_file_total,
+                ignored_file_total,
+                ignored_md5_sidecar_total,
+                unsupported_file_total
+            ));
+            append_job_log(job_id, format!(
+                "no supported files found among {} source files",
+                source_file_total
+            ));
+        }
+
+        if let Some(manifest_path) = &manifest_path {
+            append_manifest_entry(
+                manifest_path,
+                &ImportManifestEntry {
+                    timestamp: now_string(),
+                    kind: "summary".to_string(),
+                    phase: Some("end".to_string()),
+                    outcome: None,
+                    status: Some("completed".to_string()),
+                    source_path: Some(source.to_string_lossy().to_string()),
+                    destination_path: Some(staging.to_string_lossy().to_string()),
+                    duplicate_of: None,
+                    md5: None,
+                    md5_source: None,
+                    dt_source: None,
+                    size: None,
+                    reason: None,
+                    message: Some("no supported files found".to_string()),
+                    source_file_total: Some(source_file_total),
+                    attempted_total: Some(0),
+                    ignored_file_total: Some(ignored_file_total),
+                    ignored_legacy_md5_sidecar_total: Some(ignored_md5_sidecar_total),
+                    unsupported_file_total: Some(unsupported_file_total),
+                    imported_total: Some(0),
+                    skipped_total: Some(0),
+                    error_total: Some(0),
+                },
+            );
         }
 
         return Ok(ImportResult {
             imported: 0,
             skipped: 0,
+            source_file_total,
+            ignored_file_total,
+            ignored_legacy_md5_sidecar_total: ignored_md5_sidecar_total,
+            unsupported_file_total,
             errors: vec![],
         });
     }
@@ -884,7 +1223,7 @@ fn run_import(
     let start_time = Instant::now();
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
     let reserved_destinations = Arc::new(Mutex::new(HashSet::<PathBuf>::new()));
-    let claimed_content_hashes = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let claimed_content_hashes = Arc::new(Mutex::new(HashMap::<String, PathBuf>::new()));
 
     let staging_clone = staging.clone();
     let app_clone = app.clone();
@@ -900,6 +1239,7 @@ fn run_import(
     let existing_hashes_clone = staging_existing_hashes.clone();
     let size_index_clone = staging_size_index.clone();
     let job_id_clone = job_id.clone();
+    let manifest_path_clone = Arc::new(manifest_path.clone());
 
     // Use rayon for parallel file processing (bounded by CPU count, good for I/O too)
     let pool = rayon::ThreadPoolBuilder::new()
@@ -950,7 +1290,7 @@ fn run_import(
                 }
             };
 
-            let (src_md5, used_sidecar) = match md5_for_file_prefer_sidecar(src_path) {
+            let (src_md5, used_sidecar) = match md5_for_file(src_path, opts.reprocess_existing) {
                 Ok(v) => v,
                 Err(e) => {
                     errors_clone
@@ -980,34 +1320,148 @@ fn run_import(
                 });
             }
 
-            {
+            let source_batch_duplicate = {
                 let mut claimed = claimed_hashes_clone.lock().unwrap();
-                if claimed.contains(&src_md5) {
-                    bytes_clone.fetch_add(src_size, Ordering::Relaxed);
-                    skipped_clone.fetch_add(1, Ordering::Relaxed);
-                    let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
-                    if let Some(job_id) = &job_id_clone {
-                        let skipped = skipped_clone.load(Ordering::Relaxed);
-                        let elapsed = start_time.elapsed().as_secs_f64();
-                        let speed = if elapsed > 0.0 {
-                            (bytes_clone.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0)) / elapsed
-                        } else {
-                            0.0
-                        };
-                        update_job(job_id, |job| {
-                            job.done = done as usize;
-                            job.skipped = skipped as usize;
-                            job.speed_mbps = speed;
-                            job.current_file = src_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string();
-                        });
+                match claimed.get(&src_md5).cloned() {
+                    Some(duplicate_of) if duplicate_of.exists() => Some(duplicate_of),
+                    Some(duplicate_of) => {
+                        let warning = format!(
+                            "duplicate target missing '{}' for source '{}' in source batch; continuing import",
+                            duplicate_of.display(),
+                            src_path.display()
+                        );
+                        let _ = append_app_log(&app_clone, format!("{} warning {}", mode, warning));
+                        if let Some(job_id) = &job_id_clone {
+                            append_job_log(job_id, warning.clone());
+                        }
+                        if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
+                            append_manifest_entry(
+                                manifest_path,
+                                &ImportManifestEntry {
+                                    timestamp: now_string(),
+                                    kind: "warning".to_string(),
+                                    phase: Some("process".to_string()),
+                                    outcome: None,
+                                    status: None,
+                                    source_path: Some(src_path.display().to_string()),
+                                    destination_path: None,
+                                    duplicate_of: Some(duplicate_of.display().to_string()),
+                                    md5: Some(src_md5.clone()),
+                                    md5_source: Some(md5_source.to_string()),
+                                    dt_source: Some(dt_source.to_string()),
+                                    size: Some(src_size),
+                                    reason: Some("missing_duplicate_target".to_string()),
+                                    message: Some(warning),
+                                    source_file_total: None,
+                                    attempted_total: None,
+                                    ignored_file_total: None,
+                                    ignored_legacy_md5_sidecar_total: None,
+                                    unsupported_file_total: None,
+                                    imported_total: None,
+                                    skipped_total: None,
+                                    error_total: None,
+                                },
+                            );
+                        }
+                        claimed.insert(src_md5.clone(), src_path.to_path_buf());
+                        None
                     }
-                    return;
+                    None => {
+                        claimed.insert(src_md5.clone(), src_path.to_path_buf());
+                        None
+                    }
                 }
-                claimed.insert(src_md5.clone());
+            };
+
+            if let Some(duplicate_of) = source_batch_duplicate {
+                bytes_clone.fetch_add(src_size, Ordering::Relaxed);
+                skipped_clone.fetch_add(1, Ordering::Relaxed);
+                let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
+                let skipped = skipped_clone.load(Ordering::Relaxed);
+                let elapsed = start_time.elapsed().as_secs_f64();
+                let speed = if elapsed > 0.0 {
+                    (bytes_clone.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0)) / elapsed
+                } else {
+                    0.0
+                };
+                let _ = append_app_log(
+                    &app_clone,
+                    format!(
+                        "{} duplicate_skip source='{}' duplicate_of='{}' scope=source_batch md5={} size={} md5_source={} dt_source={} ",
+                        mode,
+                        src_path.display(),
+                        duplicate_of.display(),
+                        src_md5,
+                        src_size,
+                        md5_source,
+                        dt_source
+                    ),
+                );
+                if let Some(job_id) = &job_id_clone {
+                    append_job_log(job_id, format!(
+                        "duplicate skip '{}' -> '{}' (source batch, md5={} md5_source={} dt_source={})",
+                        src_path.display(),
+                        duplicate_of.display(),
+                        src_md5,
+                        md5_source,
+                        dt_source
+                    ));
+                    update_job(job_id, |job| {
+                        job.done = done as usize;
+                        job.skipped = skipped as usize;
+                        job.speed_mbps = speed;
+                        job.current_file = src_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                    });
+                }
+                if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
+                    append_manifest_entry(
+                        manifest_path,
+                        &ImportManifestEntry {
+                            timestamp: now_string(),
+                            kind: "file".to_string(),
+                            phase: Some("process".to_string()),
+                            outcome: Some("duplicate".to_string()),
+                            status: Some("source_batch".to_string()),
+                            source_path: Some(src_path.display().to_string()),
+                            destination_path: None,
+                            duplicate_of: Some(duplicate_of.display().to_string()),
+                            md5: Some(src_md5.clone()),
+                            md5_source: Some(md5_source.to_string()),
+                            dt_source: Some(dt_source.to_string()),
+                            size: Some(src_size),
+                            reason: Some("duplicate_source_batch".to_string()),
+                            message: None,
+                            source_file_total: None,
+                            attempted_total: None,
+                            ignored_file_total: None,
+                            ignored_legacy_md5_sidecar_total: None,
+                            unsupported_file_total: None,
+                            imported_total: None,
+                            skipped_total: None,
+                            error_total: None,
+                        },
+                    );
+                }
+                let _ = app_clone.emit(
+                    "import-progress",
+                    ImportProgress {
+                        total,
+                        done: done as usize,
+                        current_file: src_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        speed_mbps: speed,
+                        skipped: skipped as usize,
+                        errors: vec![],
+                    },
+                );
+                return;
             }
 
             if base_dest.parent().is_none() {
@@ -1022,72 +1476,138 @@ fn run_import(
             }
 
             match staging_has_same_content(&existing_hashes_clone, &size_index_clone, src_size, &src_md5, Some(src_path)) {
-                Ok(true) => {
-                    bytes_clone.fetch_add(src_size, Ordering::Relaxed);
-                    skipped_clone.fetch_add(1, Ordering::Relaxed);
-                    let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
-                    let skipped = skipped_clone.load(Ordering::Relaxed);
-                    let elapsed = start_time.elapsed().as_secs_f64();
-                    let speed = if elapsed > 0.0 {
-                        (bytes_clone.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0)) / elapsed
+                Ok(Some(duplicate_of)) => {
+                    if !duplicate_of.exists() {
+                        let warning = format!(
+                            "duplicate target missing '{}' for source '{}' in staging index; continuing import",
+                            duplicate_of.display(),
+                            src_path.display()
+                        );
+                        let _ = append_app_log(&app_clone, format!("{} warning {}", mode, warning));
+                        if let Some(job_id) = &job_id_clone {
+                            append_job_log(job_id, warning.clone());
+                        }
+                        if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
+                            append_manifest_entry(
+                                manifest_path,
+                                &ImportManifestEntry {
+                                    timestamp: now_string(),
+                                    kind: "warning".to_string(),
+                                    phase: Some("process".to_string()),
+                                    outcome: None,
+                                    status: None,
+                                    source_path: Some(src_path.display().to_string()),
+                                    destination_path: None,
+                                    duplicate_of: Some(duplicate_of.display().to_string()),
+                                    md5: Some(src_md5.clone()),
+                                    md5_source: Some(md5_source.to_string()),
+                                    dt_source: Some(dt_source.to_string()),
+                                    size: Some(src_size),
+                                    reason: Some("missing_duplicate_target".to_string()),
+                                    message: Some(warning),
+                                    source_file_total: None,
+                                    attempted_total: None,
+                                    ignored_file_total: None,
+                                    ignored_legacy_md5_sidecar_total: None,
+                                    unsupported_file_total: None,
+                                    imported_total: None,
+                                    skipped_total: None,
+                                    error_total: None,
+                                },
+                            );
+                        }
                     } else {
-                        0.0
-                    };
-                    let _ = append_app_log(
-                        &app_clone,
-                        format!(
-                            "{} duplicate_skip source='{}' md5={} size={} md5_source={} dt_source={}",
-                            mode,
-                            src_path.display(),
-                            src_md5,
-                            src_size,
-                            md5_source,
-                            dt_source
-                        ),
-                    );
-                    if let Err(e) = write_md5_sidecar(src_path, &src_md5) {
-                        errors_clone
-                            .lock()
-                            .unwrap()
-                            .push(format!("{}: failed to write md5 sidecar: {}", src_path.display(), e));
+                        bytes_clone.fetch_add(src_size, Ordering::Relaxed);
+                        skipped_clone.fetch_add(1, Ordering::Relaxed);
+                        let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
+                        let skipped = skipped_clone.load(Ordering::Relaxed);
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        let speed = if elapsed > 0.0 {
+                            (bytes_clone.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0)) / elapsed
+                        } else {
+                            0.0
+                        };
+                        let _ = append_app_log(
+                            &app_clone,
+                            format!(
+                                "{} duplicate_skip source='{}' duplicate_of='{}' scope=staging md5={} size={} md5_source={} dt_source={}",
+                                mode,
+                                src_path.display(),
+                                duplicate_of.display(),
+                                src_md5,
+                                src_size,
+                                md5_source,
+                                dt_source
+                            ),
+                        );
+                        if let Some(job_id) = &job_id_clone {
+                            append_job_log(job_id, format!(
+                                "duplicate skip '{}' -> '{}' (staging, md5={} md5_source={} dt_source={})",
+                                src_path.display(),
+                                duplicate_of.display(),
+                                src_md5,
+                                md5_source,
+                                dt_source
+                            ));
+                            update_job(job_id, |job| {
+                                job.done = done as usize;
+                                job.skipped = skipped as usize;
+                                job.speed_mbps = speed;
+                                job.current_file = src_path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                            });
+                        }
+                        if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
+                            append_manifest_entry(
+                                manifest_path,
+                                &ImportManifestEntry {
+                                    timestamp: now_string(),
+                                    kind: "file".to_string(),
+                                    phase: Some("process".to_string()),
+                                    outcome: Some("duplicate".to_string()),
+                                    status: Some("staging".to_string()),
+                                    source_path: Some(src_path.display().to_string()),
+                                    destination_path: None,
+                                    duplicate_of: Some(duplicate_of.display().to_string()),
+                                    md5: Some(src_md5.clone()),
+                                    md5_source: Some(md5_source.to_string()),
+                                    dt_source: Some(dt_source.to_string()),
+                                    size: Some(src_size),
+                                    reason: Some("duplicate_staging".to_string()),
+                                    message: None,
+                                    source_file_total: None,
+                                    attempted_total: None,
+                                    ignored_file_total: None,
+                                    ignored_legacy_md5_sidecar_total: None,
+                                    unsupported_file_total: None,
+                                    imported_total: None,
+                                    skipped_total: None,
+                                    error_total: None,
+                                },
+                            );
+                        }
+                        let _ = app_clone.emit(
+                            "import-progress",
+                            ImportProgress {
+                                total,
+                                done: done as usize,
+                                current_file: src_path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                speed_mbps: speed,
+                                skipped: skipped as usize,
+                                errors: vec![],
+                            },
+                        );
+                        return;
                     }
-                    if let Some(job_id) = &job_id_clone {
-                        append_job_log(job_id, format!(
-                            "duplicate skip '{}' (md5={} md5_source={} dt_source={})",
-                            src_path.display(),
-                            src_md5,
-                            md5_source,
-                            dt_source
-                        ));
-                        update_job(job_id, |job| {
-                            job.done = done as usize;
-                            job.skipped = skipped as usize;
-                            job.speed_mbps = speed;
-                            job.current_file = src_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string();
-                        });
-                    }
-                    let _ = app_clone.emit(
-                        "import-progress",
-                        ImportProgress {
-                            total,
-                            done: done as usize,
-                            current_file: src_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            speed_mbps: speed,
-                            skipped: skipped as usize,
-                            errors: vec![],
-                        },
-                    );
-                    return;
                 }
-                Ok(false) => {}
+                Ok(None) => {}
                 Err(e) => {
                     let mut claimed = claimed_hashes_clone.lock().unwrap();
                     claimed.remove(&src_md5);
@@ -1138,6 +1658,35 @@ fn run_import(
                         md5_source,
                         dt_source
                     ));
+                }
+                if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
+                    append_manifest_entry(
+                        manifest_path,
+                        &ImportManifestEntry {
+                            timestamp: now_string(),
+                            kind: "file".to_string(),
+                            phase: Some("process".to_string()),
+                            outcome: Some("imported".to_string()),
+                            status: Some("reprocess_touch".to_string()),
+                            source_path: Some(src_path.display().to_string()),
+                            destination_path: Some(dest.display().to_string()),
+                            duplicate_of: None,
+                            md5: Some(src_md5.clone()),
+                            md5_source: Some(md5_source.to_string()),
+                            dt_source: Some(dt_source.to_string()),
+                            size: Some(src_size),
+                            reason: Some("already_canonical".to_string()),
+                            message: None,
+                            source_file_total: None,
+                            attempted_total: None,
+                            ignored_file_total: None,
+                            ignored_legacy_md5_sidecar_total: None,
+                            unsupported_file_total: None,
+                            imported_total: None,
+                            skipped_total: None,
+                            error_total: None,
+                        },
+                    );
                 }
 
                 bytes_clone.fetch_add(src_size, Ordering::Relaxed);
@@ -1221,6 +1770,35 @@ fn run_import(
                                 md5_source,
                                 dt_source
                             ));
+                        }
+                        if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
+                            append_manifest_entry(
+                                manifest_path,
+                                &ImportManifestEntry {
+                                    timestamp: now_string(),
+                                    kind: "file".to_string(),
+                                    phase: Some("process".to_string()),
+                                    outcome: Some("imported".to_string()),
+                                    status: Some("reprocess_rename".to_string()),
+                                    source_path: Some(src_path.display().to_string()),
+                                    destination_path: Some(dest.display().to_string()),
+                                    duplicate_of: None,
+                                    md5: Some(src_md5.clone()),
+                                    md5_source: Some(md5_source.to_string()),
+                                    dt_source: Some(dt_source.to_string()),
+                                    size: Some(src_size),
+                                    reason: None,
+                                    message: None,
+                                    source_file_total: None,
+                                    attempted_total: None,
+                                    ignored_file_total: None,
+                                    ignored_legacy_md5_sidecar_total: None,
+                                    unsupported_file_total: None,
+                                    imported_total: None,
+                                    skipped_total: None,
+                                    error_total: None,
+                                },
+                            );
                         }
 
                         bytes_clone.fetch_add(src_size, Ordering::Relaxed);
@@ -1313,6 +1891,35 @@ fn run_import(
                             dt_source
                         ));
                     }
+                    if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
+                        append_manifest_entry(
+                            manifest_path,
+                            &ImportManifestEntry {
+                                timestamp: now_string(),
+                                kind: "file".to_string(),
+                                phase: Some("process".to_string()),
+                                outcome: Some("imported".to_string()),
+                                status: Some("copy".to_string()),
+                                source_path: Some(src_path.display().to_string()),
+                                destination_path: Some(dest.display().to_string()),
+                                duplicate_of: None,
+                                md5: Some(src_md5.clone()),
+                                md5_source: Some(md5_source.to_string()),
+                                dt_source: Some(dt_source.to_string()),
+                                size: Some(bytes),
+                                reason: None,
+                                message: None,
+                                source_file_total: None,
+                                attempted_total: None,
+                                ignored_file_total: None,
+                                ignored_legacy_md5_sidecar_total: None,
+                                unsupported_file_total: None,
+                                imported_total: None,
+                                skipped_total: None,
+                                error_total: None,
+                            },
+                        );
+                    }
 
                     bytes_clone.fetch_add(bytes, Ordering::Relaxed);
                     imported_clone.fetch_add(1, Ordering::Relaxed);
@@ -1381,6 +1988,35 @@ fn run_import(
                             e
                         ));
                     }
+                    if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
+                        append_manifest_entry(
+                            manifest_path,
+                            &ImportManifestEntry {
+                                timestamp: now_string(),
+                                kind: "file".to_string(),
+                                phase: Some("process".to_string()),
+                                outcome: Some("error".to_string()),
+                                status: None,
+                                source_path: Some(src_path.display().to_string()),
+                                destination_path: Some(dest.display().to_string()),
+                                duplicate_of: None,
+                                md5: Some(src_md5.clone()),
+                                md5_source: Some(md5_source.to_string()),
+                                dt_source: Some(dt_source.to_string()),
+                                size: Some(src_size),
+                                reason: Some("copy_failed".to_string()),
+                                message: Some(e.to_string()),
+                                source_file_total: None,
+                                attempted_total: None,
+                                ignored_file_total: None,
+                                ignored_legacy_md5_sidecar_total: None,
+                                unsupported_file_total: None,
+                                imported_total: None,
+                                skipped_total: None,
+                                error_total: None,
+                            },
+                        );
+                    }
 
                     if let Some(job_id) = &job_id_clone {
                         let done_now = done as usize;
@@ -1436,8 +2072,13 @@ fn run_import(
     let _ = append_app_log(
         &app,
         format!(
-            "{} complete imported={} skipped={} errors={}",
+            "{} complete source_files={} attempted_files={} attempted_done={} ignored_files={} unsupported_files={} imported={} skipped={} errors={}",
             mode,
+            source_file_total,
+            total,
+            processed,
+            ignored_file_total,
+            unsupported_file_total,
             imported,
             skipped,
             final_errors.len()
@@ -1455,6 +2096,10 @@ fn run_import(
                 ImportJobStatus::Completed
             };
             job.finished_at = Some(now_string());
+            job.source_file_total = source_file_total;
+            job.ignored_file_total = ignored_file_total;
+            job.ignored_legacy_md5_sidecar_total = ignored_md5_sidecar_total;
+            job.unsupported_file_total = unsupported_file_total;
             job.imported = imported;
             job.skipped = skipped;
             job.done = processed;
@@ -1466,7 +2111,23 @@ fn run_import(
 
         if was_aborted {
             append_job_log(job_id, format!(
-                "aborted imported={} skipped={} errors={} md5_sidecar_hits={} md5_computed={}",
+                "summary end source_files={} attempted={}/{} ignored={} legacy_source_md5={} unsupported={} imported={} skipped={} errors={} status=aborted",
+                source_file_total,
+                processed,
+                total,
+                ignored_file_total,
+                ignored_md5_sidecar_total,
+                unsupported_file_total,
+                imported,
+                skipped,
+                final_errors.len()
+            ));
+            append_job_log(job_id, format!(
+                "aborted source_files={} attempted={}/{} unsupported={} imported={} skipped={} errors={} md5_sidecar_hits={} md5_computed={}",
+                source_file_total,
+                processed,
+                total,
+                unsupported_file_total,
                 imported,
                 skipped,
                 final_errors.len(),
@@ -1475,7 +2136,24 @@ fn run_import(
             ));
         } else {
             append_job_log(job_id, format!(
-                "complete imported={} skipped={} errors={} md5_sidecar_hits={} md5_computed={}",
+                "summary end source_files={} attempted={}/{} ignored={} legacy_source_md5={} unsupported={} imported={} skipped={} errors={} status={}",
+                source_file_total,
+                processed,
+                total,
+                ignored_file_total,
+                ignored_md5_sidecar_total,
+                unsupported_file_total,
+                imported,
+                skipped,
+                final_errors.len(),
+                if final_errors.is_empty() { "completed" } else { "failed" }
+            ));
+            append_job_log(job_id, format!(
+                "complete source_files={} attempted={}/{} unsupported={} imported={} skipped={} errors={} md5_sidecar_hits={} md5_computed={}",
+                source_file_total,
+                processed,
+                total,
+                unsupported_file_total,
                 imported,
                 skipped,
                 final_errors.len(),
@@ -1483,11 +2161,52 @@ fn run_import(
                 md5_computed_total
             ));
         }
+        if let Some(manifest_path) = &manifest_path {
+            append_manifest_entry(
+                manifest_path,
+                &ImportManifestEntry {
+                    timestamp: now_string(),
+                    kind: "summary".to_string(),
+                    phase: Some("end".to_string()),
+                    outcome: None,
+                    status: Some(
+                        if was_aborted {
+                            "aborted".to_string()
+                        } else if failed {
+                            "failed".to_string()
+                        } else {
+                            "completed".to_string()
+                        },
+                    ),
+                    source_path: Some(source.to_string_lossy().to_string()),
+                    destination_path: Some(staging.to_string_lossy().to_string()),
+                    duplicate_of: None,
+                    md5: None,
+                    md5_source: None,
+                    dt_source: None,
+                    size: None,
+                    reason: None,
+                    message: Some("import job finished".to_string()),
+                    source_file_total: Some(source_file_total),
+                    attempted_total: Some(total),
+                    ignored_file_total: Some(ignored_file_total),
+                    ignored_legacy_md5_sidecar_total: Some(ignored_md5_sidecar_total),
+                    unsupported_file_total: Some(unsupported_file_total),
+                    imported_total: Some(imported),
+                    skipped_total: Some(skipped),
+                    error_total: Some(final_errors.len()),
+                },
+            );
+        }
     }
 
     Ok(ImportResult {
         imported,
         skipped,
+        source_file_total,
+        ignored_file_total,
+        ignored_legacy_md5_sidecar_total: ignored_md5_sidecar_total,
+        unsupported_file_total,
         errors: final_errors,
     })
 }
@@ -1515,16 +2234,24 @@ pub fn start_import_job(
 ) -> Result<String, String> {
     let opts = options.unwrap_or_default();
     let job_id = next_job_id();
+    let log_file_path = import_job_log_path(&staging_dir, &job_id);
+    let manifest_file_path = import_job_manifest_path(&staging_dir, &job_id);
 
     let job = ImportJob {
         id: job_id.clone(),
         source_dir: source_dir.clone(),
         staging_dir: staging_dir.clone(),
+        log_file_path: log_file_path.clone(),
+        manifest_file_path: manifest_file_path.clone(),
         reprocess_existing: opts.reprocess_existing,
         status: ImportJobStatus::Queued,
         created_at: now_string(),
         started_at: None,
         finished_at: None,
+        source_file_total: 0,
+        ignored_file_total: 0,
+        ignored_legacy_md5_sidecar_total: 0,
+        unsupported_file_total: 0,
         total: 0,
         done: 0,
         skipped: 0,
@@ -1534,7 +2261,7 @@ pub fn start_import_job(
         md5_sidecar_hits: 0,
         md5_computed: 0,
         errors: vec![],
-        logs: vec![format!("[{}] queued", now_string())],
+        logs: vec![],
         pause_requested: false,
         abort_requested: false,
     };
@@ -1543,6 +2270,13 @@ pub fn start_import_job(
         let mut jobs = jobs_store().lock().map_err(|e| e.to_string())?;
         jobs.insert(job_id.clone(), job);
     }
+
+    append_job_log(&job_id, format!(
+        "queued staging='{}' log_file='{}' manifest_file='{}'",
+        staging_dir,
+        log_file_path,
+        manifest_file_path
+    ));
 
     let app_for_task = app.clone();
     let job_id_for_task = job_id.clone();

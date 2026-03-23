@@ -23,6 +23,10 @@ export interface ImportProgress {
 export interface ImportResult {
   imported: number;
   skipped: number;
+  sourceFileTotal: number;
+  ignoredFileTotal: number;
+  ignoredLegacyMd5SidecarTotal: number;
+  unsupportedFileTotal: number;
   errors: string[];
 }
 
@@ -41,11 +45,17 @@ export interface ImportJob {
   id: string;
   sourceDir: string;
   stagingDir: string;
+  logFilePath: string;
+  manifestFilePath: string;
   reprocessExisting: boolean;
   status: ImportJobStatus;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  sourceFileTotal: number;
+  ignoredFileTotal: number;
+  ignoredLegacyMd5SidecarTotal: number;
+  unsupportedFileTotal: number;
   total: number;
   done: number;
   skipped: number;

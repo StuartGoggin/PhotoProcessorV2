@@ -131,6 +131,25 @@ pub fn append_app_log(app: &AppHandle, message: impl AsRef<str>) -> Result<(), S
     file.write_all(line.as_bytes()).map_err(|e| e.to_string())
 }
 
+pub fn append_log_line(path: &Path, line: impl AsRef<str>) -> Result<(), String> {
+    let _guard = log_write_guard().lock().map_err(|e| e.to_string())?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+
+    file.write_all(line.as_ref().as_bytes())
+        .and_then(|_| file.write_all(b"\n"))
+        .map_err(|e| e.to_string())
+}
+
 pub fn read_app_log(app: &AppHandle) -> Result<String, String> {
     let path = app_log_path(app);
     if !path.exists() {

@@ -158,6 +158,15 @@ export default function Jobs() {
     }
   }
 
+  async function revealPath(path: string) {
+    setError(null);
+    try {
+      await invoke("reveal_in_explorer", { path });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function pauseProcessJob(jobId: string) {
     setError(null);
     try {
@@ -329,6 +338,12 @@ export default function Jobs() {
                 <div className="flex items-center justify-between gap-4">
                   <div className="text-sm text-gray-200 font-medium">{job.id}</div>
                   <div className="flex items-center gap-2">
+                    <button className="btn-secondary" onClick={() => revealPath(job.logFilePath)}>
+                      Reveal Log
+                    </button>
+                    <button className="btn-secondary" onClick={() => revealPath(job.manifestFilePath)}>
+                      Reveal Manifest
+                    </button>
                     <div className="text-xs px-2 py-1 rounded bg-surface-700 text-gray-200">{job.status}</div>
                     {(job.status === "running" || job.status === "queued") && (
                       <button className="btn-secondary" onClick={() => pauseJob(job.id)}>
@@ -351,8 +366,14 @@ export default function Jobs() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-400">
                   <div>Source: <span className="text-gray-200 break-all">{job.sourceDir}</span></div>
                   <div>Staging: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
+                  <div>Log File: <span className="text-gray-200 break-all">{job.logFilePath}</span></div>
+                  <div>Manifest File: <span className="text-gray-200 break-all">{job.manifestFilePath}</span></div>
                   <div>Mode: <span className="text-gray-200">{job.reprocessExisting ? "reprocess" : "import"}</span></div>
                   <div>Speed: <span className="text-gray-200">{job.speedMbps.toFixed(1)} MB/s</span></div>
+                  <div>Source Files: <span className="text-gray-200">{job.sourceFileTotal}</span></div>
+                  <div>Ignored Metadata: <span className="text-gray-200">{job.ignoredFileTotal}</span></div>
+                  <div>Ignored Source .md5: <span className="text-gray-200">{job.ignoredLegacyMd5SidecarTotal}</span></div>
+                  <div>Unsupported: <span className="text-gray-200">{job.unsupportedFileTotal}</span></div>
                   <div>MD5 Sidecar: <span className="text-gray-200">{job.md5SidecarHits}</span></div>
                   <div>MD5 Computed: <span className="text-gray-200">{job.md5Computed}</span></div>
                 </div>
@@ -362,7 +383,7 @@ export default function Jobs() {
                     total={job.total || 1}
                     done={Math.min(job.done, job.total || 1)}
                     label={job.currentFile || ""}
-                    extra={`${doneLabel} • skipped ${job.skipped} • imported ${job.imported} • ${progress.toFixed(0)}%`}
+                    extra={`attempted ${doneLabel} of ${job.sourceFileTotal || job.total} counted files • ignored ${job.ignoredFileTotal} • unsupported ${job.unsupportedFileTotal} • skipped ${job.skipped} • imported ${job.imported} • ${progress.toFixed(0)}%`}
                   />
                   {job.currentFile && (
                     <div className="mt-1 text-xs text-gray-500 truncate">Current: {job.currentFile}</div>

@@ -92,6 +92,16 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
             <p className="text-xs text-gray-400">
               Job ID: <span className="font-mono">{job.id.slice(0, 8)}</span>
             </p>
+            {importJob?.logFilePath && (
+              <p className="text-xs text-gray-400 break-all">
+                Log File: <span className="font-mono text-gray-300">{importJob.logFilePath}</span>
+              </p>
+            )}
+            {importJob?.manifestFilePath && (
+              <p className="text-xs text-gray-400 break-all">
+                Manifest: <span className="font-mono text-gray-300">{importJob.manifestFilePath}</span>
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <div className={`text-xs px-2 py-1 rounded-full capitalize font-medium ${
@@ -149,6 +159,30 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
             </div>
           </div>
         </div>
+        {importJob && (
+          <div className="grid grid-cols-5 gap-2 text-xs mt-2">
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Source Files</div>
+              <div className="font-semibold text-white">{importJob.sourceFileTotal}</div>
+            </div>
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Attempted</div>
+              <div className="font-semibold text-white">{importJob.done}/{importJob.total}</div>
+            </div>
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Ignored</div>
+              <div className="font-semibold text-sky-300">{importJob.ignoredFileTotal}</div>
+            </div>
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Ignored .md5</div>
+              <div className="font-semibold text-cyan-300">{importJob.ignoredLegacyMd5SidecarTotal}</div>
+            </div>
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Unsupported</div>
+              <div className="font-semibold text-amber-300">{importJob.unsupportedFileTotal}</div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Errors section */}
@@ -171,11 +205,13 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
         </label>
         {hasLogs ? (
           <textarea
+            id="job-console-output"
             ref={textareaRef}
             readOnly
             value={job.logs.join("\n")}
-            className="flex-1 overflow-auto bg-gray-950 border border-surface-600 rounded px-3 py-2 text-xs text-green-300 font-mono"
-            style={{ resize: "none" }}
+            aria-label="Job console output"
+            title="Job console output"
+            className="job-console-textarea flex-1 overflow-auto bg-gray-950 border border-surface-600 rounded px-3 py-2 text-xs text-green-300 font-mono"
           />
         ) : (
           <div className="flex-1 bg-gray-950 border border-surface-600 rounded px-3 py-2 flex items-center justify-center">

@@ -50,3 +50,50 @@
     @apply text-white bg-surface-700 border-l-2 border-accent;
   }
 }
+
+.job-console-textarea {
+  resize: none;
+}
+
+.progress-native {
+  width: 100%;
+  height: 0.5rem;
+  border: 0;
+  border-radius: 9999px;
+  overflow: hidden;
+  appearance: none;
+  background-color: rgb(71 85 105 / 0.7);
+}
+
+.progress-native::-webkit-progress-bar {
+  background-color: rgb(71 85 105 / 0.7);
+  border-radius: 9999px;
+}
+
+.progress-native::-webkit-progress-value {
+  border-radius: 9999px;
+}
+
+.progress-native::-moz-progress-bar {
+  border-radius: 9999px;
+}
+
+.progress-accent::-webkit-progress-value,
+.progress-accent::-moz-progress-bar {
+  background-color: rgb(14 165 233);
+}
+
+.progress-emerald::-webkit-progress-value,
+.progress-emerald::-moz-progress-bar {
+  background-color: rgb(16 185 129);
+}
+
+.progress-amber::-webkit-progress-value,
+.progress-amber::-moz-progress-bar {
+  background-color: rgb(245 158 11);
+}
+
+.progress-blue::-webkit-progress-value,
+.progress-blue::-moz-progress-bar {
+  background-color: rgb(59 130 246);
+}

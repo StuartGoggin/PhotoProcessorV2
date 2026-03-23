@@ -2,7 +2,7 @@ mod commands;
 mod utils;
 
 use commands::{
-    files::{read_image_base64, rename_file},
+    files::{read_image_base64, rename_file, reveal_in_explorer},
     import::{
         abort_import_job, clear_finished_import_jobs, list_import_jobs, list_staging_tree,
         list_sd_cards, pause_import_job, resume_import_job, start_import, start_import_job,
@@ -58,6 +58,7 @@ pub fn run() {
             // Files (Review page)
             rename_file,
             read_image_base64,
+            reveal_in_explorer,
             // Logs
             read_log_file,
             clear_log_file,
