@@ -31,6 +31,7 @@ pub struct ProcessProgress {
     pub done: usize,
     pub current_file: String,
     pub phase: String,
+    pub speed_mbps: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +54,8 @@ pub enum ProcessTask {
     RemoveStabilize,
     ScanArchiveNaming,
     ApplyEventNaming,
+    Transfer,
+    VerifyChecksums,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +94,10 @@ pub struct ProcessJob {
     pub processed: usize,
     pub result_count: usize,
     pub current_file: String,
+    pub archive_dir: Option<String>,
+    pub conflict_report_path: Option<String>,
+    pub current_phase: Option<String>,
+    pub speed_mbps: Option<f64>,
     pub stabilization_mode: Option<StabilizationMode>,
     pub stabilization_strength: Option<StabilizationStrength>,
     pub preserve_source_bitrate: Option<bool>,
@@ -185,6 +192,7 @@ fn run_archive_naming_scan_task(
                     done: index,
                     current_file: current_file,
                     phase: task_label.to_string(),
+                    speed_mbps: None,
                 },
             );
 
@@ -293,6 +301,7 @@ fn run_archive_naming_scan_task(
                 done: scanned_directories,
                 current_file: "Done".to_string(),
                 phase: task_label.to_string(),
+                speed_mbps: None,
             },
         );
     }
@@ -304,12 +313,12 @@ fn run_archive_naming_scan_task(
     })
 }
 
-fn process_jobs_store() -> &'static Mutex<HashMap<String, ProcessJob>> {
+pub(crate) fn process_jobs_store() -> &'static Mutex<HashMap<String, ProcessJob>> {
     static STORE: OnceLock<Mutex<HashMap<String, ProcessJob>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn naming_requests_store() -> &'static Mutex<HashMap<String, ApplyEventNamingRequest>> {
+pub(crate) fn naming_requests_store() -> &'static Mutex<HashMap<String, ApplyEventNamingRequest>> {
     static STORE: OnceLock<Mutex<HashMap<String, ApplyEventNamingRequest>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -447,17 +456,17 @@ fn stabilization_load_policy(app: Option<&AppHandle>) -> StabilizeLoadPolicy {
     }
 }
 
-fn next_process_job_id() -> String {
+pub(crate) fn next_process_job_id() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     format!("process-job-{}", id)
 }
 
-fn now_string() -> String {
+pub(crate) fn now_string() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
-fn update_process_job(job_id: &str, mutator: impl FnOnce(&mut ProcessJob)) {
+pub(crate) fn update_process_job(job_id: &str, mutator: impl FnOnce(&mut ProcessJob)) {
     if let Ok(mut jobs) = process_jobs_store().lock() {
         if let Some(job) = jobs.get_mut(job_id) {
             mutator(job);
@@ -465,7 +474,7 @@ fn update_process_job(job_id: &str, mutator: impl FnOnce(&mut ProcessJob)) {
     }
 }
 
-fn append_process_job_log(job_id: &str, message: impl AsRef<str>) {
+pub(crate) fn append_process_job_log(job_id: &str, message: impl AsRef<str>) {
     let ts = now_string();
     update_process_job(job_id, |job| {
         job.logs.push(format!("[{}] {}", ts, message.as_ref()));
@@ -476,7 +485,7 @@ fn append_process_job_log(job_id: &str, message: impl AsRef<str>) {
     });
 }
 
-fn wait_if_process_paused_or_aborted(job_id: Option<&str>) -> bool {
+pub(crate) fn wait_if_process_paused_or_aborted(job_id: Option<&str>) -> bool {
     let Some(job_id) = job_id else { return false; };
 
     loop {
@@ -512,7 +521,7 @@ fn wait_if_process_paused_or_aborted(job_id: Option<&str>) -> bool {
     }
 }
 
-fn is_process_abort_requested(job_id: Option<&str>) -> bool {
+pub(crate) fn is_process_abort_requested(job_id: Option<&str>) -> bool {
     let Some(job_id) = job_id else { return false; };
     match process_jobs_store().lock() {
         Ok(jobs) => jobs
@@ -1034,6 +1043,7 @@ fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec
         ProcessTask::Stabilize => collect_mp4s(dir, recursive),
         ProcessTask::RemoveStabilize => collect_named_outputs(dir, recursive, "_stabilized", "mp4"),
         ProcessTask::ScanArchiveNaming | ProcessTask::ApplyEventNaming => vec![],
+        ProcessTask::Transfer | ProcessTask::VerifyChecksums => vec![],
     }
 }
 
@@ -1685,6 +1695,8 @@ fn task_name(task: &ProcessTask) -> &'static str {
         ProcessTask::RemoveStabilize => "remove_stabilize",
         ProcessTask::ScanArchiveNaming => "scan_archive_naming",
         ProcessTask::ApplyEventNaming => "apply_event_naming",
+        ProcessTask::Transfer => "transfer",
+        ProcessTask::VerifyChecksums => "verify_checksums",
     }
 }
 
@@ -1700,6 +1712,8 @@ fn task_result_label(task: &ProcessTask) -> &'static str {
         ProcessTask::RemoveStabilize => "removed",
         ProcessTask::ScanArchiveNaming => "matched",
         ProcessTask::ApplyEventNaming => "renamed",
+        ProcessTask::Transfer => "transferred",
+        ProcessTask::VerifyChecksums => "verified",
     }
 }
 
@@ -1897,6 +1911,7 @@ fn run_event_naming_task(
                 done: index + 1,
                 current_file: renamed.new_name.clone(),
                 phase: task_label.to_string(),
+                speed_mbps: None,
             },
         );
     }
@@ -2257,6 +2272,7 @@ fn run_process_task(
                     }
                     ProcessTask::ScanArchiveNaming => {}
                     ProcessTask::ApplyEventNaming => {}
+                    ProcessTask::Transfer | ProcessTask::VerifyChecksums => {}
                 }
                 Ok(())
             })();
@@ -2283,6 +2299,7 @@ fn run_process_task(
                     done: done as usize,
                     current_file: current_file.clone(),
                     phase: task_name(&task_clone).to_string(),
+                    speed_mbps: None,
                 },
             );
 
@@ -2362,6 +2379,7 @@ pub fn start_process_job(
         "stabilize" => ProcessTask::Stabilize,
         "remove_stabilize" => ProcessTask::RemoveStabilize,
         "scan_archive_naming" => ProcessTask::ScanArchiveNaming,
+        "transfer" | "verify_checksums" => return Err("Use start_transfer or verify_checksums commands directly".to_string()),
         _ => return Err(format!("Unknown process task: {}", task)),
     };
 
@@ -2423,6 +2441,10 @@ pub fn start_process_job(
         processed: 0,
         result_count: 0,
         current_file: "Queued".to_string(),
+        archive_dir: None,
+        conflict_report_path: None,
+        current_phase: None,
+        speed_mbps: None,
         stabilization_mode: queued_stabilization_mode,
         stabilization_strength: queued_stabilization_strength,
         preserve_source_bitrate: queued_preserve_source_bitrate,
@@ -2530,7 +2552,11 @@ pub fn start_event_naming_job(
     request: ApplyEventNamingRequest,
 ) -> Result<String, String> {
     let job_id = next_process_job_id();
-    let selected_count = request.directories.len();
+    let selected_count = if request.assignments.is_empty() {
+        request.directories.len()
+    } else {
+        request.assignments.len()
+    };
 
     let job = ProcessJob {
         id: job_id.clone(),
@@ -2547,6 +2573,10 @@ pub fn start_event_naming_job(
         processed: 0,
         result_count: 0,
         current_file: "Queued".to_string(),
+        archive_dir: None,
+        conflict_report_path: None,
+        current_phase: None,
+        speed_mbps: None,
         stabilization_mode: None,
         stabilization_strength: None,
         preserve_source_bitrate: None,

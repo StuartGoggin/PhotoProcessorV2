@@ -31,6 +31,17 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   remove_stabilize: "Remove Stabilised MP4s",
   scan_archive_naming: "Archive Naming Scan",
   apply_event_naming: "Apply Event Naming",
+  transfer: "Transfer to NAS",
+  verify_checksums: "Verify Checksums",
+};
+
+const PROCESS_PHASE_LABELS: Record<string, string> = {
+  transfer_copy: "Copying files to archive",
+  transfer_md5: "Generating transfer checksums",
+  transfer_manifest: "Writing transfer manifest",
+  transfer_master_manifest: "Updating master checksum manifest",
+  verify_checksums: "Verifying checksum manifest",
+  done: "Completed",
 };
 
 interface JobConsoleProps {
@@ -59,6 +70,7 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
   const processJob = isProcessJob(job) ? job : null;
   const importJob = !isProcessJob(job) ? job : null;
   const taskLabel = processJob ? PROCESS_TASK_LABELS[processJob.task] : "Import";
+  const processPhaseLabel = processJob?.currentPhase ? PROCESS_PHASE_LABELS[processJob.currentPhase] ?? processJob.currentPhase : null;
   const hasLogs = job.logs && job.logs.length > 0;
   const stabilizationModeLabel =
     processJob && processJob.task === "stabilize" && processJob.stabilizationMode
@@ -102,6 +114,9 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
             )}
             {threadingLabel && (
               <p className="text-xs text-cyan-200/90 mt-0.5">Threading in use: {threadingLabel}</p>
+            )}
+            {processPhaseLabel && (
+              <p className="text-xs text-amber-300 mt-0.5">Phase: {processPhaseLabel}</p>
             )}
             <p className="text-xs text-gray-400">
               Job ID: <span className="font-mono">{job.id.slice(0, 8)}</span>

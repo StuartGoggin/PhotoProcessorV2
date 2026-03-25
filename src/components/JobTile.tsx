@@ -24,6 +24,8 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   remove_stabilize: "Remove Stabilize",
   scan_archive_naming: "Archive Scan",
   apply_event_naming: "Name Folders",
+  transfer: "Transfer to NAS",
+  verify_checksums: "Verify Checksums",
 };
 
 const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {
@@ -81,6 +83,10 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
       ? "Archive library"
       : processJob.task === "apply_event_naming"
         ? "Queued rename"
+        : processJob.task === "transfer"
+          ? processJob.archiveDir ?? "Archive copy"
+          : processJob.task === "verify_checksums"
+            ? processJob.archiveDir ?? "Checksum verification"
       : processJob.scopeMode
     : importJob?.reprocessExisting ? "Reprocess" : "Import";
   const duration = formatDuration(job.startedAt, job.finishedAt);

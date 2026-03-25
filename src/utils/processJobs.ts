@@ -4,6 +4,10 @@ export function getProcessAttemptLabel(task: ProcessJob["task"]): string {
   switch (task) {
     case "scan_archive_naming":
       return "Scanned";
+    case "transfer":
+      return "Copied";
+    case "verify_checksums":
+      return "Checked";
     default:
       return "Processed";
   }
@@ -31,6 +35,10 @@ export function getProcessResultLabel(task: ProcessJob["task"]): string {
       return "Matched";
     case "apply_event_naming":
       return "Renamed";
+    case "transfer":
+      return "Checksummed";
+    case "verify_checksums":
+      return "Verified";
     default:
       return "Result";
   }

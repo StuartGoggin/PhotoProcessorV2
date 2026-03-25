@@ -29,6 +29,8 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   remove_stabilize: "Remove Stabilised MP4s",
   scan_archive_naming: "Archive Naming Scan",
   apply_event_naming: "Apply Event Naming",
+  transfer: "Transfer to NAS",
+  verify_checksums: "Verify Checksums",
 };
 
 const PROCESS_SCOPE_LABELS: Record<ProcessJob["scopeMode"], string> = {

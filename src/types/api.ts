@@ -56,6 +56,12 @@ export interface ScanEventNamingLibraryResult {
   discoveredDirectories: number;
 }
 
+export interface PrefillEventNamingFromArchiveResult {
+  catalog: EventNamingCatalog;
+  matchedDirectories: number;
+  assignments: EventNamingAssignment[];
+}
+
 export interface EventDayDirectory {
   path: string;
   relativePath: string;
@@ -73,6 +79,27 @@ export interface RenamedEventDirectory {
   oldName: string;
   newName: string;
   day: number;
+}
+
+export interface EventNamingAssignment {
+  directory: string;
+  eventType: string;
+  location: string;
+  source?: "manual" | "archive_prefill";
+  targetName?: string;
+  peopleTags: string[];
+  groupTags: string[];
+  generalTags: string[];
+}
+
+export interface ApplyEventNamingRequest {
+  directories: string[];
+  eventType: string;
+  location: string;
+  peopleTags: string[];
+  groupTags: string[];
+  generalTags: string[];
+  assignments: EventNamingAssignment[];
 }
 
 export interface ApplyEventNamingResult {
@@ -116,6 +143,7 @@ export interface ProcessProgress {
   done: number;
   current_file: string;
   phase: string;
+  speed_mbps?: number | null;
 }
 
 export interface ProcessResult {
@@ -124,7 +152,7 @@ export interface ProcessResult {
   errors: string[];
 }
 
-export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming";
+export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums";
 
 export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly";
 
@@ -149,6 +177,10 @@ export interface ProcessJob {
   processed: number;
   resultCount: number;
   currentFile: string;
+  archiveDir?: string;
+  conflictReportPath?: string;
+  currentPhase?: string;
+  speedMbps?: number | null;
   stabilizationMode?: StabilizationMode;
   stabilizationStrength?: StabilizationStrength;
   preserveSourceBitrate?: boolean;

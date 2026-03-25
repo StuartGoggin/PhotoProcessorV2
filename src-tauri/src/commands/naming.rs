@@ -51,6 +51,24 @@ pub struct EventDayDirectory {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EventNamingAssignment {
+    pub directory: String,
+    pub event_type: String,
+    pub location: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub target_name: Option<String>,
+    #[serde(default)]
+    pub people_tags: Vec<String>,
+    #[serde(default)]
+    pub group_tags: Vec<String>,
+    #[serde(default)]
+    pub general_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApplyEventNamingRequest {
     pub directories: Vec<String>,
     pub event_type: String,
@@ -61,6 +79,8 @@ pub struct ApplyEventNamingRequest {
     pub group_tags: Vec<String>,
     #[serde(default)]
     pub general_tags: Vec<String>,
+    #[serde(default)]
+    pub assignments: Vec<EventNamingAssignment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +114,14 @@ pub struct ApplyEventNamingResult {
 pub struct ScanEventNamingLibraryResult {
     pub catalog: EventNamingCatalog,
     pub discovered_directories: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrefillEventNamingFromArchiveResult {
+    pub catalog: EventNamingCatalog,
+    pub matched_directories: usize,
+    pub assignments: Vec<EventNamingAssignment>,
 }
 
 fn naming_catalog_path(app: &AppHandle) -> PathBuf {
@@ -260,6 +288,100 @@ fn parse_named_directory(name: &str) -> Option<ParsedEventNaming> {
     })
 }
 
+fn strip_wrapped_segments(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    for ch in value.chars() {
+        match ch {
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            _ if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+
+    out
+}
+
+fn collapse_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn clean_naming_component(value: &str) -> String {
+    let stripped = strip_wrapped_segments(value)
+        .replace('_', " ")
+        .replace("–", "-")
+        .replace("—", "-");
+    let trimmed = stripped
+        .trim()
+        .trim_matches(|ch: char| ch.is_ascii_punctuation() || ch.is_whitespace());
+    collapse_whitespace(trimmed)
+}
+
+fn parse_legacy_named_directory(name: &str) -> Option<ParsedEventNaming> {
+    let day = parse_day_prefix(name)?;
+    let mut remainder = name.trim_start();
+    let day_prefix = format!("{:02}", day);
+    if let Some(stripped) = remainder.strip_prefix(&day_prefix) {
+        remainder = stripped;
+    } else if let Some(stripped) = remainder.strip_prefix(&day.to_string()) {
+        remainder = stripped;
+    }
+
+    remainder = remainder.trim_start_matches(|ch: char| ch == '-' || ch == '_' || ch == ' ');
+    if remainder.is_empty() {
+        return None;
+    }
+
+    let normalized = remainder
+        .replace(" — ", " - ")
+        .replace(" – ", " - ")
+        .replace(" | ", " - ");
+    let parts = normalized
+        .split(" - ")
+        .map(clean_naming_component)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    let event_type = parts.first().cloned().unwrap_or_default();
+    let location = parts.get(1).cloned().unwrap_or_default();
+    let tags = if parts.len() > 2 {
+        parts[2..]
+            .join(", ")
+            .split(',')
+            .map(clean_naming_component)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
+
+    if event_type.is_empty() && location.is_empty() && tags.is_empty() {
+        return None;
+    }
+
+    Some(ParsedEventNaming {
+        event_type,
+        location,
+        tags,
+    })
+}
+
+fn parse_archive_directory_for_prefill(name: &str) -> Option<ParsedEventNaming> {
+    parse_named_directory(name).or_else(|| parse_legacy_named_directory(name))
+}
+
 fn categorize_scanned_tag(tag: &str) -> &'static str {
     let lower = tag.to_ascii_lowercase();
     if ["team", "club", "family", "crew", "squad", "school"]
@@ -391,6 +513,80 @@ pub(crate) fn scan_catalog_entry(
     ))
 }
 
+fn matching_archive_day_directory(archive_root: &Path, year: u32, month: u32, day: u32) -> Option<PathBuf> {
+    let month_dir = archive_root.join(year.to_string()).join(format!("{:02}", month));
+    if !month_dir.exists() || !month_dir.is_dir() {
+        return None;
+    }
+
+    let mut candidates = fs::read_dir(month_dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let parsed_day = parse_day_prefix(&name)?;
+            (parsed_day == day).then_some(entry.path())
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+#[tauri::command]
+pub fn prefill_event_naming_from_archive(
+    app: AppHandle,
+    staging_dir: String,
+    archive_dir: String,
+) -> Result<PrefillEventNamingFromArchiveResult, String> {
+    let staging_directories = list_event_day_directories(staging_dir)?;
+    let archive_root = PathBuf::from(&archive_dir);
+    let catalog = load_catalog_internal(&app).unwrap_or_default();
+    let mut assignments = Vec::<EventNamingAssignment>::new();
+
+    for directory in staging_directories.into_iter().filter(|directory| !directory.has_custom_name) {
+        let Some(archive_match) = matching_archive_day_directory(&archive_root, directory.year, directory.month, directory.day) else {
+            continue;
+        };
+
+        let Some(archive_name) = archive_match.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Some(parsed) = parse_archive_directory_for_prefill(archive_name) else {
+            continue;
+        };
+
+        let mut people_tags = Vec::<String>::new();
+        let mut group_tags = Vec::<String>::new();
+        let mut general_tags = Vec::<String>::new();
+        for tag in parsed.tags {
+            match categorize_scanned_tag(&tag) {
+                "person" => people_tags.push(tag),
+                "group" => group_tags.push(tag),
+                _ => general_tags.push(tag),
+            }
+        }
+
+        assignments.push(EventNamingAssignment {
+            directory: directory.path,
+            event_type: parsed.event_type,
+            location: parsed.location,
+            source: Some("archive_prefill".to_string()),
+            target_name: Some(archive_name.to_string()),
+            people_tags,
+            group_tags,
+            general_tags,
+        });
+    }
+
+    Ok(PrefillEventNamingFromArchiveResult {
+        catalog,
+        matched_directories: assignments.len(),
+        assignments,
+    })
+}
+
 pub(crate) fn scan_catalog_from_root<F>(
     mut catalog: EventNamingCatalog,
     root: &Path,
@@ -418,15 +614,45 @@ where
 pub(crate) fn build_event_naming_plans(
     request: &ApplyEventNamingRequest,
 ) -> Result<Vec<EventNamingPlan>, String> {
-    if request.directories.is_empty() {
+    let requested_directories = if request.assignments.is_empty() {
+        request.directories.len()
+    } else {
+        request.assignments.len()
+    };
+    if requested_directories == 0 {
         return Err("No directories selected".to_string());
     }
 
     let mut plans = Vec::<EventNamingPlan>::new();
     let mut seen_targets = HashSet::<String>::new();
+    let mut seen_sources = HashSet::<String>::new();
 
-    for directory in &request.directories {
-        let old_path = PathBuf::from(directory);
+    let assignments = if request.assignments.is_empty() {
+        request
+            .directories
+            .iter()
+            .map(|directory| EventNamingAssignment {
+                directory: directory.clone(),
+                event_type: request.event_type.clone(),
+                location: request.location.clone(),
+                source: Some("manual".to_string()),
+                target_name: None,
+                people_tags: request.people_tags.clone(),
+                group_tags: request.group_tags.clone(),
+                general_tags: request.general_tags.clone(),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        request.assignments.clone()
+    };
+
+    for assignment in assignments {
+        let source_key = assignment.directory.to_ascii_lowercase();
+        if !seen_sources.insert(source_key) {
+            return Err(format!("Duplicate directory assignment: {}", assignment.directory));
+        }
+
+        let old_path = PathBuf::from(&assignment.directory);
         if !old_path.exists() || !old_path.is_dir() {
             return Err(format!("Directory does not exist: {}", old_path.display()));
         }
@@ -438,14 +664,21 @@ pub(crate) fn build_event_naming_plans(
             .to_string();
         let day = parse_day_prefix(&old_name)
             .ok_or_else(|| format!("Could not determine day from directory name: {}", old_name))?;
-        let new_name = format_event_directory_name_from_categories(
-            day,
-            &request.event_type,
-            &request.location,
-            &request.people_tags,
-            &request.group_tags,
-            &request.general_tags,
-        );
+        let new_name = assignment
+            .target_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                format_event_directory_name_from_categories(
+                    day,
+                    &assignment.event_type,
+                    &assignment.location,
+                    &assignment.people_tags,
+                    &assignment.group_tags,
+                    &assignment.general_tags,
+                )
+            });
 
         let parent = old_path
             .parent()
@@ -505,14 +738,28 @@ pub(crate) fn merge_event_naming_request_into_catalog(
     app: &AppHandle,
     request: &ApplyEventNamingRequest,
 ) -> Result<EventNamingCatalog, String> {
-    let catalog = merge_catalog_values(
-        load_catalog_internal(app).unwrap_or_default(),
-        &request.event_type,
-        &request.location,
-        &request.people_tags,
-        &request.group_tags,
-        &request.general_tags,
-    );
+    let mut catalog = load_catalog_internal(app).unwrap_or_default();
+    if request.assignments.is_empty() {
+        catalog = merge_catalog_values(
+            catalog,
+            &request.event_type,
+            &request.location,
+            &request.people_tags,
+            &request.group_tags,
+            &request.general_tags,
+        );
+    } else {
+        for assignment in &request.assignments {
+            catalog = merge_catalog_values(
+                catalog,
+                &assignment.event_type,
+                &assignment.location,
+                &assignment.people_tags,
+                &assignment.group_tags,
+                &assignment.general_tags,
+            );
+        }
+    }
     save_catalog_internal(app, &catalog)?;
     Ok(catalog)
 }

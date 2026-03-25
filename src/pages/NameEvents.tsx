@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ApplyEventNamingRequest,
   EventDayDirectory,
+  EventNamingAssignment,
   EventNamingCatalog,
+  PrefillEventNamingFromArchiveResult,
   ProcessJob,
 } from "../types";
 import { useJobsMonitor, useSettings } from "../hooks";
@@ -21,6 +24,14 @@ type DirectoryTreeYear = {
   year: number;
   label: string;
   months: DirectoryTreeMonth[];
+};
+
+type NamingDraftValues = {
+  eventType: string;
+  location: string;
+  peopleTags: string[];
+  groupTags: string[];
+  generalTags: string[];
 };
 
 function normalizeTagList(tags: string[]): string[] {
@@ -186,6 +197,93 @@ function EditableStringListSection({
   );
 }
 
+function filterLookupOptions(options: string[], rawInput: string): string[] {
+  const input = rawInput.trim().toLowerCase();
+  const uniqueOptions = [...new Set(options.map((option) => option.trim()).filter(Boolean))];
+
+  if (!input) {
+    return uniqueOptions.slice(0, 8);
+  }
+
+  return uniqueOptions
+    .filter((option) => option.toLowerCase().includes(input))
+    .sort((left, right) => {
+      const leftValue = left.toLowerCase();
+      const rightValue = right.toLowerCase();
+      const leftStarts = leftValue.startsWith(input) ? 0 : 1;
+      const rightStarts = rightValue.startsWith(input) ? 0 : 1;
+      if (leftStarts !== rightStarts) {
+        return leftStarts - rightStarts;
+      }
+      return left.localeCompare(right);
+    })
+    .slice(0, 8);
+}
+
+function LookupInput({
+  value,
+  placeholder,
+  title,
+  widthClass,
+  options,
+  open,
+  onFocus,
+  onBlur,
+  onChange,
+  onSelect,
+  onCommit,
+}: {
+  value: string;
+  placeholder: string;
+  title: string;
+  widthClass: string;
+  options: string[];
+  open: boolean;
+  onFocus: () => void;
+  onBlur: () => void;
+  onChange: (value: string) => void;
+  onSelect: (value: string) => void;
+  onCommit: () => void;
+}) {
+  return (
+    <div className={`relative ${widthClass}`}>
+      <input
+        type="text"
+        className="input-field h-9 w-full"
+        value={value}
+        onFocus={onFocus}
+        onBlur={onBlur}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === "Tab") {
+            onCommit();
+          }
+        }}
+        placeholder={placeholder}
+        title={title}
+        autoComplete="off"
+      />
+      {open && options.length > 0 && (
+        <div className="absolute left-0 right-0 top-[calc(100%+0.25rem)] z-20 overflow-hidden rounded-lg border border-surface-600 bg-gray-950 shadow-xl shadow-black/30">
+          {options.map((option) => (
+            <button
+              key={option}
+              type="button"
+              className="block w-full border-b border-surface-800 px-3 py-2 text-left text-xs text-gray-200 hover:bg-surface-800 last:border-b-0"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onSelect(option);
+              }}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function pct(done: number, total: number): number {
   if (total <= 0) {
     return 0;
@@ -219,6 +317,12 @@ export default function NameEvents() {
   const [queuedArchiveScanJobId, setQueuedArchiveScanJobId] = useState<string | null>(null);
   const [queueingNamingJob, setQueueingNamingJob] = useState(false);
   const [queuedNamingJobId, setQueuedNamingJobId] = useState<string | null>(null);
+  const [plannedAssignments, setPlannedAssignments] = useState<Record<string, EventNamingAssignment>>({});
+  const [lastCheckedPath, setLastCheckedPath] = useState<string | null>(null);
+  const [showPlannedOnly, setShowPlannedOnly] = useState(false);
+  const [persistingLookup, setPersistingLookup] = useState(false);
+  const [eventLookupOpen, setEventLookupOpen] = useState(false);
+  const [locationLookupOpen, setLocationLookupOpen] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { processJobs } = useJobsMonitor(true, 1000);
@@ -281,6 +385,15 @@ export default function NameEvents() {
   }, [directories]);
 
   useEffect(() => {
+    const validPaths = new Set(directories.map((directory) => directory.path));
+    setSelectedPaths((current) => current.filter((path) => validPaths.has(path)));
+    setPlannedAssignments((current) =>
+      Object.fromEntries(Object.entries(current).filter(([path]) => validPaths.has(path))),
+    );
+    setActiveComposerPath((current) => (current && validPaths.has(current) ? current : null));
+  }, [directories]);
+
+  useEffect(() => {
     if (!queuedArchiveScanJobId) {
       return;
     }
@@ -329,36 +442,65 @@ export default function NameEvents() {
     }
   }, [processJobs, queuedNamingJobId]);
 
+  const visibleDirectories = useMemo(
+    () => directories.filter((directory) => !showPlannedOnly || Boolean(plannedAssignments[directory.path])),
+    [directories, plannedAssignments, showPlannedOnly],
+  );
+
   const selectedDirectories = useMemo(() => {
     const selected = new Set(selectedPaths);
     return directories.filter((directory) => selected.has(directory.path));
   }, [directories, selectedPaths]);
 
-  const previewRows = useMemo(
-    () => selectedDirectories.map((directory) => ({
+  const activeComposerDirectory = useMemo(
+    () => directories.find((directory) => directory.path === activeComposerPath) ?? null,
+    [activeComposerPath, directories],
+  );
+
+  const draftSelection = useMemo(
+    () => (selectedDirectories.length > 0 ? selectedDirectories : activeComposerDirectory ? [activeComposerDirectory] : []),
+    [activeComposerDirectory, selectedDirectories],
+  );
+
+  const plannedRows = useMemo(
+    () => directories
+      .filter((directory) => plannedAssignments[directory.path])
+      .map((directory) => {
+        const assignment = plannedAssignments[directory.path];
+        return {
+          ...directory,
+          assignment,
+          previewName: getAssignmentPreviewName(directory.day, assignment),
+        };
+      }),
+    [directories, plannedAssignments],
+  );
+
+  const draftPreviewRows = useMemo(
+    () => draftSelection.map((directory) => ({
       ...directory,
       previewName: formatPreviewName(directory.day, eventType, location, peopleTags, groupTags, generalTags),
     })),
-    [selectedDirectories, eventType, location, peopleTags, groupTags, generalTags],
+    [draftSelection, eventType, location, peopleTags, groupTags, generalTags],
   );
 
-  const firstSelectedDirectory = useMemo(
-    () => [...selectedDirectories].sort((a, b) => a.dateKey.localeCompare(b.dateKey))[0] ?? null,
-    [selectedDirectories],
+  const suggestionAnchorDirectory = useMemo(
+    () => activeComposerDirectory ?? [...selectedDirectories].sort((a, b) => a.dateKey.localeCompare(b.dateKey))[0] ?? null,
+    [activeComposerDirectory, selectedDirectories],
   );
 
   const previousDaySuggestion = useMemo(() => {
-    if (!firstSelectedDirectory) {
+    if (!suggestionAnchorDirectory) {
       return null;
     }
 
-    const index = directories.findIndex((directory) => directory.path === firstSelectedDirectory.path);
+    const index = directories.findIndex((directory) => directory.path === suggestionAnchorDirectory.path);
     if (index <= 0) {
       return null;
     }
 
     const previous = directories[index - 1];
-    if (!previous.hasCustomName || !isConsecutiveDay(previous.dateKey, firstSelectedDirectory.dateKey)) {
+    if (!previous.hasCustomName || !isConsecutiveDay(previous.dateKey, suggestionAnchorDirectory.dateKey)) {
       return null;
     }
 
@@ -371,10 +513,10 @@ export default function NameEvents() {
       label: `Use previous day naming from ${previous.dateKey}`,
       ...parsed,
     };
-  }, [catalog, directories, firstSelectedDirectory]);
+  }, [catalog, directories, suggestionAnchorDirectory]);
 
   const holidaySuggestion = useMemo(() => {
-    if (selectedDirectories.some((directory) => directory.month === 12 && directory.day === 25)) {
+    if (draftSelection.some((directory) => directory.month === 12 && directory.day === 25)) {
       return {
         label: "Use Christmas suggestion",
         eventType: "Christmas",
@@ -386,7 +528,7 @@ export default function NameEvents() {
     }
 
     return null;
-  }, [selectedDirectories]);
+  }, [draftSelection]);
 
   const archiveScanJobs = useMemo(
     () => processJobs.filter((job) => job.task === "scan_archive_naming").sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
@@ -399,20 +541,69 @@ export default function NameEvents() {
 
   const latestArchiveScanJob = archiveScanJobs[0] ?? null;
   const latestNamingJob = namingJobs[0] ?? null;
-  const directoryTree = useMemo(() => buildDirectoryTree(directories), [directories]);
-  const activeComposerDirectory = useMemo(
-    () => directories.find((directory) => directory.path === activeComposerPath) ?? null,
-    [activeComposerPath, directories],
+  const directoryTree = useMemo(() => buildDirectoryTree(visibleDirectories), [visibleDirectories]);
+  const currentEventTypeDefinition = useMemo(
+    () => catalog.eventTypes.find((item) => item.name.toLowerCase() === eventType.trim().toLowerCase()) ?? null,
+    [catalog.eventTypes, eventType],
+  );
+  const matchingEventTypes = useMemo(
+    () => filterLookupOptions(catalog.eventTypes.map((item) => item.name), eventType),
+    [catalog.eventTypes, eventType],
+  );
+  const locationOptions = useMemo(() => {
+    if (currentEventTypeDefinition) {
+      return currentEventTypeDefinition.locations;
+    }
+
+    const partialMatches = catalog.eventTypes.filter((item) => item.name.toLowerCase().includes(eventType.trim().toLowerCase()));
+    if (partialMatches.length === 1) {
+      return partialMatches[0].locations;
+    }
+
+    return [];
+  }, [catalog.eventTypes, currentEventTypeDefinition, eventType]);
+  const matchingLocations = useMemo(
+    () => filterLookupOptions(locationOptions, location),
+    [locationOptions, location],
   );
   const libraryDirty = useMemo(
     () => JSON.stringify(libraryDraft) !== JSON.stringify(catalog),
     [libraryDraft, catalog],
   );
 
-  function toggleDirectory(path: string) {
-    setSelectedPaths((current) =>
-      current.includes(path) ? current.filter((value) => value !== path) : [...current, path],
-    );
+  function toggleDirectory(path: string, checked: boolean, useRange = false) {
+    const visibleIndex = visibleDirectories.findIndex((directory) => directory.path === path);
+
+    setSelectedPaths((current) => {
+      if (useRange && lastCheckedPath) {
+        const anchorIndex = visibleDirectories.findIndex((directory) => directory.path === lastCheckedPath);
+        if (anchorIndex >= 0 && visibleIndex >= 0) {
+          const start = Math.min(anchorIndex, visibleIndex);
+          const end = Math.max(anchorIndex, visibleIndex);
+          const rangePaths = visibleDirectories.slice(start, end + 1).map((directory) => directory.path);
+          const nextSet = new Set(current);
+          for (const rangePath of rangePaths) {
+            if (checked) {
+              nextSet.add(rangePath);
+            } else {
+              nextSet.delete(rangePath);
+            }
+          }
+          return directories.filter((directory) => nextSet.has(directory.path)).map((directory) => directory.path);
+        }
+      }
+
+      if (checked) {
+        if (current.includes(path)) {
+          return current;
+        }
+        return [...current, path];
+      }
+
+      return current.filter((value) => value !== path);
+    });
+
+    setLastCheckedPath(path);
   }
 
   function toggleYear(yearId: string) {
@@ -427,22 +618,51 @@ export default function NameEvents() {
     setActiveComposerPath((current) => (current === directory.path ? null : directory.path));
   }
 
+  function createCurrentAssignment(directoryPath: string): EventNamingAssignment {
+    return {
+      directory: directoryPath,
+      eventType: eventType.trim(),
+      location: location.trim(),
+      source: "manual",
+      targetName: undefined,
+      peopleTags: normalizeTagList(peopleTags),
+      groupTags: normalizeTagList(groupTags),
+      generalTags: normalizeTagList(generalTags),
+    };
+  }
+
+  function loadDraftValues(values: NamingDraftValues) {
+    setEventType(values.eventType);
+    setLocation(values.location);
+    setPeopleTags(values.peopleTags);
+    setGroupTags(values.groupTags);
+    setGeneralTags(values.generalTags);
+  }
+
   function selectOnlyDirectory(path: string) {
     setSelectedPaths([path]);
+    setLastCheckedPath(path);
   }
 
   function clearSelection() {
     setSelectedPaths([]);
+    setLastCheckedPath(null);
+  }
+
+  function clearNamingPlan() {
+    setPlannedAssignments({});
+    setMessage("Cleared the queued naming plan.");
+    setError(null);
   }
 
   function selectConsecutiveDays() {
-    if (selectedPaths.length === 0) {
-      setError("Select at least one day folder first.");
+    const anchorPath = activeComposerPath ?? selectedPaths[0];
+    if (!anchorPath) {
+      setError("Focus a day or check at least one day folder first.");
       return;
     }
 
-    const selected = new Set(selectedPaths);
-    const firstIndex = directories.findIndex((directory) => selected.has(directory.path));
+    const firstIndex = directories.findIndex((directory) => directory.path === anchorPath);
     if (firstIndex < 0) {
       return;
     }
@@ -458,6 +678,37 @@ export default function NameEvents() {
     }
 
     setSelectedPaths(nextSelection);
+  }
+
+  function applyDraftToCheckedDays() {
+    if (draftSelection.length === 0) {
+      setError("Focus a day or check one or more days before applying the draft.");
+      return;
+    }
+
+    const nextAssignment = createCurrentAssignment(draftSelection[0].path);
+    setPlannedAssignments((current) => {
+      const next = { ...current };
+      for (const directory of draftSelection) {
+        next[directory.path] = {
+          ...nextAssignment,
+          directory: directory.path,
+        };
+      }
+      return next;
+    });
+    setMessage(
+      `Added ${draftSelection.length} day folder${draftSelection.length === 1 ? "" : "s"} to the naming plan.`,
+    );
+    setError(null);
+  }
+
+  function removePlannedDay(path: string) {
+    setPlannedAssignments((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
   }
 
   function addTag(value: string, currentValues: string[], setValues: (next: string[]) => void, clearInput: () => void) {
@@ -483,11 +734,73 @@ export default function NameEvents() {
     groupTags: string[];
     generalTags: string[];
   }) {
-    setEventType(suggestion.eventType);
-    setLocation(suggestion.location);
-    setPeopleTags(suggestion.peopleTags);
-    setGroupTags(suggestion.groupTags);
-    setGeneralTags(suggestion.generalTags);
+    loadDraftValues({
+      eventType: suggestion.eventType,
+      location: suggestion.location,
+      peopleTags: suggestion.peopleTags,
+      groupTags: suggestion.groupTags,
+      generalTags: suggestion.generalTags,
+    });
+  }
+
+  async function persistEventLocationLookup(nextEventType: string, nextLocation: string) {
+    const cleanEventType = nextEventType.trim();
+    const cleanLocation = nextLocation.trim();
+    if (!cleanEventType) {
+      return;
+    }
+
+    const existingEvent = catalog.eventTypes.find((item) => item.name.toLowerCase() === cleanEventType.toLowerCase());
+    const eventAlreadyExists = Boolean(existingEvent);
+    const locationAlreadyExists = !cleanLocation || existingEvent?.locations.some((item) => item.toLowerCase() === cleanLocation.toLowerCase());
+    if (eventAlreadyExists && locationAlreadyExists) {
+      return;
+    }
+
+    const nextCatalog = cloneCatalog(catalog);
+    if (existingEvent) {
+      if (cleanLocation && !locationAlreadyExists) {
+        existingEvent.locations = normalizeTagList([...existingEvent.locations, cleanLocation]);
+      }
+    } else {
+      nextCatalog.eventTypes.push({
+        name: cleanEventType,
+        locations: cleanLocation ? [cleanLocation] : [],
+      });
+      nextCatalog.eventTypes.sort((left, right) => left.name.localeCompare(right.name));
+    }
+
+    setPersistingLookup(true);
+    try {
+      const saved = await invoke<EventNamingCatalog>("save_event_naming_catalog", { catalog: nextCatalog });
+      setCatalog(saved);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setPersistingLookup(false);
+    }
+  }
+
+  function handleEventTypeSelect(nextValue: string) {
+    setEventType(nextValue);
+    setEventLookupOpen(false);
+    void persistEventLocationLookup(nextValue, location);
+  }
+
+  function handleLocationSelect(nextValue: string) {
+    setLocation(nextValue);
+    setLocationLookupOpen(false);
+    void persistEventLocationLookup(eventType, nextValue);
+  }
+
+  function commitEventLookup() {
+    setEventLookupOpen(false);
+    void persistEventLocationLookup(eventType, location);
+  }
+
+  function commitLocationLookup() {
+    setLocationLookupOpen(false);
+    void persistEventLocationLookup(eventType, location);
   }
 
   function updateLibraryDraft(mutator: (draft: EventNamingCatalog) => void) {
@@ -559,21 +872,31 @@ export default function NameEvents() {
   }
 
   function loadDirectoryIntoComposer(directory: EventDayDirectory) {
-    const parsed = parseNamedDirectory(directory.name, catalog);
-    if (!parsed) {
-      setEventType("");
-      setLocation("");
-      setPeopleTags([]);
-      setGroupTags([]);
-      setGeneralTags([]);
+    const planned = plannedAssignments[directory.path];
+    if (planned) {
+      loadDraftValues(assignmentToDraftValues(planned));
       return;
     }
 
-    setEventType(parsed.eventType);
-    setLocation(parsed.location);
-    setPeopleTags(parsed.peopleTags);
-    setGroupTags(parsed.groupTags);
-    setGeneralTags(parsed.generalTags);
+    const parsed = parseNamedDirectory(directory.name, catalog);
+    if (!parsed) {
+      loadDraftValues({
+        eventType: "",
+        location: "",
+        peopleTags: [],
+        groupTags: [],
+        generalTags: [],
+      });
+      return;
+    }
+
+    loadDraftValues({
+      eventType: parsed.eventType,
+      location: parsed.location,
+      peopleTags: parsed.peopleTags,
+      groupTags: parsed.groupTags,
+      generalTags: parsed.generalTags,
+    });
   }
 
   async function saveLibraryDraft() {
@@ -592,13 +915,8 @@ export default function NameEvents() {
   }
 
   async function queueNamingJob() {
-    if (selectedDirectories.length === 0) {
-      setError("Select at least one day folder to rename.");
-      return;
-    }
-
-    if (!eventType.trim() && !location.trim() && combineTags(peopleTags, groupTags, generalTags).length === 0) {
-      setError("Enter at least an event type, a location, or one tag before applying the name.");
+    if (plannedRows.length === 0) {
+      setError("Apply the draft to at least one day before queueing the naming job.");
       return;
     }
 
@@ -606,16 +924,27 @@ export default function NameEvents() {
     setError(null);
     setMessage(null);
     try {
+      const request: ApplyEventNamingRequest = {
+        directories: plannedRows.map((directory) => directory.path),
+        eventType: "",
+        location: "",
+        peopleTags: [],
+        groupTags: [],
+        generalTags: [],
+        assignments: plannedRows.map((row) => ({
+          directory: row.path,
+          eventType: row.assignment.eventType,
+          location: row.assignment.location,
+          source: row.assignment.source,
+          targetName: row.assignment.targetName,
+          peopleTags: row.assignment.peopleTags,
+          groupTags: row.assignment.groupTags,
+          generalTags: row.assignment.generalTags,
+        })),
+      };
       const jobId = await invoke<string>("start_event_naming_job", {
         stagingDir,
-        request: {
-          directories: selectedDirectories.map((directory) => directory.path),
-          eventType,
-          location,
-          peopleTags,
-          groupTags,
-          generalTags,
-        },
+        request,
       });
       setQueuedNamingJobId(jobId);
       setMessage(`Queued naming job ${jobId}. Progress will appear in Jobs.`);
@@ -636,14 +965,33 @@ export default function NameEvents() {
     setError(null);
     setMessage(null);
     try {
-      const jobId = await invoke<string>("start_process_job", {
-        stagingDir: archiveDir,
-        scopeDir: archiveDir,
-        scopeMode: "folderRecursive",
-        task: "scan_archive_naming",
+      try {
+        await invoke("reveal_in_explorer", { path: archiveDir });
+      } catch {
+      }
+
+      const prefill = await invoke<PrefillEventNamingFromArchiveResult>("prefill_event_naming_from_archive", {
+        stagingDir,
+        archiveDir,
       });
-      setQueuedArchiveScanJobId(jobId);
-      setMessage(`Queued archive scan job ${jobId}. Progress will appear in the standard Jobs panel.`);
+      setCatalog(prefill.catalog);
+      setPlannedAssignments((current) => {
+        const next = { ...current };
+        for (const assignment of prefill.assignments) {
+          if (!next[assignment.directory]) {
+            next[assignment.directory] = assignment;
+          }
+        }
+        return next;
+      });
+      if (prefill.assignments.length > 0) {
+        setShowPlannedOnly(true);
+      }
+      setMessage(
+        prefill.matchedDirectories > 0
+          ? `Prefilled ${prefill.matchedDirectories} unnamed day folder${prefill.matchedDirectories === 1 ? "" : "s"} from the archive using the exact NAS folder names.`
+          : "No same-day archive matches were found for unnamed staging folders.",
+      );
     } catch (e) {
       setError(String(e));
     } finally {
@@ -836,11 +1184,17 @@ export default function NameEvents() {
                 >
                   {queueingArchiveScan ? "Queueing Archive Scan..." : "Scan Archive Library"}
                 </button>
-                <button className="btn-secondary" onClick={selectConsecutiveDays} disabled={selectedPaths.length === 0}>
-                  Select Consecutive Days
+                <button className="btn-secondary" onClick={selectConsecutiveDays} disabled={selectedPaths.length === 0 && !activeComposerDirectory}>
+                  Check Consecutive Days
                 </button>
                 <button className="btn-secondary" onClick={clearSelection} disabled={selectedPaths.length === 0}>
-                  Clear Selection
+                  Clear Checks
+                </button>
+                <button className="btn-secondary" onClick={clearNamingPlan} disabled={plannedRows.length === 0}>
+                  Clear Plan
+                </button>
+                <button className={showPlannedOnly ? "btn-primary" : "btn-secondary"} onClick={() => setShowPlannedOnly((current) => !current)} disabled={plannedRows.length === 0 && !showPlannedOnly}>
+                  {showPlannedOnly ? "Show All Days" : "Planned Only"}
                 </button>
               </div>
             </div>
@@ -851,14 +1205,18 @@ export default function NameEvents() {
                 <div className="mt-1 text-lg font-semibold text-white">{directories.length}</div>
               </div>
               <div className="rounded-lg border border-accent/30 bg-accent/10 px-3 py-3">
-                <div className="uppercase tracking-wide text-accent/80">Selected</div>
+                <div className="uppercase tracking-wide text-accent/80">Checked</div>
                 <div className="mt-1 text-lg font-semibold text-white">{selectedDirectories.length}</div>
               </div>
               <div className="rounded-lg border border-surface-700 bg-surface-900/80 px-3 py-3">
                 <div className="uppercase tracking-wide text-gray-500">Years</div>
                 <div className="mt-1 text-lg font-semibold text-white">{directoryTree.length}</div>
               </div>
-              <div className="rounded-lg border border-surface-700 bg-surface-900/80 px-3 py-3">
+              <div className="rounded-lg border border-emerald-700/30 bg-emerald-900/10 px-3 py-3">
+                <div className="uppercase tracking-wide text-emerald-300/80">Planned</div>
+                <div className="mt-1 text-lg font-semibold text-white">{plannedRows.length}</div>
+              </div>
+              <div className="rounded-lg border border-surface-700 bg-surface-900/80 px-3 py-3 lg:col-span-4">
                 <div className="uppercase tracking-wide text-gray-500">Focused Row</div>
                 <div className="mt-1 truncate text-sm font-medium text-cyan-300" title={activeComposerDirectory?.name ?? "None"}>
                   {activeComposerDirectory?.name ?? "None"}
@@ -870,15 +1228,21 @@ export default function NameEvents() {
           <div className="flex items-center justify-between gap-3 px-1">
             <div>
               <div className="text-xs text-gray-500 uppercase tracking-wide">Folder Tree</div>
-              <div className="mt-1 text-xs text-gray-500">Click a day folder to edit inline without leaving the tree.</div>
+              <div className="mt-1 text-xs text-gray-500">Check a batch, shift-click to extend a range, then apply that draft to the checked days.</div>
             </div>
-            <div className="text-xs text-gray-500">Showing {directoryTree.length} year groups</div>
+            <div className="text-xs text-gray-500">
+              {showPlannedOnly ? `Showing ${plannedRows.length} planned day folder${plannedRows.length === 1 ? "" : "s"}` : `Showing ${directoryTree.length} year groups`}
+            </div>
           </div>
 
           <div className="flex-1 min-h-[68vh] max-h-[78vh] overflow-auto space-y-2 pr-1">
             {directoryTree.length === 0 ? (
               <div className="rounded-lg border border-surface-600 bg-surface-900 px-4 py-6 text-sm text-gray-400">
-                {stagingDir ? "No day folders found under the staging directory yet." : "Set the staging directory in Settings to load day folders."}
+                {stagingDir
+                  ? showPlannedOnly
+                    ? "No planned day folders are visible yet. Apply a draft to one or more days first."
+                    : "No day folders found under the staging directory yet."
+                  : "Set the staging directory in Settings to load day folders."}
               </div>
             ) : (
               directoryTree.map((yearNode) => {
@@ -913,21 +1277,24 @@ export default function NameEvents() {
                                 <div className="space-y-2 px-4 pb-4">
                                   {monthNode.directories.map((directory) => {
                                     const selected = selectedPaths.includes(directory.path);
+                                    const plannedAssignment = plannedAssignments[directory.path];
                                     const composerOpen = activeComposerPath === directory.path;
                                     const previewName = formatInlinePreview(directory, eventType, location, peopleTags, groupTags, generalTags);
+                                    const assignmentSourceLabel = plannedAssignment ? getAssignmentSourceLabel(plannedAssignment) : null;
+                                    const plannedPreviewName = plannedAssignment ? getAssignmentPreviewName(directory.day, plannedAssignment) : null;
                                     return (
                                       <div
                                         key={directory.path}
-                                        className={`rounded-lg border transition-colors ${selected ? "border-accent bg-accent/10" : "border-surface-700 bg-surface-850/80 hover:border-surface-500"}`}
+                                        className={`rounded-lg border transition-colors ${selected ? "border-accent bg-accent/10" : plannedAssignment ? "border-emerald-700/60 bg-emerald-950/10 hover:border-emerald-500" : "border-surface-700 bg-surface-850/80 hover:border-surface-500"}`}
                                       >
                                         <div className="grid grid-cols-[auto_1fr_auto] gap-3 items-start px-3 py-3">
                                           <input
                                             type="checkbox"
                                             checked={selected}
-                                            onChange={() => toggleDirectory(directory.path)}
+                                            onChange={(e) => toggleDirectory(directory.path, e.target.checked, (e.nativeEvent as MouseEvent).shiftKey)}
                                             className="mt-1 h-4 w-4"
-                                            aria-label={`Select ${directory.name}`}
-                                            title={`Select ${directory.name}`}
+                                            aria-label={`Check ${directory.name}`}
+                                            title={`Check ${directory.name}${showPlannedOnly ? "" : " (shift-click for a range)"}`}
                                           />
                                           <div className="min-w-0">
                                             <button
@@ -941,12 +1308,26 @@ export default function NameEvents() {
                                               <div className="text-sm text-white break-all hover:text-cyan-300 transition-colors">{directory.name}</div>
                                             </button>
                                             <div className="text-xs text-gray-500 mt-1">{directory.dateKey} · {directory.relativePath}</div>
-                                            {selected && (eventType.trim() || location.trim() || combineTags(peopleTags, groupTags, generalTags).length > 0) && (
-                                              <div className="text-xs text-cyan-300 break-all mt-1">Batch Preview: {previewName}</div>
+                                            {plannedPreviewName ? (
+                                              <div className="text-xs text-emerald-300 break-all mt-1">Planned Rename: {plannedPreviewName}</div>
+                                            ) : selected && (eventType.trim() || location.trim() || combineTags(peopleTags, groupTags, generalTags).length > 0) && (
+                                              <div className="text-xs text-cyan-300 break-all mt-1">Checked Draft: {previewName}</div>
                                             )}
                                           </div>
-                                          <div className={`text-xs px-2 py-1 rounded border ${directory.hasCustomName ? "border-amber-700 text-amber-200 bg-amber-900/20" : "border-surface-600 text-gray-400 bg-surface-800"}`}>
-                                            {directory.hasCustomName ? "Named" : "Day Only"}
+                                          <div className="flex flex-col items-end gap-1">
+                                            {plannedAssignment && (
+                                              <div className="text-[11px] px-2 py-1 rounded border border-emerald-700 text-emerald-200 bg-emerald-900/20">
+                                                Planned
+                                              </div>
+                                            )}
+                                            {assignmentSourceLabel && (
+                                              <div className={`text-[11px] px-2 py-1 rounded border ${plannedAssignment?.source === "archive_prefill" ? "border-cyan-700 text-cyan-200 bg-cyan-900/20" : "border-surface-600 text-gray-300 bg-surface-800"}`}>
+                                                {assignmentSourceLabel}
+                                              </div>
+                                            )}
+                                            <div className={`text-xs px-2 py-1 rounded border ${directory.hasCustomName ? "border-amber-700 text-amber-200 bg-amber-900/20" : "border-surface-600 text-gray-400 bg-surface-800"}`}>
+                                              {directory.hasCustomName ? "Named" : "Day Only"}
+                                            </div>
                                           </div>
                                         </div>
 
@@ -964,23 +1345,43 @@ export default function NameEvents() {
                                                   Christmas
                                                 </button>
                                               )}
-                                              <input
-                                                type="text"
-                                                list="event-type-options"
-                                                className="input-field h-9 w-36"
+                                              <LookupInput
                                                 value={eventType}
-                                                onChange={(e) => setEventType(e.target.value)}
                                                 placeholder="Event"
                                                 title="Event type"
+                                                widthClass="w-36"
+                                                options={matchingEventTypes}
+                                                open={eventLookupOpen}
+                                                onFocus={() => setEventLookupOpen(true)}
+                                                onBlur={() => window.setTimeout(() => {
+                                                  setEventLookupOpen(false);
+                                                  void persistEventLocationLookup(eventType, location);
+                                                }, 120)}
+                                                onChange={(nextValue) => {
+                                                  setEventType(nextValue);
+                                                  setEventLookupOpen(true);
+                                                }}
+                                                onSelect={handleEventTypeSelect}
+                                                onCommit={commitEventLookup}
                                               />
-                                              <input
-                                                type="text"
-                                                list="event-location-options"
-                                                className="input-field h-9 w-32"
+                                              <LookupInput
                                                 value={location}
-                                                onChange={(e) => setLocation(e.target.value)}
                                                 placeholder="Location"
                                                 title="Location"
+                                                widthClass="w-32"
+                                                options={matchingLocations}
+                                                open={locationLookupOpen && matchingLocations.length > 0}
+                                                onFocus={() => setLocationLookupOpen(true)}
+                                                onBlur={() => window.setTimeout(() => {
+                                                  setLocationLookupOpen(false);
+                                                  void persistEventLocationLookup(eventType, location);
+                                                }, 120)}
+                                                onChange={(nextValue) => {
+                                                  setLocation(nextValue);
+                                                  setLocationLookupOpen(true);
+                                                }}
+                                                onSelect={handleLocationSelect}
+                                                onCommit={commitLocationLookup}
                                               />
                                               <input
                                                 type="text"
@@ -1028,17 +1429,26 @@ export default function NameEvents() {
                                                 title="General tags"
                                               />
                                               <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => selectOnlyDirectory(directory.path)}>
-                                                Only This
+                                                Check Only
                                               </button>
-                                              <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => toggleDirectory(directory.path)}>
-                                                {selected ? "Remove" : "Add"}
+                                              <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => toggleDirectory(directory.path, !selected)}>
+                                                {selected ? "Uncheck" : "Check"}
                                               </button>
+                                              <button className="btn-primary px-2 py-1 text-xs" type="button" onClick={applyDraftToCheckedDays}>
+                                                {selectedDirectories.length > 0 ? `Apply to ${selectedDirectories.length} Checked` : "Apply to Focused Day"}
+                                              </button>
+                                              {plannedAssignment && (
+                                                <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => removePlannedDay(directory.path)}>
+                                                  Remove Plan
+                                                </button>
+                                              )}
                                               <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => setActiveComposerPath(null)}>
                                                 Close
                                               </button>
                                               <span className="min-w-[18rem] flex-1 text-cyan-300 truncate" title={formatInlinePreview(directory, eventType, location, peopleTags, groupTags, generalTags)}>
                                                 {formatInlinePreview(directory, eventType, location, peopleTags, groupTags, generalTags)}
                                               </span>
+                                              {persistingLookup && <span className="text-[11px] text-gray-500">Saving lookup...</span>}
                                               <datalist id="event-people-tag-options-inline">
                                                 {catalog.peopleTags.map((tag) => (
                                                   <option key={tag} value={tag} />
@@ -1113,15 +1523,15 @@ export default function NameEvents() {
 
         <section className="card space-y-4 xl:sticky xl:top-6 xl:max-h-[82vh] xl:overflow-auto">
           <div>
-            <h3 className="text-sm uppercase tracking-wide text-gray-400">Selection Summary</h3>
+            <h3 className="text-sm uppercase tracking-wide text-gray-400">Naming Plan</h3>
             <p className="text-xs text-gray-500 mt-1">
-              Edit names directly in the tree. This rail now shows the current shared values, preview, and batch actions.
+              Check the days you want to group together, apply the current draft to those days, then move on to the next group. Queueing uses the saved plan, not just the current checks.
             </p>
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="rounded-lg border border-surface-700 bg-surface-900 px-3 py-3">
-              <div className="uppercase tracking-wide text-gray-500">Selected</div>
+              <div className="uppercase tracking-wide text-gray-500">Checked</div>
               <div className="mt-1 text-lg font-semibold text-white">{selectedDirectories.length}</div>
             </div>
             <div className="rounded-lg border border-surface-700 bg-surface-900 px-3 py-3">
@@ -1130,14 +1540,18 @@ export default function NameEvents() {
                 {activeComposerDirectory?.dateKey ?? "No row open"}
               </div>
             </div>
+            <div className="rounded-lg border border-emerald-700/30 bg-emerald-900/10 px-3 py-3">
+              <div className="uppercase tracking-wide text-emerald-300/80">Planned</div>
+              <div className="mt-1 text-lg font-semibold text-white">{plannedRows.length}</div>
+            </div>
             <div className="rounded-lg border border-surface-700 bg-surface-900 px-3 py-3">
               <div className="uppercase tracking-wide text-gray-500">Latest Naming Job</div>
               <div className="mt-1 truncate text-sm font-medium text-white capitalize" title={latestNamingJob?.status ?? "No jobs yet"}>
                 {latestNamingJob?.status ?? "No jobs yet"}
               </div>
             </div>
-            <div className="rounded-lg border border-surface-700 bg-surface-900 px-3 py-3">
-              <div className="uppercase tracking-wide text-gray-500">Pending Pattern</div>
+            <div className="rounded-lg border border-surface-700 bg-surface-900 px-3 py-3 col-span-2">
+              <div className="uppercase tracking-wide text-gray-500">Current Draft</div>
               <div className="mt-1 truncate text-sm font-medium text-cyan-300" title={eventType.trim() || location.trim() || combineTags(peopleTags, groupTags, generalTags).join(", ") || "Not set"}>
                 {eventType.trim() || location.trim() || combineTags(peopleTags, groupTags, generalTags).join(", ") || "Not set"}
               </div>
@@ -1163,7 +1577,7 @@ export default function NameEvents() {
           )}
 
           <div className="rounded-lg border border-surface-600 bg-surface-900 px-4 py-3 space-y-3">
-            <div className="text-xs uppercase tracking-wide text-gray-500">Current Shared Values</div>
+            <div className="text-xs uppercase tracking-wide text-gray-500">Draft Values</div>
             <div className="grid grid-cols-1 gap-3 text-sm">
               <div>
                 <div className="text-xs uppercase tracking-wide text-gray-500">Event Type</div>
@@ -1195,11 +1609,34 @@ export default function NameEvents() {
           </div>
 
           <div className="rounded-lg border border-surface-600 bg-surface-900 px-4 py-3 space-y-2 max-h-64 overflow-auto">
-            <div className="text-xs uppercase tracking-wide text-gray-500">Preview</div>
-            {previewRows.length === 0 ? (
-              <div className="text-sm text-gray-500">Select one or more day folders to preview the final names.</div>
+            <div className="text-xs uppercase tracking-wide text-gray-500">Planned Renames</div>
+            {plannedRows.length === 0 ? (
+              <div className="text-sm text-gray-500">No days have been added to the naming plan yet.</div>
             ) : (
-              previewRows.map((row) => (
+              plannedRows.map((row) => (
+                <div key={row.path} className="flex items-start justify-between gap-3 text-sm text-gray-200 break-all">
+                  <div>
+                    {row.dateKey}: <span className="text-emerald-300">{row.previewName}</span>
+                    {getAssignmentSourceLabel(row.assignment) && (
+                      <div className={`mt-1 inline-flex rounded-full border px-2 py-0.5 text-[11px] ${row.assignment.source === "archive_prefill" ? "border-cyan-700 bg-cyan-900/20 text-cyan-200" : "border-surface-600 bg-surface-800 text-gray-300"}`}>
+                        {getAssignmentSourceLabel(row.assignment)}
+                      </div>
+                    )}
+                  </div>
+                  <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => removePlannedDay(row.path)}>
+                    Remove
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="rounded-lg border border-surface-600 bg-surface-900 px-4 py-3 space-y-2 max-h-48 overflow-auto">
+            <div className="text-xs uppercase tracking-wide text-gray-500">Current Draft Preview</div>
+            {draftPreviewRows.length === 0 ? (
+              <div className="text-sm text-gray-500">Focus a day or check one or more days to see where the current draft will land.</div>
+            ) : (
+              draftPreviewRows.map((row) => (
                 <div key={row.path} className="text-sm text-gray-200 break-all">
                   {row.dateKey}: <span className="text-cyan-300">{row.previewName}</span>
                 </div>
@@ -1208,7 +1645,10 @@ export default function NameEvents() {
           </div>
 
           <div className="flex gap-2 flex-wrap">
-            <button className="btn-primary" onClick={queueNamingJob} disabled={queueingNamingJob || selectedDirectories.length === 0}>
+            <button className="btn-primary" onClick={applyDraftToCheckedDays} disabled={draftSelection.length === 0}>
+              {selectedDirectories.length > 0 ? `Apply Draft to ${selectedDirectories.length} Checked` : "Apply Draft to Focused Day"}
+            </button>
+            <button className="btn-primary" onClick={queueNamingJob} disabled={queueingNamingJob || plannedRows.length === 0}>
               {queueingNamingJob ? "Queueing..." : "Queue Naming Job"}
             </button>
           </div>
@@ -1243,20 +1683,21 @@ export default function NameEvents() {
 
           <div className="rounded-lg border border-surface-600 bg-surface-900 px-4 py-3 space-y-3">
             <div>
-              <div className="text-sm font-medium text-white">Archive Scan</div>
+              <div className="text-sm font-medium text-white">Archive Prefill</div>
               <div className="text-xs text-gray-500 mt-1 break-all">Archive root: {archiveDir || "Not configured"}</div>
               {latestArchiveScanJob && (
-                <div className="text-xs text-gray-500 mt-1">Latest scan status: <span className="text-gray-300 capitalize">{latestArchiveScanJob.status}</span></div>
+                <div className="text-xs text-gray-500 mt-1">Latest historical archive scan job: <span className="text-gray-300 capitalize">{latestArchiveScanJob.status}</span></div>
               )}
+              <div className="text-xs text-gray-500 mt-1">Same-day NAS matches now prefill exact server folder names without adding them to the lookup library.</div>
             </div>
             <div className="flex gap-2 flex-wrap">
               <button
                 className="btn-secondary"
                 onClick={scanArchiveLibrary}
                 disabled={queueingArchiveScan}
-                title={archiveDir ? "Scan the archive to grow the naming library" : "Set Archive / NAS Directory in Settings first"}
+                title={archiveDir ? "Open the archive and prefill local unnamed day folders from same-day NAS names" : "Set Archive / NAS Directory in Settings first"}
               >
-                {queueingArchiveScan ? "Queueing Archive Scan..." : "Scan Archive Library"}
+                {queueingArchiveScan ? "Prefilling from Archive..." : "Scan Archive Library"}
               </button>
               <button className="btn-danger" onClick={purgeLibraryData} disabled={purgingLibrary || savingLibrary}>
                 {purgingLibrary ? "Purging..." : "Purge Library Data"}
@@ -1455,4 +1896,52 @@ function buildDirectoryTree(directories: EventDayDirectory[]): DirectoryTreeYear
 
 function formatInlinePreview(directory: EventDayDirectory, eventType: string, location: string, peopleTags: string[], groupTags: string[], generalTags: string[]) {
   return formatPreviewName(directory.day, eventType, location, peopleTags, groupTags, generalTags);
+}
+
+function createDraftValues(values: NamingDraftValues): NamingDraftValues {
+  return {
+    eventType: values.eventType,
+    location: values.location,
+    peopleTags: [...values.peopleTags],
+    groupTags: [...values.groupTags],
+    generalTags: [...values.generalTags],
+  };
+}
+
+function assignmentToDraftValues(assignment: EventNamingAssignment): NamingDraftValues {
+  return createDraftValues({
+    eventType: assignment.eventType,
+    location: assignment.location,
+    peopleTags: assignment.peopleTags,
+    groupTags: assignment.groupTags,
+    generalTags: assignment.generalTags,
+  });
+}
+
+function getAssignmentSourceLabel(assignment: EventNamingAssignment): string | null {
+  if (assignment.source === "archive_prefill") {
+    return "Prefilled from Archive";
+  }
+
+  if (assignment.source === "manual") {
+    return "Manual";
+  }
+
+  return null;
+}
+
+function getAssignmentPreviewName(day: number, assignment: EventNamingAssignment): string {
+  const exactTarget = assignment.targetName?.trim();
+  if (exactTarget) {
+    return exactTarget;
+  }
+
+  return formatPreviewName(
+    day,
+    assignment.eventType,
+    assignment.location,
+    assignment.peopleTags,
+    assignment.groupTags,
+    assignment.generalTags,
+  );
 }

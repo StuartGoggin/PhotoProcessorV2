@@ -10,7 +10,7 @@ use commands::{
     logs::{clear_log_file, read_log_file},
     naming::{
         apply_event_naming, list_event_day_directories, load_event_naming_catalog,
-        save_event_naming_catalog, scan_event_naming_library,
+        prefill_event_naming_from_archive, save_event_naming_catalog, scan_event_naming_library,
     },
     process::{
         abort_process_job, clear_finished_process_jobs, list_process_jobs, pause_process_job,
@@ -42,6 +42,7 @@ pub fn run() {
             load_event_naming_catalog,
             save_event_naming_catalog,
             scan_event_naming_library,
+            prefill_event_naming_from_archive,
             apply_event_naming,
             list_import_jobs,
             clear_finished_import_jobs,
