@@ -12,8 +12,18 @@ interface JobsPanelProps {
 }
 
 export default function JobsPanel({ importJobs, processJobs, loading = false }: JobsPanelProps) {
+  const panelRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [panelHeight, setPanelHeight] = useState<number>(() => {
+    const raw = window.localStorage.getItem("jobsPanelHeight");
+    const parsed = raw ? Number(raw) : NaN;
+    if (Number.isFinite(parsed)) {
+      return Math.min(Math.max(parsed, 180), 560);
+    }
+    return 300;
+  });
+  const [isResizing, setIsResizing] = useState(false);
 
   // Handle mouse wheel for horizontal scrolling
   useEffect(() => {
@@ -36,6 +46,31 @@ export default function JobsPanel({ importJobs, processJobs, loading = false }: 
     container.addEventListener("wheel", handleWheel, { passive: false });
     return () => container.removeEventListener("wheel", handleWheel);
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("jobsPanelHeight", String(panelHeight));
+    panelRef.current?.style.setProperty("--jobs-panel-height", `${panelHeight}px`);
+  }, [panelHeight]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const onMouseMove = (event: MouseEvent) => {
+      const desired = window.innerHeight - event.clientY;
+      const clamped = Math.min(Math.max(desired, 180), 560);
+      setPanelHeight(clamped);
+    };
+
+    const onMouseUp = () => setIsResizing(false);
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [isResizing]);
 
 
   // Combine and sort jobs: active (running first, then queued) at left, completed at right
@@ -66,7 +101,17 @@ export default function JobsPanel({ importJobs, processJobs, loading = false }: 
     : null;
 
   return (
-    <div className="jobs-panel-resizable border-t border-surface-700 bg-surface-900 flex flex-col">
+    <div ref={panelRef} className="jobs-panel-resizable border-t border-surface-700 bg-surface-900 flex flex-col">
+      <div
+        className="jobs-panel-resize-handle"
+        onMouseDown={(event) => {
+          event.preventDefault();
+          setIsResizing(true);
+        }}
+        title="Drag to resize jobs panel"
+      >
+        <div className="jobs-panel-resize-grip" />
+      </div>
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-3 border-b border-surface-700 flex-shrink-0">
         <div className="flex items-center gap-3">
@@ -87,7 +132,7 @@ export default function JobsPanel({ importJobs, processJobs, loading = false }: 
           {hasJobs ? (
             <div
               ref={scrollRef}
-              className="jobs-panel-scroll-strip w-full h-full overflow-x-auto overflow-y-hidden scroll-smooth px-6 py-4 space-x-4 flex items-start"
+              className="jobs-panel-scroll-strip w-full h-full overflow-x-scroll overflow-y-hidden scroll-smooth px-6 py-4 space-x-4 flex items-start"
             >
               {jobs.map((job) => (
                 <JobTile

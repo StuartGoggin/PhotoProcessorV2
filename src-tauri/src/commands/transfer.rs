@@ -464,7 +464,17 @@ fn atomic_update_master_hash_table(
     // Atomic move
     #[cfg(target_os = "windows")]
     {
-        // On Windows, use std::fs::rename which is atomic
+        // On Windows, std::fs::rename cannot overwrite an existing file.
+        // Remove existing target first so the replacement actually applies.
+        if master_path.exists() {
+            fs::remove_file(&master_path).map_err(|e| {
+                format!(
+                    "Failed to replace existing master hash table '{}': {}",
+                    master_path.display(),
+                    e
+                )
+            })?;
+        }
         fs::rename(&temp_path, &master_path).map_err(|e| e.to_string())?;
     }
     
