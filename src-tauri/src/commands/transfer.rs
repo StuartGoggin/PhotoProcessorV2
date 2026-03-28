@@ -736,6 +736,9 @@ fn run_transfer_task(
     let mut overall_errors = Vec::new();
     let total_files = files.len();
 
+    let staging_canonical = staging.canonicalize().unwrap_or_else(|_| staging.clone());
+    let archive_canonical = archive.canonicalize().unwrap_or_else(|_| archive.clone());
+    
     if let Some(ref jid) = job_id {
         update_process_job(jid, |job| {
             job.status = ProcessJobStatus::Running;
@@ -755,7 +758,7 @@ fn run_transfer_task(
             job.transfer_server_hash_unverified_count = Some(0);
             job.transfer_indexed_added_count = Some(0);
         });
-        append_process_job_log(jid, format!("start transfer staging='{}' archive='{}'", staging.display(), archive.display()));
+        append_process_job_log(jid, format!("TRANSFER_START: staging_dir=[absolute='{}'] archive_dir=[absolute='{}']", staging_canonical.display(), archive_canonical.display()));
         append_process_job_log(
             jid,
             format!(
@@ -774,15 +777,16 @@ fn run_transfer_task(
 
     // PHASE 1: Load server hash table
     let master_hash_path = resolve_master_hash_table_path(&archive);
+    let master_hash_path_canonical = master_hash_path.canonicalize().unwrap_or_else(|_| master_hash_path.clone());
     let server_hash_table = match ServerHashTable::load_from_file(&master_hash_path) {
         Ok(table) => {
             if let Some(ref jid) = job_id {
-                append_process_job_log(jid, format!("loaded server hash table from '{}'", master_hash_path.display()));
+                append_process_job_log(jid, format!("PHASE1_LOAD_HASH_TABLE: loaded server hash table from path=[absolute='{}']", master_hash_path_canonical.display()));
             }
             table
         }
         Err(e) => {
-            let msg = format!("Failed to load server hash table: {}", e);
+            let msg = format!("PHASE1_LOAD_HASH_TABLE_ERROR: Failed to load server hash table from path=[absolute='{}'], error=[{}]", master_hash_path_canonical.display(), e);
             overall_errors.push(msg.clone());
             if let Some(ref jid) = job_id {
                 append_process_job_log(jid, &msg);
@@ -1299,9 +1303,21 @@ fn run_transfer_task(
             if let Some(parent) = verification_report_path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            let _ = fs::write(&verification_report_path, verification_report.join("\n"));
-            if let Some(ref jid) = job_id {
-                append_process_job_log(jid, format!("wrote verification report to '{}'", verification_report_path.display()));
+            let report_content = verification_report.join("\n");
+            let report_bytes = report_content.len();
+            match fs::write(&verification_report_path, report_content) {
+                Ok(_) => {
+                    if let Some(ref jid) = job_id {
+                        let report_path_canonical = verification_report_path.canonicalize().unwrap_or_else(|_| verification_report_path.clone());
+                        append_process_job_log(jid, format!("VERIFICATION_REPORT_WRITTEN: file=[absolute='{}'] entries={} size_bytes={}", report_path_canonical.display(), verification_report.len(), report_bytes));
+                    }
+                }
+                Err(e) => {
+                    if let Some(ref jid) = job_id {
+                        let report_path_canonical = verification_report_path.canonicalize().unwrap_or_else(|_| verification_report_path.clone());
+                        append_process_job_log(jid, format!("VERIFICATION_REPORT_ERROR: file=[absolute='{}'] error=[{}]", report_path_canonical.display(), e));
+                    }
+                }
             }
         }
     }
@@ -1362,7 +1378,8 @@ fn run_transfer_task(
             // Create destination directory
             if let Some(parent) = file_info.destination_path.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
-                    let msg = format!("Failed to create directory {}: {}", parent.display(), e);
+                    let parent_canonical = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+                    let msg = format!("DIRECTORY_CREATE_ERROR: path=[absolute='{}'] error=[{}]", parent_canonical.display(), e);
                     copy_errors_clone.lock().unwrap().push(msg.clone());
                     if let Some(ref jid) = job_id_clone {
                         append_process_job_log(jid, &msg);
@@ -1387,9 +1404,23 @@ fn run_transfer_task(
                     pending_hash_updates_clone
                         .lock()
                         .unwrap()
-                        .push((rel_dest_path, file_info.local_hash.clone()));
+                        .push((rel_dest_path.clone(), file_info.local_hash.clone()));
 
                     let done = copy_done_clone.fetch_add(1, Ordering::Relaxed) + 1;
+                    
+                    if let Some(ref jid) = job_id_clone {
+                        append_process_job_log(
+                            jid,
+                            format!(
+                                "FILE_COPIED: source=[absolute='{}'] destination=[absolute='{}'] rel_path='{}' hash='{}' size_bytes={}",
+                                file_info.source_path.display(),
+                                file_info.destination_path.display(),
+                                rel_dest_path,
+                                &file_info.local_hash[..8],
+                                bytes
+                            ),
+                        );
+                    }
                     let elapsed = start_time.elapsed().as_secs_f64();
                     let speed = if elapsed > 0.0 {
                         (bytes_clone.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0)) / elapsed
@@ -1435,6 +1466,13 @@ fn run_transfer_task(
                         };
 
                         if !batch.is_empty() {
+                            let batch_desc = batch.iter()
+                                .map(|(path, hash)| format!("{}[{}]", path, &hash[..8]))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let master_hash_path_for_log = resolve_master_hash_table_path(&archive_for_copy);
+                            let master_hash_path_canonical_for_log = master_hash_path_for_log.canonicalize().unwrap_or_else(|_| master_hash_path_for_log.clone());
+                            
                             match atomic_update_master_hash_table(&archive_for_copy, &batch) {
                                 Ok(added_count) => {
                                     let total_added = indexed_added_total_clone
@@ -1447,18 +1485,22 @@ fn run_transfer_task(
                                         append_process_job_log(
                                             jid,
                                             format!(
-                                                "master hash table incremental flush: batch={} added={} total_added={}",
+                                                "HASH_TABLE_UPDATE_INCREMENTAL: file=[absolute='{}'] batch_size={} entries_added={} cumulative_entries={} entries=[{}]",
+                                                master_hash_path_canonical_for_log.display(),
                                                 batch.len(),
                                                 added_count,
-                                                total_added
+                                                total_added,
+                                                batch_desc
                                             ),
                                         );
                                     }
                                 }
                                 Err(e) => {
                                     let msg = format!(
-                                        "Failed incremental master hash table flush after {} copied files: {}",
-                                        done, e
+                                        "HASH_TABLE_UPDATE_ERROR: file=[absolute='{}'] after_copied={} error=[{}]",
+                                        master_hash_path_canonical_for_log.display(),
+                                        done,
+                                        e
                                     );
                                     copy_errors_clone.lock().unwrap().push(msg.clone());
                                     if let Some(ref jid) = job_id_clone {
@@ -1470,7 +1512,7 @@ fn run_transfer_task(
                     }
                 }
                 Err(e) => {
-                    let msg = format!("Failed to copy {}: {}", file_info.source_path.display(), e);
+                    let msg = format!("FILE_COPY_ERROR: source=[absolute='{}'] destination=[absolute='{}'] error=[{}]", file_info.source_path.display(), file_info.destination_path.display(), e);
                     copy_errors_clone.lock().unwrap().push(msg.clone());
                     if let Some(ref jid) = job_id_clone {
                         append_process_job_log(jid, &msg);
@@ -1488,6 +1530,13 @@ fn run_transfer_task(
         };
 
         if !remaining_batch.is_empty() {
+            let remaining_batch_desc = remaining_batch.iter()
+                .map(|(path, hash)| format!("{}[{}]", path, &hash[..8]))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let master_hash_path_final = resolve_master_hash_table_path(&archive);
+            let master_hash_path_canonical_final = master_hash_path_final.canonicalize().unwrap_or_else(|_| master_hash_path_final.clone());
+            
             match atomic_update_master_hash_table(&archive, &remaining_batch) {
                 Ok(added_count) => {
                     let total_added = indexed_added_total
@@ -1500,16 +1549,18 @@ fn run_transfer_task(
                         append_process_job_log(
                             jid,
                             format!(
-                                "master hash table final copy flush: batch={} added={} total_added={}",
+                                "HASH_TABLE_UPDATE_FINAL: file=[absolute='{}'] batch_size={} entries_added={} cumulative_entries={} entries=[{}]",
+                                master_hash_path_canonical_final.display(),
                                 remaining_batch.len(),
                                 added_count,
-                                total_added
+                                total_added,
+                                remaining_batch_desc
                             ),
                         );
                     }
                 }
                 Err(e) => {
-                    let msg = format!("Failed final copy-phase master hash table flush: {}", e);
+                    let msg = format!("HASH_TABLE_UPDATE_FINAL_ERROR: file=[absolute='{}'] error=[{}]", master_hash_path_canonical_final.display(), e);
                     overall_errors.push(msg.clone());
                     if let Some(ref jid) = job_id {
                         append_process_job_log(jid, &msg);
