@@ -20,24 +20,82 @@ use crate::commands::process::{
 pub struct TransferResult {
     pub copied: usize,
     pub verified: usize,
+    pub deduplicated: usize,
+    pub renamed: usize,
     pub errors: Vec<String>,
 }
 
 const LEGACY_CHECKSUM_FILE_NAME: &str = "checksums.md5";
 const TRANSFER_MANIFEST_DIR_NAME: &str = "_transfer_manifests";
+const MASTER_HASH_TABLE_FILE: &str = "master_hashes.md5";
 
 #[derive(Debug, Clone)]
-struct MasterManifestConflict {
-    relative_path: String,
-    existing_hash: String,
-    incoming_hash: String,
+struct FileTransferInfo {
+    source_path: PathBuf,
+    local_hash: String,
+    destination_path: PathBuf,
+    status: FileTransferStatus,
+}
+
+#[derive(Debug, Clone)]
+enum FileTransferStatus {
+    ToTransfer,
+    Deduplicated,
+    Renamed,
+}
+
+/// Server-side hash table for efficient lookups
+#[derive(Debug)]
+struct ServerHashTable {
+    hash_to_paths: HashMap<String, Vec<String>>, // hash -> list of relative paths
+    path_to_hash: HashMap<String, String>,        // relative path -> hash
+}
+
+impl ServerHashTable {
+    fn new() -> Self {
+        ServerHashTable {
+            hash_to_paths: HashMap::new(),
+            path_to_hash: HashMap::new(),
+        }
+    }
+
+    fn load_from_file(path: &Path) -> Result<Self, String> {
+        let mut table = ServerHashTable::new();
+        if !path.exists() {
+            return Ok(table);
+        }
+
+        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        for line in content.lines() {
+            if let Some((rel_path, hash)) = parse_checksum_line(line) {
+                table
+                    .hash_to_paths
+                    .entry(hash.clone())
+                    .or_insert_with(Vec::new)
+                    .push(rel_path.clone());
+                table.path_to_hash.insert(rel_path, hash);
+            }
+        }
+        Ok(table)
+    }
+
+    fn hash_exists(&self, hash: &str) -> bool {
+        self.hash_to_paths.contains_key(hash)
+    }
+
+    fn get_paths_for_hash(&self, hash: &str) -> Option<&[String]> {
+        self.hash_to_paths.get(hash).map(|v| v.as_slice())
+    }
+
 }
 
 fn should_log_progress(done: usize, total: usize) -> bool {
     total <= 20 || done <= 3 || done == total || done % 25 == 0
 }
 
-fn append_transfer_progress_log(
+/// Update status line (progress indicator that replaces on each update)
+/// Only logs milestone events (first/last/every 50 files) to console
+fn update_transfer_status_line(
     job_id: Option<&str>,
     phase: &str,
     done: usize,
@@ -45,15 +103,31 @@ fn append_transfer_progress_log(
     current_file: &str,
     speed_mbps: Option<f64>,
 ) {
+    if let Some(job_id) = job_id {
+        let speed_suffix = speed_mbps
+            .map(|speed| format!(" [{:.1} MB/s]", speed))
+            .unwrap_or_default();
+        let status = if current_file.is_empty() {
+            format!("{}: {}/{}{}", phase, done, total, speed_suffix)
+        } else {
+            format!("{}: {}/{} - {}{}", phase, done, total, current_file, speed_suffix)
+        };
+        
+        use crate::commands::process::update_process_status_line;
+        update_process_status_line(job_id, status);
+    }
+
+    // Only add to logs for milestone events
     if !should_log_progress(done, total) {
         return;
     }
 
     if let Some(job_id) = job_id {
+        use crate::commands::process::append_process_milestone_log;
         let speed_suffix = speed_mbps
             .map(|speed| format!(" speed={:.1} MB/s", speed))
             .unwrap_or_default();
-        append_process_job_log(
+        append_process_milestone_log(
             job_id,
             format!(
                 "{} progress {}/{} file='{}'{}",
@@ -69,11 +143,23 @@ fn is_transfer_manifest_path(path: &Path) -> bool {
 }
 
 fn should_skip_transfer_file(path: &Path) -> bool {
-    path.file_name()
+    // Skip by filename
+    let skip_by_name = path.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| name == LEGACY_CHECKSUM_FILE_NAME)
-        .unwrap_or(false)
-        || is_transfer_manifest_path(path)
+        .map(|name| name == LEGACY_CHECKSUM_FILE_NAME || name == MASTER_HASH_TABLE_FILE)
+        .unwrap_or(false);
+    
+    // Skip by extension (.hash, .md5, and .log files)
+    let skip_by_extension = path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            ext.eq_ignore_ascii_case("hash")
+                || ext.eq_ignore_ascii_case("md5")
+                || ext.eq_ignore_ascii_case("log")
+        })
+        .unwrap_or(false);
+    
+    skip_by_name || skip_by_extension || is_transfer_manifest_path(path)
 }
 
 fn transfer_manifest_dir(archive: &Path) -> PathBuf {
@@ -106,12 +192,8 @@ fn build_transfer_output_path(
     )))
 }
 
-fn build_transfer_manifest_path(archive: &Path, job_id: Option<&str>) -> Result<PathBuf, String> {
-    build_transfer_output_path(archive, "transfer", "md5", job_id)
-}
-
-fn build_transfer_conflict_report_path(archive: &Path, job_id: Option<&str>) -> Result<PathBuf, String> {
-    build_transfer_output_path(archive, "transfer-conflicts", "txt", job_id)
+fn build_transfer_verification_report_path(archive: &Path, job_id: Option<&str>) -> Result<PathBuf, String> {
+    build_transfer_output_path(archive, "transfer-verification", "txt", job_id)
 }
 
 fn latest_transfer_manifest_path(archive: &Path) -> Result<Option<PathBuf>, String> {
@@ -138,9 +220,19 @@ fn latest_transfer_manifest_path(archive: &Path) -> Result<Option<PathBuf>, Stri
     Ok(manifests.pop())
 }
 
+fn resolve_master_hash_table_path(archive: &Path) -> PathBuf {
+    archive.join(MASTER_HASH_TABLE_FILE)
+}
+
 fn resolve_checksum_manifest_path(archive: &Path) -> Result<PathBuf, String> {
-    if let Some(manifest_path) = latest_transfer_manifest_path(archive)? {
+    // For backward compatibility, try to find transfer manifests or master hash table
+    if let Some(manifest_path) = latest_transfer_manifest_path(archive).ok().flatten() {
         return Ok(manifest_path);
+    }
+
+    let master_path = resolve_master_hash_table_path(archive);
+    if master_path.exists() {
+        return Ok(master_path);
     }
 
     let legacy_path = archive.join(LEGACY_CHECKSUM_FILE_NAME);
@@ -171,74 +263,217 @@ fn parse_checksum_line(line: &str) -> Option<(String, String)> {
     Some((relative_path.to_string(), hash.to_string()))
 }
 
-fn update_master_checksum_manifest(
+fn md5_sidecar_path(file_path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.md5", file_path.to_string_lossy()))
+}
+
+fn is_valid_md5_hex(value: &str) -> bool {
+    value.len() == 32 && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn read_md5_hash_from_sidecar(sidecar_path: &Path, expected_filename: Option<&str>) -> Option<String> {
+    let content = fs::read_to_string(sidecar_path).ok()?;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let hash = parts.next()?;
+        if !is_valid_md5_hex(hash) {
+            continue;
+        }
+
+        if let Some(expected) = expected_filename {
+            if let Some(named) = parts.next() {
+                let named_file = Path::new(named)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(named);
+                if !named_file.eq_ignore_ascii_case(expected) {
+                    continue;
+                }
+            }
+        }
+
+        return Some(hash.to_lowercase());
+    }
+
+    None
+}
+
+fn read_md5_sidecar_for_file(file_path: &Path) -> Option<String> {
+    let expected_filename = file_path.file_name().and_then(|n| n.to_str());
+    read_md5_hash_from_sidecar(&md5_sidecar_path(file_path), expected_filename)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalHashSource {
+    Sidecar,
+    Manifest,
+    Computed,
+}
+
+impl LocalHashSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            LocalHashSource::Sidecar => "sidecar",
+            LocalHashSource::Manifest => "manifest",
+            LocalHashSource::Computed => "computed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct LocalMd5Index {
+    hashes_by_media_path: HashMap<PathBuf, String>,
+    sidecar_file_count: usize,
+    manifest_file_count: usize,
+    manifest_entry_count: usize,
+}
+
+fn load_local_md5_index(root: &Path) -> LocalMd5Index {
+    let mut index = LocalMd5Index::default();
+    if !root.exists() {
+        return index;
+    }
+
+    for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let path = entry.path();
+        let is_md5 = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("md5"))
+            .unwrap_or(false);
+        if !is_md5 {
+            continue;
+        }
+
+        let media_path = path.with_extension("");
+        if media_path.exists() {
+            let expected_filename = media_path.file_name().and_then(|n| n.to_str());
+            if let Some(hash) = read_md5_hash_from_sidecar(path, expected_filename) {
+                index.sidecar_file_count += 1;
+                index
+                    .hashes_by_media_path
+                    .entry(media_path)
+                    .or_insert(hash);
+                continue;
+            }
+        }
+
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+
+        let mut entries_added = 0usize;
+        for line in content.lines() {
+            let Some((relative_path, hash)) = parse_checksum_line(line) else {
+                continue;
+            };
+
+            let media_path = path
+                .parent()
+                .map(|parent| parent.join(&relative_path))
+                .unwrap_or_else(|| PathBuf::from(&relative_path));
+            if !media_path.exists() {
+                continue;
+            }
+
+            index
+                .hashes_by_media_path
+                .entry(media_path)
+                .or_insert(hash);
+            entries_added += 1;
+        }
+
+        if entries_added > 0 {
+            index.manifest_file_count += 1;
+            index.manifest_entry_count += entries_added;
+        }
+    }
+
+    index
+}
+
+fn md5_for_file_prefer_local_index(
+    file_path: &Path,
+    local_md5_index: &LocalMd5Index,
+) -> Result<(String, LocalHashSource), String> {
+    if let Some(hash) = read_md5_sidecar_for_file(file_path) {
+        return Ok((hash, LocalHashSource::Sidecar));
+    }
+
+    if let Some(hash) = local_md5_index.hashes_by_media_path.get(file_path) {
+        return Ok((hash.clone(), LocalHashSource::Manifest));
+    }
+
+    compute_md5(file_path)
+        .map(|hash| (hash, LocalHashSource::Computed))
+        .map_err(|e| e.to_string())
+}
+
+/// Atomically updates master hash table by writing to temp file and moving
+fn atomic_update_master_hash_table(
     archive: &Path,
-    checksum_lines: &[String],
-) -> Result<(PathBuf, usize, usize, Vec<MasterManifestConflict>), String> {
-    let manifest_path = archive.join(LEGACY_CHECKSUM_FILE_NAME);
-    let mut existing_content = String::new();
-    let mut existing_paths = std::collections::HashSet::<String>::new();
-    let mut existing_hashes = HashMap::<String, String>::new();
-    let mut skipped_invalid_existing_lines = 0usize;
-
-    if manifest_path.exists() {
-        existing_content = fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
-        for line in existing_content.lines().filter(|line| !line.trim().is_empty()) {
-            if let Some((relative_path, hash)) = parse_checksum_line(line) {
-                existing_paths.insert(relative_path.clone());
-                existing_hashes.insert(relative_path, hash);
-            } else {
-                skipped_invalid_existing_lines += 1;
+    new_entries: &[(String, String)], // (rel_path, hash)
+) -> Result<usize, String> {
+    let master_path = resolve_master_hash_table_path(archive);
+    
+    // Load existing table
+    let mut all_entries = HashMap::<String, String>::new();
+    if master_path.exists() {
+        let content = fs::read_to_string(&master_path).map_err(|e| e.to_string())?;
+        for line in content.lines() {
+            if let Some((rel_path, hash)) = parse_checksum_line(line) {
+                all_entries.insert(rel_path, hash);
             }
         }
     }
-
-    let mut appended_entries = Vec::new();
-    let mut added_entries = 0usize;
-    let mut conflicts = Vec::new();
-    for checksum_line in checksum_lines {
-        if let Some((relative_path, incoming_hash)) = parse_checksum_line(checksum_line) {
-            if existing_paths.insert(relative_path) {
-                appended_entries.push(checksum_line.clone());
-                added_entries += 1;
-            } else {
-                conflicts.push(MasterManifestConflict {
-                    relative_path: checksum_line
-                        .splitn(2, "  ")
-                        .nth(1)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string(),
-                    existing_hash: existing_hashes
-                        .get(
-                            checksum_line
-                                .splitn(2, "  ")
-                                .nth(1)
-                                .unwrap_or_default()
-                                .trim(),
-                        )
-                        .cloned()
-                        .unwrap_or_default(),
-                    incoming_hash,
-                });
-            }
+    
+    // Track how many were newly added
+    let mut added_count = 0;
+    for (rel_path, hash) in new_entries {
+        if !all_entries.contains_key(rel_path) {
+            added_count += 1;
         }
+        all_entries.insert(rel_path.clone(), hash.clone());
     }
-
-    if !appended_entries.is_empty() {
-        if !existing_content.is_empty() && !existing_content.ends_with('\n') && !existing_content.ends_with('\r') {
-            existing_content.push('\n');
-        }
-        existing_content.push_str(&appended_entries.join("\n"));
-        fs::write(&manifest_path, existing_content).map_err(|e| e.to_string())?;
+    
+    // Write to temp file first
+    let temp_path = master_path.with_extension("md5.tmp");
+    let mut sorted_entries: Vec<_> = all_entries.into_iter().collect();
+    sorted_entries.sort_by(|a, b| a.0.cmp(&b.0));
+    
+    let content = sorted_entries
+        .iter()
+        .map(|(path, hash)| format!("{}  {}", hash, path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    
+    fs::write(&temp_path, content).map_err(|e| e.to_string())?;
+    
+    // Atomic move
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, use std::fs::rename which is atomic
+        fs::rename(&temp_path, &master_path).map_err(|e| e.to_string())?;
     }
-
-    Ok((
-        manifest_path,
-        added_entries,
-        skipped_invalid_existing_lines,
-        conflicts,
-    ))
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        // On Unix, create_dir_all + rename is atomic
+        fs::rename(&temp_path, &master_path).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(added_count)
 }
 
 fn collect_all_files(dir: &Path) -> Vec<PathBuf> {
@@ -249,6 +484,37 @@ fn collect_all_files(dir: &Path) -> Vec<PathBuf> {
         .map(|e| e.into_path())
         .filter(|path| !should_skip_transfer_file(path))
         .collect()
+}
+
+fn get_unique_destination(base: &PathBuf) -> PathBuf {
+    if !base.exists() {
+        return base.clone();
+    }
+    
+    let stem = base
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let ext = base
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_string();
+    let dir = base.parent().unwrap_or(Path::new("."));
+    
+    let mut i = 1u32;
+    loop {
+        let candidate = if ext.is_empty() {
+            dir.join(format!("{}_{}", stem, i))
+        } else {
+            dir.join(format!("{}_{}.{}", stem, i, ext))
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+        i += 1;
+    }
 }
 
 #[tauri::command]
@@ -289,8 +555,19 @@ pub fn start_transfer(
         stabilize_ffmpeg_threads_per_job_used: None,
         conflict_report_path: None,
         current_phase: None,
+        transfer_local_processed_count: Some(0),
+        transfer_local_sidecar_hits_count: Some(0),
+        transfer_local_manifest_hits_count: Some(0),
+        transfer_local_hash_computed_count: Some(0),
+        transfer_uploaded_count: Some(0),
+        transfer_deduplicated_count: Some(0),
+        transfer_renamed_count: Some(0),
+        transfer_server_hash_match_count: Some(0),
+        transfer_server_hash_unverified_count: Some(0),
+        transfer_indexed_added_count: Some(0),
         errors: vec![],
         logs: vec![format!("[{}] queued transfer", now_string())],
+        status_line: String::new(),
         pause_requested: false,
         abort_requested: false,
     };
@@ -372,8 +649,19 @@ pub fn verify_checksums(
         stabilize_ffmpeg_threads_per_job_used: None,
         conflict_report_path: None,
         current_phase: None,
+        transfer_local_processed_count: None,
+        transfer_local_sidecar_hits_count: None,
+        transfer_local_manifest_hits_count: None,
+        transfer_local_hash_computed_count: None,
+        transfer_uploaded_count: None,
+        transfer_deduplicated_count: None,
+        transfer_renamed_count: None,
+        transfer_server_hash_match_count: None,
+        transfer_server_hash_unverified_count: None,
+        transfer_indexed_added_count: None,
         errors: vec![],
         logs: vec![format!("[{}] queued verify checksums", now_string())],
+        status_line: String::new(),
         pause_requested: false,
         abort_requested: false,
     };
@@ -433,42 +721,97 @@ fn run_transfer_task(
     fs::create_dir_all(&archive).map_err(|e| e.to_string())?;
 
     let files = collect_all_files(&staging);
+    let local_md5_index = Arc::new(load_local_md5_index(&staging));
     let mut overall_errors = Vec::new();
+    let total_files = files.len();
 
     if let Some(ref jid) = job_id {
         update_process_job(jid, |job| {
             job.status = ProcessJobStatus::Running;
             job.started_at = Some(now_string());
-            job.current_file = "Starting copy".to_string();
+            job.current_file = "Loading server hash table".to_string();
             job.conflict_report_path = None;
-            job.current_phase = Some("transfer_copy".to_string());
-            // Setup a progress bar that scales to 2N (copy phase + MD5 phase)
-            job.total = files.len() * 2; 
+            job.current_phase = Some("load_server_hashes".to_string());
+            job.total = total_files;
+            job.transfer_local_processed_count = Some(0);
+            job.transfer_local_sidecar_hits_count = Some(0);
+            job.transfer_local_manifest_hits_count = Some(0);
+            job.transfer_local_hash_computed_count = Some(0);
+            job.transfer_uploaded_count = Some(0);
+            job.transfer_deduplicated_count = Some(0);
+            job.transfer_renamed_count = Some(0);
+            job.transfer_server_hash_match_count = Some(0);
+            job.transfer_server_hash_unverified_count = Some(0);
+            job.transfer_indexed_added_count = Some(0);
         });
         append_process_job_log(jid, format!("start transfer staging='{}' archive='{}'", staging.display(), archive.display()));
+        append_process_job_log(
+            jid,
+            format!(
+                "local hash sources: sidecar_files={} manifest_files={} manifest_entries={} fallback_compute_pending={}",
+                local_md5_index.sidecar_file_count,
+                local_md5_index.manifest_file_count,
+                local_md5_index.manifest_entry_count,
+                total_files.saturating_sub(local_md5_index.hashes_by_media_path.len())
+            ),
+        );
         if files.is_empty() {
             append_process_job_log(jid, "no transferable files found in staging directory");
         }
     }
     let _ = crate::utils::append_app_log(&app, format!("process_transfer start staging='{}' archive='{}'", staging.display(), archive.display()));
 
-    let done_count = Arc::new(AtomicU64::new(0));
-    let bytes_copied = Arc::new(AtomicU64::new(0));
-    let errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let copied_files = Arc::new(std::sync::Mutex::new(Vec::<PathBuf>::new()));
-    let start_time = std::time::Instant::now();
+    // PHASE 1: Load server hash table
+    let master_hash_path = resolve_master_hash_table_path(&archive);
+    let server_hash_table = match ServerHashTable::load_from_file(&master_hash_path) {
+        Ok(table) => {
+            if let Some(ref jid) = job_id {
+                append_process_job_log(jid, format!("loaded server hash table from '{}'", master_hash_path.display()));
+            }
+            table
+        }
+        Err(e) => {
+            let msg = format!("Failed to load server hash table: {}", e);
+            overall_errors.push(msg.clone());
+            if let Some(ref jid) = job_id {
+                append_process_job_log(jid, &msg);
+            }
+            ServerHashTable::new()
+        }
+    };
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(8)
-        .build()
-        .map_err(|e| e.to_string())?;
+    // PHASE 2: Compute MD5 hashes for all staging files
+    if let Some(ref jid) = job_id {
+        update_process_job(jid, |job| {
+            job.current_file = "Computing local hashes".to_string();
+            job.current_phase = Some("compute_local_hashes".to_string());
+            job.done = 0;
+            job.total = total_files;
+        });
+        append_process_job_log(jid, format!("computing local hashes for {} files", total_files));
+    }
+
+    let done_count = Arc::new(AtomicU64::new(0));
+    let sidecar_hits_count = Arc::new(AtomicU64::new(0));
+    let manifest_hits_count = Arc::new(AtomicU64::new(0));
+    let computed_hashes_count = Arc::new(AtomicU64::new(0));
+    let compute_errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let file_hashes = Arc::new(std::sync::Mutex::new(HashMap::<PathBuf, String>::new()));
 
     let app_clone = app.clone();
     let job_id_clone = job_id.clone();
     let done_clone = done_count.clone();
-    let bytes_clone = bytes_copied.clone();
-    let errors_clone = errors.clone();
-    let copied_files_clone = copied_files.clone();
+    let sidecar_hits_clone = sidecar_hits_count.clone();
+    let manifest_hits_clone = manifest_hits_count.clone();
+    let computed_hashes_clone = computed_hashes_count.clone();
+    let compute_errors_clone = compute_errors.clone();
+    let file_hashes_clone = file_hashes.clone();
+    let local_md5_index_clone = local_md5_index.clone();
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cpus())
+        .build()
+        .map_err(|e| e.to_string())?;
 
     pool.install(|| {
         files.par_iter().for_each(|src| {
@@ -476,24 +819,545 @@ fn run_transfer_task(
                 return;
             }
 
-            let rel = src.strip_prefix(&staging).unwrap_or(src);
-            let dest = archive.join(rel);
-
-            let result = (|| -> anyhow::Result<u64> {
-                if let Some(parent) = dest.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                let bytes = fs::copy(src, &dest)?;
-                Ok(bytes)
-            })();
-
             let file_name_str = src.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
 
-            match result {
-                Ok(bytes) => {
-                    copied_files_clone.lock().unwrap().push(dest.clone());
-                    bytes_clone.fetch_add(bytes, Ordering::Relaxed);
+            match md5_for_file_prefer_local_index(src, local_md5_index_clone.as_ref()) {
+                Ok((hash, source)) => {
+                    file_hashes_clone.lock().unwrap().insert(src.clone(), hash);
                     let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
+                    let sidecar_hits = if matches!(source, LocalHashSource::Sidecar) {
+                        sidecar_hits_clone.fetch_add(1, Ordering::Relaxed) + 1
+                    } else {
+                        sidecar_hits_clone.load(Ordering::Relaxed)
+                    };
+                    let manifest_hits = if matches!(source, LocalHashSource::Manifest) {
+                        manifest_hits_clone.fetch_add(1, Ordering::Relaxed) + 1
+                    } else {
+                        manifest_hits_clone.load(Ordering::Relaxed)
+                    };
+                    let computed_hashes = if matches!(source, LocalHashSource::Computed) {
+                        computed_hashes_clone.fetch_add(1, Ordering::Relaxed) + 1
+                    } else {
+                        computed_hashes_clone.load(Ordering::Relaxed)
+                    };
+
+                    if let Some(ref jid) = job_id_clone {
+                        append_process_job_log(
+                            jid,
+                            format!(
+                                "  local-hash source={} file='{}'",
+                                source.as_str(),
+                                file_name_str
+                            ),
+                        );
+                        update_process_job(jid, |job| {
+                            job.done = done as usize;
+                            job.transfer_local_processed_count = Some(done as usize);
+                            job.transfer_local_sidecar_hits_count = Some(sidecar_hits as usize);
+                            job.transfer_local_manifest_hits_count = Some(manifest_hits as usize);
+                            job.transfer_local_hash_computed_count = Some(computed_hashes as usize);
+                            job.current_file = file_name_str.clone();
+                        });
+                    }
+
+                    update_transfer_status_line(
+                        job_id_clone.as_deref(),
+                        "hash",
+                        done as usize,
+                        total_files,
+                        &file_name_str,
+                        None,
+                    );
+
+                    let _ = app_clone.emit(
+                        "process-progress",
+                        ProcessProgress {
+                            total: total_files,
+                            done: done as usize,
+                            current_file: file_name_str,
+                            phase: "compute_local_hashes".to_string(),
+                            speed_mbps: None,
+                        },
+                    );
+                }
+                Err(e) => {
+                    let msg = format!("Failed to compute hash for {}: {}", src.display(), e);
+                    compute_errors_clone.lock().unwrap().push(msg.clone());
+                    if let Some(ref jid) = job_id_clone {
+                        append_process_job_log(jid, &msg);
+                    }
+                }
+            }
+        });
+    });
+
+    overall_errors.extend(compute_errors.lock().unwrap().clone());
+    if let Some(ref jid) = job_id {
+        update_process_job(jid, |job| {
+            job.transfer_local_sidecar_hits_count = Some(sidecar_hits_count.load(Ordering::Relaxed) as usize);
+            job.transfer_local_manifest_hits_count = Some(manifest_hits_count.load(Ordering::Relaxed) as usize);
+            job.transfer_local_hash_computed_count = Some(computed_hashes_count.load(Ordering::Relaxed) as usize);
+        });
+        append_process_job_log(
+            jid,
+            format!(
+                "local hash acquisition complete: sidecar_hits={} manifest_hits={} computed={}",
+                sidecar_hits_count.load(Ordering::Relaxed),
+                manifest_hits_count.load(Ordering::Relaxed),
+                computed_hashes_count.load(Ordering::Relaxed)
+            ),
+        );
+    }
+    let file_hashes_map = file_hashes.lock().unwrap().clone();
+
+    // PHASE 3: Verify against server and plan transfers
+    if let Some(ref jid) = job_id {
+        update_process_job(jid, |job| {
+            job.current_file = "Verifying against server".to_string();
+            job.current_phase = Some("verify_server".to_string());
+            job.done = 0;
+            job.total = total_files;
+        });
+        append_process_job_log(jid, "verifying files against server hash table");
+    }
+
+    let transfer_plan = Arc::new(std::sync::Mutex::new(Vec::<FileTransferInfo>::new()));
+    let verification_report = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let verify_errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let verify_done = Arc::new(AtomicU64::new(0));
+    let deduplicated_counter = Arc::new(AtomicU64::new(0));
+    let renamed_counter = Arc::new(AtomicU64::new(0));
+    let hash_match_counter = Arc::new(AtomicU64::new(0));
+    let unverified_counter = Arc::new(AtomicU64::new(0));
+
+    let app_verify = app.clone();
+    let job_id_verify = job_id.clone();
+    let staging_verify = staging.clone();
+    let archive_verify = archive.clone();
+
+    pool.install(|| {
+        files.par_iter().for_each(|src| {
+            if wait_if_process_paused_or_aborted(job_id_verify.as_deref()) {
+                return;
+            }
+
+            let file_name = src.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            let rel_path = src
+                .strip_prefix(&staging_verify)
+                .map(|p| p.to_string_lossy().replace('\\', "/").to_string())
+                .unwrap_or_else(|_| file_name.clone());
+
+            let local_hash = match file_hashes_map.get(src) {
+                Some(hash) => hash.clone(),
+                None => {
+                    if let Some(ref jid) = job_id_verify {
+                        append_process_job_log(jid, format!("  skipped (no hash): {}", rel_path));
+                    }
+                    let done = verify_done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if let Some(ref jid) = job_id_verify {
+                        if done <= 3 || done % 25 == 0 || done as usize == total_files {
+                            update_process_job(jid, |job| {
+                                job.done = done as usize;
+                                job.current_file = file_name.clone();
+                            });
+                        }
+                    }
+                    return;
+                }
+            };
+
+            if let Some(ref jid) = job_id_verify {
+                append_process_job_log(jid, format!("  checking: {} [{}]", rel_path, &local_hash[..8]));
+            }
+
+            // STEP 1: Check hash table match and verify server-side file
+            let mut resolved = false;
+            if server_hash_table.hash_exists(&local_hash) {
+                let hash_matches = hash_match_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let server_paths = server_hash_table.get_paths_for_hash(&local_hash).unwrap_or(&[]);
+
+                if let Some(ref jid) = job_id_verify {
+                    append_process_job_log(
+                        jid,
+                        format!(
+                            "    step1 hash-match: found {} server path(s) with hash {}",
+                            server_paths.len(),
+                            &local_hash[..8]
+                        ),
+                    );
+                    if hash_matches <= 3 || hash_matches % 25 == 0 {
+                        update_process_job(jid, |job| {
+                            job.transfer_server_hash_match_count = Some(hash_matches as usize);
+                        });
+                    }
+                }
+
+                for server_path in server_paths {
+                    let server_file_path = archive_verify.join(server_path);
+                    if !server_file_path.exists() {
+                        if let Some(ref jid) = job_id_verify {
+                            append_process_job_log(
+                                jid,
+                                format!(
+                                    "    step1 ghost: hash table references '{}' but file not present on server",
+                                    server_path
+                                ),
+                            );
+                        }
+                        continue;
+                    }
+
+                    match compute_md5(&server_file_path) {
+                        Ok(server_hash) if server_hash == local_hash => {
+                            let dedup = deduplicated_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                            verification_report.lock().unwrap().push(format!(
+                                "DEDUPLICATED: {} (same content already at {})",
+                                rel_path, server_path
+                            ));
+                            transfer_plan.lock().unwrap().push(FileTransferInfo {
+                                source_path: src.clone(),
+                                local_hash: local_hash.clone(),
+                                destination_path: server_file_path,
+                                status: FileTransferStatus::Deduplicated,
+                            });
+                            if let Some(ref jid) = job_id_verify {
+                                append_process_job_log(
+                                    jid,
+                                    format!(
+                                        "    step1 verified: server file OK at '{}' -> DEDUPLICATED",
+                                        server_path
+                                    ),
+                                );
+                                if dedup <= 3 || dedup % 25 == 0 {
+                                    update_process_job(jid, |job| {
+                                        job.transfer_deduplicated_count = Some(dedup as usize);
+                                    });
+                                }
+                            }
+                            resolved = true;
+                            break;
+                        }
+                        Ok(actual_hash) => {
+                            verification_report.lock().unwrap().push(format!(
+                                "HASH_MISMATCH: {} has hash {} but table shows {}",
+                                server_path, actual_hash, local_hash
+                            ));
+                            if let Some(ref jid) = job_id_verify {
+                                append_process_job_log(
+                                    jid,
+                                    format!(
+                                        "    step1 corrupt: server file '{}' has hash {} but table shows {}",
+                                        server_path,
+                                        &actual_hash[..8],
+                                        &local_hash[..8]
+                                    ),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            verification_report.lock().unwrap().push(format!(
+                                "VERIFY_ERROR: Could not verify {}: {}",
+                                server_path, e
+                            ));
+                            if let Some(ref jid) = job_id_verify {
+                                append_process_job_log(
+                                    jid,
+                                    format!(
+                                        "    step1 verify-error: could not hash server file '{}': {}",
+                                        server_path, e
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                if !resolved {
+                    let unverified = unverified_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    verify_errors.lock().unwrap().push(format!(
+                        "Hash {} exists in table but server file could not be verified for {}",
+                        local_hash, rel_path
+                    ));
+                    if let Some(ref jid) = job_id_verify {
+                        append_process_job_log(
+                            jid,
+                            format!(
+                                "    step1 unverified: hash {} in table but no server file confirmed, continuing to step 2",
+                                &local_hash[..8]
+                            ),
+                        );
+                        if unverified <= 3 || unverified % 25 == 0 {
+                            update_process_job(jid, |job| {
+                                job.transfer_server_hash_unverified_count = Some(unverified as usize);
+                            });
+                        }
+                    }
+                }
+            } else if let Some(ref jid) = job_id_verify {
+                append_process_job_log(
+                    jid,
+                    format!(
+                        "    step1 no-hash-match: hash {} not in server table",
+                        &local_hash[..8]
+                    ),
+                );
+            }
+
+            // STEP 2: Destination conflict / transfer planning
+            if !resolved {
+                let dest_base = archive_verify.join(&rel_path);
+                if dest_base.exists() {
+                    if let Some(ref jid) = job_id_verify {
+                        append_process_job_log(
+                            jid,
+                            format!(
+                                "    step2 name-conflict: destination path already exists: '{}'",
+                                rel_path
+                            ),
+                        );
+                    }
+
+                    match compute_md5(&dest_base) {
+                        Ok(existing_hash) if existing_hash == local_hash => {
+                            let dedup = deduplicated_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                            transfer_plan.lock().unwrap().push(FileTransferInfo {
+                                source_path: src.clone(),
+                                local_hash: local_hash.clone(),
+                                destination_path: dest_base,
+                                status: FileTransferStatus::Deduplicated,
+                            });
+                            if let Some(ref jid) = job_id_verify {
+                                append_process_job_log(
+                                    jid,
+                                    format!(
+                                        "    step2 same-content: destination exists with same hash {} -> DEDUPLICATED",
+                                        &local_hash[..8]
+                                    ),
+                                );
+                                if dedup <= 3 || dedup % 25 == 0 {
+                                    update_process_job(jid, |job| {
+                                        job.transfer_deduplicated_count = Some(dedup as usize);
+                                    });
+                                }
+                            }
+                        }
+                        Ok(existing_hash) => {
+                            let final_dest = get_unique_destination(&dest_base);
+                            let new_rel_path = final_dest
+                                .strip_prefix(&archive_verify)
+                                .map(|p| p.to_string_lossy().replace('\\', "/").to_string())
+                                .unwrap_or_else(|_| rel_path.clone());
+                            let renamed = renamed_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                            verification_report.lock().unwrap().push(format!(
+                                "RENAMED: {} -> {} (different content at destination)",
+                                rel_path, new_rel_path
+                            ));
+                            transfer_plan.lock().unwrap().push(FileTransferInfo {
+                                source_path: src.clone(),
+                                local_hash: local_hash.clone(),
+                                destination_path: final_dest,
+                                status: FileTransferStatus::Renamed,
+                            });
+                            if let Some(ref jid) = job_id_verify {
+                                append_process_job_log(
+                                    jid,
+                                    format!(
+                                        "    step2 renamed: different content (local={} server={}) -> '{}'",
+                                        &local_hash[..8],
+                                        &existing_hash[..8],
+                                        new_rel_path
+                                    ),
+                                );
+                                if renamed <= 3 || renamed % 25 == 0 {
+                                    update_process_job(jid, |job| {
+                                        job.transfer_renamed_count = Some(renamed as usize);
+                                    });
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            let final_dest = get_unique_destination(&dest_base);
+                            let new_rel_path = final_dest
+                                .strip_prefix(&archive_verify)
+                                .map(|p| p.to_string_lossy().replace('\\', "/").to_string())
+                                .unwrap_or_else(|_| rel_path.clone());
+                            let renamed = renamed_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                            transfer_plan.lock().unwrap().push(FileTransferInfo {
+                                source_path: src.clone(),
+                                local_hash: local_hash.clone(),
+                                destination_path: final_dest,
+                                status: FileTransferStatus::Renamed,
+                            });
+                            if let Some(ref jid) = job_id_verify {
+                                append_process_job_log(
+                                    jid,
+                                    format!(
+                                        "    step2 hash-failed: cannot hash existing destination, renaming to '{}'",
+                                        new_rel_path
+                                    ),
+                                );
+                                if renamed <= 3 || renamed % 25 == 0 {
+                                    update_process_job(jid, |job| {
+                                        job.transfer_renamed_count = Some(renamed as usize);
+                                    });
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    transfer_plan.lock().unwrap().push(FileTransferInfo {
+                        source_path: src.clone(),
+                        local_hash: local_hash.clone(),
+                        destination_path: dest_base,
+                        status: FileTransferStatus::ToTransfer,
+                    });
+                    if let Some(ref jid) = job_id_verify {
+                        append_process_job_log(
+                            jid,
+                            format!("    step2 clear: destination '{}' is free -> QUEUED", rel_path),
+                        );
+                    }
+                }
+            }
+
+            let done = verify_done.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(ref jid) = job_id_verify {
+                if done <= 3 || done % 25 == 0 || done as usize == total_files {
+                    update_process_job(jid, |job| {
+                        job.done = done as usize;
+                        job.current_file = file_name.clone();
+                        job.transfer_server_hash_match_count = Some(hash_match_counter.load(Ordering::Relaxed) as usize);
+                        job.transfer_server_hash_unverified_count = Some(unverified_counter.load(Ordering::Relaxed) as usize);
+                        job.transfer_deduplicated_count = Some(deduplicated_counter.load(Ordering::Relaxed) as usize);
+                        job.transfer_renamed_count = Some(renamed_counter.load(Ordering::Relaxed) as usize);
+                    });
+                }
+            }
+
+            update_transfer_status_line(
+                job_id_verify.as_deref(),
+                "verify",
+                done as usize,
+                total_files,
+                &file_name,
+                None,
+            );
+
+            let _ = app_verify.emit(
+                "process-progress",
+                ProcessProgress {
+                    total: total_files,
+                    done: done as usize,
+                    current_file: file_name,
+                    phase: "verify_server".to_string(),
+                    speed_mbps: None,
+                },
+            );
+        });
+    });
+
+    overall_errors.extend(verify_errors.lock().unwrap().clone());
+    let transfer_plan = transfer_plan.lock().unwrap().clone();
+    let deduplicated_count = deduplicated_counter.load(Ordering::Relaxed) as usize;
+    let renamed_count = renamed_counter.load(Ordering::Relaxed) as usize;
+    let verification_report = verification_report.lock().unwrap().clone();
+
+    let to_transfer_count = transfer_plan.iter().filter(|f| matches!(f.status, FileTransferStatus::ToTransfer)).count();
+
+    if let Some(ref jid) = job_id {
+        append_process_job_log(
+            jid,
+            format!(
+                "verification complete: to_transfer={} deduplicated={} renamed={}",
+                to_transfer_count, deduplicated_count, renamed_count
+            ),
+        );
+    }
+
+    // Write verification report
+    if !verification_report.is_empty() {
+        if let Ok(verification_report_path) = build_transfer_verification_report_path(&archive, job_id.as_deref()) {
+            if let Some(parent) = verification_report_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::write(&verification_report_path, verification_report.join("\n"));
+            if let Some(ref jid) = job_id {
+                append_process_job_log(jid, format!("wrote verification report to '{}'", verification_report_path.display()));
+            }
+        }
+    }
+
+    // PHASE 4: Copy files that need to be transferred
+    if let Some(ref jid) = job_id {
+        update_process_job(jid, |job| {
+            job.current_file = "Copying files".to_string();
+            job.current_phase = Some("transfer_copy".to_string());
+            job.done = 0;
+            job.total = to_transfer_count;
+        });
+        if to_transfer_count > 0 {
+            append_process_job_log(jid, format!("starting copy phase for {} files", to_transfer_count));
+        }
+    }
+
+    let bytes_copied = Arc::new(AtomicU64::new(0));
+    let copy_errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let copied_files = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new())); // (rel_path, hash)
+    let start_time = std::time::Instant::now();
+
+    let app_clone = app.clone();
+    let job_id_clone = job_id.clone();
+    let copy_done_count = Arc::new(AtomicU64::new(0));
+    let copy_done_clone = copy_done_count.clone();
+    let bytes_clone = bytes_copied.clone();
+    let copy_errors_clone = copy_errors.clone();
+    let copied_files_clone = copied_files.clone();
+
+    let pool2 = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cpus())
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    pool2.install(|| {
+        transfer_plan.par_iter().for_each(|file_info| {
+            if wait_if_process_paused_or_aborted(job_id_clone.as_deref()) {
+                return;
+            }
+
+            if !matches!(file_info.status, FileTransferStatus::ToTransfer) {
+                return; // Skip non-transfer files
+            }
+
+            let file_name_str = file_info.source_path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Create destination directory
+            if let Some(parent) = file_info.destination_path.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    let msg = format!("Failed to create directory {}: {}", parent.display(), e);
+                    copy_errors_clone.lock().unwrap().push(msg.clone());
+                    if let Some(ref jid) = job_id_clone {
+                        append_process_job_log(jid, &msg);
+                    }
+                    return;
+                }
+            }
+
+            // Copy file
+            match fs::copy(&file_info.source_path, &file_info.destination_path) {
+                Ok(bytes) => {
+                    bytes_clone.fetch_add(bytes, Ordering::Relaxed);
+                    copied_files_clone.lock().unwrap().push((
+                        file_info.destination_path
+                            .strip_prefix(&archive)
+                            .map(|p| p.to_string_lossy().replace('\\', "/").to_string())
+                            .unwrap_or_else(|_| file_name_str.clone()),
+                        file_info.local_hash.clone(),
+                    ));
+
+                    let done = copy_done_clone.fetch_add(1, Ordering::Relaxed) + 1;
                     let elapsed = start_time.elapsed().as_secs_f64();
                     let speed = if elapsed > 0.0 {
                         (bytes_clone.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0)) / elapsed
@@ -507,14 +1371,15 @@ fn run_transfer_task(
                             job.processed = done as usize;
                             job.speed_mbps = Some(speed);
                             job.current_file = file_name_str.clone();
+                            job.transfer_uploaded_count = Some(done as usize);
                         });
                     }
 
-                    append_transfer_progress_log(
+                    update_transfer_status_line(
                         job_id_clone.as_deref(),
                         "copy",
                         done as usize,
-                        files.len(),
+                        to_transfer_count,
                         &file_name_str,
                         Some(speed),
                     );
@@ -522,7 +1387,7 @@ fn run_transfer_task(
                     let _ = app_clone.emit(
                         "process-progress",
                         ProcessProgress {
-                            total: files.len() * 2,
+                            total: to_transfer_count,
                             done: done as usize,
                             current_file: file_name_str,
                             phase: "transfer_copy".to_string(),
@@ -531,19 +1396,19 @@ fn run_transfer_task(
                     );
                 }
                 Err(e) => {
-                    let msg = format!("{}: {}", src.display(), e);
-                    errors_clone.lock().unwrap().push(msg.clone());
+                    let msg = format!("Failed to copy {}: {}", file_info.source_path.display(), e);
+                    copy_errors_clone.lock().unwrap().push(msg.clone());
                     if let Some(ref jid) = job_id_clone {
-                        append_process_job_log(jid, format!("copy error: {}", msg));
+                        append_process_job_log(jid, &msg);
                     }
                 }
             }
         });
     });
 
-    let copied_destinations = copied_files.lock().unwrap().clone();
-    let copied = copied_destinations.len();
-    overall_errors.extend(errors.lock().unwrap().clone());
+    overall_errors.extend(copy_errors.lock().unwrap().clone());
+    let copied_files_final = copied_files.lock().unwrap().clone();
+    let copied = copied_files_final.len();
 
     let was_aborted = job_id
         .as_ref()
@@ -557,251 +1422,43 @@ fn run_transfer_task(
                 job.finished_at = Some(now_string());
                 job.current_file = "Aborted".to_string();
             });
-            append_process_job_log(jid, format!("aborted copied={}", copied));
+            append_process_job_log(jid, format!("aborted during copy phase: copied={}", copied));
         }
-        return Ok(TransferResult { copied, verified: 0, errors: overall_errors });
+        return Ok(TransferResult {
+            copied,
+            verified: 0,
+            deduplicated: deduplicated_count,
+            renamed: renamed_count,
+            errors: overall_errors,
+        });
     }
 
-    // Manifest phase: hash only the files copied by this transfer and store them separately.
-    
+    // PHASE 5: Update master hash table atomically
     if let Some(ref jid) = job_id {
         update_process_job(jid, |job| {
-            job.total = copied + copied_destinations.len();
-            job.current_file = "Starting checksums".to_string();
-            job.current_phase = Some("transfer_md5".to_string());
-            job.speed_mbps = None;
+            job.current_file = "Updating master hash table".to_string();
+            job.current_phase = Some("update_master_hashes".to_string());
+            job.done = to_transfer_count;
         });
-        append_process_job_log(
-            jid,
-            format!(
-                "starting per-transfer checksum generation phase copied_files={}",
-                copied_destinations.len()
-            ),
-        );
-        if copied_destinations.is_empty() {
-            append_process_job_log(jid, "checksum phase has no copied files to hash");
-        }
+        append_process_job_log(jid, "updating master hash table");
     }
 
-    let md5_errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let checksums = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let md5_errors_clone = md5_errors.clone();
-    let checksums_clone = checksums.clone();
-
-    let pool2 = rayon::ThreadPoolBuilder::new()
-        .num_threads(crate::utils::num_cpus())
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    pool2.install(|| {
-        copied_destinations.par_iter().for_each(|path| {
-            if wait_if_process_paused_or_aborted(job_id_clone.as_deref()) {
-                return;
-            }
-
-            let file_name_str = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-
-            match compute_md5(path) {
-                Ok(hash) => {
-                    let rel = path
-                        .strip_prefix(&archive)
-                        .unwrap_or(path)
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    checksums_clone.lock().unwrap().push(format!("{}  {}", hash, rel));
-                    
-                    let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
-
-                    if let Some(ref jid) = job_id_clone {
-                        update_process_job(jid, |job| {
-                            job.done = done as usize;
-                            job.processed = done as usize;
-                            job.current_file = file_name_str.clone();
-                        });
-                    }
-
-                    append_transfer_progress_log(
-                        job_id_clone.as_deref(),
-                        "checksum",
-                        done as usize - copied,
-                        copied_destinations.len(),
-                        &file_name_str,
-                        None,
-                    );
-
-                    let _ = app_clone.emit(
-                        "process-progress",
-                        ProcessProgress {
-                            total: copied + copied_destinations.len(),
-                            done: done as usize,
-                            current_file: file_name_str,
-                            phase: "transfer_md5".to_string(),
-                            speed_mbps: None,
-                        },
-                    );
-                }
-                Err(e) => {
-                    let msg = format!("{}: {}", path.display(), e);
-                    md5_errors_clone.lock().unwrap().push(msg.clone());
-                    if let Some(ref jid) = job_id_clone {
-                        append_process_job_log(jid, format!("md5 error: {}", msg));
-                    }
+    if !copied_files_final.is_empty() {
+        match atomic_update_master_hash_table(&archive, &copied_files_final) {
+            Ok(added_count) => {
+                if let Some(ref jid) = job_id {
+                    update_process_job(jid, |job| {
+                        job.transfer_indexed_added_count = Some(added_count);
+                    });
+                    append_process_job_log(jid, format!("master hash table updated: {} new entries added", added_count));
                 }
             }
-        });
-    });
-
-    overall_errors.extend(md5_errors.lock().unwrap().clone());
-    let verified = checksums.lock().unwrap().len();
-
-    let was_aborted_2 = job_id
-        .as_ref()
-        .and_then(|id| process_jobs_store().lock().ok().and_then(|jobs| jobs.get(id).map(|j| j.abort_requested)))
-        .unwrap_or(false);
-
-    if was_aborted_2 {
-        if let Some(ref jid) = job_id {
-            update_process_job(jid, |job| {
-                job.status = ProcessJobStatus::Aborted;
-                job.finished_at = Some(now_string());
-                job.current_file = "Aborted".to_string();
-            });
-            append_process_job_log(jid, format!("aborted after md5 phase verified={}", verified));
-        }
-        return Ok(TransferResult { copied, verified, errors: overall_errors });
-    }
-
-    if let Some(ref jid) = job_id {
-        update_process_job(jid, |job| {
-            job.current_file = "Writing transfer manifest".to_string();
-            job.current_phase = Some("transfer_manifest".to_string());
-        });
-    }
-
-    // Write per-transfer checksum manifest.
-    let mut all_checksums = checksums.lock().unwrap().clone();
-    all_checksums.sort();
-    let checksum_path = build_transfer_manifest_path(&archive, job_id.as_deref())?;
-    if let Some(parent) = checksum_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    if let Err(e) = fs::write(&checksum_path, all_checksums.join("\n")) {
-        let err_msg = format!("Failed to write checksums: {}", e);
-        overall_errors.push(err_msg.clone());
-        if let Some(ref jid) = job_id {
-            append_process_job_log(jid, err_msg);
-        }
-    } else if let Some(ref jid) = job_id {
-        append_process_job_log(
-            jid,
-            format!("wrote transfer manifest '{}'", checksum_path.display()),
-        );
-    }
-
-    if let Some(ref jid) = job_id {
-        update_process_job(jid, |job| {
-            job.current_file = "Updating master manifest".to_string();
-            job.current_phase = Some("transfer_master_manifest".to_string());
-        });
-    }
-
-    match update_master_checksum_manifest(&archive, &all_checksums) {
-        Ok((master_manifest_path, added_entries, skipped_invalid_existing_lines, conflicts)) => {
-            let conflict_count = conflicts.len();
-            let mut conflict_report_path = None;
-
-            if !conflicts.is_empty() {
-                match build_transfer_conflict_report_path(&archive, job_id.as_deref()) {
-                    Ok(report_path) => {
-                        if let Some(parent) = report_path.parent() {
-                            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                        }
-
-                        let mut report_lines = vec![
-                            format!("Transfer job: {}", job_id.as_deref().unwrap_or("manual")),
-                            format!("Archive: {}", archive.display()),
-                            format!("Master manifest: {}", master_manifest_path.display()),
-                            format!("Duplicate path collisions: {}", conflict_count),
-                            String::new(),
-                        ];
-
-                        report_lines.extend(conflicts.iter().map(|conflict| {
-                            format!(
-                                "path={} existing_hash={} incoming_hash={}",
-                                conflict.relative_path, conflict.existing_hash, conflict.incoming_hash
-                            )
-                        }));
-
-                        match fs::write(&report_path, report_lines.join("\n")) {
-                            Ok(_) => {
-                                if let Some(ref jid) = job_id {
-                                    update_process_job(jid, |job| {
-                                        job.conflict_report_path = Some(report_path.display().to_string());
-                                    });
-                                }
-                                conflict_report_path = Some(report_path);
-                            }
-                            Err(e) => {
-                                let err_msg = format!("Failed to write duplicate collision report: {}", e);
-                                overall_errors.push(err_msg.clone());
-                                if let Some(ref jid) = job_id {
-                                    append_process_job_log(jid, err_msg);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let err_msg = format!("Failed to build duplicate collision report path: {}", e);
-                        overall_errors.push(err_msg.clone());
-                        if let Some(ref jid) = job_id {
-                            append_process_job_log(jid, err_msg);
-                        }
-                    }
+            Err(e) => {
+                let msg = format!("Failed to update master hash table: {}", e);
+                overall_errors.push(msg.clone());
+                if let Some(ref jid) = job_id {
+                    append_process_job_log(jid, &msg);
                 }
-            }
-
-            if let Some(ref jid) = job_id {
-                append_process_job_log(
-                    jid,
-                    format!(
-                        "updated master manifest '{}' entries_appended={} duplicate_path_collisions={} skipped_invalid_existing_lines={}",
-                        master_manifest_path.display(),
-                        added_entries,
-                        conflict_count,
-                        skipped_invalid_existing_lines
-                    ),
-                );
-
-                if !conflicts.is_empty() {
-                    let preview_paths = conflicts
-                        .iter()
-                        .take(5)
-                        .map(|conflict| conflict.relative_path.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    append_process_job_log(
-                        jid,
-                        format!(
-                            "duplicate path collisions detected: {}{}",
-                            preview_paths,
-                            if conflict_count > 5 { " ..." } else { "" }
-                        ),
-                    );
-
-                    if let Some(report_path) = conflict_report_path {
-                        append_process_job_log(
-                            jid,
-                            format!("wrote duplicate collision report '{}'", report_path.display()),
-                        );
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            let err_msg = format!("Failed to update master checksums: {}", e);
-            overall_errors.push(err_msg.clone());
-            if let Some(ref jid) = job_id {
-                append_process_job_log(jid, err_msg);
             }
         }
     }
@@ -814,16 +1471,36 @@ fn run_transfer_task(
             job.current_file = "Done".to_string();
             job.current_phase = Some("done".to_string());
             job.errors = overall_errors.clone();
-            job.result_count = verified;
+            job.result_count = copied;
         });
-        append_process_job_log(jid, format!("complete copied={} verified={} errors={}", copied, verified, overall_errors.len()));
+        append_process_job_log(
+            jid,
+            format!(
+                "complete: copied={} deduplicated={} renamed={} errors={}",
+                copied,
+                deduplicated_count,
+                renamed_count,
+                overall_errors.len()
+            ),
+        );
     }
 
-    let _ = crate::utils::append_app_log(&app, format!("process_transfer complete copied={} verified={} errors={}", copied, verified, overall_errors.len()));
+    let _ = crate::utils::append_app_log(
+        &app,
+        format!(
+            "process_transfer complete: copied={} deduplicated={} renamed={} errors={}",
+            copied,
+            deduplicated_count,
+            renamed_count,
+            overall_errors.len()
+        ),
+    );
 
     Ok(TransferResult {
         copied,
-        verified,
+        verified: copied,
+        deduplicated: deduplicated_count,
+        renamed: renamed_count,
         errors: overall_errors,
     })
 }
@@ -940,7 +1617,7 @@ fn run_verify_task(
                 });
             }
 
-            append_transfer_progress_log(
+            update_transfer_status_line(
                 job_id_clone.as_deref(),
                 "verify",
                 done as usize,
@@ -986,6 +1663,8 @@ fn run_verify_task(
     Ok(TransferResult {
         copied: 0,
         verified,
+        deduplicated: 0,
+        renamed: 0,
         errors: final_errors,
     })
 }

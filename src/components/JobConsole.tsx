@@ -93,6 +93,61 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
       typeof processJob.stabilizeFfmpegThreadsPerJobUsed === "number")
       ? `${processJob.stabilizeMaxParallelJobsUsed ?? "-"} parallel jobs, ${processJob.stabilizeFfmpegThreadsPerJobUsed ?? "-"} ffmpeg threads/job`
       : null;
+  const isTransferJob = processJob?.task === "transfer";
+  const transferLocalProcessedCount = processJob?.transferLocalProcessedCount ?? 0;
+  const transferLocalSidecarHitsCount = processJob?.transferLocalSidecarHitsCount ?? 0;
+  const transferLocalManifestHitsCount = processJob?.transferLocalManifestHitsCount ?? 0;
+  const transferLocalHashComputedCount = processJob?.transferLocalHashComputedCount ?? 0;
+  const transferUploadedCount = processJob?.transferUploadedCount ?? 0;
+  const transferDeduplicatedCount = processJob?.transferDeduplicatedCount ?? 0;
+  const transferRenamedCount = processJob?.transferRenamedCount ?? 0;
+  const transferServerHashMatchCount = processJob?.transferServerHashMatchCount ?? 0;
+  const transferServerHashUnverifiedCount = processJob?.transferServerHashUnverifiedCount ?? 0;
+  const transferIndexedAddedCount = processJob?.transferIndexedAddedCount ?? 0;
+  const transferCopyRemainingCount = Math.max((job.total ?? 0) - transferUploadedCount, 0);
+  const transferVerifyNonDuplicateCount = Math.max(
+    transferLocalProcessedCount - transferDeduplicatedCount,
+    0,
+  );
+
+  const transferPhaseSummary = (() => {
+    if (!isTransferJob || !processJob) return [] as Array<{ label: string; value: number; tone?: string }>;
+
+    switch (processJob.currentPhase) {
+      case "compute_local_hashes":
+        return [
+          { label: "Local Processed", value: transferLocalProcessedCount, tone: "text-white" },
+          { label: "Sidecar Hits", value: transferLocalSidecarHitsCount, tone: "text-teal-300" },
+          { label: "Manifest Hits", value: transferLocalManifestHitsCount, tone: "text-cyan-300" },
+          { label: "Computed", value: transferLocalHashComputedCount, tone: "text-amber-300" },
+          { label: "Remaining", value: Math.max((job.total ?? 0) - transferLocalProcessedCount, 0), tone: "text-gray-300" },
+        ];
+      case "verify_server":
+        return [
+          { label: "Hash Matches", value: transferServerHashMatchCount, tone: "text-sky-300" },
+          { label: "Verified Duplicates", value: transferDeduplicatedCount, tone: "text-cyan-300" },
+          { label: "Non-Duplicate", value: transferVerifyNonDuplicateCount, tone: "text-amber-300" },
+          { label: "Unverified Matches", value: transferServerHashUnverifiedCount, tone: "text-rose-300" },
+        ];
+      case "transfer_copy":
+        return [
+          { label: "Uploaded", value: transferUploadedCount, tone: "text-emerald-300" },
+          { label: "Remaining", value: transferCopyRemainingCount, tone: "text-amber-300" },
+          { label: "Renamed", value: transferRenamedCount, tone: "text-yellow-300" },
+        ];
+      case "update_master_hashes":
+        return [
+          { label: "Indexed Added", value: transferIndexedAddedCount, tone: "text-teal-300" },
+          { label: "Uploaded", value: transferUploadedCount, tone: "text-emerald-300" },
+        ];
+      default:
+        return [
+          { label: "Local Processed", value: transferLocalProcessedCount, tone: "text-white" },
+          { label: "Uploaded", value: transferUploadedCount, tone: "text-emerald-300" },
+          { label: "Deduplicated", value: transferDeduplicatedCount, tone: "text-cyan-300" },
+        ];
+    }
+  })();
 
   return (
     <div className="flex flex-col h-full gap-3 p-4 overflow-hidden">
@@ -162,11 +217,11 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
             <>
               <div className="bg-surface-800 rounded px-2 py-1.5">
                 <div className="text-gray-500 mb-0.5">{getProcessAttemptLabel(processJob.task)}</div>
-                <div className="font-semibold text-white">{processJob.processed}</div>
+                <div className="font-semibold text-white">{isTransferJob ? transferLocalProcessedCount : processJob.processed}</div>
               </div>
               <div className="bg-surface-800 rounded px-2 py-1.5">
                 <div className="text-gray-500 mb-0.5">{getProcessResultLabel(processJob.task)}</div>
-                <div className="font-semibold text-yellow-300">{processJob.resultCount}</div>
+                <div className="font-semibold text-yellow-300">{isTransferJob ? transferUploadedCount : processJob.resultCount}</div>
               </div>
             </>
           ) : (
@@ -188,6 +243,47 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
             </div>
           </div>
         </div>
+        {isTransferJob && (
+          <div className="grid grid-cols-3 lg:grid-cols-6 gap-2 text-xs mt-2">
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Uploaded</div>
+              <div className="font-semibold text-emerald-300">{transferUploadedCount}</div>
+            </div>
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Deduplicated</div>
+              <div className="font-semibold text-cyan-300">{transferDeduplicatedCount}</div>
+            </div>
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Renamed</div>
+              <div className="font-semibold text-amber-300">{transferRenamedCount}</div>
+            </div>
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Hash Matches</div>
+              <div className="font-semibold text-sky-300">{transferServerHashMatchCount}</div>
+            </div>
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Unverified Matches</div>
+              <div className="font-semibold text-rose-300">{transferServerHashUnverifiedCount}</div>
+            </div>
+            <div className="bg-surface-800 rounded px-2 py-1.5">
+              <div className="text-gray-500 mb-0.5">Indexed Added</div>
+              <div className="font-semibold text-teal-300">{transferIndexedAddedCount}</div>
+            </div>
+          </div>
+        )}
+        {isTransferJob && transferPhaseSummary.length > 0 && (
+          <div className="mt-2 rounded border border-surface-700 bg-surface-900/40 px-2 py-1.5">
+            <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Phase Summary</div>
+            <div className="flex flex-wrap gap-3 text-xs">
+              {transferPhaseSummary.map((item) => (
+                <div key={item.label} className="inline-flex items-center gap-1">
+                  <span className="text-gray-400">{item.label}:</span>
+                  <span className={`font-semibold ${item.tone ?? "text-white"}`}>{item.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {importJob && (
           <div className="grid grid-cols-5 gap-2 text-xs mt-2">
             <div className="bg-surface-800 rounded px-2 py-1.5">
@@ -250,6 +346,15 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
           </div>
         )}
       </div>
+
+      {/* Status Line (updates in-place) */}
+      {processJob?.statusLine && job.status === "running" && (
+        <div className="flex-shrink-0 bg-surface-800/50 border border-surface-600 rounded px-3 py-2">
+          <p className="text-xs text-cyan-300 font-mono">
+            ▶ {processJob.statusLine}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

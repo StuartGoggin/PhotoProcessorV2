@@ -98,6 +98,16 @@ pub struct ProcessJob {
     pub conflict_report_path: Option<String>,
     pub current_phase: Option<String>,
     pub speed_mbps: Option<f64>,
+    pub transfer_local_processed_count: Option<usize>,
+    pub transfer_local_sidecar_hits_count: Option<usize>,
+    pub transfer_local_manifest_hits_count: Option<usize>,
+    pub transfer_local_hash_computed_count: Option<usize>,
+    pub transfer_uploaded_count: Option<usize>,
+    pub transfer_deduplicated_count: Option<usize>,
+    pub transfer_renamed_count: Option<usize>,
+    pub transfer_server_hash_match_count: Option<usize>,
+    pub transfer_server_hash_unverified_count: Option<usize>,
+    pub transfer_indexed_added_count: Option<usize>,
     pub stabilization_mode: Option<StabilizationMode>,
     pub stabilization_strength: Option<StabilizationStrength>,
     pub preserve_source_bitrate: Option<bool>,
@@ -105,6 +115,7 @@ pub struct ProcessJob {
     pub stabilize_ffmpeg_threads_per_job_used: Option<usize>,
     pub errors: Vec<String>,
     pub logs: Vec<String>,
+    pub status_line: String,  // Single line that updates in-place
     pub pause_requested: bool,
     pub abort_requested: bool,
 }
@@ -478,10 +489,33 @@ pub(crate) fn append_process_job_log(job_id: &str, message: impl AsRef<str>) {
     let ts = now_string();
     update_process_job(job_id, |job| {
         job.logs.push(format!("[{}] {}", ts, message.as_ref()));
-        if job.logs.len() > 2000 {
-            let to_drop = job.logs.len() - 2000;
+        // Limit logs to 100 lines to avoid UI slowdown and verbose output
+        if job.logs.len() > 100 {
+            let to_drop = job.logs.len() - 100;
             job.logs.drain(0..to_drop);
         }
+    });
+}
+
+/// Update the status line (single line that updates in-place) without adding to logs
+pub(crate) fn update_process_status_line(job_id: &str, message: impl AsRef<str>) {
+    update_process_job(job_id, |job| {
+        job.status_line = message.as_ref().to_string();
+    });
+}
+
+/// Add an important log entry (phase changes, errors, summaries)
+pub(crate) fn append_process_milestone_log(job_id: &str, message: impl AsRef<str>) {
+    let ts = now_string();
+    update_process_job(job_id, |job| {
+        job.logs.push(format!("[{}] {}", ts, message.as_ref()));
+        // Keep last 100 milestone entries
+        if job.logs.len() > 100 {
+            let to_drop = job.logs.len() - 100;
+            job.logs.drain(0..to_drop);
+        }
+        // Clear status line when logging milestone
+        job.status_line.clear();
     });
 }
 
@@ -2445,6 +2479,16 @@ pub fn start_process_job(
         conflict_report_path: None,
         current_phase: None,
         speed_mbps: None,
+        transfer_local_processed_count: None,
+        transfer_local_sidecar_hits_count: None,
+        transfer_local_manifest_hits_count: None,
+        transfer_local_hash_computed_count: None,
+        transfer_uploaded_count: None,
+        transfer_deduplicated_count: None,
+        transfer_renamed_count: None,
+        transfer_server_hash_match_count: None,
+        transfer_server_hash_unverified_count: None,
+        transfer_indexed_added_count: None,
         stabilization_mode: queued_stabilization_mode,
         stabilization_strength: queued_stabilization_strength,
         preserve_source_bitrate: queued_preserve_source_bitrate,
@@ -2452,6 +2496,7 @@ pub fn start_process_job(
         stabilize_ffmpeg_threads_per_job_used: None,
         errors: vec![],
         logs: vec![format!("[{}] queued", now_string())],
+        status_line: String::new(),
         pause_requested: false,
         abort_requested: false,
     };
@@ -2577,6 +2622,16 @@ pub fn start_event_naming_job(
         conflict_report_path: None,
         current_phase: None,
         speed_mbps: None,
+        transfer_local_processed_count: None,
+        transfer_local_sidecar_hits_count: None,
+        transfer_local_manifest_hits_count: None,
+        transfer_local_hash_computed_count: None,
+        transfer_uploaded_count: None,
+        transfer_deduplicated_count: None,
+        transfer_renamed_count: None,
+        transfer_server_hash_match_count: None,
+        transfer_server_hash_unverified_count: None,
+        transfer_indexed_added_count: None,
         stabilization_mode: None,
         stabilization_strength: None,
         preserve_source_bitrate: None,
@@ -2584,6 +2639,7 @@ pub fn start_event_naming_job(
         stabilize_ffmpeg_threads_per_job_used: None,
         errors: vec![],
         logs: vec![format!("[{}] queued apply_event_naming selected_directories={}", now_string(), selected_count)],
+        status_line: String::new(),
         pause_requested: false,
         abort_requested: false,
     };

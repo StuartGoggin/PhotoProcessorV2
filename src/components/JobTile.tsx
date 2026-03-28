@@ -111,6 +111,12 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
       typeof processJob.stabilizeFfmpegThreadsPerJobUsed === "number")
       ? `${processJob.stabilizeMaxParallelJobsUsed ?? "-"} jobs • ${processJob.stabilizeFfmpegThreadsPerJobUsed ?? "-"} threads/job`
       : null;
+  const isTransferJob = processJob?.task === "transfer";
+  const transferLocalProcessedCount = processJob?.transferLocalProcessedCount ?? 0;
+  const transferLocalSidecarHitsCount = processJob?.transferLocalSidecarHitsCount ?? 0;
+  const transferLocalManifestHitsCount = processJob?.transferLocalManifestHitsCount ?? 0;
+  const transferLocalHashComputedCount = processJob?.transferLocalHashComputedCount ?? 0;
+  const transferUploadedCount = processJob?.transferUploadedCount ?? 0;
 
   return (
     <div
@@ -200,11 +206,11 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
             <>
               <div className="bg-surface-700/40 rounded px-2 py-1">
                 <div className="text-gray-500">{getProcessAttemptLabel(processJob.task)}</div>
-                <div className="font-semibold text-white">{processJob.processed}</div>
+                <div className="font-semibold text-white">{isTransferJob ? transferLocalProcessedCount : processJob.processed}</div>
               </div>
               <div className="bg-surface-700/40 rounded px-2 py-1">
                 <div className="text-gray-500">{getProcessResultLabel(processJob.task)}</div>
-                <div className="font-semibold text-yellow-300">{processJob.resultCount}</div>
+                <div className="font-semibold text-yellow-300">{isTransferJob ? transferUploadedCount : processJob.resultCount}</div>
               </div>
             </>
           ) : (
@@ -230,6 +236,26 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
         </div>
       )}
 
+      {isTransferJob && (
+        <div className="rounded border border-surface-700 bg-surface-900/30 px-2 py-1.5">
+          <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Local Hash Source</div>
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <div>
+              <div className="text-gray-500">Sidecar</div>
+              <div className="font-semibold text-teal-300">{transferLocalSidecarHitsCount}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Manifest</div>
+              <div className="font-semibold text-cyan-300">{transferLocalManifestHitsCount}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Computed</div>
+              <div className="font-semibold text-amber-300">{transferLocalHashComputedCount}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {threadingLabel && (
         <div className="pt-1 border-t border-surface-600">
           <div className="text-xs text-cyan-300">Threading: {threadingLabel}</div>
@@ -251,11 +277,11 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
               <>
                 <div>
                   <span className="text-gray-500">{getProcessAttemptLabel(processJob.task)}:</span>
-                  <span className="ml-1 font-semibold text-emerald-300">{processJob.processed}</span>
+                  <span className="ml-1 font-semibold text-emerald-300">{isTransferJob ? transferLocalProcessedCount : processJob.processed}</span>
                 </div>
                 <div>
                   <span className="text-gray-500">{getProcessResultLabel(processJob.task)}:</span>
-                  <span className="ml-1 font-semibold text-yellow-300">{processJob.resultCount}</span>
+                  <span className="ml-1 font-semibold text-yellow-300">{isTransferJob ? transferUploadedCount : processJob.resultCount}</span>
                 </div>
               </>
             ) : (

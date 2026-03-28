@@ -181,6 +181,16 @@ export interface ProcessJob {
   conflictReportPath?: string;
   currentPhase?: string;
   speedMbps?: number | null;
+  transferLocalProcessedCount?: number;
+  transferLocalSidecarHitsCount?: number;
+  transferLocalManifestHitsCount?: number;
+  transferLocalHashComputedCount?: number;
+  transferUploadedCount?: number;
+  transferDeduplicatedCount?: number;
+  transferRenamedCount?: number;
+  transferServerHashMatchCount?: number;
+  transferServerHashUnverifiedCount?: number;
+  transferIndexedAddedCount?: number;
   stabilizationMode?: StabilizationMode;
   stabilizationStrength?: StabilizationStrength;
   preserveSourceBitrate?: boolean;
@@ -188,6 +198,7 @@ export interface ProcessJob {
   stabilizeFfmpegThreadsPerJobUsed?: number;
   errors: string[];
   logs: string[];
+  statusLine: string;  // Single-line status that updates in-place
   pauseRequested: boolean;
   abortRequested: boolean;
 }
