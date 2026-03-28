@@ -37,6 +37,7 @@ export default function JobsPanel({ importJobs, processJobs, loading = false }: 
     return () => container.removeEventListener("wheel", handleWheel);
   }, []);
 
+
   // Combine and sort jobs: active (running first, then queued) at left, completed at right
   const jobs: Job[] = [
     ...processJobs.map((j) => ({ ...j, jobType: "process" as const })),
@@ -65,9 +66,7 @@ export default function JobsPanel({ importJobs, processJobs, loading = false }: 
     : null;
 
   return (
-    <div className={`border-t border-surface-700 bg-surface-900 flex flex-col transition-all duration-300 ${
-      selectedJob ? "h-96" : "h-64"
-    }`}>
+    <div className="jobs-panel-resizable border-t border-surface-700 bg-surface-900 flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-3 border-b border-surface-700 flex-shrink-0">
         <div className="flex items-center gap-3">
@@ -88,11 +87,7 @@ export default function JobsPanel({ importJobs, processJobs, loading = false }: 
           {hasJobs ? (
             <div
               ref={scrollRef}
-              className="w-full h-full overflow-x-auto overflow-y-hidden scroll-smooth px-6 py-4 space-x-4 flex items-start"
-              style={{
-                scrollbarColor: "rgb(75, 85, 99) rgb(23, 32, 51)",
-                scrollbarWidth: "thin",
-              }}
+              className="jobs-panel-scroll-strip w-full h-full overflow-x-auto overflow-y-hidden scroll-smooth px-6 py-4 space-x-4 flex items-start"
             >
               {jobs.map((job) => (
                 <JobTile

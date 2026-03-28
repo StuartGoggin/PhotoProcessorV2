@@ -28,6 +28,7 @@ pub struct TransferResult {
 const LEGACY_CHECKSUM_FILE_NAME: &str = "checksums.md5";
 const TRANSFER_MANIFEST_DIR_NAME: &str = "_transfer_manifests";
 const MASTER_HASH_TABLE_FILE: &str = "master_hashes.md5";
+const MASTER_HASH_FLUSH_EVERY_COPIES: u64 = 250;
 
 #[derive(Debug, Clone)]
 struct FileTransferInfo {
@@ -922,6 +923,7 @@ fn run_transfer_task(
     }
 
     let transfer_plan = Arc::new(std::sync::Mutex::new(Vec::<FileTransferInfo>::new()));
+    let hash_backfill_entries = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
     let verification_report = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let verify_errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let verify_done = Arc::new(AtomicU64::new(0));
@@ -934,6 +936,7 @@ fn run_transfer_task(
     let job_id_verify = job_id.clone();
     let staging_verify = staging.clone();
     let archive_verify = archive.clone();
+    let hash_backfill_entries_verify = hash_backfill_entries.clone();
 
     pool.install(|| {
         files.par_iter().for_each(|src| {
@@ -1120,6 +1123,10 @@ fn run_transfer_task(
                     match compute_md5(&dest_base) {
                         Ok(existing_hash) if existing_hash == local_hash => {
                             let dedup = deduplicated_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                            hash_backfill_entries_verify
+                                .lock()
+                                .unwrap()
+                                .push((rel_path.clone(), existing_hash.clone()));
                             transfer_plan.lock().unwrap().push(FileTransferInfo {
                                 source_path: src.clone(),
                                 local_hash: local_hash.clone(),
@@ -1130,8 +1137,9 @@ fn run_transfer_task(
                                 append_process_job_log(
                                     jid,
                                     format!(
-                                        "    step2 same-content: destination exists with same hash {} -> DEDUPLICATED",
-                                        &local_hash[..8]
+                                        "    step2 same-content: destination exists with same hash {} -> DEDUPLICATED (queued hash backfill for '{}')",
+                                        &local_hash[..8],
+                                        rel_path
                                     ),
                                 );
                                 if dedup <= 3 || dedup % 25 == 0 {
@@ -1258,6 +1266,7 @@ fn run_transfer_task(
 
     overall_errors.extend(verify_errors.lock().unwrap().clone());
     let transfer_plan = transfer_plan.lock().unwrap().clone();
+    let hash_backfill_entries = hash_backfill_entries.lock().unwrap().clone();
     let deduplicated_count = deduplicated_counter.load(Ordering::Relaxed) as usize;
     let renamed_count = renamed_counter.load(Ordering::Relaxed) as usize;
     let verification_report = verification_report.lock().unwrap().clone();
@@ -1268,8 +1277,8 @@ fn run_transfer_task(
         append_process_job_log(
             jid,
             format!(
-                "verification complete: to_transfer={} deduplicated={} renamed={}",
-                to_transfer_count, deduplicated_count, renamed_count
+                "verification complete: to_transfer={} deduplicated={} renamed={} hash_backfill_pending={}",
+                to_transfer_count, deduplicated_count, renamed_count, hash_backfill_entries.len()
             ),
         );
     }
@@ -1303,15 +1312,22 @@ fn run_transfer_task(
     let bytes_copied = Arc::new(AtomicU64::new(0));
     let copy_errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let copied_files = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new())); // (rel_path, hash)
+    let pending_hash_updates = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let index_flush_lock = Arc::new(std::sync::Mutex::new(()));
+    let indexed_added_total = Arc::new(AtomicU64::new(0));
     let start_time = std::time::Instant::now();
 
     let app_clone = app.clone();
+    let archive_for_copy = archive.clone();
     let job_id_clone = job_id.clone();
     let copy_done_count = Arc::new(AtomicU64::new(0));
     let copy_done_clone = copy_done_count.clone();
     let bytes_clone = bytes_copied.clone();
     let copy_errors_clone = copy_errors.clone();
     let copied_files_clone = copied_files.clone();
+    let pending_hash_updates_clone = pending_hash_updates.clone();
+    let index_flush_lock_clone = index_flush_lock.clone();
+    let indexed_added_total_clone = indexed_added_total.clone();
 
     let pool2 = rayon::ThreadPoolBuilder::new()
         .num_threads(num_cpus())
@@ -1349,13 +1365,19 @@ fn run_transfer_task(
             match fs::copy(&file_info.source_path, &file_info.destination_path) {
                 Ok(bytes) => {
                     bytes_clone.fetch_add(bytes, Ordering::Relaxed);
-                    copied_files_clone.lock().unwrap().push((
-                        file_info.destination_path
-                            .strip_prefix(&archive)
-                            .map(|p| p.to_string_lossy().replace('\\', "/").to_string())
-                            .unwrap_or_else(|_| file_name_str.clone()),
-                        file_info.local_hash.clone(),
-                    ));
+                    let rel_dest_path = file_info
+                        .destination_path
+                        .strip_prefix(&archive_for_copy)
+                        .map(|p| p.to_string_lossy().replace('\\', "/").to_string())
+                        .unwrap_or_else(|_| file_name_str.clone());
+                    copied_files_clone
+                        .lock()
+                        .unwrap()
+                        .push((rel_dest_path.clone(), file_info.local_hash.clone()));
+                    pending_hash_updates_clone
+                        .lock()
+                        .unwrap()
+                        .push((rel_dest_path, file_info.local_hash.clone()));
 
                     let done = copy_done_clone.fetch_add(1, Ordering::Relaxed) + 1;
                     let elapsed = start_time.elapsed().as_secs_f64();
@@ -1394,6 +1416,48 @@ fn run_transfer_task(
                             speed_mbps: Some(speed),
                         },
                     );
+
+                    if done % MASTER_HASH_FLUSH_EVERY_COPIES == 0 {
+                        let _flush_guard = index_flush_lock_clone.lock().unwrap();
+                        let batch = {
+                            let mut pending = pending_hash_updates_clone.lock().unwrap();
+                            std::mem::take(&mut *pending)
+                        };
+
+                        if !batch.is_empty() {
+                            match atomic_update_master_hash_table(&archive_for_copy, &batch) {
+                                Ok(added_count) => {
+                                    let total_added = indexed_added_total_clone
+                                        .fetch_add(added_count as u64, Ordering::Relaxed)
+                                        + added_count as u64;
+                                    if let Some(ref jid) = job_id_clone {
+                                        update_process_job(jid, |job| {
+                                            job.transfer_indexed_added_count = Some(total_added as usize);
+                                        });
+                                        append_process_job_log(
+                                            jid,
+                                            format!(
+                                                "master hash table incremental flush: batch={} added={} total_added={}",
+                                                batch.len(),
+                                                added_count,
+                                                total_added
+                                            ),
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg = format!(
+                                        "Failed incremental master hash table flush after {} copied files: {}",
+                                        done, e
+                                    );
+                                    copy_errors_clone.lock().unwrap().push(msg.clone());
+                                    if let Some(ref jid) = job_id_clone {
+                                        append_process_job_log(jid, &msg);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     let msg = format!("Failed to copy {}: {}", file_info.source_path.display(), e);
@@ -1405,6 +1469,45 @@ fn run_transfer_task(
             }
         });
     });
+
+    {
+        let _flush_guard = index_flush_lock.lock().unwrap();
+        let remaining_batch = {
+            let mut pending = pending_hash_updates.lock().unwrap();
+            std::mem::take(&mut *pending)
+        };
+
+        if !remaining_batch.is_empty() {
+            match atomic_update_master_hash_table(&archive, &remaining_batch) {
+                Ok(added_count) => {
+                    let total_added = indexed_added_total
+                        .fetch_add(added_count as u64, Ordering::Relaxed)
+                        + added_count as u64;
+                    if let Some(ref jid) = job_id {
+                        update_process_job(jid, |job| {
+                            job.transfer_indexed_added_count = Some(total_added as usize);
+                        });
+                        append_process_job_log(
+                            jid,
+                            format!(
+                                "master hash table final copy flush: batch={} added={} total_added={}",
+                                remaining_batch.len(),
+                                added_count,
+                                total_added
+                            ),
+                        );
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("Failed final copy-phase master hash table flush: {}", e);
+                    overall_errors.push(msg.clone());
+                    if let Some(ref jid) = job_id {
+                        append_process_job_log(jid, &msg);
+                    }
+                }
+            }
+        }
+    }
 
     overall_errors.extend(copy_errors.lock().unwrap().clone());
     let copied_files_final = copied_files.lock().unwrap().clone();
@@ -1443,14 +1546,26 @@ fn run_transfer_task(
         append_process_job_log(jid, "updating master hash table");
     }
 
-    if !copied_files_final.is_empty() {
-        match atomic_update_master_hash_table(&archive, &copied_files_final) {
+    let mut backfill_added_count = 0usize;
+
+    if !hash_backfill_entries.is_empty() {
+        match atomic_update_master_hash_table(&archive, &hash_backfill_entries) {
             Ok(added_count) => {
+                backfill_added_count = added_count;
+                let total_added = indexed_added_total.load(Ordering::Relaxed) as usize + backfill_added_count;
                 if let Some(ref jid) = job_id {
                     update_process_job(jid, |job| {
-                        job.transfer_indexed_added_count = Some(added_count);
+                        job.transfer_indexed_added_count = Some(total_added);
                     });
-                    append_process_job_log(jid, format!("master hash table updated: {} new entries added", added_count));
+                    append_process_job_log(
+                        jid,
+                        format!(
+                            "master hash table backfill flush: backfill_entries={} added={} total_added={}",
+                            hash_backfill_entries.len(),
+                            added_count,
+                            total_added
+                        ),
+                    );
                 }
             }
             Err(e) => {
@@ -1461,6 +1576,13 @@ fn run_transfer_task(
                 }
             }
         }
+    }
+
+    if let Some(ref jid) = job_id {
+        let total_added = indexed_added_total.load(Ordering::Relaxed) as usize + backfill_added_count;
+        update_process_job(jid, |job| {
+            job.transfer_indexed_added_count = Some(total_added);
+        });
     }
 
     let failed = !overall_errors.is_empty();

@@ -55,6 +55,16 @@
   resize: none;
 }
 
+.jobs-panel-resizable {
+  height: 300px;
+  min-height: 180px;
+  max-height: 560px;
+  resize: vertical;
+  overflow: hidden;
+}
+
+
+
 .progress-native {
   width: 100%;
   height: 0.5rem;
