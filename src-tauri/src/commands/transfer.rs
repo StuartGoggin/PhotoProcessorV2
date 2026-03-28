@@ -1151,9 +1151,17 @@ fn run_transfer_task(
                                 append_process_job_log(
                                     jid,
                                     format!(
-                                        "    step2 same-content: destination exists with same hash {} -> DEDUPLICATED (queued hash backfill for '{}')",
-                                        &local_hash[..8],
-                                        rel_path
+                                        "    step2 same-content: destination '{}' already exists with matching hash '{}' -> DEDUPLICATED",
+                                        rel_path,
+                                        &local_hash[..8]
+                                    ),
+                                );
+                                append_process_job_log(
+                                    jid,
+                                    format!(
+                                        "    step2 backfill-queued: path='{}' hash='{}' added to backfill queue (will be written to server hash table in phase 5)",
+                                        rel_path,
+                                        &local_hash[..8]
                                     ),
                                 );
                                 if dedup <= 3 || dedup % 25 == 0 {
@@ -1610,6 +1618,23 @@ fn run_transfer_task(
     let mut backfill_added_count = 0usize;
 
     if !hash_backfill_entries.is_empty() {
+        let backfill_hash_path = resolve_master_hash_table_path(&archive);
+        let backfill_hash_path_canonical = backfill_hash_path.canonicalize().unwrap_or_else(|_| backfill_hash_path.clone());
+        
+        if let Some(ref jid) = job_id {
+            for (path, hash) in &hash_backfill_entries {
+                append_process_job_log(
+                    jid,
+                    format!(
+                        "HASH_TABLE_BACKFILL_QUEUED: path='{}' hash='{}' -> will be written to [absolute='{}']",
+                        path,
+                        &hash[..8],
+                        backfill_hash_path_canonical.display()
+                    ),
+                );
+            }
+        }
+        
         match atomic_update_master_hash_table(&archive, &hash_backfill_entries) {
             Ok(added_count) => {
                 backfill_added_count = added_count;
@@ -1621,7 +1646,8 @@ fn run_transfer_task(
                     append_process_job_log(
                         jid,
                         format!(
-                            "master hash table backfill flush: backfill_entries={} added={} total_added={}",
+                            "HASH_TABLE_BACKFILL_WRITTEN: file=[absolute='{}'] entries_queued={} entries_added={} cumulative_total={}",
+                            backfill_hash_path_canonical.display(),
                             hash_backfill_entries.len(),
                             added_count,
                             total_added
@@ -1630,13 +1656,19 @@ fn run_transfer_task(
                 }
             }
             Err(e) => {
-                let msg = format!("Failed to update master hash table: {}", e);
+                let msg = format!(
+                    "HASH_TABLE_BACKFILL_ERROR: file=[absolute='{}'] error=[{}]",
+                    backfill_hash_path_canonical.display(),
+                    e
+                );
                 overall_errors.push(msg.clone());
                 if let Some(ref jid) = job_id {
                     append_process_job_log(jid, &msg);
                 }
             }
         }
+    } else if let Some(ref jid) = job_id {
+        append_process_job_log(jid, "HASH_TABLE_BACKFILL_SKIPPED: no backfill entries to write");
     }
 
     if let Some(ref jid) = job_id {
