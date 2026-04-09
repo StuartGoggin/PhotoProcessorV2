@@ -152,7 +152,7 @@ export interface ProcessResult {
   errors: string[];
 }
 
-export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums";
+export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums" | "scan_faces" | "search_person_videos";
 
 export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly";
 
@@ -196,6 +196,13 @@ export interface ProcessJob {
   preserveSourceBitrate?: boolean;
   stabilizeMaxParallelJobsUsed?: number;
   stabilizeFfmpegThreadsPerJobUsed?: number;
+  framesPerSecond?: number;
+  similarityThreshold?: number;
+  videosScanned?: number;
+  facesDetected?: number;
+  uniquePeople?: number;
+  personName?: string;
+  searchResults?: VideoMatch[];
   errors: string[];
   logs: string[];
   statusLine: string;  // Single-line status that updates in-place
@@ -223,4 +230,55 @@ export interface TreeNode {
   type: "dir" | "file";
   size?: number;
   children?: TreeNode[];
+}
+
+// Face Recognition types
+export interface FaceEmbedding {
+  personId: string;
+  personName: string;
+  embedding: number[];
+  sourceVideo: string;
+  timestampMs: number;
+  confidence: number;
+}
+
+export interface FaceDatabase {
+  version: number;
+  faces: FaceEmbedding[];
+  updatedAt: string;
+}
+
+export interface PersonIdentity {
+  personId: string;
+  personName: string;
+  distinctEmbeddings: number;
+  videoCount: number;
+  lastSeen: string;
+}
+
+export interface VideoMatch {
+  videoPath: string;
+  relativePath: string;
+  matchCount: number;
+  timestamps: number[];
+  firstMatch: number;
+  lastMatch: number;
+}
+
+export interface SearchPersonResult {
+  personIdentity: PersonIdentity;
+  matches: VideoMatch[];
+}
+
+export interface ScanFacesConfig {
+  archiveDir: string;
+  framesPerSecond: number;
+  similarityThreshold: number;
+}
+
+export interface ScanFacesResult {
+  videosScanned: number;
+  facesDetected: number;
+  uniquePeople: number;
+  dbPath: string;
 }

@@ -1,4 +1,5 @@
 pub mod files;
+pub mod faces;
 pub mod import;
 pub mod logs;
 pub mod naming;

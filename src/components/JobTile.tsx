@@ -26,6 +26,8 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   apply_event_naming: "Name Folders",
   transfer: "Transfer to NAS",
   verify_checksums: "Verify Checksums",
+  scan_faces: "Scan Faces",
+  search_person_videos: "Search Person",
 };
 
 const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {
@@ -38,6 +40,12 @@ const STABILIZATION_STRENGTH_LABELS: Record<NonNullable<ProcessJob["stabilizatio
   gentle: "Gentle",
   balanced: "Balanced",
   strong: "Strong",
+};
+
+const PROCESS_SCOPE_LABELS: Record<ProcessJob["scopeMode"], string> = {
+  entireStaging: "Full Archive",
+  folderRecursive: "Folder + Subfolders",
+  folderOnly: "Folder Only",
 };
 
 const STATUS_COLORS: Record<Job["status"], { bg: string; text: string; border: string }> = {
@@ -111,6 +119,11 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
       typeof processJob.stabilizeFfmpegThreadsPerJobUsed === "number")
       ? `${processJob.stabilizeMaxParallelJobsUsed ?? "-"} jobs • ${processJob.stabilizeFfmpegThreadsPerJobUsed ?? "-"} threads/job`
       : null;
+  const faceScopeLabel =
+    processJob &&
+    (processJob.task === "scan_faces" || processJob.task === "search_person_videos")
+      ? PROCESS_SCOPE_LABELS[processJob.scopeMode] ?? processJob.scopeMode
+      : null;
   const isTransferJob = processJob?.task === "transfer";
   const transferLocalProcessedCount = processJob?.transferLocalProcessedCount ?? 0;
   const transferLocalSidecarHitsCount = processJob?.transferLocalSidecarHitsCount ?? 0;
@@ -149,6 +162,11 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
             {bitratePolicyLabel && (
               <div className="inline-flex items-center rounded border border-sky-700 bg-sky-900/30 px-2 py-0.5 text-[10px] font-medium text-sky-200">
                 {bitratePolicyLabel}
+              </div>
+            )}
+            {faceScopeLabel && (
+              <div className="inline-flex items-center rounded border border-fuchsia-700 bg-fuchsia-900/30 px-2 py-0.5 text-[10px] font-medium text-fuchsia-200">
+                {faceScopeLabel}
               </div>
             )}
           </div>

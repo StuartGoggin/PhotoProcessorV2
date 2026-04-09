@@ -8,6 +8,7 @@ export type Page =
   | "postprocess"
   | "review"
   | "transfer"
+  | "faceidentify"
   | "settings"
   | "logs";
 
