@@ -1405,8 +1405,8 @@ fn stabilize_mp4(
         "quality_priority"
     };
 
-    let base_cq = if preserve_source_bitrate { "16" } else { "18" };
-    let base_crf = if preserve_source_bitrate { "16" } else { "18" };
+    let base_cq = "18";
+    let base_crf = "18";
 
     let detect_args = vec![
         "-hide_banner".to_string(),
@@ -1451,49 +1451,109 @@ fn stabilize_mp4(
             "p7".to_string(),
             "-tune".to_string(),
             "hq".to_string(),
-            "-rc".to_string(),
-            "vbr".to_string(),
-            "-cq".to_string(),
-            base_cq.to_string(),
-            "-spatial-aq".to_string(),
-            "1".to_string(),
-            "-aq-strength".to_string(),
-            "8".to_string(),
         ]);
 
-        if let (Some(target_bitrate_bps), Some(maxrate_bps), Some(bufsize_bps)) =
-            (target_video_bitrate_bps, maxrate_bps, bufsize_bps)
-        {
-            transform_args.extend([
-                "-b:v".to_string(),
-                target_bitrate_bps.to_string(),
-                "-maxrate".to_string(),
-                maxrate_bps.to_string(),
-                "-bufsize".to_string(),
-                bufsize_bps.to_string(),
-            ]);
+        if preserve_source_bitrate {
+            if let Some(target_bitrate_bps) = target_video_bitrate_bps {
+                // Use a strict rate-control path to better preserve source bitrate.
+                transform_args.extend([
+                    "-rc".to_string(),
+                    "cbr_hq".to_string(),
+                    "-b:v".to_string(),
+                    target_bitrate_bps.to_string(),
+                    "-minrate".to_string(),
+                    target_bitrate_bps.to_string(),
+                    "-maxrate".to_string(),
+                    target_bitrate_bps.to_string(),
+                    "-bufsize".to_string(),
+                    target_bitrate_bps.saturating_mul(2).to_string(),
+                ]);
+            } else {
+                transform_args.extend([
+                    "-rc".to_string(),
+                    "vbr".to_string(),
+                    "-cq".to_string(),
+                    base_cq.to_string(),
+                    "-spatial-aq".to_string(),
+                    "1".to_string(),
+                    "-aq-strength".to_string(),
+                    "8".to_string(),
+                    "-b:v".to_string(),
+                    "0".to_string(),
+                ]);
+            }
         } else {
-            transform_args.extend(["-b:v".to_string(), "0".to_string()]);
+            transform_args.extend([
+                "-rc".to_string(),
+                "vbr".to_string(),
+                "-cq".to_string(),
+                base_cq.to_string(),
+                "-spatial-aq".to_string(),
+                "1".to_string(),
+                "-aq-strength".to_string(),
+                "8".to_string(),
+            ]);
+
+            if let (Some(target_bitrate_bps), Some(maxrate_bps), Some(bufsize_bps)) =
+                (target_video_bitrate_bps, maxrate_bps, bufsize_bps)
+            {
+                transform_args.extend([
+                    "-b:v".to_string(),
+                    target_bitrate_bps.to_string(),
+                    "-maxrate".to_string(),
+                    maxrate_bps.to_string(),
+                    "-bufsize".to_string(),
+                    bufsize_bps.to_string(),
+                ]);
+            } else {
+                transform_args.extend(["-b:v".to_string(), "0".to_string()]);
+            }
         }
     } else {
         transform_args.extend([
             "-preset".to_string(),
             "slow".to_string(),
-            "-crf".to_string(),
-            base_crf.to_string(),
         ]);
 
-        if let (Some(target_bitrate_bps), Some(maxrate_bps), Some(bufsize_bps)) =
-            (target_video_bitrate_bps, maxrate_bps, bufsize_bps)
-        {
+        if preserve_source_bitrate {
+            if let Some(target_bitrate_bps) = target_video_bitrate_bps {
+                // Avoid CRF when bitrate preservation is requested.
+                transform_args.extend([
+                    "-b:v".to_string(),
+                    target_bitrate_bps.to_string(),
+                    "-minrate".to_string(),
+                    target_bitrate_bps.to_string(),
+                    "-maxrate".to_string(),
+                    target_bitrate_bps.to_string(),
+                    "-bufsize".to_string(),
+                    target_bitrate_bps.saturating_mul(2).to_string(),
+                    "-x264-params".to_string(),
+                    "nal-hrd=cbr".to_string(),
+                ]);
+            } else {
+                transform_args.extend([
+                    "-crf".to_string(),
+                    base_crf.to_string(),
+                ]);
+            }
+        } else {
             transform_args.extend([
-                "-b:v".to_string(),
-                target_bitrate_bps.to_string(),
-                "-maxrate".to_string(),
-                maxrate_bps.to_string(),
-                "-bufsize".to_string(),
-                bufsize_bps.to_string(),
+                "-crf".to_string(),
+                base_crf.to_string(),
             ]);
+
+            if let (Some(target_bitrate_bps), Some(maxrate_bps), Some(bufsize_bps)) =
+                (target_video_bitrate_bps, maxrate_bps, bufsize_bps)
+            {
+                transform_args.extend([
+                    "-b:v".to_string(),
+                    target_bitrate_bps.to_string(),
+                    "-maxrate".to_string(),
+                    maxrate_bps.to_string(),
+                    "-bufsize".to_string(),
+                    bufsize_bps.to_string(),
+                ]);
+            }
         }
     }
 
