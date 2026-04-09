@@ -223,7 +223,8 @@ pub fn collect_video_files(archive_dir: &Path, recursive: bool) -> Vec<PathBuf> 
         {
             let path = entry.path();
             if let Some(ext) = path.extension() {
-                if video_extensions.contains(&ext.to_string_lossy().as_ref()) {
+                let ext_lc = ext.to_string_lossy().to_ascii_lowercase();
+                if video_extensions.contains(&ext_lc.as_str()) {
                     videos.push(path.to_path_buf());
                 }
             }
@@ -234,7 +235,8 @@ pub fn collect_video_files(archive_dir: &Path, recursive: bool) -> Vec<PathBuf> 
                 let path = entry.path();
                 if path.is_file() {
                     if let Some(ext) = path.extension() {
-                        if video_extensions.contains(&ext.to_string_lossy().as_ref()) {
+                        let ext_lc = ext.to_string_lossy().to_ascii_lowercase();
+                        if video_extensions.contains(&ext_lc.as_str()) {
                             videos.push(path);
                         }
                     }

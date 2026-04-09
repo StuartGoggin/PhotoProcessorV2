@@ -9,7 +9,7 @@ interface FaceIdentifyProps {
 }
 
 const SCOPE_MODES: Array<{ id: ProcessScopeMode; label: string; description: string }> = [
-  { id: "entireStaging", label: "Entire archive", description: "Ignore selected folder and process the whole archive tree." },
+  { id: "entireStaging", label: "Entire source tree", description: "Ignore selected folder and process the whole source tree." },
   { id: "folderRecursive", label: "Folder recursively", description: "Process the selected folder and all of its subfolders." },
   { id: "folderOnly", label: "This folder only", description: "Process only files directly inside the selected folder." },
 ];
@@ -22,6 +22,7 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
   const [loading, setLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [treeLoading, setTreeLoading] = useState(false);
+  const [treeHint, setTreeHint] = useState<string | null>(null);
 
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [selectedScope, setSelectedScope] = useState<string>("");
@@ -37,13 +38,13 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
   const [searchResults, setSearchResults] = useState<VideoMatch[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   
-  const canScan = Boolean(settings?.archive_dir);
-  const archiveDir = settings?.archive_dir || "";
+  const scopeRoot = settings?.staging_dir || settings?.archive_dir || "";
+  const canScan = Boolean(scopeRoot);
   const effectiveScope = useMemo(() => {
-    if (!archiveDir) return "";
-    if (scopeMode === "entireStaging") return archiveDir;
-    return selectedScope || archiveDir;
-  }, [archiveDir, scopeMode, selectedScope]);
+    if (!scopeRoot) return "";
+    if (scopeMode === "entireStaging") return scopeRoot;
+    return selectedScope || scopeRoot;
+  }, [scopeRoot, scopeMode, selectedScope]);
   const scopeModeLabel = useMemo(
     () => SCOPE_MODES.find((mode) => mode.id === scopeMode)?.label ?? scopeMode,
     [scopeMode]
@@ -51,42 +52,52 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
 
   useEffect(() => {
     void loadPeopleList();
-  }, [archiveDir]);
+  }, [scopeRoot]);
 
   useEffect(() => {
     async function loadTree() {
-      if (!archiveDir) {
+      if (!scopeRoot) {
         setTree([]);
         setSelectedScope("");
+        setTreeHint(null);
         return;
       }
 
       try {
         setTreeLoading(true);
+        setTreeHint(null);
         const data = await invoke<TreeNode | TreeNode[]>("list_staging_tree", {
-          stagingDir: archiveDir,
+          stagingDir: scopeRoot,
         });
         const nodes = Array.isArray(data) ? data : [data];
         setTree(nodes);
-        setSelectedScope(archiveDir);
+        setSelectedScope(scopeRoot);
+        if (nodes.length === 0) {
+          const looksLikeMappedDrive = /^[A-Za-z]:\\/.test(scopeRoot);
+          setTreeHint(
+            looksLikeMappedDrive
+              ? "Source path is not reachable from the app process. If this is a mapped network drive, use its UNC path (\\\\server\\share\\folder) in Settings."
+              : "Source path is empty or not reachable from the app process."
+          );
+        }
       } catch (e) {
-        setError(`Failed to load archive folders: ${String(e)}`);
+        setError(`Failed to load source folders: ${String(e)}`);
       } finally {
         setTreeLoading(false);
       }
     }
 
     void loadTree();
-  }, [archiveDir]);
+  }, [scopeRoot]);
 
   async function loadPeopleList() {
-    if (!archiveDir) return;
+    if (!scopeRoot) return;
 
     try {
       setLoading(true);
       // In production, would call a Tauri command to load people from database
       // For now, fetch from local database file that gets created during scan
-      const dbPath = `${archiveDir}\\.faces_db.json`;
+      const dbPath = `${scopeRoot}\\.faces_db.json`;
       try {
         const contents = await invoke<string>("read_text_file", { path: dbPath });
         const db: FaceDatabase = JSON.parse(contents);
@@ -120,13 +131,13 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
   }
 
   async function startScan() {
-    if (!archiveDir) {
-      setError("Archive directory not configured in Settings.");
+    if (!scopeRoot) {
+      setError("Source directory not configured in Settings.");
       return;
     }
 
     const confirmed = window.confirm(
-      `Scan for faces in archive?\n\nSettings:\n• Frames per second: ${framesPerSecond}\n• Similarity threshold: ${similarityThreshold.toFixed(2)}\n\nThis may take a while if you have many videos.`
+      `Scan for faces in selected source tree?\n\nSettings:\n• Frames per second: ${framesPerSecond}\n• Similarity threshold: ${similarityThreshold.toFixed(2)}\n\nThis may take a while if you have many videos.`
     );
     if (!confirmed) return;
 
@@ -136,17 +147,14 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
 
     try {
       const jobId = await invoke<string>("start_process_job", {
-        stagingDir: archiveDir,
+        stagingDir: scopeRoot,
         scopeDir: effectiveScope,
         scopeMode,
         task: "scan_faces",
         framesPerSecond,
         similarityThreshold,
       });
-      setMessage(`Started face scanning job. Job ID: ${jobId}`);
-      if (onOpenJobs) {
-        setTimeout(() => onOpenJobs(), 500);
-      }
+      setMessage(`Queued face scanning job ${jobId}. If it finishes quickly, open Jobs and switch filter to All or Finished.`);
     } catch (e) {
       setError(`Failed to start scan: ${String(e)}`);
     } finally {
@@ -155,8 +163,8 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
   }
 
   async function searchPerson(person: PersonIdentity) {
-    if (!archiveDir) {
-      setError("Archive directory not configured.");
+    if (!scopeRoot) {
+      setError("Source directory not configured.");
       return;
     }
 
@@ -165,18 +173,15 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
 
     try {
       const jobId = await invoke<string>("start_process_job", {
-        stagingDir: archiveDir,
+        stagingDir: scopeRoot,
         scopeDir: effectiveScope,
         scopeMode,
         task: "search_person_videos",
         personName: person.personName,
       });
-      setMessage(`Started search for '${person.personName}'. Job ID: ${jobId}`);
+      setMessage(`Queued search for '${person.personName}' (${jobId}). If it finishes quickly, open Jobs and switch filter to All or Finished.`);
       setSelectedPerson(person);
       setSearchResults([]);
-      if (onOpenJobs) {
-        setTimeout(() => onOpenJobs(), 500);
-      }
     } catch (e) {
       setError(`Failed to search: ${String(e)}`);
     } finally {
@@ -188,16 +193,16 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
     <div className="p-6 max-w-5xl mx-auto">
       <h2 className="text-2xl font-semibold text-white mb-2">Face Recognition</h2>
       <p className="text-gray-400 text-sm mb-6">
-        Scan your video library to build a face database, then identify videos containing specific people.
+        Scan your selected source tree to build a face database, then identify videos containing specific people.
       </p>
 
       {!canScan && (
         <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg px-4 py-3 mb-4 text-yellow-200 text-sm">
-          Set the archive directory in Settings before scanning for faces.
+          Set the source directory in Settings before scanning for faces.
         </div>
       )}
 
-      {archiveDir && (
+      {scopeRoot && (
         <div className="card mb-4 text-sm">
           <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
             <h3 className="text-white font-medium">Current Queue Target</h3>
@@ -205,8 +210,8 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             <div>
-              <span className="text-gray-400">Archive: </span>
-              <span className="text-gray-200 break-all">{archiveDir}</span>
+              <span className="text-gray-400">Source: </span>
+              <span className="text-gray-200 break-all">{scopeRoot}</span>
             </div>
             <div>
               <span className="text-gray-400">Scope: </span>
@@ -216,22 +221,22 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
         </div>
       )}
 
-      {archiveDir && (
+      {scopeRoot && (
         <div className="card mb-6">
           <div className="flex items-center justify-between gap-4 mb-3">
             <div>
               <h3 className="text-white font-medium">Recognition Scope</h3>
-              <p className="text-xs text-gray-400">Select a folder inside archive, then choose whether to process just that folder, recursively, or the full archive tree.</p>
+              <p className="text-xs text-gray-400">Select a folder inside the source tree, then choose whether to process just that folder, recursively, or the full source tree.</p>
             </div>
             <button
               className="btn-secondary"
               onClick={() => {
-                setSelectedScope(archiveDir);
+                setSelectedScope(scopeRoot);
                 setScopeMode("entireStaging");
               }}
-              disabled={scopeMode === "entireStaging" && selectedScope === archiveDir}
+              disabled={scopeMode === "entireStaging" && selectedScope === scopeRoot}
             >
-              Use Full Archive
+              Use Full Source
             </button>
           </div>
           <div className="text-xs text-gray-400 mb-3">
@@ -254,21 +259,24 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
               <div className="h-full flex items-center justify-center text-sm text-gray-400">Loading archive tree...</div>
             ) : tree.length === 0 ? (
               <div className="h-full flex items-center justify-center text-sm text-gray-500 px-4 text-center">
-                No folders found in archive path: {archiveDir}
+                No folders found in source path: {scopeRoot}
               </div>
             ) : (
               <FileTree
                 nodes={tree}
-                selected={selectedScope.replace(archiveDir, "").replace(/^[\\/]+/, "")}
+                selected={selectedScope.replace(scopeRoot, "").replace(/^[\\/]+/, "")}
                 onSelect={(node) => {
                   if (node.type !== "dir") return;
                   const relative = node.path.replace(/^[\\/]+/, "");
-                  const absolute = relative ? `${archiveDir}\\${relative.replace(/\//g, "\\")}` : archiveDir;
+                  const absolute = relative ? `${scopeRoot}\\${relative.replace(/\//g, "\\")}` : scopeRoot;
                   setSelectedScope(absolute);
                 }}
               />
             )}
           </div>
+          {treeHint && (
+            <div className="mt-2 text-xs text-amber-300">{treeHint}</div>
+          )}
         </div>
       )}
 
@@ -296,7 +304,7 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
         <div className="space-y-1">
           <h3 className="font-medium text-cyan-300">Scan Library for Faces</h3>
           <p className="text-sm text-gray-400">
-            Analyze your video archive to detect and catalog faces. This creates a database that can be searched later.
+            Analyze the selected source tree to detect and catalog faces. This creates a database that can be searched later.
           </p>
         </div>
 
@@ -354,6 +362,9 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
         >
           {isScanning ? "Scanning..." : "Start Face Scan"}
         </button>
+        <p className="text-xs text-gray-500">
+          Note: this scans video files only. Jobs can complete quickly; in Jobs page switch filter to All or Finished to see completed scans.
+        </p>
       </div>
 
       {/* People List & Search Section */}

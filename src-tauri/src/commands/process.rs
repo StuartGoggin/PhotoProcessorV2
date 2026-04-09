@@ -2803,11 +2803,29 @@ fn run_scan_faces_task(
             .and_then(|store| store.get(id).and_then(|job| job.similarity_threshold)))
         .unwrap_or(0.6);
 
+    if let Some(job_id) = &job_id {
+        append_process_job_log(
+            job_id,
+            format!(
+                "scan config scope='{}' mode={:?} fps={} similarity_threshold={:.2}",
+                scope.display(),
+                scope_mode,
+                frames_per_second,
+                similarity_threshold
+            ),
+        );
+    }
+
     // Get list of videos
     let videos = faces::collect_video_files(&scope, recursive);
     let total_videos = videos.len();
 
+    if let Some(job_id) = &job_id {
+        append_process_job_log(job_id, format!("found {} video(s) to scan", total_videos));
+    }
+
     if total_videos == 0 {
+        let empty_msg = format!("No videos found in selected scope: {}", scope.display());
         if let Some(job_id) = &job_id {
             update_process_job(job_id, |job| {
                 job.status = ProcessJobStatus::Completed;
@@ -2816,12 +2834,14 @@ fn run_scan_faces_task(
                 job.videos_scanned = Some(0);
                 job.faces_detected = Some(0);
                 job.unique_people = Some(0);
+                job.errors.push(empty_msg.clone());
             });
+            append_process_job_log(job_id, empty_msg.clone());
         }
         return Ok(ProcessResult {
             processed: 0,
             result_count: 0,
-            errors: vec!["No videos found in selected scope".to_string()],
+            errors: vec![empty_msg],
         });
     }
 
@@ -2848,11 +2868,24 @@ fn run_scan_faces_task(
 
             update_process_job(job_id, |job| {
                 job.total = total_videos;
-                job.done = idx;
-                job.processed = idx;
+                job.done = idx + 1;
+                job.processed = idx + 1;
                 job.current_file = rel_path.to_string();
                 job.current_phase = Some(format!("Scanning video {}/{}", idx + 1, total_videos));
             });
+
+            if idx == 0 || (idx + 1) % 25 == 0 || (idx + 1) == total_videos {
+                append_process_job_log(
+                    job_id,
+                    format!(
+                        "progress {}/{} current='{}' faces_detected_so_far={}",
+                        idx + 1,
+                        total_videos,
+                        rel_path,
+                        total_faces
+                    ),
+                );
+            }
         }
 
         // Call face detection - this would use Python subprocess in production
