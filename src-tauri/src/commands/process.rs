@@ -2414,6 +2414,11 @@ fn run_process_task(
 }
 
 #[tauri::command]
+pub fn check_face_scan_environment() -> Result<faces::FaceScanEnvironmentCheck, String> {
+    Ok(faces::check_scan_environment())
+}
+
+#[tauri::command]
 pub fn start_process_job(
     app: AppHandle,
     staging_dir: String,
@@ -2845,7 +2850,7 @@ fn run_scan_faces_task(
         });
     }
 
-    let face_db = faces::FaceDatabase::load(&archive_path.join(".faces_db.json"))
+    let mut face_db = faces::FaceDatabase::load(&archive_path.join(".faces_db.json"))
         .unwrap_or_else(|_| faces::FaceDatabase::new());
 
     let mut total_faces = 0;
@@ -2888,11 +2893,35 @@ fn run_scan_faces_task(
             }
         }
 
-        // Call face detection - this would use Python subprocess in production
-        if let Ok(face_results) = faces::detect_faces_in_video(video_path, frames_per_second, similarity_threshold) {
-            total_faces += face_results.len();
-            // Process results and add to database
-            // (In production, would extract embeddings from Python response)
+        // Call Python deepface worker and persist detections.
+        match faces::detect_faces_in_video(video_path, frames_per_second, similarity_threshold) {
+            Ok(face_results) => {
+                total_faces += face_results.len();
+                let source_video = video_path.to_string_lossy().to_string();
+
+                for (_person_id, embedding, timestamp_ms, confidence) in face_results {
+                    if embedding.is_empty() {
+                        continue;
+                    }
+
+                    let person_id = faces::assign_person_id(&face_db, &embedding, similarity_threshold);
+                    let person_name = person_id.clone();
+                    face_db.faces.push(faces::FaceEmbedding {
+                        person_id,
+                        person_name,
+                        embedding,
+                        source_video: source_video.clone(),
+                        timestamp_ms,
+                        confidence,
+                    });
+                }
+            }
+            Err(err) => {
+                if let Some(job_id) = &job_id {
+                    append_process_job_log(job_id, format!("face detector error on '{}': {}", video_path.display(), err));
+                }
+                return Err(format!("Face detection failed for '{}': {}", video_path.display(), err));
+            }
         }
     }
 

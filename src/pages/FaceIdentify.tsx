@@ -8,6 +8,14 @@ interface FaceIdentifyProps {
   onOpenJobs?: () => void;
 }
 
+interface FaceScanEnvironmentCheck {
+  ready: boolean;
+  pythonCommand?: string | null;
+  scriptPath?: string | null;
+  details: string[];
+  error?: string | null;
+}
+
 const SCOPE_MODES: Array<{ id: ProcessScopeMode; label: string; description: string }> = [
   { id: "entireStaging", label: "Entire source tree", description: "Ignore selected folder and process the whole source tree." },
   { id: "folderRecursive", label: "Folder recursively", description: "Process the selected folder and all of its subfolders." },
@@ -133,6 +141,18 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
   async function startScan() {
     if (!scopeRoot) {
       setError("Source directory not configured in Settings.");
+      return;
+    }
+
+    try {
+      const env = await invoke<FaceScanEnvironmentCheck>("check_face_scan_environment");
+      if (!env.ready) {
+        const detailText = env.details.length > 0 ? `\n${env.details.join("\n")}` : "";
+        setError(`Face scan environment not ready. ${env.error ?? "Unknown setup error."}${detailText}`);
+        return;
+      }
+    } catch (e) {
+      setError(`Failed to validate face scan environment: ${String(e)}`);
       return;
     }
 
