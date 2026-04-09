@@ -304,8 +304,15 @@ pub fn detect_faces_in_video(
 
                 let stdout = String::from_utf8(output.stdout)
                     .map_err(|e| format!("{} produced non-utf8 output: {}", cmd, e))?;
-                let parsed: PythonScanOutput = serde_json::from_str(&stdout)
-                    .map_err(|e| format!("Failed to parse {} JSON output: {}", cmd, e))?;
+                let parsed: PythonScanOutput = parse_python_scan_output(&stdout)
+                    .map_err(|e| {
+                        format!(
+                            "Failed to parse {} JSON output: {}. Raw stdout (first 300 chars): {}",
+                            cmd,
+                            e,
+                            stdout.chars().take(300).collect::<String>()
+                        )
+                    })?;
 
                 let faces = parsed
                     .faces
@@ -330,6 +337,29 @@ pub fn detect_faces_in_video(
         "Unable to run face scan Python worker. Last error: {}",
         last_error
     ))
+}
+
+fn parse_python_scan_output(stdout: &str) -> Result<PythonScanOutput, String> {
+    // Fast path: pure JSON output.
+    if let Ok(parsed) = serde_json::from_str::<PythonScanOutput>(stdout.trim()) {
+        return Ok(parsed);
+    }
+
+    // Fallback: libraries may print logs to stdout; parse the last valid JSON line.
+    for line in stdout.lines().rev() {
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        if !(candidate.starts_with('{') && candidate.ends_with('}')) {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<PythonScanOutput>(candidate) {
+            return Ok(parsed);
+        }
+    }
+
+    Err("No valid JSON object found in Python stdout".to_string())
 }
 
 #[derive(Debug, Deserialize)]
