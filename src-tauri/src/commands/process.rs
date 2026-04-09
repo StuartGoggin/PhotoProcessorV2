@@ -24,6 +24,7 @@ use super::naming::{
     ApplyEventNamingRequest,
 };
 use super::settings::load_settings;
+use super::faces;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessProgress {
@@ -56,6 +57,8 @@ pub enum ProcessTask {
     ApplyEventNaming,
     Transfer,
     VerifyChecksums,
+    ScanFaces,
+    SearchPersonVideos,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +116,12 @@ pub struct ProcessJob {
     pub preserve_source_bitrate: Option<bool>,
     pub stabilize_max_parallel_jobs_used: Option<usize>,
     pub stabilize_ffmpeg_threads_per_job_used: Option<usize>,
+    pub frames_per_second: Option<usize>,
+    pub similarity_threshold: Option<f32>,
+    pub videos_scanned: Option<usize>,
+    pub faces_detected: Option<usize>,
+    pub unique_people: Option<usize>,
+    pub person_name: Option<String>,
     pub errors: Vec<String>,
     pub logs: Vec<String>,
     pub status_line: String,  // Single line that updates in-place
@@ -1078,6 +1087,7 @@ fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec
         ProcessTask::RemoveStabilize => collect_named_outputs(dir, recursive, "_stabilized", "mp4"),
         ProcessTask::ScanArchiveNaming | ProcessTask::ApplyEventNaming => vec![],
         ProcessTask::Transfer | ProcessTask::VerifyChecksums => vec![],
+        ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos => vec![],
     }
 }
 
@@ -1791,6 +1801,8 @@ fn task_name(task: &ProcessTask) -> &'static str {
         ProcessTask::ApplyEventNaming => "apply_event_naming",
         ProcessTask::Transfer => "transfer",
         ProcessTask::VerifyChecksums => "verify_checksums",
+        ProcessTask::ScanFaces => "scan_faces",
+        ProcessTask::SearchPersonVideos => "search_person_videos",
     }
 }
 
@@ -1808,6 +1820,8 @@ fn task_result_label(task: &ProcessTask) -> &'static str {
         ProcessTask::ApplyEventNaming => "renamed",
         ProcessTask::Transfer => "transferred",
         ProcessTask::VerifyChecksums => "verified",
+        ProcessTask::ScanFaces => "faces_detected",
+        ProcessTask::SearchPersonVideos => "videos_found",
     }
 }
 
@@ -2063,6 +2077,14 @@ fn run_process_task(
             .and_then(|id| naming_requests_store().lock().ok().and_then(|store| store.get(id).cloned()))
             .ok_or_else(|| "Missing apply-event-naming request parameters for queued job".to_string())?;
         return run_event_naming_task(app, staging_dir, request, job_id);
+    }
+
+    if matches!(task, ProcessTask::ScanFaces) {
+        return run_scan_faces_task(app, staging_dir, scope_dir, scope_mode, job_id);
+    }
+
+    if matches!(task, ProcessTask::SearchPersonVideos) {
+        return run_search_person_videos_task(app, staging_dir, scope_dir, scope_mode, job_id);
     }
 
     let scope_mode = scope_mode.unwrap_or(ProcessScopeMode::FolderRecursive);
@@ -2367,6 +2389,7 @@ fn run_process_task(
                     ProcessTask::ScanArchiveNaming => {}
                     ProcessTask::ApplyEventNaming => {}
                     ProcessTask::Transfer | ProcessTask::VerifyChecksums => {}
+                    ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos => {}
                 }
                 Ok(())
             })();
@@ -2451,6 +2474,11 @@ fn run_process_task(
 }
 
 #[tauri::command]
+pub fn check_face_scan_environment() -> Result<faces::FaceScanEnvironmentCheck, String> {
+    Ok(faces::check_scan_environment())
+}
+
+#[tauri::command]
 pub fn start_process_job(
     app: AppHandle,
     staging_dir: String,
@@ -2462,6 +2490,9 @@ pub fn start_process_job(
     stabilization_mode: Option<String>,
     stabilization_strength: Option<String>,
     preserve_source_bitrate: Option<bool>,
+    frames_per_second: Option<usize>,
+    similarity_threshold: Option<f32>,
+    person_name: Option<String>,
 ) -> Result<String, String> {
     let task_enum = match task.to_lowercase().as_str() {
         "focus" => ProcessTask::Focus,
@@ -2473,6 +2504,8 @@ pub fn start_process_job(
         "stabilize" => ProcessTask::Stabilize,
         "remove_stabilize" => ProcessTask::RemoveStabilize,
         "scan_archive_naming" => ProcessTask::ScanArchiveNaming,
+        "scan_faces" => ProcessTask::ScanFaces,
+        "search_person_videos" => ProcessTask::SearchPersonVideos,
         "transfer" | "verify_checksums" => return Err("Use start_transfer or verify_checksums commands directly".to_string()),
         _ => return Err(format!("Unknown process task: {}", task)),
     };
@@ -2554,6 +2587,12 @@ pub fn start_process_job(
         preserve_source_bitrate: queued_preserve_source_bitrate,
         stabilize_max_parallel_jobs_used: None,
         stabilize_ffmpeg_threads_per_job_used: None,
+        frames_per_second,
+        similarity_threshold,
+        videos_scanned: None,
+        faces_detected: None,
+        unique_people: None,
+        person_name,
         errors: vec![],
         logs: vec![format!("[{}] queued", now_string())],
         status_line: String::new(),
@@ -2697,6 +2736,12 @@ pub fn start_event_naming_job(
         preserve_source_bitrate: None,
         stabilize_max_parallel_jobs_used: None,
         stabilize_ffmpeg_threads_per_job_used: None,
+        frames_per_second: None,
+        similarity_threshold: None,
+        videos_scanned: None,
+        faces_detected: None,
+        unique_people: None,
+        person_name: None,
         errors: vec![],
         logs: vec![format!("[{}] queued apply_event_naming selected_directories={}", now_string(), selected_count)],
         status_line: String::new(),
@@ -2770,4 +2815,296 @@ pub fn start_event_naming_job(
     });
 
     Ok(job_id)
+}
+
+/// Scan videos in archive directory for faces and build face database
+fn run_scan_faces_task(
+    app: AppHandle,
+    archive_dir: String,
+    scope_dir: Option<String>,
+    scope_mode: Option<ProcessScopeMode>,
+    job_id: Option<String>,
+) -> Result<ProcessResult, String> {
+    let task_label = "scan_faces";
+    let archive_path = PathBuf::from(&archive_dir);
+
+    if !archive_path.exists() {
+        return Err(format!("Archive directory does not exist: {}", archive_dir));
+    }
+
+    let scope_mode = scope_mode.unwrap_or(ProcessScopeMode::FolderRecursive);
+    let scope = resolve_process_scope(&archive_dir, scope_dir, &scope_mode)?;
+    let recursive = !matches!(scope_mode, ProcessScopeMode::FolderOnly);
+
+    if let Some(job_id) = &job_id {
+        update_process_job(job_id, |job| {
+            job.status = ProcessJobStatus::Running;
+            job.started_at = Some(now_string());
+            job.current_phase = Some("Collecting videos".to_string());
+            job.scope_dir = scope.to_string_lossy().into_owned();
+            job.scope_mode = scope_mode.clone();
+        });
+    }
+
+    let _ = append_app_log(
+        &app,
+        format!(
+            "process_{} start archive='{}' scope='{}' scope_mode={:?} collecting videos",
+            task_label,
+            archive_dir,
+            scope.display(),
+            scope_mode
+        ),
+    );
+
+    // Get frames_per_second and similarity_threshold from job if available
+    let frames_per_second = job_id.as_ref()
+        .and_then(|id| process_jobs_store().lock().ok()
+            .and_then(|store| store.get(id).and_then(|job| job.frames_per_second)))
+        .unwrap_or(1);
+
+    let similarity_threshold = job_id.as_ref()
+        .and_then(|id| process_jobs_store().lock().ok()
+            .and_then(|store| store.get(id).and_then(|job| job.similarity_threshold)))
+        .unwrap_or(0.6);
+
+    if let Some(job_id) = &job_id {
+        append_process_job_log(
+            job_id,
+            format!(
+                "scan config scope='{}' mode={:?} fps={} similarity_threshold={:.2}",
+                scope.display(),
+                scope_mode,
+                frames_per_second,
+                similarity_threshold
+            ),
+        );
+    }
+
+    // Get list of videos
+    let videos = faces::collect_video_files(&scope, recursive);
+    let total_videos = videos.len();
+
+    if let Some(job_id) = &job_id {
+        append_process_job_log(job_id, format!("found {} video(s) to scan", total_videos));
+    }
+
+    if total_videos == 0 {
+        let empty_msg = format!("No videos found in selected scope: {}", scope.display());
+        if let Some(job_id) = &job_id {
+            update_process_job(job_id, |job| {
+                job.status = ProcessJobStatus::Completed;
+                job.finished_at = Some(now_string());
+                job.current_file = "Done".to_string();
+                job.videos_scanned = Some(0);
+                job.faces_detected = Some(0);
+                job.unique_people = Some(0);
+                job.errors.push(empty_msg.clone());
+            });
+            append_process_job_log(job_id, empty_msg.clone());
+        }
+        return Ok(ProcessResult {
+            processed: 0,
+            result_count: 0,
+            errors: vec![empty_msg],
+        });
+    }
+
+    let mut face_db = faces::FaceDatabase::load(&archive_path.join(".faces_db.json"))
+        .unwrap_or_else(|_| faces::FaceDatabase::new());
+
+    let mut total_faces = 0;
+    let unique_people: usize;
+
+    for (idx, video_path) in videos.iter().enumerate() {
+        if let Some(job_id) = &job_id {
+            if is_process_abort_requested(Some(job_id)) {
+                update_process_job(job_id, |job| {
+                    job.status = ProcessJobStatus::Aborted;
+                    job.finished_at = Some(now_string());
+                });
+                return Err("Face scanning aborted".to_string());
+            }
+
+            let rel_path = video_path
+                .strip_prefix(&archive_path)
+                .unwrap_or(video_path)
+                .to_string_lossy();
+
+            update_process_job(job_id, |job| {
+                job.total = total_videos;
+                job.done = idx + 1;
+                job.processed = idx + 1;
+                job.current_file = rel_path.to_string();
+                job.current_phase = Some(format!("Scanning video {}/{}", idx + 1, total_videos));
+            });
+
+            if idx == 0 || (idx + 1) % 25 == 0 || (idx + 1) == total_videos {
+                append_process_job_log(
+                    job_id,
+                    format!(
+                        "progress {}/{} current='{}' faces_detected_so_far={}",
+                        idx + 1,
+                        total_videos,
+                        rel_path,
+                        total_faces
+                    ),
+                );
+            }
+        }
+
+        // Call Python deepface worker and persist detections.
+        match faces::detect_faces_in_video(video_path, frames_per_second, similarity_threshold) {
+            Ok(face_results) => {
+                total_faces += face_results.len();
+                let source_video = video_path.to_string_lossy().to_string();
+
+                for (_person_id, embedding, timestamp_ms, confidence) in face_results {
+                    if embedding.is_empty() {
+                        continue;
+                    }
+
+                    let person_id = faces::assign_person_id(&face_db, &embedding, similarity_threshold);
+                    let person_name = person_id.clone();
+                    face_db.faces.push(faces::FaceEmbedding {
+                        person_id,
+                        person_name,
+                        embedding,
+                        source_video: source_video.clone(),
+                        timestamp_ms,
+                        confidence,
+                    });
+                }
+            }
+            Err(err) => {
+                if let Some(job_id) = &job_id {
+                    append_process_job_log(job_id, format!("face detector error on '{}': {}", video_path.display(), err));
+                }
+                return Err(format!("Face detection failed for '{}': {}", video_path.display(), err));
+            }
+        }
+    }
+
+    // Save updated database
+    let db_path = archive_path.join(".faces_db.json");
+    face_db.save(&db_path)
+        .map_err(|e| format!("Failed to save face database: {}", e))?;
+
+    unique_people = face_db.get_people().len();
+
+    if let Some(job_id) = &job_id {
+        update_process_job(job_id, |job| {
+            job.status = ProcessJobStatus::Completed;
+            job.finished_at = Some(now_string());
+            job.current_file = "Done".to_string();
+            job.current_phase = Some("Scan complete".to_string());
+            job.videos_scanned = Some(total_videos);
+            job.faces_detected = Some(total_faces);
+            job.unique_people = Some(unique_people);
+        });
+        append_process_job_log(
+            job_id,
+            format!(
+                "completed: {} videos scanned, {} faces detected, {} unique people",
+                total_videos, total_faces, unique_people
+            ),
+        );
+    }
+
+    let _ = append_app_log(
+        &app,
+        format!(
+            "process_{} completed videos={} faces={} people={}",
+            task_label, total_videos, total_faces, unique_people
+        ),
+    );
+
+    Ok(ProcessResult {
+        processed: total_videos,
+        result_count: total_faces,
+        errors: vec![],
+    })
+}
+
+/// Search for videos containing a specific person
+fn run_search_person_videos_task(
+    app: AppHandle,
+    archive_dir: String,
+    scope_dir: Option<String>,
+    scope_mode: Option<ProcessScopeMode>,
+    job_id: Option<String>,
+) -> Result<ProcessResult, String> {
+    let task_label = "search_person_videos";
+    let archive_path = PathBuf::from(&archive_dir);
+    let db_path = archive_path.join(".faces_db.json");
+    let scope_mode = scope_mode.unwrap_or(ProcessScopeMode::FolderRecursive);
+    let scope = resolve_process_scope(&archive_dir, scope_dir, &scope_mode)?;
+
+    // Load face database
+    let face_db = faces::FaceDatabase::load(&db_path)
+        .map_err(|e| format!("Failed to load face database: {}", e))?;
+
+    // Get person_name from job
+    let person_name = job_id.as_ref()
+        .and_then(|id| process_jobs_store().lock().ok()
+            .and_then(|store| store.get(id).and_then(|job| job.person_name.clone())))
+        .ok_or_else(|| "Missing person name for search".to_string())?;
+
+    // Find matching person in database
+    let people = face_db.get_people();
+    let person = people.iter()
+        .find(|p| p.person_name.eq_ignore_ascii_case(&person_name))
+        .ok_or_else(|| format!("Person '{}' not found in database", person_name))?;
+
+    // Search for videos matching this person
+    let mut search_result = face_db.search_person(&person.person_id, &archive_path);
+    search_result.matches.retain(|m| {
+        let path = PathBuf::from(&m.video_path);
+        if matches!(scope_mode, ProcessScopeMode::FolderOnly) {
+            path.parent() == Some(scope.as_path())
+        } else {
+            path.starts_with(&scope)
+        }
+    });
+    let match_count = search_result.matches.len();
+
+    if let Some(job_id) = &job_id {
+        update_process_job(job_id, |job| {
+            job.status = ProcessJobStatus::Completed;
+            job.finished_at = Some(now_string());
+            job.current_file = "Done".to_string();
+            job.current_phase = Some("Search complete".to_string());
+            job.result_count = match_count;
+            job.scope_dir = scope.to_string_lossy().into_owned();
+            job.scope_mode = scope_mode.clone();
+        });
+        append_process_job_log(
+            job_id,
+            format!(
+                "found {} videos with '{}' in scope '{}' mode={:?}",
+                match_count,
+                person_name,
+                scope.display(),
+                scope_mode
+            ),
+        );
+    }
+
+    let _ = append_app_log(
+        &app,
+        format!(
+            "process_{} completed: found {} videos with '{}' in scope '{}' mode={:?}",
+            task_label,
+            match_count,
+            person_name,
+            scope.display(),
+            scope_mode
+        ),
+    );
+
+    Ok(ProcessResult {
+        processed: 1,
+        result_count: match_count,
+        errors: vec![],
+    })
 }

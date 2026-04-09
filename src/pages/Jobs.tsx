@@ -31,6 +31,8 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   apply_event_naming: "Apply Event Naming",
   transfer: "Transfer to NAS",
   verify_checksums: "Verify Checksums",
+  scan_faces: "Face Library Scan",
+  search_person_videos: "Search Person Videos",
 };
 
 const PROCESS_SCOPE_LABELS: Record<ProcessJob["scopeMode"], string> = {

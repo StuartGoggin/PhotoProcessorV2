@@ -337,6 +337,7 @@ export default function Transfer() {
           </div>
           {renderJobCard(activeVerifyJob, "No checksum verification job queued yet.")}
         </section>
+
       </div>
     </div>
   );

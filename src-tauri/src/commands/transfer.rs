@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use crate::utils::{compute_md5, num_cpus};
 use std::path::{Path, PathBuf};
@@ -487,6 +487,72 @@ fn atomic_update_master_hash_table(
     Ok(added_count)
 }
 
+    fn atomic_reconcile_master_hash_table(
+        archive: &Path,
+        upserts: &[(String, String)],     // (rel_path, hash)
+        remove_paths: &[String],
+    ) -> Result<(usize, usize), String> {
+        let master_path = resolve_master_hash_table_path(archive);
+
+        let mut all_entries = HashMap::<String, String>::new();
+        if master_path.exists() {
+            let content = fs::read_to_string(&master_path).map_err(|e| e.to_string())?;
+            for line in content.lines() {
+                if let Some((rel_path, hash)) = parse_checksum_line(line) {
+                    all_entries.insert(rel_path, hash);
+                }
+            }
+        }
+
+        let mut removed_count = 0usize;
+        for rel_path in remove_paths {
+            if all_entries.remove(rel_path).is_some() {
+                removed_count += 1;
+            }
+        }
+
+        let mut added_count = 0usize;
+        for (rel_path, hash) in upserts {
+            if !all_entries.contains_key(rel_path) {
+                added_count += 1;
+            }
+            all_entries.insert(rel_path.clone(), hash.clone());
+        }
+
+        let temp_path = master_path.with_extension("md5.tmp");
+        let mut sorted_entries: Vec<_> = all_entries.into_iter().collect();
+        sorted_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let content = sorted_entries
+            .iter()
+            .map(|(path, hash)| format!("{}  {}", hash, path))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        fs::write(&temp_path, content).map_err(|e| e.to_string())?;
+
+        #[cfg(target_os = "windows")]
+        {
+            if master_path.exists() {
+                fs::remove_file(&master_path).map_err(|e| {
+                    format!(
+                        "Failed to replace existing master hash table '{}': {}",
+                        master_path.display(),
+                        e
+                    )
+                })?;
+            }
+            fs::rename(&temp_path, &master_path).map_err(|e| e.to_string())?;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            fs::rename(&temp_path, &master_path).map_err(|e| e.to_string())?;
+        }
+
+        Ok((added_count, removed_count))
+    }
+
 fn collect_all_files(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)
         .into_iter()
@@ -564,6 +630,12 @@ pub fn start_transfer(
         preserve_source_bitrate: None,
         stabilize_max_parallel_jobs_used: None,
         stabilize_ffmpeg_threads_per_job_used: None,
+        frames_per_second: None,
+        similarity_threshold: None,
+        videos_scanned: None,
+        faces_detected: None,
+        unique_people: None,
+        person_name: None,
         conflict_report_path: None,
         current_phase: None,
         transfer_local_processed_count: Some(0),
@@ -658,6 +730,12 @@ pub fn verify_checksums(
         preserve_source_bitrate: None,
         stabilize_max_parallel_jobs_used: None,
         stabilize_ffmpeg_threads_per_job_used: None,
+        frames_per_second: None,
+        similarity_threshold: None,
+        videos_scanned: None,
+        faces_detected: None,
+        unique_people: None,
+        person_name: None,
         conflict_report_path: None,
         current_phase: None,
         transfer_local_processed_count: None,
@@ -940,6 +1018,7 @@ fn run_transfer_task(
     let hash_backfill_entries = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
     let verification_report = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let verify_errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let stale_hash_paths = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let verify_done = Arc::new(AtomicU64::new(0));
     let deduplicated_counter = Arc::new(AtomicU64::new(0));
     let renamed_counter = Arc::new(AtomicU64::new(0));
@@ -951,6 +1030,7 @@ fn run_transfer_task(
     let staging_verify = staging.clone();
     let archive_verify = archive.clone();
     let hash_backfill_entries_verify = hash_backfill_entries.clone();
+    let stale_hash_paths_verify = stale_hash_paths.clone();
 
     pool.install(|| {
         files.par_iter().for_each(|src| {
@@ -1012,6 +1092,7 @@ fn run_transfer_task(
                 for server_path in server_paths {
                     let server_file_path = archive_verify.join(server_path);
                     if !server_file_path.exists() {
+                        stale_hash_paths_verify.lock().unwrap().push(server_path.clone());
                         if let Some(ref jid) = job_id_verify {
                             append_process_job_log(
                                 jid,
@@ -1055,6 +1136,7 @@ fn run_transfer_task(
                             break;
                         }
                         Ok(actual_hash) => {
+                            stale_hash_paths_verify.lock().unwrap().push(server_path.clone());
                             verification_report.lock().unwrap().push(format!(
                                 "HASH_MISMATCH: {} has hash {} but table shows {}",
                                 server_path, actual_hash, local_hash
@@ -1072,6 +1154,7 @@ fn run_transfer_task(
                             }
                         }
                         Err(e) => {
+                            stale_hash_paths_verify.lock().unwrap().push(server_path.clone());
                             verification_report.lock().unwrap().push(format!(
                                 "VERIFY_ERROR: Could not verify {}: {}",
                                 server_path, e
@@ -1289,6 +1372,7 @@ fn run_transfer_task(
     overall_errors.extend(verify_errors.lock().unwrap().clone());
     let transfer_plan = transfer_plan.lock().unwrap().clone();
     let hash_backfill_entries = hash_backfill_entries.lock().unwrap().clone();
+    let stale_hash_paths = stale_hash_paths.lock().unwrap().clone();
     let deduplicated_count = deduplicated_counter.load(Ordering::Relaxed) as usize;
     let renamed_count = renamed_counter.load(Ordering::Relaxed) as usize;
     let verification_report = verification_report.lock().unwrap().clone();
@@ -1617,9 +1701,27 @@ fn run_transfer_task(
 
     let mut backfill_added_count = 0usize;
 
-    if !hash_backfill_entries.is_empty() {
+    let mut deduped_stale_paths = HashSet::<String>::new();
+    for path in stale_hash_paths {
+        deduped_stale_paths.insert(path);
+    }
+    let stale_hash_paths = deduped_stale_paths.into_iter().collect::<Vec<_>>();
+
+    if !hash_backfill_entries.is_empty() || !stale_hash_paths.is_empty() {
         let backfill_hash_path = resolve_master_hash_table_path(&archive);
         let backfill_hash_path_canonical = backfill_hash_path.canonicalize().unwrap_or_else(|_| backfill_hash_path.clone());
+        let mut stale_paths_by_hash = BTreeMap::<String, Vec<String>>::new();
+        for path in &stale_hash_paths {
+            let hash = server_hash_table
+                .path_to_hash
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+            stale_paths_by_hash
+                .entry(hash)
+                .or_default()
+                .push(path.clone());
+        }
         
         if let Some(ref jid) = job_id {
             for (path, hash) in &hash_backfill_entries {
@@ -1633,10 +1735,38 @@ fn run_transfer_task(
                     ),
                 );
             }
+            if !stale_hash_paths.is_empty() {
+                append_process_job_log(
+                    jid,
+                    format!(
+                        "HASH_TABLE_STALE_SUMMARY: unique_hashes={} stale_paths={} target=[absolute='{}']",
+                        stale_paths_by_hash.len(),
+                        stale_hash_paths.len(),
+                        backfill_hash_path_canonical.display()
+                    ),
+                );
+                for (hash, paths) in &stale_paths_by_hash {
+                    let sample = paths
+                        .iter()
+                        .take(3)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    append_process_job_log(
+                        jid,
+                        format!(
+                            "HASH_TABLE_STALE_BY_HASH: hash='{}' stale_paths={} sample_paths=[{}]",
+                            &hash[..hash.len().min(8)],
+                            paths.len(),
+                            sample
+                        ),
+                    );
+                }
+            }
         }
         
-        match atomic_update_master_hash_table(&archive, &hash_backfill_entries) {
-            Ok(added_count) => {
+        match atomic_reconcile_master_hash_table(&archive, &hash_backfill_entries, &stale_hash_paths) {
+            Ok((added_count, removed_count)) => {
                 backfill_added_count = added_count;
                 let total_added = indexed_added_total.load(Ordering::Relaxed) as usize + backfill_added_count;
                 if let Some(ref jid) = job_id {
@@ -1646,10 +1776,11 @@ fn run_transfer_task(
                     append_process_job_log(
                         jid,
                         format!(
-                            "HASH_TABLE_BACKFILL_WRITTEN: file=[absolute='{}'] entries_queued={} entries_added={} cumulative_total={}",
+                            "HASH_TABLE_RECONCILED: file=[absolute='{}'] backfill_entries={} entries_added={} stale_entries_removed={} cumulative_total={}",
                             backfill_hash_path_canonical.display(),
                             hash_backfill_entries.len(),
                             added_count,
+                            removed_count,
                             total_added
                         ),
                     );
@@ -1668,7 +1799,7 @@ fn run_transfer_task(
             }
         }
     } else if let Some(ref jid) = job_id {
-        append_process_job_log(jid, "HASH_TABLE_BACKFILL_SKIPPED: no backfill entries to write");
+        append_process_job_log(jid, "HASH_TABLE_RECONCILE_SKIPPED: no backfill entries and no stale paths to remove");
     }
 
     if let Some(ref jid) = job_id {
@@ -1883,3 +2014,4 @@ fn run_verify_task(
         errors: final_errors,
     })
 }
+

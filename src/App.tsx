@@ -9,6 +9,7 @@ import Jobs from "./pages/Jobs";
 import PostProcess from "./pages/PostProcess";
 import Review from "./pages/Review";
 import Transfer from "./pages/Transfer";
+import FaceIdentify from "./pages/FaceIdentify";
 import Settings from "./pages/Settings";
 import Logs from "./pages/Logs";
 
@@ -18,6 +19,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "postprocess", label: "Post Process",  icon: "⚙️" },
   { id: "review",      label: "Review",        icon: "🖼️" },
   { id: "transfer",    label: "Transfer",      icon: "📤" },
+  { id: "faceidentify",label: "Face Identify", icon: "👤" },
   { id: "settings",    label: "Settings",      icon: "⚙️" },
   { id: "jobs",        label: "Jobs",         icon: "🧵" },
   { id: "cleanup",     label: "Cleanup",      icon: "🧹" },
@@ -36,6 +38,7 @@ export default function App() {
     postprocess: <PostProcess onOpenJobs={() => setPage("jobs")} />,
     review: <Review />,
     transfer: <Transfer />,
+    faceidentify: <FaceIdentify onOpenJobs={() => setPage("jobs")} />,
     settings: <Settings />,
     logs: <Logs />,
   };

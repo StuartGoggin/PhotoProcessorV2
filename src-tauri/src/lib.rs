@@ -14,6 +14,7 @@ use commands::{
     },
     process::{
         abort_process_job, clear_finished_process_jobs, list_process_jobs, pause_process_job,
+        check_face_scan_environment,
         resume_process_job, run_bw_conversion, run_enhancement, run_focus_detection,
         run_video_stabilization,
         start_event_naming_job, start_process_job,
@@ -55,6 +56,7 @@ pub fn run() {
             run_bw_conversion,
             run_video_stabilization,
             start_event_naming_job,
+            check_face_scan_environment,
             start_process_job,
             list_process_jobs,
             clear_finished_process_jobs,
