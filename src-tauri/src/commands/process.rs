@@ -2999,17 +2999,48 @@ fn run_scan_faces_task(
     };
 
     let (requested_parallel_jobs, parallel_jobs_source) = parse_parallel_jobs();
-    let parallel_jobs = requested_parallel_jobs.min(total_videos.max(1));
+    let use_single_video_sharding = total_videos == 1 && requested_parallel_jobs > 1;
+    let parallel_jobs = if use_single_video_sharding {
+        requested_parallel_jobs.max(1)
+    } else {
+        requested_parallel_jobs.min(total_videos.max(1))
+    };
 
     if let Some(job_id) = &job_id {
         append_process_job_log(
             job_id,
             format!(
-                "scan execution parallel_jobs={} requested={} source={} total_videos={}",
-                parallel_jobs, requested_parallel_jobs, parallel_jobs_source, total_videos
+                "scan execution parallel_jobs={} requested={} source={} total_videos={} mode={}",
+                parallel_jobs,
+                requested_parallel_jobs,
+                parallel_jobs_source,
+                total_videos,
+                if use_single_video_sharding {
+                    "single-video-sharded"
+                } else {
+                    "multi-video"
+                }
             ),
         );
     }
+
+    let progress_total_units = if use_single_video_sharding {
+        parallel_jobs
+    } else {
+        total_videos
+    };
+    let scan_units: Vec<(usize, PathBuf, Option<(usize, usize)>)> = if use_single_video_sharding {
+        let video_path = videos[0].clone();
+        (0..parallel_jobs)
+            .map(|shard_index| (shard_index, video_path.clone(), Some((shard_index, parallel_jobs))))
+            .collect()
+    } else {
+        videos
+            .iter()
+            .enumerate()
+            .map(|(idx, video_path)| (idx, video_path.clone(), None))
+            .collect()
+    };
 
     let total_faces_counter = Arc::new(AtomicUsize::new(0));
     let processed_counter = Arc::new(AtomicUsize::new(0));
@@ -3020,6 +3051,7 @@ fn run_scan_faces_task(
     let progress_done_by_video = Arc::new(Mutex::new(HashMap::<usize, usize>::new()));
     let progress_total_by_video = Arc::new(Mutex::new(HashMap::<usize, usize>::new()));
     let progress_emit_tick = Arc::new(AtomicUsize::new(0));
+    let progress_log_tick = Arc::new(AtomicUsize::new(0));
     let worker_progress = Arc::new(Mutex::new(HashMap::<usize, FaceScanWorkerProgress>::new()));
 
     if let Ok(mut workers) = worker_progress.lock() {
@@ -3046,6 +3078,14 @@ fn run_scan_faces_task(
             let mut snapshot: Vec<FaceScanWorkerProgress> = workers.values().cloned().collect();
             snapshot.sort_by_key(|w| w.worker_id);
             update_process_job(job_id, |job| {
+                job.total = progress_total_units;
+                job.done = 0;
+                job.processed = 0;
+                job.current_phase = Some(if use_single_video_sharding {
+                    format!("Scanning video shards 0/{} (active 0) • frames 0/0", parallel_jobs)
+                } else {
+                    format!("Scanning videos 0/{} (active 0) • frames 0/0", total_videos)
+                });
                 job.face_worker_progress = Some(snapshot);
             });
         }
@@ -3057,10 +3097,12 @@ fn run_scan_faces_task(
         .map_err(|e| format!("Failed to configure scan worker pool: {}", e))?;
 
     let scan_results = pool.install(|| {
-        videos
+        scan_units
             .par_iter()
-            .enumerate()
-            .map(|(idx, video_path)| {
+            .map(|(idx_ref, video_path, shard_info_ref)| {
+                let idx = *idx_ref;
+                let shard_info = *shard_info_ref;
+
                 if stop_requested.load(Ordering::Relaxed)
                     || job_id
                         .as_ref()
@@ -3070,12 +3112,22 @@ fn run_scan_faces_task(
                     return (idx, video_path.clone(), Err("Face scanning aborted".to_string()));
                 }
 
-                let worker_id = rayon::current_thread_index().unwrap_or(idx % parallel_jobs);
+                let worker_id = shard_info
+                    .map(|(shard_index, _)| shard_index)
+                    .unwrap_or_else(|| rayon::current_thread_index().unwrap_or(idx % parallel_jobs));
                 let rel_video_path = video_path
                     .strip_prefix(&archive_path)
                     .unwrap_or(video_path)
                     .to_string_lossy()
                     .replace('\\', "/");
+                let worker_label = shard_info
+                    .map(|(shard_index, shard_count)| {
+                        format!("{} [shard {}/{}]", rel_video_path, shard_index + 1, shard_count)
+                    })
+                    .unwrap_or_else(|| rel_video_path.clone());
+                let shard_suffix = shard_info
+                    .map(|(shard_index, shard_count)| format!(" shard={}/{}", shard_index + 1, shard_count))
+                    .unwrap_or_default();
 
                 active_videos_counter.fetch_add(1, Ordering::Relaxed);
 
@@ -3085,11 +3137,10 @@ fn run_scan_faces_task(
                 let done_map_for_progress = progress_done_by_video.clone();
                 let total_map_for_progress = progress_total_by_video.clone();
                 let emit_tick_for_progress = progress_emit_tick.clone();
+                let log_tick_for_progress = progress_log_tick.clone();
                 let active_for_progress = active_videos_counter.clone();
                 let processed_for_progress = processed_counter.clone();
                 let worker_progress_for_progress = worker_progress.clone();
-                // Clone the pre-verified Python path so each worker can use it directly
-                // without spawning parallel env-check subprocesses.
                 let python_exe_for_worker = verified_python_exe.clone();
 
                 if let Ok(mut workers) = worker_progress.lock() {
@@ -3105,19 +3156,38 @@ fn run_scan_faces_task(
                         error: None,
                     });
                     worker.state = "running".to_string();
-                    worker.current_video = Some(rel_video_path.clone());
+                    worker.current_video = Some(worker_label.clone());
                     worker.sampled_done = 0;
                     worker.sampled_total = 0;
                     worker.error = None;
                     worker.last_update_at = now_string();
                 }
 
-                let detection = faces::detect_faces_in_video_with_progress(
-                    video_path,
-                    frames_per_second,
-                    similarity_threshold,
-                    Some(python_exe_for_worker),
-                    Some(|sampled_done_video: usize, sampled_total_video: usize| {
+                if let Some(job_id) = &job_id {
+                    append_process_job_log(
+                        job_id,
+                        format!(
+                            "worker {} started video='{}'{}",
+                            worker_id,
+                            rel_video_path,
+                            shard_suffix
+                        ),
+                    );
+                }
+
+                let build_progress_callback = || {
+                    let job_id_for_progress = job_id_for_progress.clone();
+                    let done_counter_for_progress = done_counter_for_progress.clone();
+                    let total_counter_for_progress = total_counter_for_progress.clone();
+                    let done_map_for_progress = done_map_for_progress.clone();
+                    let total_map_for_progress = total_map_for_progress.clone();
+                    let emit_tick_for_progress = emit_tick_for_progress.clone();
+                    let log_tick_for_progress = log_tick_for_progress.clone();
+                    let active_for_progress = active_for_progress.clone();
+                    let processed_for_progress = processed_for_progress.clone();
+                    let worker_progress_for_progress = worker_progress_for_progress.clone();
+
+                    move |sampled_done_video: usize, sampled_total_video: usize| {
                         if let Ok(mut workers) = worker_progress_for_progress.lock() {
                             if let Some(worker) = workers.get_mut(&worker_id) {
                                 worker.sampled_done = sampled_done_video;
@@ -3154,7 +3224,7 @@ fn run_scan_faces_task(
                                 let frames_done_now = done_counter_for_progress.load(Ordering::Relaxed);
                                 let frames_total_now = total_counter_for_progress.load(Ordering::Relaxed);
                                 let active_now = active_for_progress.load(Ordering::Relaxed);
-                                let videos_done_now = processed_for_progress.load(Ordering::Relaxed);
+                                let units_done_now = processed_for_progress.load(Ordering::Relaxed);
                                 let worker_snapshot = worker_progress_for_progress
                                     .lock()
                                     .ok()
@@ -3170,24 +3240,127 @@ fn run_scan_faces_task(
                                     job.face_frames_total_estimate = Some(frames_total_now.max(frames_done_now));
                                     job.face_videos_in_flight = Some(active_now);
                                     job.face_worker_progress = Some(worker_snapshot);
-                                    job.current_phase = Some(format!(
-                                        "Scanning videos {}/{} (active {}) • frames {}/{}",
-                                        videos_done_now,
-                                        total_videos,
-                                        active_now,
-                                        frames_done_now,
-                                        frames_total_now.max(frames_done_now)
-                                    ));
+                                    job.current_phase = Some(if use_single_video_sharding {
+                                        format!(
+                                            "Scanning video shards {}/{} (active {}) • frames {}/{}",
+                                            units_done_now,
+                                            parallel_jobs,
+                                            active_now,
+                                            frames_done_now,
+                                            frames_total_now.max(frames_done_now)
+                                        )
+                                    } else {
+                                        format!(
+                                            "Scanning videos {}/{} (active {}) • frames {}/{}",
+                                            units_done_now,
+                                            total_videos,
+                                            active_now,
+                                            frames_done_now,
+                                            frames_total_now.max(frames_done_now)
+                                        )
+                                    });
                                 });
+
+                                let log_tick = log_tick_for_progress.fetch_add(1, Ordering::Relaxed) + 1;
+                                if log_tick == 1 || log_tick % 8 == 0 {
+                                    let worker_status = worker_progress_for_progress
+                                        .lock()
+                                        .ok()
+                                        .map(|workers| {
+                                            let mut items: Vec<FaceScanWorkerProgress> =
+                                                workers.values().cloned().collect();
+                                            items.sort_by_key(|w| w.worker_id);
+                                            items
+                                                .into_iter()
+                                                .map(|w| {
+                                                    let video = w
+                                                        .current_video
+                                                        .unwrap_or_else(|| "-".to_string());
+                                                    format!(
+                                                        "w{}:{} {} {}/{}",
+                                                        w.worker_id,
+                                                        w.state,
+                                                        video,
+                                                        w.sampled_done,
+                                                        w.sampled_total.max(w.sampled_done)
+                                                    )
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .join(" | ")
+                                        })
+                                        .unwrap_or_else(|| "worker snapshot unavailable".to_string());
+
+                                    append_process_job_log(
+                                        job_id,
+                                        if use_single_video_sharding {
+                                            format!(
+                                                "frame progress shards_done={}/{} active={} frames={}/{} threads=[{}]",
+                                                units_done_now,
+                                                parallel_jobs,
+                                                active_now,
+                                                frames_done_now,
+                                                frames_total_now.max(frames_done_now),
+                                                worker_status
+                                            )
+                                        } else {
+                                            format!(
+                                                "frame progress videos_done={}/{} active={} frames={}/{} threads=[{}]",
+                                                units_done_now,
+                                                total_videos,
+                                                active_now,
+                                                frames_done_now,
+                                                frames_total_now.max(frames_done_now),
+                                                worker_status
+                                            )
+                                        },
+                                    );
+                                }
                             }
                         }
-                    }),
-                )
-                .map(|(face_results, _stats)| face_results)
-                .map_err(|err| {
-                    stop_requested.store(true, Ordering::Relaxed);
-                    format!("Face detection failed for '{}': {}", video_path.display(), err)
-                });
+                    }
+                };
+
+                let detection_raw = (if let Some((shard_index, shard_count)) = shard_info {
+                    faces::detect_faces_in_video_shard_with_progress(
+                        video_path,
+                        frames_per_second,
+                        similarity_threshold,
+                        Some(python_exe_for_worker),
+                        shard_index,
+                        shard_count,
+                        Some(build_progress_callback()),
+                    )
+                } else {
+                    faces::detect_faces_in_video_with_progress(
+                        video_path,
+                        frames_per_second,
+                        similarity_threshold,
+                        Some(python_exe_for_worker),
+                        Some(build_progress_callback()),
+                    )
+                })
+                .map(|(face_results, _stats)| face_results);
+
+                let detection = match detection_raw {
+                    Ok(face_results) => Ok(face_results),
+                    Err(err) if faces::is_skippable_video_error(&err) => {
+                        if let Some(job_id) = &job_id {
+                            append_process_job_log(
+                                job_id,
+                                format!(
+                                    "Skipping unreadable video '{}': {}",
+                                    video_path.display(),
+                                    err
+                                ),
+                            );
+                        }
+                        Ok(Vec::new())
+                    }
+                    Err(err) => {
+                        stop_requested.store(true, Ordering::Relaxed);
+                        Err(format!("Face detection failed for '{}': {}", video_path.display(), err))
+                    }
+                };
 
                 if let Ok(mut workers) = worker_progress.lock() {
                     if let Some(worker) = workers.get_mut(&worker_id) {
@@ -3205,6 +3378,35 @@ fn run_scan_faces_task(
                             }
                         }
                         worker.last_update_at = now_string();
+                    }
+                }
+
+                if let Some(job_id) = &job_id {
+                    match &detection {
+                        Ok(face_results) => {
+                            append_process_job_log(
+                                job_id,
+                                format!(
+                                    "worker {} completed video='{}'{} faces_detected={}",
+                                    worker_id,
+                                    rel_video_path,
+                                    shard_suffix,
+                                    face_results.len()
+                                ),
+                            );
+                        }
+                        Err(err) => {
+                            append_process_job_log(
+                                job_id,
+                                format!(
+                                    "worker {} failed video='{}'{} error={}",
+                                    worker_id,
+                                    rel_video_path,
+                                    shard_suffix,
+                                    err
+                                ),
+                            );
+                        }
                     }
                 }
 
@@ -3239,7 +3441,7 @@ fn run_scan_faces_task(
                         })
                         .unwrap_or_default();
                     update_process_job(job_id, |job| {
-                        job.total = total_videos;
+                        job.total = progress_total_units;
                         job.done = done;
                         job.processed = done;
                         job.current_file = rel_path.clone();
@@ -3247,23 +3449,47 @@ fn run_scan_faces_task(
                         job.face_frames_total_estimate = Some(frames_total_now.max(frames_done_now));
                         job.face_videos_in_flight = Some(active_now);
                         job.face_worker_progress = Some(worker_snapshot);
-                        job.current_phase = Some(format!(
-                            "Scanning videos {}/{} (active {}) • frames {}/{}",
-                            done,
-                            total_videos,
-                            active_now,
-                            frames_done_now,
-                            frames_total_now.max(frames_done_now)
-                        ));
+                        job.current_phase = Some(if use_single_video_sharding {
+                            format!(
+                                "Scanning video shards {}/{} (active {}) • frames {}/{}",
+                                done,
+                                parallel_jobs,
+                                active_now,
+                                frames_done_now,
+                                frames_total_now.max(frames_done_now)
+                            )
+                        } else {
+                            format!(
+                                "Scanning videos {}/{} (active {}) • frames {}/{}",
+                                done,
+                                total_videos,
+                                active_now,
+                                frames_done_now,
+                                frames_total_now.max(frames_done_now)
+                            )
+                        });
                     });
 
-                    if done == 1 || done % 25 == 0 || done == total_videos {
+                    if done == 1 || done % 25 == 0 || done == progress_total_units {
                         append_process_job_log(
                             job_id,
-                            format!(
-                                "progress {}/{} current='{}' faces_detected_so_far={}",
-                                done, total_videos, rel_path, faces_so_far
-                            ),
+                            if use_single_video_sharding {
+                                format!(
+                                    "progress {}/{} current='{}' faces_detected_so_far={}",
+                                    done,
+                                    parallel_jobs,
+                                    rel_path,
+                                    faces_so_far
+                                )
+                            } else {
+                                format!(
+                                    "progress {}/{} current='{}' faces_detected_so_far={}",
+                                    done,
+                                    total_videos,
+                                    rel_path,
+                                    faces_so_far
+                                )
+                            },
                         );
                     }
 

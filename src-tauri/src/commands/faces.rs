@@ -639,11 +639,13 @@ pub fn detect_faces_in_video(
     frames_per_second: usize,
     similarity_threshold: f32,
 ) -> Result<Vec<(String, Vec<f32>, u64, f32)>, String> {
-    let (faces, _stats) = detect_faces_in_video_with_progress(
+    let (faces, _stats) = detect_faces_in_video_shard_with_progress(
         video_path,
         frames_per_second,
         similarity_threshold,
         None,
+        0,
+        1,
         None::<fn(usize, usize)>,
     )?;
     Ok(faces)
@@ -660,6 +662,29 @@ pub fn detect_faces_in_video_with_progress<F>(
     frames_per_second: usize,
     _similarity_threshold: f32,
     python_exe: Option<PathBuf>,
+    progress_callback: Option<F>,
+) -> Result<(Vec<(String, Vec<f32>, u64, f32)>, FaceScanProgressStats), String>
+where
+    F: FnMut(usize, usize),
+{
+    detect_faces_in_video_shard_with_progress(
+        video_path,
+        frames_per_second,
+        _similarity_threshold,
+        python_exe,
+        0,
+        1,
+        progress_callback,
+    )
+}
+
+pub fn detect_faces_in_video_shard_with_progress<F>(
+    video_path: &Path,
+    frames_per_second: usize,
+    _similarity_threshold: f32,
+    python_exe: Option<PathBuf>,
+    shard_index: usize,
+    shard_count: usize,
     mut progress_callback: Option<F>,
 ) -> Result<(Vec<(String, Vec<f32>, u64, f32)>, FaceScanProgressStats), String>
 where
@@ -667,6 +692,13 @@ where
 {
     let script_path = resolve_scan_script_path()?;
     let fps = frames_per_second.max(1).to_string();
+    let shard_count = shard_count.max(1);
+    if shard_index >= shard_count {
+        return Err(format!(
+            "Invalid face scan shard parameters: shard_index={} shard_count={}",
+            shard_index, shard_count
+        ));
+    }
 
     // When a pre-verified executable is provided (i.e., from the parallel scan
     // loop), use it exclusively. This avoids spawning N concurrent
@@ -712,6 +744,13 @@ where
             .arg(video_path)
             .arg("--fps")
             .arg(&fps);
+        if shard_count > 1 {
+            command
+                .arg("--shard-index")
+                .arg(shard_index.to_string())
+                .arg("--shard-count")
+                .arg(shard_count.to_string());
+        }
 
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -843,6 +882,13 @@ where
     ))
 }
 
+pub fn is_skippable_video_error(err: &str) -> bool {
+    let normalized = err.to_ascii_lowercase();
+    normalized.contains("failed to open video")
+        || normalized.contains("moov atom not found")
+        || normalized.contains("invalid data found when processing input")
+}
+
 fn parse_python_scan_output(stdout: &str) -> Result<PythonScanOutput, String> {
     // Fast path: pure JSON output.
     if let Ok(parsed) = serde_json::from_str::<PythonScanOutput>(stdout.trim()) {
@@ -880,12 +926,24 @@ struct PythonScanOutput {
     sampled_done: usize,
     #[serde(default)]
     sampled_total: usize,
+    #[serde(default)]
+    #[serde(rename = "shard_index")]
+    _shard_index: Option<usize>,
+    #[serde(default)]
+    #[serde(rename = "shard_count")]
+    _shard_count: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PythonProgressOutput {
     sampled_done: usize,
     sampled_total: usize,
+    #[serde(default)]
+    #[serde(rename = "shard_index")]
+    _shard_index: Option<usize>,
+    #[serde(default)]
+    #[serde(rename = "shard_count")]
+    _shard_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
