@@ -36,6 +36,12 @@ def _iter_sampled_frames(cv2, cap, sample_fps):
         frame_idx += 1
 
 
+def _estimate_sampled_total(total_frames, step):
+    if total_frames <= 0 or step <= 0:
+        return 0
+    return (total_frames + step - 1) // step
+
+
 def main():
     parser = argparse.ArgumentParser(description="Scan a video for faces with DeepFace")
     parser.add_argument("--video", required=True, help="Path to video file")
@@ -49,10 +55,31 @@ def main():
         print(f"Failed to open video: {args.video}", file=sys.stderr)
         return 2
 
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    source_fps = cap.get(cv2.CAP_PROP_FPS)
+    if not source_fps or math.isnan(source_fps) or source_fps <= 0:
+        source_fps = 30.0
+    step = max(int(round(source_fps / max(args.fps, 1))), 1)
+    sampled_total = _estimate_sampled_total(total_frames, step)
+
     detections = []
+    sampled_done = 0
+    progress_every = 10
 
     try:
         for frame, timestamp_ms in _iter_sampled_frames(cv2, cap, max(args.fps, 1)):
+            sampled_done += 1
+            if sampled_done == 1 or sampled_done % progress_every == 0:
+                print(
+                    "PG_PROGRESS "
+                    + json.dumps(
+                        {
+                            "sampled_done": sampled_done,
+                            "sampled_total": sampled_total,
+                        }
+                    ),
+                    flush=True,
+                )
             try:
                 reps = DeepFace.represent(
                     img_path=frame,
@@ -87,7 +114,17 @@ def main():
     finally:
         cap.release()
 
-    print(json.dumps({"faces": detections}))
+    print(
+        "PG_RESULT "
+        + json.dumps(
+            {
+                "faces": detections,
+                "sampled_done": sampled_done,
+                "sampled_total": sampled_total,
+                "source_total_frames": max(total_frames, 0),
+            }
+        )
+    )
     return 0
 
 

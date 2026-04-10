@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
 use walkdir::WalkDir;
 
 /// Face embedding vector and metadata
@@ -258,24 +261,447 @@ pub fn collect_video_files(archive_dir: &Path, recursive: bool) -> Vec<PathBuf> 
     videos
 }
 
-/// Call Python script to detect faces in videos using deepface
-pub fn detect_faces_in_video(
-    video_path: &Path,
-    frames_per_second: usize,
-    _similarity_threshold: f32,
-) -> Result<Vec<(String, Vec<f32>, u64, f32)>, String> {
-    let script_path = resolve_scan_script_path()?;
-    let fps = frames_per_second.max(1).to_string();
+/// Returns the directory where the managed Python venv for face scanning lives.
+/// On Windows: %APPDATA%\PhotoGoGoV2\face_scan_env
+pub fn managed_face_env_dir() -> PathBuf {
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        return PathBuf::from(appdata)
+            .join("PhotoGoGoV2")
+            .join("face_scan_env");
+    }
+    #[cfg(unix)]
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("PhotoGoGoV2")
+            .join("face_scan_env");
+    }
+    PathBuf::from("face_scan_env")
+}
 
-    let python_candidates: [(&str, &[&str]); 3] = [
+/// Returns the Python executable inside the managed venv.
+pub fn managed_face_env_python() -> PathBuf {
+    let venv = managed_face_env_dir();
+    if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python3")
+    }
+}
+
+fn bundled_face_scan_root() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok();
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+    let mut candidates = Vec::new();
+
+    if let Some(cwd) = cwd {
+        candidates.push(cwd.join("src-tauri").join("resources").join("face-scan"));
+        candidates.push(cwd.join("resources").join("face-scan"));
+    }
+
+    if let Some(exe_dir) = exe_dir {
+        candidates.push(exe_dir.join("resources").join("face-scan"));
+        candidates.push(exe_dir.join("face-scan"));
+    }
+
+    candidates.into_iter().find(|p| p.exists())
+}
+
+fn bundled_python_runtime() -> Option<PathBuf> {
+    let root = bundled_face_scan_root()?;
+    let python = if cfg!(windows) {
+        root.join("python-runtime").join("python.exe")
+    } else {
+        root.join("python-runtime").join("bin").join("python3")
+    };
+    if python.exists() {
+        Some(python)
+    } else {
+        None
+    }
+}
+
+fn bundled_wheelhouse_dir() -> Option<PathBuf> {
+    let root = bundled_face_scan_root()?;
+    let wheelhouse = root.join("wheelhouse");
+    if wheelhouse.exists() {
+        Some(wheelhouse)
+    } else {
+        None
+    }
+}
+
+fn is_managed_env_ready(python: &Path) -> bool {
+    if !python.exists() {
+        return false;
+    }
+    matches!(
+        Command::new(python)
+            .args(["-c", "import cv2; import deepface; print('ok')"])
+            .output(),
+        Ok(o) if o.status.success()
+    )
+}
+
+fn probe_python_version(python: &Path) -> Option<(u32, u32)> {
+    let output = Command::new(python)
+        .args([
+            "-c",
+            "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut parts = text.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    Some((major, minor))
+}
+
+fn is_supported_face_scan_python_version(major: u32, minor: u32) -> bool {
+    major == 3 && (8..=11).contains(&minor)
+}
+
+fn face_scan_packages() -> Vec<&'static str> {
+    vec![
+        "deepface==0.0.95",
+        "opencv-python==4.10.0.84",
+        "tensorflow-cpu==2.15.1",
+        "tf-keras==2.15.0",
+    ]
+}
+
+fn common_python_install_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        roots.push(PathBuf::from(local_app_data));
+    }
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        roots.push(PathBuf::from(program_files));
+    }
+    if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+        roots.push(PathBuf::from(program_files_x86));
+    }
+
+    for root in roots {
+        out.push(root.join("Programs").join("Python").join("Python311").join("python.exe"));
+        out.push(root.join("Programs").join("Python").join("Python310").join("python.exe"));
+        out.push(root.join("Programs").join("Python").join("Python39").join("python.exe"));
+        out.push(root.join("Programs").join("Python").join("Python38").join("python.exe"));
+
+        out.push(root.join("Python").join("pythoncore-3.11-64").join("python.exe"));
+        out.push(root.join("Python").join("pythoncore-3.10-64").join("python.exe"));
+        out.push(root.join("Python").join("pythoncore-3.9-64").join("python.exe"));
+        out.push(root.join("Python").join("pythoncore-3.8-64").join("python.exe"));
+    }
+
+    out.push(PathBuf::from("C:\\Python311\\python.exe"));
+    out.push(PathBuf::from("C:\\Python310\\python.exe"));
+    out.push(PathBuf::from("C:\\Python39\\python.exe"));
+    out.push(PathBuf::from("C:\\Python38\\python.exe"));
+
+    out
+}
+
+fn find_system_python() -> Result<PathBuf, String> {
+    let mut attempts: Vec<String> = Vec::new();
+
+    let candidates: &[(&str, &[&str])] = &[
+        ("py", &["-3.11"]),
+        ("py", &["-3.10"]),
+        ("py", &["-3.9"]),
+        ("py", &["-3.8"]),
         ("py", &["-3"]),
         ("python3", &[]),
         ("python", &[]),
     ];
+    for (cmd, prefix_args) in candidates {
+        let mut command = Command::new(cmd);
+        for arg in *prefix_args {
+            command.arg(arg);
+        }
+        command.arg("-c").arg("import sys; print(sys.executable)");
+        match command.output() {
+            Ok(output) if output.status.success() => {
+                let exe = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if exe.is_empty() {
+                    attempts.push(format!("{} {} -> empty executable", cmd, prefix_args.join(" ")));
+                    continue;
+                }
+                let exe_path = PathBuf::from(exe);
+                if let Some((major, minor)) = probe_python_version(&exe_path) {
+                    if is_supported_face_scan_python_version(major, minor) {
+                        return Ok(exe_path);
+                    }
+                    attempts.push(format!("{} {} -> unsupported {}.{}", cmd, prefix_args.join(" "), major, minor));
+                } else {
+                    attempts.push(format!("{} {} -> failed to probe version", cmd, prefix_args.join(" ")));
+                }
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                attempts.push(format!("{} {} -> status {} {}", cmd, prefix_args.join(" "), output.status, stderr));
+            }
+            Err(err) => {
+                attempts.push(format!("{} {} -> not runnable: {}", cmd, prefix_args.join(" "), err));
+            }
+        }
+    }
+
+    for candidate in common_python_install_paths() {
+        if !candidate.exists() {
+            continue;
+        }
+        if let Some((major, minor)) = probe_python_version(&candidate) {
+            if is_supported_face_scan_python_version(major, minor) {
+                return Ok(candidate);
+            }
+            attempts.push(format!("{} -> unsupported {}.{}", candidate.display(), major, minor));
+        } else {
+            attempts.push(format!("{} -> failed to probe version", candidate.display()));
+        }
+    }
+
+    let diagnostics = if attempts.is_empty() {
+        "No interpreter probes succeeded".to_string()
+    } else {
+        attempts.join(" | ")
+    };
+
+    Err(format!(
+        "No supported Python interpreter found. Face scan requires Python 3.8-3.11. Probe diagnostics: {}",
+        diagnostics
+    ))
+}
+
+/// Creates and provisions the managed face-scan venv.
+/// If the venv is already ready, returns immediately with a message.
+pub fn install_face_scan_deps() -> Result<String, String> {
+    let venv_dir = managed_face_env_dir();
+    let venv_python = managed_face_env_python();
+
+    if is_managed_env_ready(&venv_python) {
+        return Ok(format!(
+            "Dependencies already installed at {}",
+            venv_dir.display()
+        ));
+    }
+
+    let source_python = if let Some(bundled_python) = bundled_python_runtime() {
+        bundled_python
+    } else {
+        find_system_python()?
+    };
+
+    if let Some((major, minor)) = probe_python_version(&source_python) {
+        if !is_supported_face_scan_python_version(major, minor) {
+            return Err(format!(
+                "Unsupported Python version {}.{} for face scan setup. Use bundled runtime or Python 3.8-3.11.",
+                major,
+                minor
+            ));
+        }
+    }
+
+    let create_output = Command::new(&source_python)
+        .args(["-m", "venv"])
+        .arg(&venv_dir)
+        .output()
+        .map_err(|e| format!("Failed to run 'python -m venv': {}", e))?;
+
+    if !create_output.status.success() {
+        let stderr = String::from_utf8_lossy(&create_output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&create_output.stdout).trim().to_string();
+        return Err(format!(
+            "Failed to create virtual environment: {}{}",
+            stderr,
+            if stdout.is_empty() { String::new() } else { format!(" / {}", stdout) }
+        ));
+    }
+
+    // Ensure pip exists in the new environment before install attempts.
+    let _ = Command::new(&venv_python)
+        .args(["-m", "ensurepip", "--upgrade"])
+        .output();
+
+    let wheelhouse = bundled_wheelhouse_dir();
+    let mut install_args: Vec<String> = vec![
+        "-m".to_string(),
+        "pip".to_string(),
+        "install".to_string(),
+        "--upgrade".to_string(),
+    ];
+
+    if let Some(dir) = &wheelhouse {
+        install_args.push("--no-index".to_string());
+        install_args.push("--find-links".to_string());
+        install_args.push(dir.to_string_lossy().into_owned());
+    }
+
+    for pkg in face_scan_packages() {
+        install_args.push(pkg.to_string());
+    }
+
+    let install_output = Command::new(&venv_python)
+        .args(&install_args)
+        .output()
+        .map_err(|e| format!("Failed to run pip install: {}", e))?;
+
+    let install_output = if !install_output.status.success() && wheelhouse.is_some() {
+        // Fallback to online install if the local wheelhouse is incomplete.
+        Command::new(&venv_python)
+            .args([
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "deepface==0.0.95",
+                "opencv-python==4.10.0.84",
+                "tensorflow-cpu==2.15.1",
+                "tf-keras==2.15.0",
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run fallback pip install: {}", e))?
+    } else {
+        install_output
+    };
+
+    if !install_output.status.success() {
+        let stderr = String::from_utf8_lossy(&install_output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&install_output.stdout).trim().to_string();
+        // Remove the incomplete venv so a retry starts fresh.
+        let _ = fs::remove_dir_all(&venv_dir);
+        return Err(format!(
+            "pip install failed: {}{}",
+            stderr,
+            if stdout.is_empty() { String::new() } else { format!(" / {}", stdout) }
+        ));
+    }
+
+    if !is_managed_env_ready(&venv_python) {
+        return Err(
+            "Packages appear installed but the import check failed. Try again or check pip output.".to_string()
+        );
+    }
+
+    let source_label = if bundled_python_runtime().is_some() {
+        "bundled Python runtime"
+    } else {
+        "system Python runtime"
+    };
+
+    let wheelhouse_label = if let Some(dir) = bundled_wheelhouse_dir() {
+        format!("wheelhouse={}", dir.display())
+    } else {
+        "wheelhouse=none".to_string()
+    };
+
+    Ok(format!(
+        "Face scan dependencies installed successfully at {} (source={} {})",
+        venv_dir.display(),
+        source_label,
+        wheelhouse_label
+    ))
+}
+
+pub fn ensure_face_scan_environment_ready() -> Result<PathBuf, String> {
+    let managed_python = managed_face_env_python();
+    if is_managed_env_ready(&managed_python) {
+        return Ok(managed_python);
+    }
+
+    install_face_scan_deps()?;
+
+    let managed_python = managed_face_env_python();
+    if is_managed_env_ready(&managed_python) {
+        Ok(managed_python)
+    } else {
+        Err(format!(
+            "Managed face scan environment did not validate after installation: {}",
+            managed_python.display()
+        ))
+    }
+}
+
+/// Call Python script to detect faces in videos using deepface
+#[allow(dead_code)]
+pub fn detect_faces_in_video(
+    video_path: &Path,
+    frames_per_second: usize,
+    similarity_threshold: f32,
+) -> Result<Vec<(String, Vec<f32>, u64, f32)>, String> {
+    let (faces, _stats) = detect_faces_in_video_with_progress(
+        video_path,
+        frames_per_second,
+        similarity_threshold,
+        None,
+        None::<fn(usize, usize)>,
+    )?;
+    Ok(faces)
+}
+
+/// Scan a video for faces with optional per-frame progress callbacks.
+///
+/// `python_exe`: when `Some`, use this pre-verified executable directly and skip
+/// all env checks and fallback candidates. Pass the path returned by
+/// `ensure_face_scan_environment_ready()` which was resolved once before the
+/// parallel scan loop to avoid N concurrent env-check subprocesses on Windows.
+pub fn detect_faces_in_video_with_progress<F>(
+    video_path: &Path,
+    frames_per_second: usize,
+    _similarity_threshold: f32,
+    python_exe: Option<PathBuf>,
+    mut progress_callback: Option<F>,
+) -> Result<(Vec<(String, Vec<f32>, u64, f32)>, FaceScanProgressStats), String>
+where
+    F: FnMut(usize, usize),
+{
+    let script_path = resolve_scan_script_path()?;
+    let fps = frames_per_second.max(1).to_string();
+
+    // When a pre-verified executable is provided (i.e., from the parallel scan
+    // loop), use it exclusively. This avoids spawning N concurrent
+    // ensure_face_scan_environment_ready() subprocesses inside Rayon threads
+    // which can interfere with each other on Windows and cause fallthrough to
+    // system Python (which has no cv2).
+    let mut python_candidates: Vec<(OsString, Vec<OsString>)> = Vec::new();
+    if let Some(verified_exe) = python_exe {
+        python_candidates.push((verified_exe.into_os_string(), vec![]));
+    } else {
+        if let Ok(managed_python) = ensure_face_scan_environment_ready() {
+            python_candidates.push((managed_python.into_os_string(), vec![]));
+        }
+        if let Some(bundled_python) = bundled_python_runtime() {
+            python_candidates.push((bundled_python.into_os_string(), vec![]));
+        }
+        for (cmd, args) in &[
+            ("py", vec!["-3.11"]),
+            ("py", vec!["-3.10"]),
+            ("py", vec!["-3.9"]),
+            ("py", vec!["-3.8"]),
+            ("py", vec!["-3"]),
+            ("python3", vec![]),
+            ("python", vec![]),
+        ] {
+            python_candidates.push((
+                OsString::from(cmd),
+                args.iter().map(OsString::from).collect(),
+            ));
+        }
+    }
 
     let mut last_error = String::new();
 
-    for (cmd, prefix_args) in python_candidates {
+    for (cmd, prefix_args) in &python_candidates {
         let mut command = Command::new(cmd);
         for arg in prefix_args {
             command.arg(arg);
@@ -287,48 +713,126 @@ pub fn detect_faces_in_video(
             .arg("--fps")
             .arg(&fps);
 
-        match command.output() {
-            Ok(output) => {
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        match command.spawn() {
+            Ok(mut child) => {
+                let stdout = match child.stdout.take() {
+                    Some(s) => s,
+                    None => {
+                        last_error = format!("{} did not provide stdout pipe", cmd.to_string_lossy());
+                        continue;
+                    }
+                };
+                let stderr = child.stderr.take();
+
+                let stderr_reader = thread::spawn(move || -> String {
+                    if let Some(mut err_stream) = stderr {
+                        let mut stderr_text = String::new();
+                        let _ = err_stream.read_to_string(&mut stderr_text);
+                        stderr_text
+                    } else {
+                        String::new()
+                    }
+                });
+
+                let mut full_stdout = String::new();
+                let mut result_payload: Option<String> = None;
+                let mut latest_sampled_done = 0usize;
+                let mut latest_sampled_total = 0usize;
+
+                for line_result in BufReader::new(stdout).lines() {
+                    let line = match line_result {
+                        Ok(line) => line,
+                        Err(_read_err) => break,
+                    };
+
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        full_stdout.push_str(trimmed);
+                        full_stdout.push('\n');
+                    }
+
+                    if let Some(payload) = trimmed.strip_prefix("PG_PROGRESS ") {
+                        if let Ok(progress) = serde_json::from_str::<PythonProgressOutput>(payload) {
+                            latest_sampled_done = progress.sampled_done;
+                            latest_sampled_total = progress.sampled_total;
+                            if let Some(callback) = progress_callback.as_mut() {
+                                callback(progress.sampled_done, progress.sampled_total);
+                            }
+                        }
+                        continue;
+                    }
+
+                    if let Some(payload) = trimmed.strip_prefix("PG_RESULT ") {
+                        result_payload = Some(payload.to_string());
+                    }
+                }
+
+                let status = match child.wait() {
+                    Ok(status) => status,
+                    Err(wait_err) => {
+                        last_error = format!(
+                            "{} failed waiting for process: {}",
+                            cmd.to_string_lossy(),
+                            wait_err
+                        );
+                        continue;
+                    }
+                };
+
+                let stderr_text = stderr_reader.join().unwrap_or_default();
+
+                if !status.success() {
                     last_error = format!(
                         "{} exited with status {}. stderr='{}' stdout='{}'",
-                        cmd,
-                        output.status,
-                        stderr,
-                        stdout
+                        cmd.to_string_lossy(),
+                        status,
+                        stderr_text.trim(),
+                        full_stdout.trim()
                     );
                     continue;
                 }
 
-                let stdout = String::from_utf8(output.stdout)
-                    .map_err(|e| format!("{} produced non-utf8 output: {}", cmd, e))?;
-                let parsed: PythonScanOutput = parse_python_scan_output(&stdout)
-                    .map_err(|e| {
+                let parsed: PythonScanOutput = if let Some(payload) = result_payload {
+                    serde_json::from_str(&payload).map_err(|e| {
+                        format!(
+                            "Failed to parse {} result payload: {}. Payload: {}",
+                            cmd.to_string_lossy(),
+                            e,
+                            payload.chars().take(300).collect::<String>()
+                        )
+                    })?
+                } else {
+                    parse_python_scan_output(&full_stdout).map_err(|e| {
                         format!(
                             "Failed to parse {} JSON output: {}. Raw stdout (first 300 chars): {}",
-                            cmd,
+                            cmd.to_string_lossy(),
                             e,
-                            stdout.chars().take(300).collect::<String>()
+                            full_stdout.chars().take(300).collect::<String>()
                         )
-                    })?;
+                    })?
+                };
 
                 let faces = parsed
                     .faces
                     .into_iter()
-                    .map(|f| (
-                        String::new(),
-                        f.embedding,
-                        f.timestamp_ms,
-                        f.confidence,
-                    ))
+                    .map(|f| (String::new(), f.embedding, f.timestamp_ms, f.confidence))
                     .collect();
 
-                return Ok(faces);
+                let stats = FaceScanProgressStats {
+                    sampled_done: parsed.sampled_done.max(latest_sampled_done),
+                    sampled_total: parsed.sampled_total.max(latest_sampled_total),
+                };
+
+                if let Some(callback) = progress_callback.as_mut() {
+                    callback(stats.sampled_done, stats.sampled_total);
+                }
+
+                return Ok((faces, stats));
             }
             Err(e) => {
-                last_error = format!("failed to run {}: {}", cmd, e);
+                last_error = format!("failed to run {}: {}", cmd.to_string_lossy(), e);
             }
         }
     }
@@ -372,6 +876,22 @@ struct PythonFaceDetection {
 #[derive(Debug, Deserialize)]
 struct PythonScanOutput {
     faces: Vec<PythonFaceDetection>,
+    #[serde(default)]
+    sampled_done: usize,
+    #[serde(default)]
+    sampled_total: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct PythonProgressOutput {
+    sampled_done: usize,
+    sampled_total: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FaceScanProgressStats {
+    pub sampled_done: usize,
+    pub sampled_total: usize,
 }
 
 fn resolve_scan_script_path() -> Result<PathBuf, String> {
@@ -386,6 +906,11 @@ fn resolve_scan_script_path() -> Result<PathBuf, String> {
     ];
     if let Some(dir) = exe_dir {
         candidates.push(dir.join("scripts").join("face_scan.py"));
+        candidates.push(dir.join("resources").join("scripts").join("face_scan.py"));
+    }
+
+    if let Some(root) = bundled_face_scan_root() {
+        candidates.push(root.join("scripts").join("face_scan.py"));
     }
 
     candidates
@@ -414,16 +939,52 @@ pub fn check_scan_environment() -> FaceScanEnvironmentCheck {
         }
     };
 
-    let python_candidates: [(&str, &[&str]); 3] = [
-        ("py", &["-3"]),
-        ("python3", &[]),
-        ("python", &[]),
-    ];
+    // Build candidate list: managed venv first, then system pythons.
+    let managed_python = managed_face_env_python();
+    let mut python_candidates: Vec<(OsString, Vec<OsString>)> = Vec::new();
+    if managed_python.exists() {
+        python_candidates.push((managed_python.clone().into_os_string(), vec![]));
+        details.push(format!("Managed face env Python found: {}", managed_python.display()));
+    } else {
+        details.push(format!("Managed face env Python not found yet: {}", managed_python.display()));
+    }
+
+    if let Some(bundled_python) = bundled_python_runtime() {
+        details.push(format!("Bundled Python runtime found: {}", bundled_python.display()));
+        python_candidates.push((bundled_python.into_os_string(), vec![]));
+    } else {
+        details.push("Bundled Python runtime not found (face-scan/python-runtime)".to_string());
+    }
+
+    if let Some(wheelhouse) = bundled_wheelhouse_dir() {
+        details.push(format!("Bundled wheelhouse found: {}", wheelhouse.display()));
+    } else {
+        details.push("Bundled wheelhouse not found (face-scan/wheelhouse)".to_string());
+    }
+
+    if let Some((major, minor)) = probe_python_version(&managed_python) {
+        details.push(format!("Managed env Python version: {}.{}", major, minor));
+    }
+
+    for (cmd, args) in &[
+        ("py", vec!["-3.11"]),
+        ("py", vec!["-3.10"]),
+        ("py", vec!["-3.9"]),
+        ("py", vec!["-3.8"]),
+        ("py", vec!["-3"]),
+        ("python3", vec![]),
+        ("python", vec![]),
+    ] {
+        python_candidates.push((
+            OsString::from(cmd),
+            args.iter().map(OsString::from).collect(),
+        ));
+    }
 
     let mut selected_python: Option<String> = None;
     let mut last_err = String::new();
 
-    for (cmd, prefix_args) in python_candidates {
+    for (cmd, prefix_args) in &python_candidates {
         let mut command = Command::new(cmd);
         for arg in prefix_args {
             command.arg(arg);
@@ -433,20 +994,20 @@ pub fn check_scan_environment() -> FaceScanEnvironmentCheck {
         match command.output() {
             Ok(output) => {
                 if output.status.success() {
-                    selected_python = Some(cmd.to_string());
-                    details.push(format!("Python/deps check passed with '{}'", cmd));
+                    selected_python = Some(cmd.to_string_lossy().to_string());
+                    details.push(format!("Python/deps check passed with '{}'", cmd.to_string_lossy()));
                     break;
                 }
 
                 last_err = format!(
                     "{} failed (status={}): {}",
-                    cmd,
+                    cmd.to_string_lossy(),
                     output.status,
                     String::from_utf8_lossy(&output.stderr).trim()
                 );
             }
             Err(err) => {
-                last_err = format!("{} not runnable: {}", cmd, err);
+                last_err = format!("{} not runnable: {}", cmd.to_string_lossy(), err);
             }
         }
     }
@@ -466,7 +1027,7 @@ pub fn check_scan_environment() -> FaceScanEnvironmentCheck {
             script_path: script_path.map(|p| p.to_string_lossy().to_string()),
             details,
             error: Some(format!(
-                "Python face scan environment is not ready. Install dependencies in your Python env: pip install deepface opencv-python. Last error: {}",
+                "Python face scan environment is not ready. Click 'Install Dependencies' to set up automatically, or manually: pip install deepface opencv-python. Last error: {}",
                 last_err
             )),
         }

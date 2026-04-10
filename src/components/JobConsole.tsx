@@ -96,6 +96,7 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
       ? `${processJob.stabilizeMaxParallelJobsUsed ?? "-"} parallel jobs, ${processJob.stabilizeFfmpegThreadsPerJobUsed ?? "-"} ffmpeg threads/job`
       : null;
   const isTransferJob = processJob?.task === "transfer";
+  const isFaceScanJob = processJob?.task === "scan_faces";
   const transferLocalProcessedCount = processJob?.transferLocalProcessedCount ?? 0;
   const transferLocalSidecarHitsCount = processJob?.transferLocalSidecarHitsCount ?? 0;
   const transferLocalManifestHitsCount = processJob?.transferLocalManifestHitsCount ?? 0;
@@ -111,6 +112,10 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
     transferLocalProcessedCount - transferDeduplicatedCount,
     0,
   );
+  const faceFramesScanned = processJob?.faceFramesScanned ?? 0;
+  const faceFramesTotalEstimate = processJob?.faceFramesTotalEstimate ?? 0;
+  const faceVideosInFlight = processJob?.faceVideosInFlight ?? 0;
+  const faceWorkerProgress = processJob?.faceWorkerProgress ?? [];
 
   const transferPhaseSummary = (() => {
     if (!isTransferJob || !processJob) return [] as Array<{ label: string; value: number; tone?: string }>;
@@ -245,6 +250,69 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
             </div>
           </div>
         </div>
+        {isFaceScanJob && (
+          <div className="mt-2 space-y-2">
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="bg-surface-800 rounded px-2 py-1.5">
+                <div className="text-gray-500 mb-0.5">Frames Scanned</div>
+                <div className="font-semibold text-white">{faceFramesScanned}</div>
+              </div>
+              <div className="bg-surface-800 rounded px-2 py-1.5">
+                <div className="text-gray-500 mb-0.5">Frame Target</div>
+                <div className="font-semibold text-cyan-300">{faceFramesTotalEstimate}</div>
+              </div>
+              <div className="bg-surface-800 rounded px-2 py-1.5">
+                <div className="text-gray-500 mb-0.5">Videos In Flight</div>
+                <div className="font-semibold text-amber-300">{faceVideosInFlight}</div>
+              </div>
+            </div>
+
+            <div className="rounded border border-surface-700 bg-surface-900/40 px-2 py-1.5">
+              <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Worker Threads</div>
+              {faceWorkerProgress.length === 0 ? (
+                <div className="text-xs text-gray-400">No worker detail available yet.</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {faceWorkerProgress.map((worker) => {
+                    const workerTotal = Math.max(worker.sampledTotal, worker.sampledDone, 1);
+                    const workerPct = Math.min(100, Math.round((worker.sampledDone / workerTotal) * 100));
+                    return (
+                      <div
+                        key={worker.workerId}
+                        className="grid grid-cols-12 gap-2 text-xs bg-surface-800/60 rounded px-2 py-1.5"
+                      >
+                        <div className="col-span-2 text-gray-300">T{worker.workerId}</div>
+                        <div className="col-span-2 text-cyan-300 capitalize">{worker.state}</div>
+                        <div className="col-span-4 text-gray-300 truncate" title={worker.currentVideo ?? ""}>
+                          {worker.currentVideo ?? "Idle"}
+                        </div>
+                        <div className="col-span-2 text-amber-300">
+                          {worker.sampledDone}/{Math.max(worker.sampledTotal, worker.sampledDone)} fr
+                        </div>
+                        <div className="col-span-1 text-emerald-300">v:{worker.videosCompleted}</div>
+                        <div className="col-span-1 text-yellow-300">f:{worker.facesDetected}</div>
+
+                        <div className="col-span-11 h-1.5 bg-surface-700 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-cyan-500 rounded-full transition-all duration-200"
+                            style={{ width: `${workerPct}%` }}
+                          />
+                        </div>
+                        <div className="col-span-1 text-right text-gray-400">{workerPct}%</div>
+
+                        {worker.error && (
+                          <div className="col-span-12 text-red-300 truncate" title={worker.error}>
+                            {worker.error}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         {isTransferJob && (
           <div className="grid grid-cols-3 lg:grid-cols-6 gap-2 text-xs mt-2">
             <div className="bg-surface-800 rounded px-2 py-1.5">

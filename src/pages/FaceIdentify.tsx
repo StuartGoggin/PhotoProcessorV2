@@ -31,6 +31,9 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
   const [isScanning, setIsScanning] = useState(false);
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeHint, setTreeHint] = useState<string | null>(null);
+  const [envNotReady, setEnvNotReady] = useState(false);
+  const [isInstalling, setIsInstalling] = useState(false);
+  const [installResult, setInstallResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [selectedScope, setSelectedScope] = useState<string>("");
@@ -138,6 +141,21 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
     }
   }
 
+  async function installDeps() {
+    setIsInstalling(true);
+    setInstallResult(null);
+    setError(null);
+    try {
+      const msg = await invoke<string>("install_face_scan_deps");
+      setInstallResult({ success: true, message: msg });
+      setEnvNotReady(false);
+    } catch (e) {
+      setInstallResult({ success: false, message: String(e) });
+    } finally {
+      setIsInstalling(false);
+    }
+  }
+
   async function startScan() {
     if (!scopeRoot) {
       setError("Source directory not configured in Settings.");
@@ -149,8 +167,10 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
       if (!env.ready) {
         const detailText = env.details.length > 0 ? `\n${env.details.join("\n")}` : "";
         setError(`Face scan environment not ready. ${env.error ?? "Unknown setup error."}${detailText}`);
+        setEnvNotReady(true);
         return;
       }
+      setEnvNotReady(false);
     } catch (e) {
       setError(`Failed to validate face scan environment: ${String(e)}`);
       return;
@@ -303,6 +323,29 @@ export default function FaceIdentify({ onOpenJobs }: FaceIdentifyProps) {
       {error && (
         <div className="bg-red-900/40 border border-red-700 rounded-lg px-4 py-3 mb-4 text-red-300 text-sm">
           {error}
+        </div>
+      )}
+
+      {envNotReady && (
+        <div className="card mb-4 border-amber-700/50 bg-amber-900/10">
+          <h3 className="text-amber-300 font-medium mb-1">Python Dependencies Required</h3>
+          <p className="text-sm text-gray-300 mb-3">
+            Face scanning requires <code className="text-amber-200">deepface</code> and{" "}
+            <code className="text-amber-200">opencv-python</code>. Click below to install them
+            automatically into a managed environment (requires Python 3.8+ on PATH).
+          </p>
+          {installResult && (
+            <div className={`rounded px-3 py-2 text-sm mb-3 ${installResult.success ? "bg-green-900/40 text-green-300" : "bg-red-900/40 text-red-300"}`}>
+              {installResult.message}
+            </div>
+          )}
+          <button
+            className="btn-primary"
+            onClick={() => void installDeps()}
+            disabled={isInstalling}
+          >
+            {isInstalling ? "Installing… this may take a few minutes" : "Install Dependencies"}
+          </button>
         </div>
       )}
 

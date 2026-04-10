@@ -26,3 +26,11 @@ tools/ffmpeg/
 tools/ffmpeg-n71-test/
 *.zip
 *.exe
+
+# Bundled face-scan payloads are generated locally for release builds.
+src-tauri/resources/face-scan/python-runtime/*
+!src-tauri/resources/face-scan/python-runtime/.gitkeep
+src-tauri/resources/face-scan/wheelhouse/*
+!src-tauri/resources/face-scan/wheelhouse/.gitkeep
+src-tauri/resources/face-scan/scripts/*
+!src-tauri/resources/face-scan/scripts/.gitkeep

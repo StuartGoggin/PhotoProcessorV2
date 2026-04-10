@@ -7,7 +7,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -82,6 +82,20 @@ pub enum ProcessJobStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FaceScanWorkerProgress {
+    pub worker_id: usize,
+    pub state: String,
+    pub current_video: Option<String>,
+    pub sampled_done: usize,
+    pub sampled_total: usize,
+    pub videos_completed: usize,
+    pub faces_detected: usize,
+    pub last_update_at: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProcessJob {
     pub id: String,
     pub task: ProcessTask,
@@ -118,6 +132,10 @@ pub struct ProcessJob {
     pub stabilize_ffmpeg_threads_per_job_used: Option<usize>,
     pub frames_per_second: Option<usize>,
     pub similarity_threshold: Option<f32>,
+    pub face_frames_scanned: Option<usize>,
+    pub face_frames_total_estimate: Option<usize>,
+    pub face_videos_in_flight: Option<usize>,
+    pub face_worker_progress: Option<Vec<FaceScanWorkerProgress>>,
     pub videos_scanned: Option<usize>,
     pub faces_detected: Option<usize>,
     pub unique_people: Option<usize>,
@@ -2479,6 +2497,13 @@ pub fn check_face_scan_environment() -> Result<faces::FaceScanEnvironmentCheck, 
 }
 
 #[tauri::command]
+pub async fn install_face_scan_deps() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(faces::install_face_scan_deps)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn start_process_job(
     app: AppHandle,
     staging_dir: String,
@@ -2589,6 +2614,10 @@ pub fn start_process_job(
         stabilize_ffmpeg_threads_per_job_used: None,
         frames_per_second,
         similarity_threshold,
+        face_frames_scanned: None,
+        face_frames_total_estimate: None,
+        face_videos_in_flight: None,
+        face_worker_progress: None,
         videos_scanned: None,
         faces_detected: None,
         unique_people: None,
@@ -2738,6 +2767,10 @@ pub fn start_event_naming_job(
         stabilize_ffmpeg_threads_per_job_used: None,
         frames_per_second: None,
         similarity_threshold: None,
+        face_frames_scanned: None,
+        face_frames_total_estimate: None,
+        face_videos_in_flight: None,
+        face_worker_progress: None,
         videos_scanned: None,
         faces_detected: None,
         unique_people: None,
@@ -2841,6 +2874,10 @@ fn run_scan_faces_task(
             job.status = ProcessJobStatus::Running;
             job.started_at = Some(now_string());
             job.current_phase = Some("Collecting videos".to_string());
+            job.face_frames_scanned = Some(0);
+            job.face_frames_total_estimate = Some(0);
+            job.face_videos_in_flight = Some(0);
+            job.face_worker_progress = Some(Vec::new());
             job.scope_dir = scope.to_string_lossy().into_owned();
             job.scope_mode = scope_mode.clone();
         });
@@ -2881,6 +2918,31 @@ fn run_scan_faces_task(
         );
     }
 
+    if let Some(job_id) = &job_id {
+        update_process_job(job_id, |job| {
+            job.current_phase = Some("Preparing face scan environment".to_string());
+        });
+        append_process_job_log(job_id, "preparing managed face scan environment");
+    }
+
+    let verified_python_exe = match faces::ensure_face_scan_environment_ready() {
+        Ok(python_path) => {
+            if let Some(job_id) = &job_id {
+                append_process_job_log(
+                    job_id,
+                    format!("face scan environment ready python='{}'", python_path.display()),
+                );
+            }
+            python_path
+        }
+        Err(err) => {
+            if let Some(job_id) = &job_id {
+                append_process_job_log(job_id, format!("face scan environment error: {}", err));
+            }
+            return Err(format!("Face scan environment setup failed: {}", err));
+        }
+    };
+
     // Get list of videos
     let videos = faces::collect_video_files(&scope, recursive);
     let total_videos = videos.len();
@@ -2913,75 +2975,351 @@ fn run_scan_faces_task(
     let mut face_db = faces::FaceDatabase::load(&archive_path.join(".faces_db.json"))
         .unwrap_or_else(|_| faces::FaceDatabase::new());
 
-    let mut total_faces = 0;
-    let unique_people: usize;
+    let settings_parallel_jobs = load_settings(app.clone())
+        .map(|s| s.face_scan_parallel_jobs)
+        .unwrap_or(0);
 
-    for (idx, video_path) in videos.iter().enumerate() {
-        if let Some(job_id) = &job_id {
-            if is_process_abort_requested(Some(job_id)) {
-                update_process_job(job_id, |job| {
-                    job.status = ProcessJobStatus::Aborted;
-                    job.finished_at = Some(now_string());
-                });
-                return Err("Face scanning aborted".to_string());
-            }
+    let parse_parallel_jobs = || -> (usize, &'static str) {
+        if settings_parallel_jobs > 0 {
+            return (settings_parallel_jobs, "settings");
+        }
 
-            let rel_path = video_path
-                .strip_prefix(&archive_path)
-                .unwrap_or(video_path)
-                .to_string_lossy();
-
-            update_process_job(job_id, |job| {
-                job.total = total_videos;
-                job.done = idx + 1;
-                job.processed = idx + 1;
-                job.current_file = rel_path.to_string();
-                job.current_phase = Some(format!("Scanning video {}/{}", idx + 1, total_videos));
-            });
-
-            if idx == 0 || (idx + 1) % 25 == 0 || (idx + 1) == total_videos {
-                append_process_job_log(
-                    job_id,
-                    format!(
-                        "progress {}/{} current='{}' faces_detected_so_far={}",
-                        idx + 1,
-                        total_videos,
-                        rel_path,
-                        total_faces
-                    ),
-                );
+        if let Ok(raw) = std::env::var("PHOTOGOGO_FACE_SCAN_PARALLEL_JOBS") {
+            if let Ok(value) = raw.trim().parse::<usize>() {
+                if value > 0 {
+                    return (value, "env");
+                }
             }
         }
 
-        // Call Python deepface worker and persist detections.
-        match faces::detect_faces_in_video(video_path, frames_per_second, similarity_threshold) {
-            Ok(face_results) => {
-                total_faces += face_results.len();
-                let source_video = video_path.to_string_lossy().to_string();
+        let cpus = num_cpus().max(1);
+        // Target roughly 90% CPU utilization in auto mode by using ~90% of logical threads.
+        let auto = ((cpus * 9) + 9) / 10;
+        (auto, "auto")
+    };
 
-                for (_person_id, embedding, timestamp_ms, confidence) in face_results {
-                    if embedding.is_empty() {
-                        continue;
+    let (requested_parallel_jobs, parallel_jobs_source) = parse_parallel_jobs();
+    let parallel_jobs = requested_parallel_jobs.min(total_videos.max(1));
+
+    if let Some(job_id) = &job_id {
+        append_process_job_log(
+            job_id,
+            format!(
+                "scan execution parallel_jobs={} requested={} source={} total_videos={}",
+                parallel_jobs, requested_parallel_jobs, parallel_jobs_source, total_videos
+            ),
+        );
+    }
+
+    let total_faces_counter = Arc::new(AtomicUsize::new(0));
+    let processed_counter = Arc::new(AtomicUsize::new(0));
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let sampled_frames_done = Arc::new(AtomicUsize::new(0));
+    let sampled_frames_total = Arc::new(AtomicUsize::new(0));
+    let active_videos_counter = Arc::new(AtomicUsize::new(0));
+    let progress_done_by_video = Arc::new(Mutex::new(HashMap::<usize, usize>::new()));
+    let progress_total_by_video = Arc::new(Mutex::new(HashMap::<usize, usize>::new()));
+    let progress_emit_tick = Arc::new(AtomicUsize::new(0));
+    let worker_progress = Arc::new(Mutex::new(HashMap::<usize, FaceScanWorkerProgress>::new()));
+
+    if let Ok(mut workers) = worker_progress.lock() {
+        for worker_id in 0..parallel_jobs {
+            workers.insert(
+                worker_id,
+                FaceScanWorkerProgress {
+                    worker_id,
+                    state: "idle".to_string(),
+                    current_video: None,
+                    sampled_done: 0,
+                    sampled_total: 0,
+                    videos_completed: 0,
+                    faces_detected: 0,
+                    last_update_at: now_string(),
+                    error: None,
+                },
+            );
+        }
+    }
+
+    if let Some(job_id) = &job_id {
+        if let Ok(workers) = worker_progress.lock() {
+            let mut snapshot: Vec<FaceScanWorkerProgress> = workers.values().cloned().collect();
+            snapshot.sort_by_key(|w| w.worker_id);
+            update_process_job(job_id, |job| {
+                job.face_worker_progress = Some(snapshot);
+            });
+        }
+    }
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(parallel_jobs)
+        .build()
+        .map_err(|e| format!("Failed to configure scan worker pool: {}", e))?;
+
+    let scan_results = pool.install(|| {
+        videos
+            .par_iter()
+            .enumerate()
+            .map(|(idx, video_path)| {
+                if stop_requested.load(Ordering::Relaxed)
+                    || job_id
+                        .as_ref()
+                        .map(|id| is_process_abort_requested(Some(id)))
+                        .unwrap_or(false)
+                {
+                    return (idx, video_path.clone(), Err("Face scanning aborted".to_string()));
+                }
+
+                let worker_id = rayon::current_thread_index().unwrap_or(idx % parallel_jobs);
+                let rel_video_path = video_path
+                    .strip_prefix(&archive_path)
+                    .unwrap_or(video_path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+
+                active_videos_counter.fetch_add(1, Ordering::Relaxed);
+
+                let job_id_for_progress = job_id.clone();
+                let done_counter_for_progress = sampled_frames_done.clone();
+                let total_counter_for_progress = sampled_frames_total.clone();
+                let done_map_for_progress = progress_done_by_video.clone();
+                let total_map_for_progress = progress_total_by_video.clone();
+                let emit_tick_for_progress = progress_emit_tick.clone();
+                let active_for_progress = active_videos_counter.clone();
+                let processed_for_progress = processed_counter.clone();
+                let worker_progress_for_progress = worker_progress.clone();
+                // Clone the pre-verified Python path so each worker can use it directly
+                // without spawning parallel env-check subprocesses.
+                let python_exe_for_worker = verified_python_exe.clone();
+
+                if let Ok(mut workers) = worker_progress.lock() {
+                    let worker = workers.entry(worker_id).or_insert(FaceScanWorkerProgress {
+                        worker_id,
+                        state: "idle".to_string(),
+                        current_video: None,
+                        sampled_done: 0,
+                        sampled_total: 0,
+                        videos_completed: 0,
+                        faces_detected: 0,
+                        last_update_at: now_string(),
+                        error: None,
+                    });
+                    worker.state = "running".to_string();
+                    worker.current_video = Some(rel_video_path.clone());
+                    worker.sampled_done = 0;
+                    worker.sampled_total = 0;
+                    worker.error = None;
+                    worker.last_update_at = now_string();
+                }
+
+                let detection = faces::detect_faces_in_video_with_progress(
+                    video_path,
+                    frames_per_second,
+                    similarity_threshold,
+                    Some(python_exe_for_worker),
+                    Some(|sampled_done_video: usize, sampled_total_video: usize| {
+                        if let Ok(mut workers) = worker_progress_for_progress.lock() {
+                            if let Some(worker) = workers.get_mut(&worker_id) {
+                                worker.sampled_done = sampled_done_video;
+                                worker.sampled_total = sampled_total_video.max(sampled_done_video);
+                                worker.last_update_at = now_string();
+                            }
+                        }
+
+                        if let Ok(mut done_map) = done_map_for_progress.lock() {
+                            let prev_done = done_map.get(&idx).copied().unwrap_or(0);
+                            if sampled_done_video > prev_done {
+                                done_counter_for_progress.fetch_add(
+                                    sampled_done_video - prev_done,
+                                    Ordering::Relaxed,
+                                );
+                                done_map.insert(idx, sampled_done_video);
+                            }
+                        }
+
+                        if let Ok(mut total_map) = total_map_for_progress.lock() {
+                            let prev_total = total_map.get(&idx).copied().unwrap_or(0);
+                            if sampled_total_video > prev_total {
+                                total_counter_for_progress.fetch_add(
+                                    sampled_total_video - prev_total,
+                                    Ordering::Relaxed,
+                                );
+                                total_map.insert(idx, sampled_total_video);
+                            }
+                        }
+
+                        let tick = emit_tick_for_progress.fetch_add(1, Ordering::Relaxed) + 1;
+                        if tick == 1 || tick % 20 == 0 {
+                            if let Some(job_id) = &job_id_for_progress {
+                                let frames_done_now = done_counter_for_progress.load(Ordering::Relaxed);
+                                let frames_total_now = total_counter_for_progress.load(Ordering::Relaxed);
+                                let active_now = active_for_progress.load(Ordering::Relaxed);
+                                let videos_done_now = processed_for_progress.load(Ordering::Relaxed);
+                                let worker_snapshot = worker_progress_for_progress
+                                    .lock()
+                                    .ok()
+                                    .map(|workers| {
+                                        let mut out: Vec<FaceScanWorkerProgress> =
+                                            workers.values().cloned().collect();
+                                        out.sort_by_key(|w| w.worker_id);
+                                        out
+                                    })
+                                    .unwrap_or_default();
+                                update_process_job(job_id, |job| {
+                                    job.face_frames_scanned = Some(frames_done_now);
+                                    job.face_frames_total_estimate = Some(frames_total_now.max(frames_done_now));
+                                    job.face_videos_in_flight = Some(active_now);
+                                    job.face_worker_progress = Some(worker_snapshot);
+                                    job.current_phase = Some(format!(
+                                        "Scanning videos {}/{} (active {}) • frames {}/{}",
+                                        videos_done_now,
+                                        total_videos,
+                                        active_now,
+                                        frames_done_now,
+                                        frames_total_now.max(frames_done_now)
+                                    ));
+                                });
+                            }
+                        }
+                    }),
+                )
+                .map(|(face_results, _stats)| face_results)
+                .map_err(|err| {
+                    stop_requested.store(true, Ordering::Relaxed);
+                    format!("Face detection failed for '{}': {}", video_path.display(), err)
+                });
+
+                if let Ok(mut workers) = worker_progress.lock() {
+                    if let Some(worker) = workers.get_mut(&worker_id) {
+                        match &detection {
+                            Ok(face_results) => {
+                                worker.state = "idle".to_string();
+                                worker.current_video = None;
+                                worker.videos_completed += 1;
+                                worker.faces_detected += face_results.len();
+                                worker.error = None;
+                            }
+                            Err(err) => {
+                                worker.state = "error".to_string();
+                                worker.error = Some(err.clone());
+                            }
+                        }
+                        worker.last_update_at = now_string();
+                    }
+                }
+
+                active_videos_counter.fetch_sub(1, Ordering::Relaxed);
+
+                let done = processed_counter.fetch_add(1, Ordering::Relaxed) + 1;
+
+                match &detection {
+                    Ok(face_results) => {
+                        total_faces_counter.fetch_add(face_results.len(), Ordering::Relaxed);
+                    }
+                    Err(_) => {}
+                }
+
+                if let Some(job_id) = &job_id {
+                    let rel_path = video_path
+                        .strip_prefix(&archive_path)
+                        .unwrap_or(video_path)
+                        .to_string_lossy()
+                        .to_string();
+                    let faces_so_far = total_faces_counter.load(Ordering::Relaxed);
+                    let frames_done_now = sampled_frames_done.load(Ordering::Relaxed);
+                    let frames_total_now = sampled_frames_total.load(Ordering::Relaxed);
+                    let active_now = active_videos_counter.load(Ordering::Relaxed);
+                    let worker_snapshot = worker_progress
+                        .lock()
+                        .ok()
+                        .map(|workers| {
+                            let mut out: Vec<FaceScanWorkerProgress> = workers.values().cloned().collect();
+                            out.sort_by_key(|w| w.worker_id);
+                            out
+                        })
+                        .unwrap_or_default();
+                    update_process_job(job_id, |job| {
+                        job.total = total_videos;
+                        job.done = done;
+                        job.processed = done;
+                        job.current_file = rel_path.clone();
+                        job.face_frames_scanned = Some(frames_done_now);
+                        job.face_frames_total_estimate = Some(frames_total_now.max(frames_done_now));
+                        job.face_videos_in_flight = Some(active_now);
+                        job.face_worker_progress = Some(worker_snapshot);
+                        job.current_phase = Some(format!(
+                            "Scanning videos {}/{} (active {}) • frames {}/{}",
+                            done,
+                            total_videos,
+                            active_now,
+                            frames_done_now,
+                            frames_total_now.max(frames_done_now)
+                        ));
+                    });
+
+                    if done == 1 || done % 25 == 0 || done == total_videos {
+                        append_process_job_log(
+                            job_id,
+                            format!(
+                                "progress {}/{} current='{}' faces_detected_so_far={}",
+                                done, total_videos, rel_path, faces_so_far
+                            ),
+                        );
                     }
 
-                    let person_id = faces::assign_person_id(&face_db, &embedding, similarity_threshold);
-                    let person_name = person_id.clone();
-                    face_db.faces.push(faces::FaceEmbedding {
-                        person_id,
-                        person_name,
-                        embedding,
-                        source_video: source_video.clone(),
-                        timestamp_ms,
-                        confidence,
-                    });
+                    if let Err(err) = &detection {
+                        append_process_job_log(job_id, format!("face detector error on '{}': {}", video_path.display(), err));
+                    }
                 }
+
+                (idx, video_path.clone(), detection)
+            })
+            .collect::<Vec<_>>()
+    });
+
+    if let Some(job_id) = &job_id {
+        if is_process_abort_requested(Some(job_id)) {
+            update_process_job(job_id, |job| {
+                job.status = ProcessJobStatus::Aborted;
+                job.finished_at = Some(now_string());
+            });
+            return Err("Face scanning aborted".to_string());
+        }
+    }
+
+    let mut ordered_results = scan_results;
+    ordered_results.sort_by_key(|(idx, _, _)| *idx);
+
+    for (_, _video_path, detection) in &ordered_results {
+        if let Err(err) = detection {
+            return Err(err.clone());
+        }
+    }
+
+    let unique_people: usize;
+
+    let mut total_faces = 0usize;
+
+    for (_, video_path, detection) in ordered_results {
+        let face_results = detection?;
+        total_faces += face_results.len();
+        let source_video = video_path.to_string_lossy().to_string();
+
+        for (_person_id, embedding, timestamp_ms, confidence) in face_results {
+            if embedding.is_empty() {
+                continue;
             }
-            Err(err) => {
-                if let Some(job_id) = &job_id {
-                    append_process_job_log(job_id, format!("face detector error on '{}': {}", video_path.display(), err));
-                }
-                return Err(format!("Face detection failed for '{}': {}", video_path.display(), err));
-            }
+
+            let person_id = faces::assign_person_id(&face_db, &embedding, similarity_threshold);
+            let person_name = person_id.clone();
+            face_db.faces.push(faces::FaceEmbedding {
+                person_id,
+                person_name,
+                embedding,
+                source_video: source_video.clone(),
+                timestamp_ms,
+                confidence,
+            });
         }
     }
 
@@ -2993,11 +3331,33 @@ fn run_scan_faces_task(
     unique_people = face_db.get_people().len();
 
     if let Some(job_id) = &job_id {
+        if let Ok(mut workers) = worker_progress.lock() {
+            for worker in workers.values_mut() {
+                worker.state = "idle".to_string();
+                worker.current_video = None;
+                worker.last_update_at = now_string();
+            }
+        }
+
+        let final_worker_snapshot = worker_progress
+            .lock()
+            .ok()
+            .map(|workers| {
+                let mut out: Vec<FaceScanWorkerProgress> = workers.values().cloned().collect();
+                out.sort_by_key(|w| w.worker_id);
+                out
+            })
+            .unwrap_or_default();
+
         update_process_job(job_id, |job| {
             job.status = ProcessJobStatus::Completed;
             job.finished_at = Some(now_string());
             job.current_file = "Done".to_string();
             job.current_phase = Some("Scan complete".to_string());
+            job.face_frames_scanned = Some(sampled_frames_done.load(Ordering::Relaxed));
+            job.face_frames_total_estimate = Some(sampled_frames_total.load(Ordering::Relaxed));
+            job.face_videos_in_flight = Some(0);
+            job.face_worker_progress = Some(final_worker_snapshot);
             job.videos_scanned = Some(total_videos);
             job.faces_detected = Some(total_faces);
             job.unique_people = Some(unique_people);

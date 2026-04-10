@@ -44,6 +44,8 @@ src-tauri/src/
 
 MP4 stabilization requires an FFmpeg build with the `vidstabdetect` and `vidstabtransform` filters. Running [run.ps1](run.ps1) now bootstraps a repo-local Windows GPL build into `tools/ffmpeg/bin/ffmpeg.exe` and exports `PHOTOGOGO_FFMPEG` automatically. If the detected build also exposes `h264_nvenc`, PhotoGoGo will use NVIDIA H.264 encoding for stabilized outputs.
 
+Face recognition can be packaged without requiring end users to install Python. The production build can pull a prebuilt face bundle (Python runtime + wheelhouse) from a local zip path or URL.
+
 ```bash
 # Install dependencies
 npm install
@@ -53,6 +55,14 @@ npm run tauri dev
 
 # Build for production
 npm run tauri build
+
+# Build release with bundled face runtime (no manual Python install for end users)
+# Option A: set once in your shell/session
+$env:PHOTOGOGO_FACE_BUNDLE_SOURCE = "https://your-host/face-scan-bundle-win64.zip"
+npm run release
+
+# Option B: place src-tauri/resources/face-scan-bundle.zip, then run
+npm run release
 ```
 
 ## Code Quality

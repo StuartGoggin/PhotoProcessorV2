@@ -12,6 +12,7 @@ pub struct Settings {
     pub archive_dir: String,
     pub stabilize_max_parallel_jobs: usize,
     pub stabilize_ffmpeg_threads_per_job: usize,
+    pub face_scan_parallel_jobs: usize,
 }
 
 impl Default for Settings {
@@ -22,6 +23,7 @@ impl Default for Settings {
             archive_dir: String::new(),
             stabilize_max_parallel_jobs: 0,
             stabilize_ffmpeg_threads_per_job: 0,
+            face_scan_parallel_jobs: 0,
         }
     }
 }

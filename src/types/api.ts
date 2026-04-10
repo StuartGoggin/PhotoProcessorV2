@@ -9,6 +9,7 @@ export interface Settings {
   archive_dir: string;
   stabilize_max_parallel_jobs: number;
   stabilize_ffmpeg_threads_per_job: number;
+  face_scan_parallel_jobs: number;
 }
 
 export interface ImportProgress {
@@ -198,6 +199,10 @@ export interface ProcessJob {
   stabilizeFfmpegThreadsPerJobUsed?: number;
   framesPerSecond?: number;
   similarityThreshold?: number;
+  faceFramesScanned?: number;
+  faceFramesTotalEstimate?: number;
+  faceVideosInFlight?: number;
+  faceWorkerProgress?: FaceScanWorkerProgress[];
   videosScanned?: number;
   facesDetected?: number;
   uniquePeople?: number;
@@ -208,6 +213,18 @@ export interface ProcessJob {
   statusLine: string;  // Single-line status that updates in-place
   pauseRequested: boolean;
   abortRequested: boolean;
+}
+
+export interface FaceScanWorkerProgress {
+  workerId: number;
+  state: string;
+  currentVideo?: string;
+  sampledDone: number;
+  sampledTotal: number;
+  videosCompleted: number;
+  facesDetected: number;
+  lastUpdateAt: string;
+  error?: string;
 }
 
 export interface TransferProgress {

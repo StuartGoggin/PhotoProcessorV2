@@ -38,6 +38,7 @@ export default function SettingsPage() {
     archive_dir: "",
     stabilize_max_parallel_jobs: 0,
     stabilize_ffmpeg_threads_per_job: 0,
+    face_scan_parallel_jobs: 0,
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +52,7 @@ export default function SettingsPage() {
           archive_dir: loaded.archive_dir ?? "",
           stabilize_max_parallel_jobs: loaded.stabilize_max_parallel_jobs ?? 0,
           stabilize_ffmpeg_threads_per_job: loaded.stabilize_ffmpeg_threads_per_job ?? 0,
+          face_scan_parallel_jobs: loaded.face_scan_parallel_jobs ?? 0,
         })
       )
       .catch((e) => setError(String(e)));
@@ -189,6 +191,69 @@ export default function SettingsPage() {
               }
             >
               Balanced
+            </button>
+          </div>
+        </div>
+
+        <div className="card space-y-4">
+          <div>
+            <h3 className="text-sm font-medium text-white">Face Scan Performance</h3>
+            <p className="text-xs text-gray-500 mt-1">
+              Number of videos to scan in parallel. Higher values can be much faster but use more RAM and CPU.
+            </p>
+          </div>
+
+          <label className="block max-w-xs">
+            <span className="text-sm text-gray-300">Parallel Face Scan Workers</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              className="input-field mt-1"
+              value={settings.face_scan_parallel_jobs}
+              onChange={(e) =>
+                setSettings((s) => ({
+                  ...s,
+                  face_scan_parallel_jobs: parseNonNegativeInt(e.target.value),
+                }))
+              }
+            />
+            <span className="text-xs text-gray-500">0 = Auto. Typical values: 2-4.</span>
+          </label>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  face_scan_parallel_jobs: 0,
+                }))
+              }
+            >
+              Auto (Recommended)
+            </button>
+            <button
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  face_scan_parallel_jobs: 2,
+                }))
+              }
+            >
+              Conservative
+            </button>
+            <button
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  face_scan_parallel_jobs: 4,
+                }))
+              }
+            >
+              Fast
             </button>
           </div>
         </div>

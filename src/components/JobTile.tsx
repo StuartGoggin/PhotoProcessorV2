@@ -124,6 +124,12 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
     (processJob.task === "scan_faces" || processJob.task === "search_person_videos")
       ? PROCESS_SCOPE_LABELS[processJob.scopeMode] ?? processJob.scopeMode
       : null;
+  const faceFramesLabel =
+    processJob &&
+    processJob.task === "scan_faces" &&
+    typeof processJob.faceFramesScanned === "number"
+      ? `${processJob.faceFramesScanned}/${processJob.faceFramesTotalEstimate ?? processJob.faceFramesScanned} frames`
+      : null;
   const isTransferJob = processJob?.task === "transfer";
   const transferLocalProcessedCount = processJob?.transferLocalProcessedCount ?? 0;
   const transferLocalSidecarHitsCount = processJob?.transferLocalSidecarHitsCount ?? 0;
@@ -167,6 +173,11 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
             {faceScopeLabel && (
               <div className="inline-flex items-center rounded border border-fuchsia-700 bg-fuchsia-900/30 px-2 py-0.5 text-[10px] font-medium text-fuchsia-200">
                 {faceScopeLabel}
+              </div>
+            )}
+            {faceFramesLabel && (
+              <div className="inline-flex items-center rounded border border-violet-700 bg-violet-900/30 px-2 py-0.5 text-[10px] font-medium text-violet-200">
+                {faceFramesLabel}
               </div>
             )}
           </div>
