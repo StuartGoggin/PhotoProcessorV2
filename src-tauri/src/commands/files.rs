@@ -552,3 +552,53 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
         Err("Reveal in Explorer is only implemented on Windows".to_string())
     }
 }
+
+#[tauri::command]
+pub fn open_with_default_app(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("Path does not exist: {}", target.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .status()
+            .map_err(|e| e.to_string())?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("Failed to open with default app: {}", target.display()))
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg(&path)
+            .status()
+            .map_err(|e| e.to_string())?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("Failed to open with default app: {}", target.display()))
+        }
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let status = Command::new("xdg-open")
+            .arg(&path)
+            .status()
+            .map_err(|e| e.to_string())?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("Failed to open with default app: {}", target.display()))
+        }
+    }
+}

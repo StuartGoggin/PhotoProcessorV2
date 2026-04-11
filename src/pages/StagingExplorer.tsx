@@ -1129,6 +1129,26 @@ export default function StagingExplorer() {
     }
   }
 
+  async function openFileInExternalViewer(relativePath: string) {
+    if (!stagingDir) {
+      return;
+    }
+
+    try {
+      await invoke("open_with_default_app", { path: toAbsolutePath(relativePath) });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function openSelectedPreviewExternally() {
+    if (!selectedPreviewFile) {
+      return;
+    }
+
+    await openFileInExternalViewer(selectedPreviewFile.relativePath);
+  }
+
   function selectSameGroup(relativePath: string) {
     const primaryGroupId = tagEntryByPath.get(relativePath)?.groupIds[0] ?? null;
     if (!primaryGroupId) {
@@ -2384,13 +2404,36 @@ export default function StagingExplorer() {
                 {selectedPreviewFile ? (
                   <>
                     <div className="text-xs text-gray-300 break-all">{selectedPreviewFile.relativePath}</div>
+                    <button className="btn-secondary w-full" onClick={() => void openSelectedPreviewExternally()}>
+                      Open In Default Viewer/Player
+                    </button>
                     <div className="rounded-md border border-surface-700 bg-black min-h-56 flex items-center justify-center overflow-hidden">
                       {selectedPreviewFile.isImage && previewDataUrl ? (
-                        <img src={previewDataUrl} alt={selectedPreviewFile.name} className="max-h-[320px] max-w-full object-contain" />
+                        <img
+                          src={previewDataUrl}
+                          alt={selectedPreviewFile.name}
+                          className="max-h-[320px] max-w-full object-contain cursor-zoom-in"
+                          onClick={() => void openSelectedPreviewExternally()}
+                          title="Open in default viewer"
+                        />
                       ) : selectedPreviewFile.isVideo ? (
-                        <div className="text-sm text-gray-500 p-4 text-center">Video selected. Inline video preview is not enabled yet.</div>
+                        <div className="text-sm text-gray-500 p-4 text-center">
+                          Video selected. Inline video preview is not enabled yet.
+                          <div className="mt-3">
+                            <button className="btn-secondary" onClick={() => void openSelectedPreviewExternally()}>
+                              Open Video In Player
+                            </button>
+                          </div>
+                        </div>
                       ) : (
-                        <div className="text-sm text-gray-500 p-4 text-center">No preview available for this file type.</div>
+                        <div className="text-sm text-gray-500 p-4 text-center">
+                          No preview available for this file type.
+                          <div className="mt-3">
+                            <button className="btn-secondary" onClick={() => void openSelectedPreviewExternally()}>
+                              Open File Externally
+                            </button>
+                          </div>
+                        </div>
                       )}
                     </div>
                   </>
