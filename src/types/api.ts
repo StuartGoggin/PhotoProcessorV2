@@ -285,6 +285,17 @@ export interface MetadataTagWriteResult {
   exiftoolVersion: string;
 }
 
+export interface TimelineMediaItem {
+  relativePath: string;
+  name: string;
+  kind: "image" | "video";
+  size: number;
+  timestampMs: number;
+  endTimestampMs: number;
+  durationMs: number | null;
+  timestampSource: "exif" | "ffprobe" | "filesystem";
+}
+
 // Face Recognition types
 export interface FaceEmbedding {
   personId: string;

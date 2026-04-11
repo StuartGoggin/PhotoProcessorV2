@@ -130,6 +130,8 @@
 
 .staging-explorer-grid-scope {
   min-width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 
 .staging-explorer-details-grid {
@@ -140,6 +142,160 @@
 .staging-context-menu {
   left: var(--sx-cm-x, 120px);
   top: var(--sx-cm-y, 120px);
+}
+
+.staging-timeline-shell {
+  min-width: 100%;
+}
+
+.staging-timeline-viewport {
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+.staging-timeline {
+  position: relative;
+  overflow: hidden;
+}
+
+.staging-timeline-axis {
+  position: absolute;
+  top: 28px;
+  bottom: 28px;
+  left: 50%;
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, rgb(34 211 238 / 0.85), rgb(14 165 233 / 0.2) 35%, rgb(16 185 129 / 0.3) 100%);
+  box-shadow: 0 0 24px rgb(34 211 238 / 0.28);
+}
+
+.staging-timeline-tick {
+  position: absolute;
+  left: 50%;
+  width: 100%;
+  transform: translateX(-50%);
+}
+
+.staging-timeline-tick::before {
+  content: "";
+  position: absolute;
+  left: calc(50% - 24px);
+  right: calc(50% - 24px);
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(148 163 184 / 0.35), transparent);
+}
+
+.staging-timeline-tick-label {
+  position: absolute;
+  left: calc(50% + 30px);
+  top: -9px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgb(148 163 184 / 0.7);
+}
+
+.staging-timeline-sequence {
+  position: absolute;
+  left: calc(50% - 18px);
+  width: 36px;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, rgb(14 165 233 / 0.22), rgb(16 185 129 / 0.16));
+  border: 1px solid rgb(125 211 252 / 0.16);
+}
+
+.staging-timeline-sequence-label {
+  position: absolute;
+  left: 50px;
+  top: 50%;
+  display: flex;
+  gap: 8px;
+  transform: translateY(-50%);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgb(186 230 253 / 0.82);
+}
+
+.staging-timeline-marker {
+  position: absolute;
+  left: 50%;
+  width: 12px;
+  margin-left: -6px;
+  border-radius: 9999px;
+  z-index: 2;
+}
+
+.staging-timeline-marker.is-video {
+  background: linear-gradient(180deg, rgb(103 232 249), rgb(14 165 233));
+  box-shadow: 0 0 16px rgb(34 211 238 / 0.35);
+}
+
+.staging-timeline-marker.is-image {
+  background: linear-gradient(180deg, rgb(253 230 138), rgb(245 158 11));
+  box-shadow: 0 0 14px rgb(251 191 36 / 0.35);
+}
+
+.staging-timeline-card {
+  position: absolute;
+  width: min(420px, calc(50% - 44px));
+  border-radius: 22px;
+  border: 1px solid rgb(71 85 105 / 0.75);
+  background: linear-gradient(180deg, rgb(15 23 42 / 0.94), rgb(15 23 42 / 0.88));
+  padding: 14px 16px;
+  box-shadow: 0 18px 38px rgb(2 6 23 / 0.28);
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1), border-color 180ms ease, box-shadow 180ms ease;
+  animation: staging-timeline-card-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.staging-timeline-card:hover {
+  transform: translateY(-2px) scale(1.01);
+  border-color: rgb(103 232 249 / 0.5);
+  box-shadow: 0 22px 46px rgb(2 6 23 / 0.38);
+}
+
+.staging-timeline-card.is-selected {
+  border-color: rgb(34 211 238 / 0.7);
+  box-shadow: 0 20px 48px rgb(8 145 178 / 0.28);
+}
+
+.staging-timeline-card.is-left {
+  left: 22px;
+}
+
+.staging-timeline-card.is-right {
+  right: 22px;
+}
+
+.staging-timeline-card-connector {
+  position: absolute;
+  width: 34px;
+  height: 2px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, rgb(34 211 238 / 0.8), rgb(34 211 238 / 0.1));
+}
+
+.staging-timeline-card.is-left .staging-timeline-card-connector {
+  right: -34px;
+}
+
+.staging-timeline-card.is-right .staging-timeline-card-connector {
+  left: -34px;
+  background: linear-gradient(90deg, rgb(34 211 238 / 0.1), rgb(34 211 238 / 0.8));
+}
+
+@keyframes staging-timeline-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .app-shell {
@@ -200,5 +356,41 @@
 
   .staging-explorer-pane-resizer:hover {
     background: rgb(51 65 85 / 0.7);
+  }
+}
+
+@media (max-width: 900px) {
+  .staging-timeline-axis,
+  .staging-timeline-marker,
+  .staging-timeline-sequence {
+    left: 24px;
+  }
+
+  .staging-timeline-tick::before {
+    left: 12px;
+    right: 12px;
+  }
+
+  .staging-timeline-tick-label,
+  .staging-timeline-sequence-label {
+    left: 42px;
+  }
+
+  .staging-timeline-card {
+    left: 44px;
+    right: 14px;
+    width: auto;
+  }
+
+  .staging-timeline-card.is-left,
+  .staging-timeline-card.is-right {
+    left: 44px;
+    right: 14px;
+  }
+
+  .staging-timeline-card-connector {
+    left: -24px;
+    width: 24px;
+    background: linear-gradient(90deg, rgb(34 211 238 / 0.1), rgb(34 211 238 / 0.8));
   }
 }

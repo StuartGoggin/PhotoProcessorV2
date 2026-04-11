@@ -381,6 +381,36 @@ pub fn apply_staging_tags(
     save_state(&root, &state)
 }
 
+/// Replaces the tags for a single file entirely. Passing an empty `tags` vec
+/// removes the file's tag list (but preserves any group membership).
+#[tauri::command]
+pub fn set_file_staging_tags(
+    staging_dir: String,
+    relative_path: String,
+    tags: Vec<String>,
+) -> Result<StagingTagsState, String> {
+    let root = PathBuf::from(staging_dir);
+    let mut state = load_state(&root)?;
+
+    let clean_path = relative_path
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_string();
+    let clean_tags = normalize_list(&tags);
+
+    if let Some(existing) = state.entries.iter_mut().find(|e| e.relative_path == clean_path) {
+        existing.tags = clean_tags;
+    } else if !clean_tags.is_empty() {
+        state.entries.push(StagingTagEntry {
+            relative_path: clean_path,
+            tags: clean_tags,
+            group_ids: vec![],
+        });
+    }
+
+    save_state(&root, &state)
+}
+
 #[tauri::command]
 pub fn write_staging_tags_to_metadata(
     app: AppHandle,
