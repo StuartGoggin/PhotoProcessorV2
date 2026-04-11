@@ -2,7 +2,7 @@ mod commands;
 mod utils;
 
 use commands::{
-    files::{load_staging_timeline, read_image_base64, rename_file, reveal_in_explorer},
+    files::{load_staging_timeline, prewarm_staging_timeline_cache, read_image_base64, rename_file, reveal_in_explorer},
     import::{
         abort_import_job, clear_finished_import_jobs, list_import_jobs, list_staging_tree,
         list_sd_cards, pause_import_job, resume_import_job, start_import, start_import_job,
@@ -76,6 +76,7 @@ pub fn run() {
             read_image_base64,
             reveal_in_explorer,
             load_staging_timeline,
+            prewarm_staging_timeline_cache,
             // Staging Explorer tags
             load_staging_tags,
             apply_staging_tags,

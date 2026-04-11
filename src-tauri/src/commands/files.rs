@@ -3,13 +3,39 @@
 use crate::utils::{base64_encode, rename_path_with_retry};
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use exif::{In, Tag};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
+use std::fs::Metadata;
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
+
+const TIMELINE_CACHE_VERSION: u32 = 1;
+const TIMELINE_CACHE_FILE: &str = ".photogogo.timeline-cache.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelineCacheEntry {
+    relative_path: String,
+    kind: String,
+    size: u64,
+    modified_ms: i64,
+    timestamp_ms: i64,
+    end_timestamp_ms: i64,
+    duration_ms: Option<i64>,
+    timestamp_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelineCacheFile {
+    version: u32,
+    entries: Vec<TimelineCacheEntry>,
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +62,57 @@ fn is_timeline_video(path: &std::path::Path) -> bool {
         .and_then(|ext| ext.to_str())
         .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "avi" | "mp4" | "mkv" | "mov" | "mts"))
         .unwrap_or(false)
+}
+
+fn timeline_cache_path(staging_root: &std::path::Path) -> PathBuf {
+    staging_root.join(TIMELINE_CACHE_FILE)
+}
+
+fn load_timeline_cache(staging_root: &std::path::Path) -> HashMap<String, TimelineCacheEntry> {
+    let path = timeline_cache_path(staging_root);
+    if !path.exists() {
+        return HashMap::new();
+    }
+
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(_) => return HashMap::new(),
+    };
+    let parsed = match serde_json::from_str::<TimelineCacheFile>(&raw) {
+        Ok(parsed) => parsed,
+        Err(_) => return HashMap::new(),
+    };
+    if parsed.version != TIMELINE_CACHE_VERSION {
+        return HashMap::new();
+    }
+
+    parsed
+        .entries
+        .into_iter()
+        .map(|entry| (entry.relative_path.clone(), entry))
+        .collect::<HashMap<_, _>>()
+}
+
+fn save_timeline_cache(staging_root: &std::path::Path, entries: &HashMap<String, TimelineCacheEntry>) -> Result<(), String> {
+    let path = timeline_cache_path(staging_root);
+    let mut cache_entries = entries.values().cloned().collect::<Vec<_>>();
+    cache_entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+    let payload = TimelineCacheFile {
+        version: TIMELINE_CACHE_VERSION,
+        entries: cache_entries,
+    };
+    let raw = serde_json::to_string_pretty(&payload).map_err(|error| error.to_string())?;
+    fs::write(path, raw).map_err(|error| error.to_string())
+}
+
+fn modified_ms_from_metadata(metadata: &Metadata) -> Option<i64> {
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
 }
 
 fn file_modified_ms(path: &std::path::Path) -> Option<i64> {
@@ -193,6 +270,13 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String) -> Resul
         return Ok(vec![]);
     }
 
+    let normalized_relative_dir = relative_dir
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_string();
+
+    let mut cache = load_timeline_cache(&root);
+    let mut seen_paths = HashSet::<String>::new();
     let mut items = Vec::<TimelineMediaItem>::new();
     for entry in WalkDir::new(&target).into_iter().filter_map(|entry| entry.ok()).filter(|entry| entry.file_type().is_file()) {
         let path = entry.path();
@@ -209,7 +293,29 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String) -> Resul
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let size = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        seen_paths.insert(relative_path.clone());
+
+        let Ok(metadata) = fs::metadata(path) else { continue; };
+        let size = metadata.len();
+        let modified_ms = modified_ms_from_metadata(&metadata)
+            .or_else(|| file_modified_ms(path))
+            .unwrap_or_default();
+
+        if let Some(cached) = cache.get(&relative_path) {
+            if cached.kind == kind && cached.size == size && cached.modified_ms == modified_ms {
+                items.push(TimelineMediaItem {
+                    relative_path: cached.relative_path.clone(),
+                    name: path.file_name().and_then(|value| value.to_str()).unwrap_or_default().to_string(),
+                    kind: cached.kind.clone(),
+                    size: cached.size,
+                    timestamp_ms: cached.timestamp_ms,
+                    end_timestamp_ms: cached.end_timestamp_ms,
+                    duration_ms: cached.duration_ms,
+                    timestamp_source: cached.timestamp_source.clone(),
+                });
+                continue;
+            }
+        }
 
         let (timestamp_ms, duration_ms, timestamp_source) = if kind == "video" {
             let (video_timestamp, video_duration) = probe_video_timeline_metadata(path);
@@ -239,6 +345,20 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String) -> Resul
             .map(|duration| timestamp_ms.saturating_add(duration))
             .unwrap_or(timestamp_ms);
 
+        cache.insert(
+            relative_path.clone(),
+            TimelineCacheEntry {
+                relative_path: relative_path.clone(),
+                kind: kind.to_string(),
+                size,
+                modified_ms,
+                timestamp_ms,
+                end_timestamp_ms,
+                duration_ms,
+                timestamp_source: timestamp_source.clone(),
+            },
+        );
+
         items.push(TimelineMediaItem {
             relative_path,
             name: path.file_name().and_then(|value| value.to_str()).unwrap_or_default().to_string(),
@@ -251,6 +371,24 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String) -> Resul
         });
     }
 
+    cache.retain(|relative_path, _| {
+        if normalized_relative_dir.is_empty() {
+            return seen_paths.contains(relative_path);
+        }
+
+        let in_scope = relative_path == &normalized_relative_dir
+            || relative_path
+                .strip_prefix(&format!("{}/", normalized_relative_dir))
+                .is_some();
+        if !in_scope {
+            return true;
+        }
+
+        seen_paths.contains(relative_path)
+    });
+
+    let _ = save_timeline_cache(&root, &cache);
+
     items.sort_by(|left, right| {
         left.timestamp_ms
             .cmp(&right.timestamp_ms)
@@ -258,6 +396,12 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String) -> Resul
     });
 
     Ok(items)
+}
+
+#[tauri::command]
+pub fn prewarm_staging_timeline_cache(staging_dir: String) -> Result<usize, String> {
+    let items = load_staging_timeline(staging_dir, String::new())?;
+    Ok(items.len())
 }
 
 /// Rename a file in-place, returning the new absolute path.

@@ -150,6 +150,8 @@
 
 .staging-timeline-viewport {
   min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
 }
 
@@ -320,12 +322,27 @@
 }
 
 .staging-explorer-pane-layout {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.staging-explorer-pane-left {
+  flex: 0 0 auto;
+  min-height: 180px;
+  max-height: 240px;
+}
+
+.staging-explorer-pane-center {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 @media (min-width: 1280px) {
   .staging-explorer-pane-layout {
     display: flex;
+    flex-direction: row;
     --sx-pane-left: 250px;
     --sx-pane-right: 360px;
   }

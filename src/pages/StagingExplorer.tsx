@@ -349,6 +349,7 @@ export default function StagingExplorer() {
   const [showSidecarFiles, setShowSidecarFiles] = useState(false);
   const [timelineItems, setTimelineItems] = useState<TimelineMediaItem[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineZoom, setTimelineZoom] = useState(1);
   const [timelineGapMode, setTimelineGapMode] = useState<TimelineGapMode>("auto");
   const [manualSequenceGapMs, setManualSequenceGapMs] = useState(90_000);
   const [manualSessionGapMs, setManualSessionGapMs] = useState(10 * 60_000);
@@ -375,6 +376,7 @@ export default function StagingExplorer() {
   const detailsGridScopeRef = useRef<HTMLDivElement | null>(null);
   const contextMenuLayerRef = useRef<HTMLDivElement | null>(null);
   const paneScopeRef = useRef<HTMLDivElement | null>(null);
+  const prewarmStartedForRef = useRef<string | null>(null);
 
   const stagingDir = settings?.staging_dir ?? "";
 
@@ -512,10 +514,10 @@ export default function StagingExplorer() {
     const maxMs = Math.max(...renderTimelineItems.map((item) => item.endTimestampMs));
     const spanMs = Math.max(60_000, maxMs - minMs);
     const spanMinutes = spanMs / 60_000;
-    const pxPerMinute = clamp(1100 / Math.max(spanMinutes, 45), 10, 24);
-    const height = Math.max(820, spanMinutes * pxPerMinute + 140);
+    const pxPerMinute = clamp((1100 / Math.max(spanMinutes, 45)) * timelineZoom, 8, 64);
+    const baseHeight = Math.max(820, spanMinutes * pxPerMinute + 140);
     const topPadding = 60;
-    const pxPerMs = (height - topPadding * 2) / spanMs;
+    const pxPerMs = (baseHeight - topPadding * 2) / spanMs;
 
     const laneBottoms: [number, number] = [topPadding, topPadding];
     const items: TimelineLayoutItem[] = [];
@@ -541,6 +543,9 @@ export default function StagingExplorer() {
       });
     }
 
+    const packedBottom = Math.max(laneBottoms[0], laneBottoms[1]) + 56;
+    const height = Math.max(baseHeight, packedBottom);
+
     const tickIntervalMinutes = spanMinutes <= 30 ? 5 : spanMinutes <= 120 ? 10 : 15;
     const tickIntervalMs = tickIntervalMinutes * 60_000;
     const tickStartMs = Math.floor(minMs / tickIntervalMs) * tickIntervalMs;
@@ -553,7 +558,7 @@ export default function StagingExplorer() {
     }
 
     return { minMs, maxMs, height, topPadding, items, ticks, pxPerMs };
-  }, [timelineSequences, renderTimelineItems]);
+  }, [timelineSequences, renderTimelineItems, timelineZoom]);
 
   const selectedPreviewFile = useMemo(() => {
     const fromFiles = files.find((file) => file.relativePath === selectedPreviewPath);
@@ -644,6 +649,7 @@ export default function StagingExplorer() {
         rightPaneWidth?: number;
         showSidecarFiles?: boolean;
         timelineGapMode?: TimelineGapMode;
+        timelineZoom?: number;
         manualSequenceGapMs?: number;
         manualSessionGapMs?: number;
         forcedSequenceBreaks?: string[];
@@ -690,6 +696,9 @@ export default function StagingExplorer() {
       if (parsed.timelineGapMode === "auto" || parsed.timelineGapMode === "manual") {
         setTimelineGapMode(parsed.timelineGapMode);
       }
+      if (typeof parsed.timelineZoom === "number") {
+        setTimelineZoom(clamp(parsed.timelineZoom, 0.5, 2.5));
+      }
       if (typeof parsed.manualSequenceGapMs === "number") {
         setManualSequenceGapMs(parsed.manualSequenceGapMs);
       }
@@ -725,6 +734,7 @@ export default function StagingExplorer() {
       rightPaneWidth,
       showSidecarFiles,
       timelineGapMode,
+      timelineZoom,
       manualSequenceGapMs,
       manualSessionGapMs,
       forcedSequenceBreaks,
@@ -736,7 +746,7 @@ export default function StagingExplorer() {
       window.localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify(payload));
     } catch {
     }
-  }, [searchQuery, sortColumn, sortDirection, density, viewMode, showDetailsPane, columnWidths, leftPaneWidth, rightPaneWidth, showSidecarFiles, timelineGapMode, manualSequenceGapMs, manualSessionGapMs, forcedSequenceBreaks, suppressedSequenceBreaks, collapsedSessionIds, sessionLabels]);
+  }, [searchQuery, sortColumn, sortDirection, density, viewMode, showDetailsPane, columnWidths, leftPaneWidth, rightPaneWidth, showSidecarFiles, timelineGapMode, timelineZoom, manualSequenceGapMs, manualSessionGapMs, forcedSequenceBreaks, suppressedSequenceBreaks, collapsedSessionIds, sessionLabels]);
 
   useEffect(() => {
     if (!stagingDir || !selectedDay?.relativePath) {
@@ -772,6 +782,24 @@ export default function StagingExplorer() {
       cancelled = true;
     };
   }, [stagingDir, selectedDay?.relativePath]);
+
+  useEffect(() => {
+    if (!stagingDir || directories.length === 0) {
+      return;
+    }
+
+    if (prewarmStartedForRef.current === stagingDir) {
+      return;
+    }
+    prewarmStartedForRef.current = stagingDir;
+
+    const timer = window.setTimeout(() => {
+      void invoke<number>("prewarm_staging_timeline_cache", { stagingDir }).catch(() => {
+      });
+    }, 1400);
+
+    return () => window.clearTimeout(timer);
+  }, [stagingDir, directories.length]);
 
   useEffect(() => {
     if (!contextMenuLayerRef.current) {
@@ -1243,6 +1271,14 @@ export default function StagingExplorer() {
     setCollapsedSessionIds([]);
   }
 
+  function setZoomLevel(nextZoom: number) {
+    setTimelineZoom(clamp(nextZoom, 0.5, 2.5));
+  }
+
+  function nudgeZoom(delta: number) {
+    setTimelineZoom((current) => clamp(current + delta, 0.5, 2.5));
+  }
+
   function onHeaderClick(column: SortColumn) {
     if (sortColumn === column) {
       setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
@@ -1522,7 +1558,7 @@ export default function StagingExplorer() {
             aria-orientation="vertical"
           />
 
-          <section className="staging-explorer-pane-center min-h-0 flex flex-col overflow-x-auto">
+          <section className="staging-explorer-pane-center min-h-0 flex flex-col overflow-hidden">
             <div className="staging-explorer-grid-scope h-full min-h-0 flex flex-col">
               <div className={`flex-1 min-h-0 ${viewMode === "timeline" ? "overflow-hidden" : "overflow-auto"}`}>
                 {viewMode === "list" ? (
@@ -1608,7 +1644,19 @@ export default function StagingExplorer() {
                 ) : !timelineLayout || visibleTimelineItems.length === 0 ? (
                   <div className="p-6 text-sm text-gray-500">No photos or videos were found for the current day.</div>
                 ) : (
-                  <div className="staging-timeline-viewport h-full overflow-auto px-2 py-2">
+                  <div
+                    className="staging-timeline-viewport h-full overflow-auto px-2 py-2"
+                    onWheel={(event) => {
+                      if (!event.ctrlKey) {
+                        return;
+                      }
+
+                      event.preventDefault();
+                      const delta = event.deltaY < 0 ? 0.08 : -0.08;
+                      nudgeZoom(delta);
+                    }}
+                    title="Scroll to move timeline. Use Ctrl + Mouse Wheel to zoom."
+                  >
                   <div className="staging-timeline-shell px-4 py-5">
                     {timelineDynamicCss && <style>{timelineDynamicCss}</style>}
                     <div className="mb-4 rounded-2xl border border-surface-700 bg-surface-850/75 p-4">
@@ -1659,7 +1707,24 @@ export default function StagingExplorer() {
                         <div className="text-xs text-gray-500">
                           Auto suggests {Math.round(suggestedThresholds.sequenceGapMs / 1000)}s and {Math.round(suggestedThresholds.sessionGapMs / 60_000)}m
                         </div>
-                        <button className="btn-secondary px-3 py-1.5 text-xs ml-auto" onClick={resetTimelineOverrides} type="button">
+                        <div className="ml-auto flex items-center gap-2">
+                          <span className="text-xs text-gray-400">Zoom</span>
+                          <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => nudgeZoom(-0.1)}>-</button>
+                          <input
+                            className="w-28"
+                            type="range"
+                            min={0.5}
+                            max={2.5}
+                            step={0.05}
+                            value={timelineZoom}
+                            onChange={(event) => setZoomLevel(Number(event.target.value))}
+                            title="Timeline zoom"
+                          />
+                          <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => nudgeZoom(0.1)}>+</button>
+                          <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => setZoomLevel(1)}>100%</button>
+                          <span className="text-xs text-gray-300 w-12 text-right">{Math.round(timelineZoom * 100)}%</span>
+                        </div>
+                        <button className="btn-secondary px-3 py-1.5 text-xs" onClick={resetTimelineOverrides} type="button">
                           Reset Overrides
                         </button>
                       </div>
