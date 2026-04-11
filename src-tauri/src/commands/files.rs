@@ -3,12 +3,15 @@
 use crate::utils::{base64_encode, rename_path_with_retry};
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use exif::{In, Tag};
+use image::codecs::jpeg::JpegEncoder;
+use image::ImageReader;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::fs::Metadata;
 use std::io::BufReader;
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::UNIX_EPOCH;
@@ -183,6 +186,72 @@ fn ffprobe_candidates() -> Vec<PathBuf> {
 
     candidates.push(PathBuf::from("ffprobe"));
     candidates
+}
+
+fn ffmpeg_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(path) = std::env::var_os("PHOTOGOGO_FFMPEG") {
+        candidates.push(PathBuf::from(path));
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            candidates.push(parent.join("ffmpeg.exe"));
+            candidates.push(parent.join("tools").join("ffmpeg").join("bin").join("ffmpeg.exe"));
+        }
+    }
+
+    candidates.push(PathBuf::from("ffmpeg"));
+    candidates
+}
+
+fn render_video_thumbnail(path: &std::path::Path, max_width: u32, max_height: u32) -> Result<Vec<u8>, String> {
+    let mut last_error = String::new();
+
+    for ffmpeg_binary in ffmpeg_candidates() {
+        let scale_filter = format!("scale={}:{}:force_original_aspect_ratio=decrease", max_width, max_height);
+        let output = Command::new(&ffmpeg_binary)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                "00:00:01",
+                "-i",
+            ])
+            .arg(path)
+            .args([
+                "-frames:v",
+                "1",
+                "-vf",
+                &scale_filter,
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "-q:v",
+                "5",
+                "-",
+            ])
+            .output();
+
+        let Ok(output) = output else { continue; };
+        if output.status.success() && !output.stdout.is_empty() {
+            return Ok(output.stdout);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            last_error = stderr;
+        }
+    }
+
+    if last_error.is_empty() {
+        Err("Unable to extract video thumbnail with ffmpeg".to_string())
+    } else {
+        Err(last_error)
+    }
 }
 
 fn parse_ffprobe_creation_time(value: &str) -> Option<i64> {
@@ -418,6 +487,35 @@ pub async fn rename_file(old_path: String, new_name: String) -> Result<String, S
 #[tauri::command]
 pub fn read_image_base64(path: String) -> Result<String, String> {
     let data = fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(base64_encode(&data))
+}
+
+#[tauri::command]
+pub fn read_image_thumbnail_base64(path: String, max_width: Option<u32>, max_height: Option<u32>, quality: Option<u8>) -> Result<String, String> {
+    let width = max_width.unwrap_or(220).clamp(32, 1200);
+    let height = max_height.unwrap_or(160).clamp(32, 1200);
+    let jpeg_quality = quality.unwrap_or(72).clamp(25, 95);
+
+    let decoded = ImageReader::open(&path)
+        .map_err(|error| error.to_string())?
+        .decode()
+        .map_err(|error| error.to_string())?;
+    let thumbnail = decoded.thumbnail(width, height);
+
+    let mut encoded = Cursor::new(Vec::<u8>::new());
+    let mut encoder = JpegEncoder::new_with_quality(&mut encoded, jpeg_quality);
+    encoder
+        .encode_image(&thumbnail)
+        .map_err(|error| error.to_string())?;
+    Ok(base64_encode(encoded.get_ref()))
+}
+
+#[tauri::command]
+pub fn read_video_thumbnail_base64(path: String, max_width: Option<u32>, max_height: Option<u32>) -> Result<String, String> {
+    let width = max_width.unwrap_or(220).clamp(32, 1200);
+    let height = max_height.unwrap_or(160).clamp(32, 1200);
+
+    let data = render_video_thumbnail(std::path::Path::new(&path), width, height)?;
     Ok(base64_encode(&data))
 }
 

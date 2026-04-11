@@ -66,6 +66,14 @@ type TimelineSession = {
 
 type TimelineGapMode = "auto" | "manual";
 
+type TimelineHoverPreview = {
+  relativePath: string;
+  name: string;
+  kind: "image" | "video";
+  x: number;
+  y: number;
+};
+
 const VIEW_PREFS_KEY = "photogogo.stagingExplorer.viewPrefs.v1";
 
 function normalizeTagList(tags: string[]): string[] {
@@ -350,6 +358,9 @@ export default function StagingExplorer() {
   const [timelineItems, setTimelineItems] = useState<TimelineMediaItem[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
+  const [preloadVisibleThumbs, setPreloadVisibleThumbs] = useState(true);
+  const [timelineThumbByPath, setTimelineThumbByPath] = useState<Record<string, string>>({});
+  const [timelineHoverPreview, setTimelineHoverPreview] = useState<TimelineHoverPreview | null>(null);
   const [timelineGapMode, setTimelineGapMode] = useState<TimelineGapMode>("auto");
   const [manualSequenceGapMs, setManualSequenceGapMs] = useState(90_000);
   const [manualSessionGapMs, setManualSessionGapMs] = useState(10 * 60_000);
@@ -376,7 +387,14 @@ export default function StagingExplorer() {
   const detailsGridScopeRef = useRef<HTMLDivElement | null>(null);
   const contextMenuLayerRef = useRef<HTMLDivElement | null>(null);
   const paneScopeRef = useRef<HTMLDivElement | null>(null);
+  const timelineViewportRef = useRef<HTMLDivElement | null>(null);
   const prewarmStartedForRef = useRef<string | null>(null);
+  const loadingTimelineThumbsRef = useRef(new Set<string>());
+  const queuedTimelineThumbsRef = useRef(new Set<string>());
+  const timelineThumbQueueRef = useRef<Array<{ relativePath: string; kind: "image" | "video"; priority: number; order: number }>>([]);
+  const timelineThumbQueueOrderRef = useRef(0);
+  const timelineThumbWorkersRef = useRef(0);
+  const timelineThumbPreloadRafRef = useRef<number | null>(null);
 
   const stagingDir = settings?.staging_dir ?? "";
 
@@ -650,6 +668,7 @@ export default function StagingExplorer() {
         showSidecarFiles?: boolean;
         timelineGapMode?: TimelineGapMode;
         timelineZoom?: number;
+        preloadVisibleThumbs?: boolean;
         manualSequenceGapMs?: number;
         manualSessionGapMs?: number;
         forcedSequenceBreaks?: string[];
@@ -699,6 +718,9 @@ export default function StagingExplorer() {
       if (typeof parsed.timelineZoom === "number") {
         setTimelineZoom(clamp(parsed.timelineZoom, 0.5, 2.5));
       }
+      if (typeof parsed.preloadVisibleThumbs === "boolean") {
+        setPreloadVisibleThumbs(parsed.preloadVisibleThumbs);
+      }
       if (typeof parsed.manualSequenceGapMs === "number") {
         setManualSequenceGapMs(parsed.manualSequenceGapMs);
       }
@@ -735,6 +757,7 @@ export default function StagingExplorer() {
       showSidecarFiles,
       timelineGapMode,
       timelineZoom,
+      preloadVisibleThumbs,
       manualSequenceGapMs,
       manualSessionGapMs,
       forcedSequenceBreaks,
@@ -746,7 +769,7 @@ export default function StagingExplorer() {
       window.localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify(payload));
     } catch {
     }
-  }, [searchQuery, sortColumn, sortDirection, density, viewMode, showDetailsPane, columnWidths, leftPaneWidth, rightPaneWidth, showSidecarFiles, timelineGapMode, timelineZoom, manualSequenceGapMs, manualSessionGapMs, forcedSequenceBreaks, suppressedSequenceBreaks, collapsedSessionIds, sessionLabels]);
+  }, [searchQuery, sortColumn, sortDirection, density, viewMode, showDetailsPane, columnWidths, leftPaneWidth, rightPaneWidth, showSidecarFiles, timelineGapMode, timelineZoom, preloadVisibleThumbs, manualSequenceGapMs, manualSessionGapMs, forcedSequenceBreaks, suppressedSequenceBreaks, collapsedSessionIds, sessionLabels]);
 
   useEffect(() => {
     if (!stagingDir || !selectedDay?.relativePath) {
@@ -782,6 +805,27 @@ export default function StagingExplorer() {
       cancelled = true;
     };
   }, [stagingDir, selectedDay?.relativePath]);
+
+  useEffect(() => {
+    setTimelineThumbByPath({});
+    setTimelineHoverPreview(null);
+    loadingTimelineThumbsRef.current.clear();
+    queuedTimelineThumbsRef.current.clear();
+    timelineThumbQueueRef.current = [];
+    timelineThumbQueueOrderRef.current = 0;
+    timelineThumbWorkersRef.current = 0;
+  }, [selectedDayPath]);
+
+  useEffect(() => {
+    schedulePreloadVisibleTimelineThumbs();
+  }, [timelineLayout, viewMode, preloadVisibleThumbs, timelineZoom]);
+
+  useEffect(() => () => {
+    if (timelineThumbPreloadRafRef.current !== null) {
+      window.cancelAnimationFrame(timelineThumbPreloadRafRef.current);
+      timelineThumbPreloadRafRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (!stagingDir || directories.length === 0) {
@@ -1279,6 +1323,106 @@ export default function StagingExplorer() {
     setTimelineZoom((current) => clamp(current + delta, 0.5, 2.5));
   }
 
+  function processTimelineThumbQueue() {
+    const maxWorkers = 3;
+
+    while (timelineThumbWorkersRef.current < maxWorkers && timelineThumbQueueRef.current.length > 0) {
+      const next = timelineThumbQueueRef.current.shift();
+      if (!next || !stagingDir) {
+        continue;
+      }
+
+      queuedTimelineThumbsRef.current.delete(next.relativePath);
+      if (timelineThumbByPath[next.relativePath] || loadingTimelineThumbsRef.current.has(next.relativePath)) {
+        continue;
+      }
+
+      timelineThumbWorkersRef.current += 1;
+      loadingTimelineThumbsRef.current.add(next.relativePath);
+
+      const path = toAbsolutePath(next.relativePath);
+      const command = next.kind === "video" ? "read_video_thumbnail_base64" : "read_image_thumbnail_base64";
+      const payload = next.kind === "video"
+        ? { path, maxWidth: 220, maxHeight: 140 }
+        : { path, maxWidth: 220, maxHeight: 140, quality: 68 };
+
+      void invoke<string>(command, payload)
+        .then((base64) => {
+          setTimelineThumbByPath((current) => ({
+            ...current,
+            [next.relativePath]: `data:image/jpeg;base64,${base64}`,
+          }));
+        })
+        .catch(() => {
+        })
+        .finally(() => {
+          loadingTimelineThumbsRef.current.delete(next.relativePath);
+          timelineThumbWorkersRef.current = Math.max(0, timelineThumbWorkersRef.current - 1);
+          processTimelineThumbQueue();
+        });
+    }
+  }
+
+  function enqueueTimelineThumb(relativePath: string, kind: "image" | "video", priority = 1) {
+    if (!stagingDir || timelineThumbByPath[relativePath] || loadingTimelineThumbsRef.current.has(relativePath) || queuedTimelineThumbsRef.current.has(relativePath)) {
+      return;
+    }
+
+    queuedTimelineThumbsRef.current.add(relativePath);
+    timelineThumbQueueRef.current.push({
+      relativePath,
+      kind,
+      priority,
+      order: timelineThumbQueueOrderRef.current,
+    });
+    timelineThumbQueueOrderRef.current += 1;
+    timelineThumbQueueRef.current.sort((left, right) => {
+      if (left.priority !== right.priority) {
+        return right.priority - left.priority;
+      }
+      return left.order - right.order;
+    });
+
+    processTimelineThumbQueue();
+  }
+
+  function preloadVisibleTimelineThumbs() {
+    if (!preloadVisibleThumbs || viewMode !== "timeline" || !timelineLayout || !timelineViewportRef.current) {
+      return;
+    }
+
+    const viewport = timelineViewportRef.current;
+    const viewportTop = viewport.scrollTop;
+    const viewportBottom = viewportTop + viewport.clientHeight;
+    const buffer = 320;
+
+    for (const layoutItem of timelineLayout.items) {
+      const cardTop = layoutItem.cardTop;
+      const cardBottom = layoutItem.cardTop + (layoutItem.item.kind === "video" ? 96 : 76);
+      if (cardBottom < viewportTop - buffer || cardTop > viewportBottom + buffer) {
+        continue;
+      }
+
+      const kind = layoutItem.item.kind as "image" | "video";
+      // Bias toward still images during passive prefetch, then videos.
+      enqueueTimelineThumb(layoutItem.item.relativePath, kind, kind === "image" ? 2 : 1);
+    }
+  }
+
+  function schedulePreloadVisibleTimelineThumbs() {
+    if (timelineThumbPreloadRafRef.current !== null) {
+      window.cancelAnimationFrame(timelineThumbPreloadRafRef.current);
+    }
+    timelineThumbPreloadRafRef.current = window.requestAnimationFrame(() => {
+      timelineThumbPreloadRafRef.current = null;
+      preloadVisibleTimelineThumbs();
+    });
+  }
+
+  function loadTimelineThumb(relativePath: string, kind: "image" | "video", priority = 3) {
+    enqueueTimelineThumb(relativePath, kind, priority);
+  }
+
   function onHeaderClick(column: SortColumn) {
     if (sortColumn === column) {
       setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
@@ -1426,6 +1570,16 @@ export default function StagingExplorer() {
     });
     return rules.join("\n");
   }, [timelineLayout, timelineSequences]);
+
+  const timelineHoverPreviewCss = useMemo(() => {
+    if (!timelineHoverPreview) {
+      return "";
+    }
+
+    const x = Math.min(window.innerWidth - 340, timelineHoverPreview.x + 18);
+    const y = Math.min(window.innerHeight - 260, timelineHoverPreview.y + 18);
+    return `.staging-timeline-hover-preview{left:${x}px;top:${y}px;}`;
+  }, [timelineHoverPreview]);
 
   return (
     <div className="p-4 h-full">
@@ -1646,6 +1800,8 @@ export default function StagingExplorer() {
                 ) : (
                   <div
                     className="staging-timeline-viewport h-full overflow-auto px-2 py-2"
+                    ref={timelineViewportRef}
+                    onScroll={() => schedulePreloadVisibleTimelineThumbs()}
                     onWheel={(event) => {
                       if (!event.ctrlKey) {
                         return;
@@ -1724,6 +1880,15 @@ export default function StagingExplorer() {
                           <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => setZoomLevel(1)}>100%</button>
                           <span className="text-xs text-gray-300 w-12 text-right">{Math.round(timelineZoom * 100)}%</span>
                         </div>
+                        <label className="flex items-center gap-2 text-xs text-gray-300">
+                          <input
+                            type="checkbox"
+                            checked={preloadVisibleThumbs}
+                            onChange={(event) => setPreloadVisibleThumbs(event.target.checked)}
+                            className="h-4 w-4"
+                          />
+                          Preload visible thumbs
+                        </label>
                         <button className="btn-secondary px-3 py-1.5 text-xs" onClick={resetTimelineOverrides} type="button">
                           Reset Overrides
                         </button>
@@ -1834,12 +1999,32 @@ export default function StagingExplorer() {
                         const selectedPreview = selectedPreviewPath === layoutItem.item.relativePath;
                         const primaryGroupId = entry?.groupIds[0] ?? null;
                         const groupLabel = primaryGroupId ? (groupLabelById.get(primaryGroupId) ?? primaryGroupId) : null;
+                        const kind = layoutItem.item.kind as "image" | "video";
+                        const thumbSrc = timelineThumbByPath[layoutItem.item.relativePath] ?? null;
 
                         return (
                           <div key={layoutItem.item.relativePath}>
                             <div className={`staging-timeline-marker timeline-marker-${index} ${layoutItem.item.kind === "video" ? "is-video" : "is-image"}`} />
                             <div
                               className={`staging-timeline-card timeline-card-${index} ${selectedPreview ? "is-selected" : ""} ${layoutItem.lane === 0 ? "is-left" : "is-right"}`}
+                              onMouseEnter={(event) => {
+                                loadTimelineThumb(layoutItem.item.relativePath, kind, 4);
+                                setTimelineHoverPreview({
+                                  relativePath: layoutItem.item.relativePath,
+                                  name: layoutItem.item.name,
+                                  kind,
+                                  x: event.clientX,
+                                  y: event.clientY,
+                                });
+                              }}
+                              onMouseMove={(event) => {
+                                setTimelineHoverPreview((current) => current && current.relativePath === layoutItem.item.relativePath
+                                  ? { ...current, x: event.clientX, y: event.clientY }
+                                  : current);
+                              }}
+                              onMouseLeave={() => {
+                                setTimelineHoverPreview((current) => current && current.relativePath === layoutItem.item.relativePath ? null : current);
+                              }}
                               onContextMenu={(event) => {
                                 event.preventDefault();
                                 openContextMenu(layoutItem.item.relativePath, event.clientX, event.clientY);
@@ -1860,6 +2045,22 @@ export default function StagingExplorer() {
                                   className="mt-1 h-4 w-4 shrink-0"
                                   aria-label={`Select ${layoutItem.item.name}`}
                                 />
+                                <button
+                                  type="button"
+                                  className="staging-timeline-mini-thumb"
+                                  onMouseEnter={() => loadTimelineThumb(layoutItem.item.relativePath, kind, 4)}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    onRowClick(layoutItem.item.relativePath, event);
+                                  }}
+                                  aria-label={`Preview ${layoutItem.item.name}`}
+                                >
+                                  {thumbSrc ? (
+                                    <img src={thumbSrc} alt={layoutItem.item.name} className="staging-timeline-mini-thumb-img" loading="lazy" />
+                                  ) : (
+                                    <span className="staging-timeline-mini-thumb-fallback">{kind === "video" ? "VID" : "IMG"}</span>
+                                  )}
+                                </button>
                                 <button
                                   type="button"
                                   className="min-w-0 flex-1 text-left"
@@ -1890,6 +2091,26 @@ export default function StagingExplorer() {
                         );
                       })}
                     </div>
+                    {timelineHoverPreview && (
+                      <div className="staging-timeline-hover-preview">
+                        {timelineHoverPreviewCss && <style>{timelineHoverPreviewCss}</style>}
+                        <div className="staging-timeline-hover-preview-head">
+                          <span>{timelineHoverPreview.name}</span>
+                          <span className="staging-timeline-hover-preview-kind">{timelineHoverPreview.kind}</span>
+                        </div>
+                        <div className="staging-timeline-hover-preview-body">
+                          {timelineThumbByPath[timelineHoverPreview.relativePath] ? (
+                            <img
+                              src={timelineThumbByPath[timelineHoverPreview.relativePath]}
+                              alt={timelineHoverPreview.name}
+                              className="staging-timeline-hover-preview-img"
+                            />
+                          ) : (
+                            <div className="staging-timeline-hover-preview-loading">Loading preview...</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                   </div>
                 )}
