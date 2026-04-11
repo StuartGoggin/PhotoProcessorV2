@@ -1,9 +1,11 @@
 use crate::utils::compute_md5;
+use super::settings::load_settings;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tauri::AppHandle;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -132,8 +134,31 @@ fn is_metadata_writable_extension(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn detect_exiftool_version() -> Result<String, String> {
-    let output = Command::new("exiftool")
+fn resolve_exiftool_program(exiftool_dir: &str) -> PathBuf {
+    let trimmed = exiftool_dir.trim();
+    if trimmed.is_empty() {
+        return PathBuf::from("exiftool");
+    }
+
+    let base = PathBuf::from(trimmed);
+    #[cfg(target_os = "windows")]
+    {
+        let exe = base.join("exiftool.exe");
+        if exe.exists() {
+            return exe;
+        }
+    }
+
+    let plain = base.join("exiftool");
+    if plain.exists() {
+        return plain;
+    }
+
+    PathBuf::from("exiftool")
+}
+
+fn detect_exiftool_version(exiftool_program: &Path) -> Result<String, String> {
+    let output = Command::new(exiftool_program)
         .arg("-ver")
         .output()
         .map_err(|e| format!("Failed to execute exiftool: {}", e))?;
@@ -150,8 +175,8 @@ fn detect_exiftool_version() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn write_tags_with_exiftool(path: &Path, tags: &[String]) -> Result<(), String> {
-    let mut cmd = Command::new("exiftool");
+fn write_tags_with_exiftool(exiftool_program: &Path, path: &Path, tags: &[String]) -> Result<(), String> {
+    let mut cmd = Command::new(exiftool_program);
     cmd.arg("-overwrite_original")
         .arg("-P")
         .arg("-XMP-dc:Subject=");
@@ -199,8 +224,8 @@ fn backup_file(staging_dir: &Path, absolute_path: &Path, relative_path: &str, ba
     Ok(())
 }
 
-fn read_tags_with_exiftool(path: &Path) -> Result<Vec<String>, String> {
-    let output = Command::new("exiftool")
+fn read_tags_with_exiftool(exiftool_program: &Path, path: &Path) -> Result<Vec<String>, String> {
+    let output = Command::new(exiftool_program)
         .arg("-j")
         .arg("-XMP-dc:Subject")
         .arg("-Keys:Keywords")
@@ -247,8 +272,8 @@ fn read_tags_with_exiftool(path: &Path) -> Result<Vec<String>, String> {
     Ok(normalize_list(&tags))
 }
 
-fn verify_written_tags(path: &Path, expected_tags: &[String]) -> Result<bool, String> {
-    let actual_tags = read_tags_with_exiftool(path)?;
+fn verify_written_tags(exiftool_program: &Path, path: &Path, expected_tags: &[String]) -> Result<bool, String> {
+    let actual_tags = read_tags_with_exiftool(exiftool_program, path)?;
     let actual_lookup = actual_tags
         .into_iter()
         .map(|tag| tag.to_ascii_lowercase())
@@ -358,6 +383,7 @@ pub fn apply_staging_tags(
 
 #[tauri::command]
 pub fn write_staging_tags_to_metadata(
+    app: AppHandle,
     staging_dir: String,
     relative_paths: Vec<String>,
     additional_tags: Vec<String>,
@@ -371,7 +397,11 @@ pub fn write_staging_tags_to_metadata(
         return Err(format!("Staging directory does not exist: {}", root.display()));
     }
 
-    let exiftool_version = detect_exiftool_version()?;
+    let exiftool_dir = load_settings(app)
+        .map(|settings| settings.exiftool_dir)
+        .unwrap_or_default();
+    let exiftool_program = resolve_exiftool_program(&exiftool_dir);
+    let exiftool_version = detect_exiftool_version(&exiftool_program)?;
     let state = load_state(&root)?;
     let extra_tags = normalize_list(&additional_tags);
 
@@ -437,12 +467,12 @@ pub fn write_staging_tags_to_metadata(
             backup_dir_used = true;
         }
 
-        match write_tags_with_exiftool(&absolute_path, &merged_tags) {
+        match write_tags_with_exiftool(&exiftool_program, &absolute_path, &merged_tags) {
             Ok(_) => {
                 result.updated += 1;
 
                 if verify_after_write {
-                    match verify_written_tags(&absolute_path, &merged_tags) {
+                    match verify_written_tags(&exiftool_program, &absolute_path, &merged_tags) {
                         Ok(true) => result.verified += 1,
                         Ok(false) => {
                             result.verification_failed += 1;

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Settings } from "../types";
 
-type PathSettingKey = "source_root" | "staging_dir" | "archive_dir";
+type PathSettingKey = "source_root" | "staging_dir" | "archive_dir" | "exiftool_dir";
 
 const FIELDS: { key: PathSettingKey; label: string; help: string }[] = [
   {
@@ -21,6 +21,11 @@ const FIELDS: { key: PathSettingKey; label: string; help: string }[] = [
     label: "Archive / NAS Directory",
     help: "Final destination for transfer (NAS or external drive)",
   },
+  {
+    key: "exiftool_dir",
+    label: "ExifTool Folder",
+    help: "Folder containing exiftool.exe (used for writing metadata tags)",
+  },
 ];
 
 function parseNonNegativeInt(raw: string): number {
@@ -36,6 +41,7 @@ export default function SettingsPage() {
     source_root: "",
     staging_dir: "",
     archive_dir: "",
+    exiftool_dir: "",
     stabilize_max_parallel_jobs: 0,
     stabilize_ffmpeg_threads_per_job: 0,
     face_scan_parallel_jobs: 0,
@@ -52,6 +58,7 @@ export default function SettingsPage() {
           source_root: loaded.source_root ?? "",
           staging_dir: loaded.staging_dir ?? "",
           archive_dir: loaded.archive_dir ?? "",
+          exiftool_dir: loaded.exiftool_dir ?? "",
           stabilize_max_parallel_jobs: loaded.stabilize_max_parallel_jobs ?? 0,
           stabilize_ffmpeg_threads_per_job: loaded.stabilize_ffmpeg_threads_per_job ?? 0,
           face_scan_parallel_jobs: loaded.face_scan_parallel_jobs ?? 0,

@@ -7,6 +7,7 @@ export interface Settings {
   source_root: string;
   staging_dir: string;
   archive_dir: string;
+  exiftool_dir: string;
   stabilize_max_parallel_jobs: number;
   stabilize_ffmpeg_threads_per_job: number;
   face_scan_parallel_jobs: number;
