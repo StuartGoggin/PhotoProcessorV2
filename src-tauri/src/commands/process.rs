@@ -2975,9 +2975,8 @@ fn run_scan_faces_task(
     let mut face_db = faces::FaceDatabase::load(&archive_path.join(".faces_db.json"))
         .unwrap_or_else(|_| faces::FaceDatabase::new());
 
-    let settings_parallel_jobs = load_settings(app.clone())
-        .map(|s| s.face_scan_parallel_jobs)
-        .unwrap_or(0);
+    let loaded_settings = load_settings(app.clone()).unwrap_or_default();
+    let settings_parallel_jobs = loaded_settings.face_scan_parallel_jobs;
 
     let parse_parallel_jobs = || -> (usize, &'static str) {
         if settings_parallel_jobs > 0 {
@@ -2999,48 +2998,110 @@ fn run_scan_faces_task(
     };
 
     let (requested_parallel_jobs, parallel_jobs_source) = parse_parallel_jobs();
-    let use_single_video_sharding = total_videos == 1 && requested_parallel_jobs > 1;
-    let parallel_jobs = if use_single_video_sharding {
-        requested_parallel_jobs.max(1)
+    let parallel_jobs = requested_parallel_jobs.max(1);
+
+    let mb: u64 = 1024 * 1024;
+    let min_shard_mb = if loaded_settings.face_scan_min_shard_mb > 0 {
+        loaded_settings.face_scan_min_shard_mb
     } else {
-        requested_parallel_jobs.min(total_videos.max(1))
+        parse_positive_env_usize("PHOTOGOGO_FACE_SCAN_MIN_SHARD_MB").unwrap_or(250)
     };
+    let target_shard_mb = if loaded_settings.face_scan_target_shard_mb > 0 {
+        loaded_settings.face_scan_target_shard_mb
+    } else {
+        parse_positive_env_usize("PHOTOGOGO_FACE_SCAN_TARGET_SHARD_MB").unwrap_or(450)
+    }
+    .max(min_shard_mb);
+
+    let video_plans: Vec<(usize, PathBuf, usize, usize)> = videos
+        .iter()
+        .enumerate()
+        .map(|(video_idx, video_path)| {
+            let file_size_mb = fs::metadata(video_path)
+                .ok()
+                .map(|m| ((m.len() + (mb - 1)) / mb) as usize)
+                .unwrap_or(0);
+
+            let shard_count = if parallel_jobs <= 1 {
+                1
+            } else if file_size_mb < min_shard_mb {
+                1
+            } else {
+                let estimated = (file_size_mb + target_shard_mb - 1) / target_shard_mb;
+                estimated.max(2).min(parallel_jobs)
+            };
+
+            (video_idx, video_path.clone(), shard_count, file_size_mb)
+        })
+        .collect();
+
+    let use_adaptive_sharding = video_plans.iter().any(|(_, _, shard_count, _)| *shard_count > 1);
+
+    // Interleave shards across videos so a single large file does not monopolize startup slots.
+    let max_shards = video_plans
+        .iter()
+        .map(|(_, _, shard_count, _)| *shard_count)
+        .max()
+        .unwrap_or(1);
+    let mut scan_units: Vec<(usize, PathBuf, Option<(usize, usize)>)> = Vec::new();
+    let mut next_unit_idx = 0usize;
+    for shard_slot in 0..max_shards {
+        for (_video_idx, video_path, shard_count, _file_size_mb) in &video_plans {
+            if shard_slot < *shard_count {
+                let shard_info = if *shard_count > 1 {
+                    Some((shard_slot, *shard_count))
+                } else {
+                    None
+                };
+                scan_units.push((next_unit_idx, video_path.clone(), shard_info));
+                next_unit_idx += 1;
+            }
+        }
+    }
+
+    let progress_total_units = scan_units.len().max(1);
+    let worker_pool_size = parallel_jobs.min(progress_total_units).max(1);
 
     if let Some(job_id) = &job_id {
         append_process_job_log(
             job_id,
             format!(
-                "scan execution parallel_jobs={} requested={} source={} total_videos={} mode={}",
-                parallel_jobs,
+                "scan execution parallel_jobs={} requested={} source={} total_videos={} total_units={} mode={} min_shard_mb={} target_shard_mb={}",
+                worker_pool_size,
                 requested_parallel_jobs,
                 parallel_jobs_source,
                 total_videos,
-                if use_single_video_sharding {
-                    "single-video-sharded"
+                progress_total_units,
+                if use_adaptive_sharding {
+                    "adaptive-mixed-sharding"
                 } else {
                     "multi-video"
-                }
+                },
+                min_shard_mb,
+                target_shard_mb
             ),
         );
-    }
 
-    let progress_total_units = if use_single_video_sharding {
-        parallel_jobs
-    } else {
-        total_videos
-    };
-    let scan_units: Vec<(usize, PathBuf, Option<(usize, usize)>)> = if use_single_video_sharding {
-        let video_path = videos[0].clone();
-        (0..parallel_jobs)
-            .map(|shard_index| (shard_index, video_path.clone(), Some((shard_index, parallel_jobs))))
-            .collect()
-    } else {
-        videos
+        let sharded_summary: Vec<String> = video_plans
             .iter()
-            .enumerate()
-            .map(|(idx, video_path)| (idx, video_path.clone(), None))
-            .collect()
-    };
+            .filter(|(_, _, shard_count, _)| *shard_count > 1)
+            .map(|(_, video_path, shard_count, file_size_mb)| {
+                let rel = video_path
+                    .strip_prefix(&archive_path)
+                    .unwrap_or(video_path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                format!("{}: {} shard(s) ({} MB)", rel, shard_count, file_size_mb)
+            })
+            .collect();
+
+        if !sharded_summary.is_empty() {
+            append_process_job_log(
+                job_id,
+                format!("adaptive shard plan [{}]", sharded_summary.join(" | ")),
+            );
+        }
+    }
 
     let total_faces_counter = Arc::new(AtomicUsize::new(0));
     let processed_counter = Arc::new(AtomicUsize::new(0));
@@ -3055,7 +3116,7 @@ fn run_scan_faces_task(
     let worker_progress = Arc::new(Mutex::new(HashMap::<usize, FaceScanWorkerProgress>::new()));
 
     if let Ok(mut workers) = worker_progress.lock() {
-        for worker_id in 0..parallel_jobs {
+        for worker_id in 0..worker_pool_size {
             workers.insert(
                 worker_id,
                 FaceScanWorkerProgress {
@@ -3081,18 +3142,17 @@ fn run_scan_faces_task(
                 job.total = progress_total_units;
                 job.done = 0;
                 job.processed = 0;
-                job.current_phase = Some(if use_single_video_sharding {
-                    format!("Scanning video shards 0/{} (active 0) • frames 0/0", parallel_jobs)
-                } else {
-                    format!("Scanning videos 0/{} (active 0) • frames 0/0", total_videos)
-                });
+                job.current_phase = Some(format!(
+                    "Scanning units 0/{} (active 0) • frames 0/0",
+                    progress_total_units
+                ));
                 job.face_worker_progress = Some(snapshot);
             });
         }
     }
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(parallel_jobs)
+        .num_threads(worker_pool_size)
         .build()
         .map_err(|e| format!("Failed to configure scan worker pool: {}", e))?;
 
@@ -3112,9 +3172,7 @@ fn run_scan_faces_task(
                     return (idx, video_path.clone(), Err("Face scanning aborted".to_string()));
                 }
 
-                let worker_id = shard_info
-                    .map(|(shard_index, _)| shard_index)
-                    .unwrap_or_else(|| rayon::current_thread_index().unwrap_or(idx % parallel_jobs));
+                let worker_id = rayon::current_thread_index().unwrap_or(idx % worker_pool_size);
                 let rel_video_path = video_path
                     .strip_prefix(&archive_path)
                     .unwrap_or(video_path)
@@ -3240,25 +3298,14 @@ fn run_scan_faces_task(
                                     job.face_frames_total_estimate = Some(frames_total_now.max(frames_done_now));
                                     job.face_videos_in_flight = Some(active_now);
                                     job.face_worker_progress = Some(worker_snapshot);
-                                    job.current_phase = Some(if use_single_video_sharding {
-                                        format!(
-                                            "Scanning video shards {}/{} (active {}) • frames {}/{}",
-                                            units_done_now,
-                                            parallel_jobs,
-                                            active_now,
-                                            frames_done_now,
-                                            frames_total_now.max(frames_done_now)
-                                        )
-                                    } else {
-                                        format!(
-                                            "Scanning videos {}/{} (active {}) • frames {}/{}",
-                                            units_done_now,
-                                            total_videos,
-                                            active_now,
-                                            frames_done_now,
-                                            frames_total_now.max(frames_done_now)
-                                        )
-                                    });
+                                    job.current_phase = Some(format!(
+                                        "Scanning units {}/{} (active {}) • frames {}/{}",
+                                        units_done_now,
+                                        progress_total_units,
+                                        active_now,
+                                        frames_done_now,
+                                        frames_total_now.max(frames_done_now)
+                                    ));
                                 });
 
                                 let log_tick = log_tick_for_progress.fetch_add(1, Ordering::Relaxed) + 1;
@@ -3292,27 +3339,15 @@ fn run_scan_faces_task(
 
                                     append_process_job_log(
                                         job_id,
-                                        if use_single_video_sharding {
-                                            format!(
-                                                "frame progress shards_done={}/{} active={} frames={}/{} threads=[{}]",
-                                                units_done_now,
-                                                parallel_jobs,
-                                                active_now,
-                                                frames_done_now,
-                                                frames_total_now.max(frames_done_now),
-                                                worker_status
-                                            )
-                                        } else {
-                                            format!(
-                                                "frame progress videos_done={}/{} active={} frames={}/{} threads=[{}]",
-                                                units_done_now,
-                                                total_videos,
-                                                active_now,
-                                                frames_done_now,
-                                                frames_total_now.max(frames_done_now),
-                                                worker_status
-                                            )
-                                        },
+                                        format!(
+                                            "frame progress units_done={}/{} active={} frames={}/{} threads=[{}]",
+                                            units_done_now,
+                                            progress_total_units,
+                                            active_now,
+                                            frames_done_now,
+                                            frames_total_now.max(frames_done_now),
+                                            worker_status
+                                        ),
                                     );
                                 }
                             }
@@ -3449,47 +3484,26 @@ fn run_scan_faces_task(
                         job.face_frames_total_estimate = Some(frames_total_now.max(frames_done_now));
                         job.face_videos_in_flight = Some(active_now);
                         job.face_worker_progress = Some(worker_snapshot);
-                        job.current_phase = Some(if use_single_video_sharding {
-                            format!(
-                                "Scanning video shards {}/{} (active {}) • frames {}/{}",
-                                done,
-                                parallel_jobs,
-                                active_now,
-                                frames_done_now,
-                                frames_total_now.max(frames_done_now)
-                            )
-                        } else {
-                            format!(
-                                "Scanning videos {}/{} (active {}) • frames {}/{}",
-                                done,
-                                total_videos,
-                                active_now,
-                                frames_done_now,
-                                frames_total_now.max(frames_done_now)
-                            )
-                        });
+                        job.current_phase = Some(format!(
+                            "Scanning units {}/{} (active {}) • frames {}/{}",
+                            done,
+                            progress_total_units,
+                            active_now,
+                            frames_done_now,
+                            frames_total_now.max(frames_done_now)
+                        ));
                     });
 
                     if done == 1 || done % 25 == 0 || done == progress_total_units {
                         append_process_job_log(
                             job_id,
-                            if use_single_video_sharding {
-                                format!(
-                                    "progress {}/{} current='{}' faces_detected_so_far={}",
-                                    done,
-                                    parallel_jobs,
-                                    rel_path,
-                                    faces_so_far
-                                )
-                            } else {
-                                format!(
-                                    "progress {}/{} current='{}' faces_detected_so_far={}",
-                                    done,
-                                    total_videos,
-                                    rel_path,
-                                    faces_so_far
-                                )
-                            },
+                            format!(
+                                "progress {}/{} current='{}' faces_detected_so_far={}",
+                                done,
+                                progress_total_units,
+                                rel_path,
+                                faces_so_far
+                            ),
                         );
                     }
 

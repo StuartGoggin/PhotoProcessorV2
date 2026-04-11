@@ -21,6 +21,7 @@ use commands::{
         start_event_naming_job, start_process_job,
     },
     settings::{load_settings, save_settings},
+    staging_tags::{apply_staging_tags, load_staging_tags, write_staging_tags_to_metadata},
     tidy::collect_trash,
     transfer::{start_transfer, verify_checksums},
 };
@@ -74,6 +75,10 @@ pub fn run() {
             rename_file,
             read_image_base64,
             reveal_in_explorer,
+            // Staging Explorer tags
+            load_staging_tags,
+            apply_staging_tags,
+            write_staging_tags_to_metadata,
             // Logs
             read_log_file,
             clear_log_file,

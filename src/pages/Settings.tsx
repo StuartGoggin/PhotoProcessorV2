@@ -39,6 +39,8 @@ export default function SettingsPage() {
     stabilize_max_parallel_jobs: 0,
     stabilize_ffmpeg_threads_per_job: 0,
     face_scan_parallel_jobs: 0,
+    face_scan_min_shard_mb: 0,
+    face_scan_target_shard_mb: 0,
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +55,8 @@ export default function SettingsPage() {
           stabilize_max_parallel_jobs: loaded.stabilize_max_parallel_jobs ?? 0,
           stabilize_ffmpeg_threads_per_job: loaded.stabilize_ffmpeg_threads_per_job ?? 0,
           face_scan_parallel_jobs: loaded.face_scan_parallel_jobs ?? 0,
+          face_scan_min_shard_mb: loaded.face_scan_min_shard_mb ?? 0,
+          face_scan_target_shard_mb: loaded.face_scan_target_shard_mb ?? 0,
         })
       )
       .catch((e) => setError(String(e)));
@@ -199,27 +203,65 @@ export default function SettingsPage() {
           <div>
             <h3 className="text-sm font-medium text-white">Face Scan Performance</h3>
             <p className="text-xs text-gray-500 mt-1">
-              Number of videos to scan in parallel. Higher values can be much faster but use more RAM and CPU.
+              Tune mixed sharding behavior to keep CPU utilization high while finishing videos quickly. Set any value to <strong>0</strong> to use automatic defaults.
             </p>
           </div>
 
-          <label className="block max-w-xs">
-            <span className="text-sm text-gray-300">Parallel Face Scan Workers</span>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              className="input-field mt-1"
-              value={settings.face_scan_parallel_jobs}
-              onChange={(e) =>
-                setSettings((s) => ({
-                  ...s,
-                  face_scan_parallel_jobs: parseNonNegativeInt(e.target.value),
-                }))
-              }
-            />
-            <span className="text-xs text-gray-500">0 = Auto. Typical values: 2-4.</span>
-          </label>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="block">
+              <span className="text-sm text-gray-300">Parallel Face Scan Workers</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                className="input-field mt-1"
+                value={settings.face_scan_parallel_jobs}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    face_scan_parallel_jobs: parseNonNegativeInt(e.target.value),
+                  }))
+                }
+              />
+              <span className="text-xs text-gray-500">0 = Auto. Typical values: 2-8.</span>
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-gray-300">Min Size To Shard (MB)</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                className="input-field mt-1"
+                value={settings.face_scan_min_shard_mb}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    face_scan_min_shard_mb: parseNonNegativeInt(e.target.value),
+                  }))
+                }
+              />
+              <span className="text-xs text-gray-500">0 = Auto (default 250MB).</span>
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-gray-300">Target Shard Size (MB)</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                className="input-field mt-1"
+                value={settings.face_scan_target_shard_mb}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    face_scan_target_shard_mb: parseNonNegativeInt(e.target.value),
+                  }))
+                }
+              />
+              <span className="text-xs text-gray-500">0 = Auto (default 450MB).</span>
+            </label>
+          </div>
 
           <div className="flex flex-wrap gap-2">
             <button
@@ -228,6 +270,8 @@ export default function SettingsPage() {
                 setSettings((s) => ({
                   ...s,
                   face_scan_parallel_jobs: 0,
+                  face_scan_min_shard_mb: 0,
+                  face_scan_target_shard_mb: 0,
                 }))
               }
             >
@@ -239,6 +283,8 @@ export default function SettingsPage() {
                 setSettings((s) => ({
                   ...s,
                   face_scan_parallel_jobs: 2,
+                  face_scan_min_shard_mb: 350,
+                  face_scan_target_shard_mb: 600,
                 }))
               }
             >
@@ -250,10 +296,25 @@ export default function SettingsPage() {
                 setSettings((s) => ({
                   ...s,
                   face_scan_parallel_jobs: 4,
+                  face_scan_min_shard_mb: 220,
+                  face_scan_target_shard_mb: 380,
                 }))
               }
             >
               Fast
+            </button>
+            <button
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  face_scan_parallel_jobs: 8,
+                  face_scan_min_shard_mb: 120,
+                  face_scan_target_shard_mb: 240,
+                }))
+              }
+            >
+              Max Throughput
             </button>
           </div>
         </div>

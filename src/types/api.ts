@@ -10,6 +10,8 @@ export interface Settings {
   stabilize_max_parallel_jobs: number;
   stabilize_ffmpeg_threads_per_job: number;
   face_scan_parallel_jobs: number;
+  face_scan_min_shard_mb: number;
+  face_scan_target_shard_mb: number;
 }
 
 export interface ImportProgress {
@@ -247,6 +249,39 @@ export interface TreeNode {
   type: "dir" | "file";
   size?: number;
   children?: TreeNode[];
+}
+
+export interface StagingTagEntry {
+  relativePath: string;
+  tags: string[];
+  groupIds: string[];
+}
+
+export interface StagingTagGroup {
+  id: string;
+  label: string;
+  createdAt: string;
+}
+
+export interface StagingTagsState {
+  version: number;
+  entries: StagingTagEntry[];
+  groups: StagingTagGroup[];
+}
+
+export interface MetadataTagWriteResult {
+  dryRun: boolean;
+  planned: number;
+  updated: number;
+  verified: number;
+  verificationFailed: number;
+  skippedUnsupported: number;
+  skippedNoTags: number;
+  failed: number;
+  errors: string[];
+  backupDir: string | null;
+  md5ReportPath: string | null;
+  exiftoolVersion: string;
 }
 
 // Face Recognition types

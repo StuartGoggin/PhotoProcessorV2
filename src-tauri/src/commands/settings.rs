@@ -13,6 +13,8 @@ pub struct Settings {
     pub stabilize_max_parallel_jobs: usize,
     pub stabilize_ffmpeg_threads_per_job: usize,
     pub face_scan_parallel_jobs: usize,
+    pub face_scan_min_shard_mb: usize,
+    pub face_scan_target_shard_mb: usize,
 }
 
 impl Default for Settings {
@@ -24,6 +26,8 @@ impl Default for Settings {
             stabilize_max_parallel_jobs: 0,
             stabilize_ffmpeg_threads_per_job: 0,
             face_scan_parallel_jobs: 0,
+            face_scan_min_shard_mb: 0,
+            face_scan_target_shard_mb: 0,
         }
     }
 }

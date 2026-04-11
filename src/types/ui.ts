@@ -2,6 +2,7 @@
 
 export type Page =
   | "import"
+  | "stagingexplorer"
   | "nameevents"
   | "cleanup"
   | "jobs"

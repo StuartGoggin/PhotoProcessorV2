@@ -127,3 +127,78 @@
 .progress-blue::-moz-progress-bar {
   background-color: rgb(59 130 246);
 }
+
+.staging-explorer-grid-scope {
+  min-width: 100%;
+}
+
+.staging-explorer-details-grid {
+  display: grid;
+  grid-template-columns: 40px var(--sx-col-name, 420px) var(--sx-col-tags, 170px) var(--sx-col-group, 180px) var(--sx-col-size, 100px);
+}
+
+.staging-context-menu {
+  left: var(--sx-cm-x, 120px);
+  top: var(--sx-cm-y, 120px);
+}
+
+.app-shell {
+  --app-sidebar-width: 208px;
+}
+
+.app-sidebar {
+  width: var(--app-sidebar-width);
+  min-width: var(--app-sidebar-width);
+  max-width: var(--app-sidebar-width);
+}
+
+.app-sidebar-resizer {
+  width: 6px;
+  cursor: col-resize;
+  background: rgb(30 41 59 / 0.5);
+  border-right: 1px solid rgb(71 85 105 / 0.45);
+}
+
+.app-sidebar-resizer:hover {
+  background: rgb(51 65 85 / 0.7);
+}
+
+.staging-explorer-pane-layout {
+  display: block;
+}
+
+@media (min-width: 1280px) {
+  .staging-explorer-pane-layout {
+    display: flex;
+    --sx-pane-left: 250px;
+    --sx-pane-right: 360px;
+  }
+
+  .staging-explorer-pane-left {
+    width: var(--sx-pane-left);
+    min-width: var(--sx-pane-left);
+    max-width: var(--sx-pane-left);
+  }
+
+  .staging-explorer-pane-center {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .staging-explorer-pane-right {
+    width: var(--sx-pane-right);
+    min-width: var(--sx-pane-right);
+    max-width: var(--sx-pane-right);
+  }
+
+  .staging-explorer-pane-resizer {
+    width: 6px;
+    cursor: col-resize;
+    background: rgb(30 41 59 / 0.5);
+    border-right: 1px solid rgb(71 85 105 / 0.45);
+  }
+
+  .staging-explorer-pane-resizer:hover {
+    background: rgb(51 65 85 / 0.7);
+  }
+}

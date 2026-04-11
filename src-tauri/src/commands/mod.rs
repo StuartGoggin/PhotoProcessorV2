@@ -5,5 +5,6 @@ pub mod logs;
 pub mod naming;
 pub mod process;
 pub mod settings;
+pub mod staging_tags;
 pub mod tidy;
 pub mod transfer;
