@@ -394,6 +394,8 @@ export default function StagingExplorer() {
   const timelineThumbQueueRef = useRef<Array<{ relativePath: string; kind: "image" | "video"; priority: number; order: number }>>([]);
   const timelineThumbQueueOrderRef = useRef(0);
   const timelineThumbWorkersRef = useRef(0);
+  const timelineScrollingRef = useRef(false);
+  const timelineScrollIdleTimerRef = useRef<number | null>(null);
   const timelineThumbPreloadRafRef = useRef<number | null>(null);
 
   const stagingDir = settings?.staging_dir ?? "";
@@ -814,6 +816,11 @@ export default function StagingExplorer() {
     timelineThumbQueueRef.current = [];
     timelineThumbQueueOrderRef.current = 0;
     timelineThumbWorkersRef.current = 0;
+    timelineScrollingRef.current = false;
+    if (timelineScrollIdleTimerRef.current !== null) {
+      window.clearTimeout(timelineScrollIdleTimerRef.current);
+      timelineScrollIdleTimerRef.current = null;
+    }
   }, [selectedDayPath]);
 
   useEffect(() => {
@@ -824,6 +831,10 @@ export default function StagingExplorer() {
     if (timelineThumbPreloadRafRef.current !== null) {
       window.cancelAnimationFrame(timelineThumbPreloadRafRef.current);
       timelineThumbPreloadRafRef.current = null;
+    }
+    if (timelineScrollIdleTimerRef.current !== null) {
+      window.clearTimeout(timelineScrollIdleTimerRef.current);
+      timelineScrollIdleTimerRef.current = null;
     }
   }, []);
 
@@ -1129,26 +1140,6 @@ export default function StagingExplorer() {
     }
   }
 
-  async function openFileInExternalViewer(relativePath: string) {
-    if (!stagingDir) {
-      return;
-    }
-
-    try {
-      await invoke("open_with_default_app", { path: toAbsolutePath(relativePath) });
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  async function openSelectedPreviewExternally() {
-    if (!selectedPreviewFile) {
-      return;
-    }
-
-    await openFileInExternalViewer(selectedPreviewFile.relativePath);
-  }
-
   function selectSameGroup(relativePath: string) {
     const primaryGroupId = tagEntryByPath.get(relativePath)?.groupIds[0] ?? null;
     if (!primaryGroupId) {
@@ -1344,7 +1335,7 @@ export default function StagingExplorer() {
   }
 
   function processTimelineThumbQueue() {
-    const maxWorkers = 3;
+    const maxWorkers = timelineScrollingRef.current ? 1 : 3;
 
     while (timelineThumbWorkersRef.current < maxWorkers && timelineThumbQueueRef.current.length > 0) {
       const next = timelineThumbQueueRef.current.shift();
@@ -1437,6 +1428,20 @@ export default function StagingExplorer() {
       timelineThumbPreloadRafRef.current = null;
       preloadVisibleTimelineThumbs();
     });
+  }
+
+  function onTimelineViewportScroll() {
+    timelineScrollingRef.current = true;
+    if (timelineScrollIdleTimerRef.current !== null) {
+      window.clearTimeout(timelineScrollIdleTimerRef.current);
+    }
+
+    schedulePreloadVisibleTimelineThumbs();
+    timelineScrollIdleTimerRef.current = window.setTimeout(() => {
+      timelineScrollingRef.current = false;
+      timelineScrollIdleTimerRef.current = null;
+      processTimelineThumbQueue();
+    }, 220);
   }
 
   function loadTimelineThumb(relativePath: string, kind: "image" | "video", priority = 3) {
@@ -1821,7 +1826,7 @@ export default function StagingExplorer() {
                   <div
                     className="staging-timeline-viewport h-full overflow-auto px-2 py-2"
                     ref={timelineViewportRef}
-                    onScroll={() => schedulePreloadVisibleTimelineThumbs()}
+                    onScroll={onTimelineViewportScroll}
                     onWheel={(event) => {
                       if (!event.ctrlKey) {
                         return;
@@ -2404,36 +2409,13 @@ export default function StagingExplorer() {
                 {selectedPreviewFile ? (
                   <>
                     <div className="text-xs text-gray-300 break-all">{selectedPreviewFile.relativePath}</div>
-                    <button className="btn-secondary w-full" onClick={() => void openSelectedPreviewExternally()}>
-                      Open In Default Viewer/Player
-                    </button>
                     <div className="rounded-md border border-surface-700 bg-black min-h-56 flex items-center justify-center overflow-hidden">
                       {selectedPreviewFile.isImage && previewDataUrl ? (
-                        <img
-                          src={previewDataUrl}
-                          alt={selectedPreviewFile.name}
-                          className="max-h-[320px] max-w-full object-contain cursor-zoom-in"
-                          onClick={() => void openSelectedPreviewExternally()}
-                          title="Open in default viewer"
-                        />
+                        <img src={previewDataUrl} alt={selectedPreviewFile.name} className="max-h-[320px] max-w-full object-contain" />
                       ) : selectedPreviewFile.isVideo ? (
-                        <div className="text-sm text-gray-500 p-4 text-center">
-                          Video selected. Inline video preview is not enabled yet.
-                          <div className="mt-3">
-                            <button className="btn-secondary" onClick={() => void openSelectedPreviewExternally()}>
-                              Open Video In Player
-                            </button>
-                          </div>
-                        </div>
+                        <div className="text-sm text-gray-500 p-4 text-center">Video selected. Inline video preview is not enabled yet.</div>
                       ) : (
-                        <div className="text-sm text-gray-500 p-4 text-center">
-                          No preview available for this file type.
-                          <div className="mt-3">
-                            <button className="btn-secondary" onClick={() => void openSelectedPreviewExternally()}>
-                              Open File Externally
-                            </button>
-                          </div>
-                        </div>
+                        <div className="text-sm text-gray-500 p-4 text-center">No preview available for this file type.</div>
                       )}
                     </div>
                   </>

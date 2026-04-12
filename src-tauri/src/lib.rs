@@ -3,7 +3,7 @@ mod utils;
 
 use commands::{
     files::{
-        load_staging_timeline, open_with_default_app, prewarm_staging_timeline_cache, read_image_base64,
+        load_staging_timeline, prewarm_staging_timeline_cache, read_image_base64,
         read_image_thumbnail_base64, read_video_thumbnail_base64, rename_file,
         reveal_in_explorer,
     },
@@ -81,7 +81,6 @@ pub fn run() {
             read_image_thumbnail_base64,
             read_video_thumbnail_base64,
             reveal_in_explorer,
-            open_with_default_app,
             load_staging_timeline,
             prewarm_staging_timeline_cache,
             // Staging Explorer tags
