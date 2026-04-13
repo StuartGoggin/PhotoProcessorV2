@@ -16,6 +16,9 @@ pub struct Settings {
     pub face_scan_parallel_jobs: usize,
     pub face_scan_min_shard_mb: usize,
     pub face_scan_target_shard_mb: usize,
+    pub timeline_preview_width: u32,
+    pub timeline_preview_height: u32,
+    pub timeline_preview_fps: u32,
 }
 
 impl Default for Settings {
@@ -30,6 +33,9 @@ impl Default for Settings {
             face_scan_parallel_jobs: 0,
             face_scan_min_shard_mb: 0,
             face_scan_target_shard_mb: 0,
+            timeline_preview_width: 420,
+            timeline_preview_height: 240,
+            timeline_preview_fps: 8,
         }
     }
 }

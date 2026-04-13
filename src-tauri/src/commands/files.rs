@@ -26,8 +26,10 @@ const TIMELINE_CACHE_VERSION: u32 = 1;
 const TIMELINE_CACHE_FILE: &str = ".photogogo.timeline-cache.json";
 const IMPORT_PREWARM_CYCLES: usize = 24;
 const IMPORT_PREWARM_INTERVAL_SECS: u64 = 20;
+const PREVIEW_MONITOR_INTERVAL_SECS: u64 = 90;
 
 static ACTIVE_IMPORT_PREWARM_WORKERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static ACTIVE_PREVIEW_MONITOR_WORKERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,7 +71,19 @@ fn is_timeline_image(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+fn is_generated_preview_video_sidecar(path: &std::path::Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    name.contains(".pgg.video-hover-preview.")
+}
+
 fn is_timeline_video(path: &std::path::Path) -> bool {
+    if is_generated_preview_video_sidecar(path) {
+        return false;
+    }
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "avi" | "mp4" | "mkv" | "mov" | "mts"))
@@ -131,6 +145,10 @@ fn active_import_prewarm_workers() -> &'static Mutex<HashSet<String>> {
     ACTIVE_IMPORT_PREWARM_WORKERS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+fn active_preview_monitor_workers() -> &'static Mutex<HashSet<String>> {
+    ACTIVE_PREVIEW_MONITOR_WORKERS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 fn thumb_cache_root(staging_dir: Option<&str>) -> PathBuf {
     if let Some(staging_dir) = staging_dir {
         let root = PathBuf::from(staging_dir);
@@ -165,7 +183,31 @@ fn build_thumb_cache_file_path_with_ext(
     size.hash(&mut hasher);
     modified_ms.hash(&mut hasher);
 
-    cache_root.join(format!("{:016x}.{}", hasher.finish(), extension))
+    // Store preview sidecar files next to the source media file.
+    let parent_dir = path.parent().unwrap_or(cache_root);
+    let source_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("media");
+    let digest = format!("{:016x}", hasher.finish());
+    let ext = extension.to_ascii_lowercase();
+    let sidecar_ext = if ext == "mp4" {
+        "mp4".to_string()
+    } else {
+        format!("pgg-{}", ext)
+    };
+    let file_name = format!(
+        "{}.pgg.{}.{}x{}.q{}.{}.{}",
+        source_name,
+        kind,
+        max_width,
+        max_height,
+        quality,
+        digest,
+        sidecar_ext,
+    );
+
+    parent_dir.join(file_name)
 }
 
 fn build_thumb_cache_file_path(
@@ -290,17 +332,27 @@ fn ffmpeg_candidates() -> Vec<PathBuf> {
 }
 
 fn render_video_thumbnail(path: &std::path::Path, max_width: u32, max_height: u32) -> Result<Vec<u8>, String> {
+    render_video_thumbnail_at(path, max_width, max_height, 1.0)
+}
+
+fn render_video_thumbnail_at(
+    path: &std::path::Path,
+    max_width: u32,
+    max_height: u32,
+    seek_seconds: f32,
+) -> Result<Vec<u8>, String> {
     let mut last_error = String::new();
 
     for ffmpeg_binary in ffmpeg_candidates() {
         let scale_filter = format!("scale={}:{}:force_original_aspect_ratio=decrease", max_width, max_height);
+        let seek = format!("{:.3}", seek_seconds.max(0.0));
         let output = Command::new(&ffmpeg_binary)
             .args([
                 "-hide_banner",
                 "-loglevel",
                 "error",
                 "-ss",
-                "00:00:01",
+                &seek,
                 "-i",
             ])
             .arg(path)
@@ -337,61 +389,64 @@ fn render_video_thumbnail(path: &std::path::Path, max_width: u32, max_height: u3
     }
 }
 
-fn render_video_hover_preview(
+fn render_video_hover_preview_mp4_to_file(
     path: &std::path::Path,
     max_width: u32,
     max_height: u32,
-    seconds: f32,
-) -> Result<Vec<u8>, String> {
+    fps: u32,
+    output_path: &Path,
+) -> Result<(), String> {
     let mut last_error = String::new();
-    let clip_seconds = seconds.clamp(0.8, 4.0);
+    let target_fps = fps.clamp(2, 30);
+    let scale_filter = format!(
+        "fps={},scale={}:{}:force_original_aspect_ratio=decrease:flags=lanczos",
+        target_fps, max_width, max_height
+    );
 
     for ffmpeg_binary in ffmpeg_candidates() {
-        let scale_filter = format!(
-            "fps=15,scale={}:{}:force_original_aspect_ratio=decrease",
-            max_width, max_height
-        );
         let output = Command::new(&ffmpeg_binary)
             .args([
                 "-hide_banner",
                 "-loglevel",
                 "error",
-                "-ss",
-                "00:00:00.5",
                 "-i",
             ])
             .arg(path)
             .args([
                 "-an",
-                "-t",
-                &format!("{:.2}", clip_seconds),
                 "-vf",
                 &scale_filter,
-                "-movflags",
-                "frag_keyframe+empty_moov",
                 "-c:v",
-                "mpeg4",
-                "-q:v",
-                "6",
-                "-f",
-                "mp4",
-                "-",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "30",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-y",
             ])
+            .arg(output_path)
             .output();
 
         let Ok(output) = output else { continue; };
-        if output.status.success() && !output.stdout.is_empty() {
-            return Ok(output.stdout);
+        if output.status.success() && output_path.exists() {
+            let size_ok = fs::metadata(output_path).map(|meta| meta.len() > 0).unwrap_or(false);
+            if size_ok {
+                return Ok(());
+            }
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if !stderr.is_empty() {
-            last_error = stderr;
+            last_error = format!("mp4 encode failed: {}", stderr);
         }
     }
 
     if last_error.is_empty() {
-        Err("Unable to render video hover preview with ffmpeg".to_string())
+        Err("Unable to render video hover preview mp4 with ffmpeg".to_string())
     } else {
         Err(last_error)
     }
@@ -719,13 +774,14 @@ pub fn read_video_hover_preview_base64(
     path: String,
     max_width: Option<u32>,
     max_height: Option<u32>,
-    seconds: Option<f32>,
+    _seconds: Option<f32>,
+    preview_fps: Option<u32>,
     staging_dir: Option<String>,
 ) -> Result<String, String> {
     let width = max_width.unwrap_or(480).clamp(120, 1280);
     let height = max_height.unwrap_or(270).clamp(68, 720);
-    let clip_seconds = seconds.unwrap_or(2.2).clamp(0.8, 4.0);
-    let cache_quality = (clip_seconds * 10.0).round().clamp(0.0, 255.0) as u8;
+    let fps = preview_fps.unwrap_or(8).clamp(2, 30);
+    let cache_quality = fps.clamp(0, 255) as u8;
 
     let cache_root = thumb_cache_root(staging_dir.as_deref());
     let cache_file = build_thumb_cache_file_path_with_ext(
@@ -737,13 +793,201 @@ pub fn read_video_hover_preview_base64(
         cache_quality,
         "mp4",
     );
-    if let Some(cached) = read_cached_thumb(&cache_file) {
-        return Ok(base64_encode(&cached));
+
+    if !cache_file.exists() {
+        if let Some(parent) = cache_file.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        render_video_hover_preview_mp4_to_file(Path::new(&path), width, height, fps, &cache_file)?;
     }
 
-    let data = render_video_hover_preview(Path::new(&path), width, height, clip_seconds)?;
-    write_cached_thumb(&cache_file, &data);
+    let data = fs::read(&cache_file).map_err(|error| error.to_string())?;
     Ok(base64_encode(&data))
+}
+
+#[tauri::command]
+pub fn read_video_hover_preview_path(
+    path: String,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    _seconds: Option<f32>,
+    preview_fps: Option<u32>,
+    staging_dir: Option<String>,
+) -> Result<String, String> {
+    let width = max_width.unwrap_or(480).clamp(120, 1280);
+    let height = max_height.unwrap_or(270).clamp(68, 720);
+    let fps = preview_fps.unwrap_or(8).clamp(2, 30);
+    let cache_quality = fps.clamp(0, 255) as u8;
+
+    let cache_root = thumb_cache_root(staging_dir.as_deref());
+    let cache_file = build_thumb_cache_file_path_with_ext(
+        &cache_root,
+        Path::new(&path),
+        "video-hover-preview",
+        width,
+        height,
+        cache_quality,
+        "mp4",
+    );
+
+    if !cache_file.exists() {
+        if let Some(parent) = cache_file.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        render_video_hover_preview_mp4_to_file(Path::new(&path), width, height, fps, &cache_file)?;
+    }
+
+    Ok(cache_file.to_string_lossy().to_string())
+}
+
+fn generate_video_hover_preview_for_path(
+    path: &str,
+    staging_dir: Option<&str>,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> Result<(), String> {
+    let cache_quality = fps.clamp(0, 255) as u8;
+
+    let cache_root = thumb_cache_root(staging_dir);
+    let cache_file = build_thumb_cache_file_path_with_ext(
+        &cache_root,
+        Path::new(path),
+        "video-hover-preview",
+        width,
+        height,
+        cache_quality,
+        "mp4",
+    );
+
+    if cache_file.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = cache_file.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    render_video_hover_preview_mp4_to_file(Path::new(path), width, height, fps, &cache_file)
+}
+
+fn collect_timeline_video_paths(staging_dir: &str) -> Vec<String> {
+    let root = PathBuf::from(staging_dir);
+    WalkDir::new(&root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.path().to_path_buf())
+        .filter(|path| is_timeline_video(path))
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+}
+
+fn prewarm_missing_preview_videos(
+    staging_dir: &str,
+    width: u32,
+    height: u32,
+    fps: u32,
+) {
+    use rayon::prelude::*;
+    let staging = staging_dir.to_string();
+    let paths = collect_timeline_video_paths(staging_dir);
+    paths.par_iter().for_each(|path| {
+        let _ = generate_video_hover_preview_for_path(path, Some(&staging), width, height, fps);
+    });
+}
+
+#[tauri::command]
+pub fn start_preview_monitor_worker(
+    staging_dir: String,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    preview_fps: Option<u32>,
+) -> Result<bool, String> {
+    let normalized = staging_dir.trim().to_string();
+    if normalized.is_empty() {
+        return Err("staging_dir is required".to_string());
+    }
+
+    let width = max_width.unwrap_or(420).clamp(120, 1280);
+    let height = max_height.unwrap_or(240).clamp(68, 720);
+    let fps = preview_fps.unwrap_or(8).clamp(2, 30);
+
+    let workers = active_preview_monitor_workers();
+    {
+        let mut guard = workers.lock().map_err(|_| "preview monitor lock poisoned".to_string())?;
+        if guard.contains(&normalized) {
+            return Ok(false);
+        }
+        guard.insert(normalized.clone());
+    }
+
+    std::thread::spawn(move || {
+        loop {
+            prewarm_missing_preview_videos(&normalized, width, height, fps);
+            std::thread::sleep(Duration::from_secs(PREVIEW_MONITOR_INTERVAL_SECS));
+        }
+    });
+
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn read_video_hover_frames_base64(
+    path: String,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    seconds: Option<f32>,
+    frame_count: Option<u32>,
+    staging_dir: Option<String>,
+) -> Result<Vec<String>, String> {
+    let width = max_width.unwrap_or(420).clamp(120, 1280);
+    let height = max_height.unwrap_or(240).clamp(68, 720);
+    let _seconds = seconds.unwrap_or(2.0).clamp(0.8, 12.0);
+    let fps = frame_count.unwrap_or(8).clamp(2, 30);
+
+    let preview_path = read_video_hover_preview_path(
+        path,
+        Some(width),
+        Some(height),
+        None,
+        Some(fps),
+        staging_dir,
+    )?;
+    let bytes = fs::read(preview_path).map_err(|error| error.to_string())?;
+    Ok(vec![base64_encode(&bytes)])
+}
+
+/// Pre-generates hover preview MP4 sidecars for a list of video paths in a background thread.
+/// Returns immediately (fire-and-forget). Already-cached files are skipped.
+#[tauri::command]
+pub fn prewarm_video_hover_frames(
+    paths: Vec<String>,
+    staging_dir: Option<String>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    preview_fps: Option<u32>,
+) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let width = max_width.unwrap_or(420).clamp(120, 1280);
+    let height = max_height.unwrap_or(240).clamp(68, 720);
+    let fps = preview_fps.unwrap_or(8).clamp(2, 30);
+
+    std::thread::spawn(move || {
+        use rayon::prelude::*;
+        paths.par_iter().for_each(|path| {
+            let _ = generate_video_hover_preview_for_path(
+                path,
+                staging_dir.as_deref(),
+                width,
+                height,
+                fps,
+            );
+        });
+    });
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -781,7 +1025,12 @@ pub fn prewarm_staging_timeline_thumbnails(
 }
 
 #[tauri::command]
-pub fn start_import_prewarm_worker(staging_dir: String) -> Result<bool, String> {
+pub fn start_import_prewarm_worker(
+    staging_dir: String,
+    preview_max_width: Option<u32>,
+    preview_max_height: Option<u32>,
+    preview_fps: Option<u32>,
+) -> Result<bool, String> {
     let normalized = staging_dir.trim().to_string();
     if normalized.is_empty() {
         return Err("staging_dir is required".to_string());
@@ -796,6 +1045,10 @@ pub fn start_import_prewarm_worker(staging_dir: String) -> Result<bool, String> 
         guard.insert(normalized.clone());
     }
 
+    let preview_width = preview_max_width.unwrap_or(420).clamp(120, 1280);
+    let preview_height = preview_max_height.unwrap_or(240).clamp(68, 720);
+    let preview_fps = preview_fps.unwrap_or(8).clamp(2, 30);
+
     std::thread::spawn(move || {
         for _ in 0..IMPORT_PREWARM_CYCLES {
             let _ = prewarm_staging_timeline_cache(normalized.clone());
@@ -806,6 +1059,27 @@ pub fn start_import_prewarm_worker(staging_dir: String) -> Result<bool, String> 
                 Some(140),
                 Some(160),
             );
+            // Pre-generate hover frames for all videos in the staging directory
+            if let Ok(items) = load_staging_timeline(normalized.clone(), String::new(), Some(false)) {
+                let root = PathBuf::from(&normalized);
+                use rayon::prelude::*;
+                items
+                    .par_iter()
+                    .filter(|item| item.kind == "video")
+                    .for_each(|item| {
+                        let abs_path = root
+                            .join(item.relative_path.replace('/', std::path::MAIN_SEPARATOR_STR))
+                            .to_string_lossy()
+                            .to_string();
+                        let _ = generate_video_hover_preview_for_path(
+                            &abs_path,
+                            Some(&normalized),
+                            preview_width,
+                            preview_height,
+                            preview_fps,
+                        );
+                    });
+            }
             std::thread::sleep(Duration::from_secs(IMPORT_PREWARM_INTERVAL_SECS));
         }
 

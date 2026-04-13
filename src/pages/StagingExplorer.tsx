@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useSettings } from "../hooks";
 import type {
   ApplyEventNamingRequest,
@@ -15,6 +15,10 @@ import type {
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "cr3", "dng"]);
 const VIDEO_EXTS = new Set(["avi", "mp4", "mkv", "mov", "mts"]);
 const SIDECAR_EXTS = new Set(["xmp", "aae", "thm", "pp3", "dop", "cos", "md5", "nks"]);
+
+function isGeneratedPreviewSidecarName(name: string): boolean {
+  return name.toLowerCase().includes(".pgg.video-hover-preview.");
+}
 
 type FileRow = {
   relativePath: string;
@@ -434,6 +438,8 @@ export default function StagingExplorer() {
   const [autoPrewarmEnabled, setAutoPrewarmEnabled] = useState(false);
   const [timelineThumbByPath, setTimelineThumbByPath] = useState<Record<string, string>>({});
   const [timelineVideoPreviewByPath, setTimelineVideoPreviewByPath] = useState<Record<string, string>>({});
+  const [timelineVideoPreviewLoadingByPath, setTimelineVideoPreviewLoadingByPath] = useState<Record<string, boolean>>({});
+  const [timelineVideoPreviewErrorByPath, setTimelineVideoPreviewErrorByPath] = useState<Record<string, string>>({});
   const [timelineHoverPreview, setTimelineHoverPreview] = useState<TimelineHoverPreview | null>(null);
   const [timelineHoverVideoError, setTimelineHoverVideoError] = useState(false);
   const [timelineGapHover, setTimelineGapHover] = useState<TimelineGapHover | null>(null);
@@ -483,6 +489,9 @@ export default function StagingExplorer() {
   const loadingTimelineVideoPreviewsRef = useRef(new Set<string>());
 
   const stagingDir = settings?.staging_dir ?? "";
+  const previewWidth = Math.max(120, settings?.timeline_preview_width ?? 420);
+  const previewHeight = Math.max(68, settings?.timeline_preview_height ?? 240);
+  const previewFps = Math.max(2, Math.min(30, settings?.timeline_preview_fps ?? 8));
 
   const selectedDay = useMemo(
     () => directories.find((directory) => directory.path === selectedDayPath) ?? null,
@@ -521,7 +530,7 @@ export default function StagingExplorer() {
       ? raw
       : raw.filter((file) => {
           const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-          return !SIDECAR_EXTS.has(ext);
+          return !SIDECAR_EXTS.has(ext) && !isGeneratedPreviewSidecarName(file.name);
         });
     const byMedia = mediaFilter === "videos"
       ? withoutSidecars.filter((file) => file.isVideo)
@@ -977,6 +986,8 @@ export default function StagingExplorer() {
   useEffect(() => {
     setTimelineThumbByPath({});
     setTimelineVideoPreviewByPath({});
+    setTimelineVideoPreviewLoadingByPath({});
+    setTimelineVideoPreviewErrorByPath({});
     setTimelineHoverPreview(null);
     setTimelineHoverVideoError(false);
     loadingTimelineThumbsRef.current.clear();
@@ -991,6 +1002,36 @@ export default function StagingExplorer() {
       timelineScrollIdleTimerRef.current = null;
     }
   }, [selectedDayPath]);
+
+  // When the timeline items load, kick off background hover-frame generation for all videos
+  // so that hovering over them is instant (frames are already cached).
+  useEffect(() => {
+    if (!stagingDir || timelineItems.length === 0) return;
+    const videoPaths = timelineItems
+      .filter((item) => item.kind === "video")
+      .map((item) => toAbsolutePath(item.relativePath));
+    if (videoPaths.length === 0) return;
+    void invoke("prewarm_video_hover_frames", {
+      paths: videoPaths,
+      stagingDir,
+      maxWidth: previewWidth,
+      maxHeight: previewHeight,
+      previewFps,
+    });
+  }, [stagingDir, timelineItems, previewWidth, previewHeight, previewFps]);
+
+  useEffect(() => {
+    if (!stagingDir) {
+      return;
+    }
+    void invoke<boolean>("start_preview_monitor_worker", {
+      stagingDir,
+      maxWidth: previewWidth,
+      maxHeight: previewHeight,
+      previewFps,
+    }).catch(() => {
+    });
+  }, [stagingDir, previewWidth, previewHeight, previewFps]);
 
   useEffect(() => {
     schedulePreloadVisibleTimelineThumbs();
@@ -1799,23 +1840,38 @@ export default function StagingExplorer() {
     }
 
     loadingTimelineVideoPreviewsRef.current.add(relativePath);
-    void invoke<string>("read_video_hover_preview_base64", {
+    setTimelineVideoPreviewLoadingByPath((current) => ({ ...current, [relativePath]: true }));
+    setTimelineVideoPreviewErrorByPath((current) => {
+      const next = { ...current };
+      delete next[relativePath];
+      return next;
+    });
+    void invoke<string>("read_video_hover_preview_path", {
       path: toAbsolutePath(relativePath),
-      maxWidth: 480,
-      maxHeight: 270,
-      seconds: 2.2,
+      maxWidth: previewWidth,
+      maxHeight: previewHeight,
+      previewFps,
       stagingDir,
     })
-      .then((base64) => {
+      .then((previewPath) => {
+        if (!previewPath || typeof previewPath !== "string") {
+          throw new Error("No hover preview path returned");
+        }
+        const previewSrc = convertFileSrc(previewPath);
         setTimelineVideoPreviewByPath((current) => ({
           ...current,
-          [relativePath]: `data:video/mp4;base64,${base64}`,
+          [relativePath]: previewSrc,
         }));
       })
-      .catch(() => {
+      .catch((previewError) => {
+        setTimelineVideoPreviewErrorByPath((current) => ({
+          ...current,
+          [relativePath]: String(previewError),
+        }));
       })
       .finally(() => {
         loadingTimelineVideoPreviewsRef.current.delete(relativePath);
+        setTimelineVideoPreviewLoadingByPath((current) => ({ ...current, [relativePath]: false }));
       });
   }
 
@@ -2101,6 +2157,18 @@ export default function StagingExplorer() {
     }
     return timelineVideoPreviewByPath[timelineHoverPreview.relativePath] ?? null;
   }, [timelineHoverPreview, timelineVideoPreviewByPath]);
+
+  const timelineHoverVideoStatus = useMemo(() => {
+    if (!timelineHoverPreview || timelineHoverPreview.kind !== "video") {
+      return { loading: false, error: null as string | null };
+    }
+
+    const path = timelineHoverPreview.relativePath;
+    return {
+      loading: Boolean(timelineVideoPreviewLoadingByPath[path]),
+      error: timelineVideoPreviewErrorByPath[path] ?? null,
+    };
+  }, [timelineHoverPreview, timelineVideoPreviewLoadingByPath, timelineVideoPreviewErrorByPath]);
 
   useEffect(() => {
     setTimelineHoverVideoError(false);
@@ -2769,9 +2837,9 @@ export default function StagingExplorer() {
                         <div className="staging-timeline-hover-preview-body">
                           {timelineHoverPreview.kind === "video" && timelineHoverVideoSrc && !timelineHoverVideoError ? (
                             <video
+                              key={timelineHoverPreview.relativePath}
                               className="staging-timeline-hover-preview-video"
                               src={timelineHoverVideoSrc}
-                              poster={timelineThumbByPath[timelineHoverPreview.relativePath]}
                               autoPlay
                               muted
                               loop
@@ -2779,6 +2847,12 @@ export default function StagingExplorer() {
                               preload="metadata"
                               onError={() => setTimelineHoverVideoError(true)}
                             />
+                          ) : timelineHoverPreview.kind === "video" && timelineHoverVideoStatus.loading ? (
+                            <div className="staging-timeline-hover-preview-loading">Rendering motion preview...</div>
+                          ) : timelineHoverPreview.kind === "video" && timelineHoverVideoStatus.error ? (
+                            <div className="staging-timeline-hover-preview-loading">
+                              Motion preview failed. Showing thumbnail fallback.
+                            </div>
                           ) : timelineThumbByPath[timelineHoverPreview.relativePath] ? (
                             <img
                               src={timelineThumbByPath[timelineHoverPreview.relativePath]}

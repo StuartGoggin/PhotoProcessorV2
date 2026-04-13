@@ -29,7 +29,19 @@ export default function Cleanup() {
         stagingDir: staging,
         options,
       });
-      void invoke<boolean>("start_import_prewarm_worker", { stagingDir: staging }).catch(() => {
+      void invoke<boolean>("start_import_prewarm_worker", {
+        stagingDir: staging,
+        previewMaxWidth: Math.max(120, settings?.timeline_preview_width ?? 420),
+        previewMaxHeight: Math.max(68, settings?.timeline_preview_height ?? 240),
+        previewFps: Math.max(2, Math.min(30, settings?.timeline_preview_fps ?? 8)),
+      }).catch(() => {
+      });
+      void invoke<boolean>("start_preview_monitor_worker", {
+        stagingDir: staging,
+        maxWidth: Math.max(120, settings?.timeline_preview_width ?? 420),
+        maxHeight: Math.max(68, settings?.timeline_preview_height ?? 240),
+        previewFps: Math.max(2, Math.min(30, settings?.timeline_preview_fps ?? 8)),
+      }).catch(() => {
       });
       setMessage(`Queued cleanup job: ${jobId}. Track it in Jobs tab.`);
     } catch (e) {

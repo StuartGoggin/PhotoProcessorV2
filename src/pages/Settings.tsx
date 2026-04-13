@@ -47,6 +47,9 @@ export default function SettingsPage() {
     face_scan_parallel_jobs: 0,
     face_scan_min_shard_mb: 0,
     face_scan_target_shard_mb: 0,
+    timeline_preview_width: 420,
+    timeline_preview_height: 240,
+    timeline_preview_fps: 8,
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +67,9 @@ export default function SettingsPage() {
           face_scan_parallel_jobs: loaded.face_scan_parallel_jobs ?? 0,
           face_scan_min_shard_mb: loaded.face_scan_min_shard_mb ?? 0,
           face_scan_target_shard_mb: loaded.face_scan_target_shard_mb ?? 0,
+          timeline_preview_width: loaded.timeline_preview_width ?? 420,
+          timeline_preview_height: loaded.timeline_preview_height ?? 240,
+          timeline_preview_fps: loaded.timeline_preview_fps ?? 8,
         })
       )
       .catch((e) => setError(String(e)));
@@ -202,6 +208,111 @@ export default function SettingsPage() {
               }
             >
               Balanced
+            </button>
+          </div>
+        </div>
+
+        <div className="card space-y-4">
+          <div>
+            <h3 className="text-sm font-medium text-white">Timeline Video Preview MP4</h3>
+            <p className="text-xs text-gray-500 mt-1">
+              Controls the generated hover preview video sidecars for timeline cards.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="block">
+              <span className="text-sm text-gray-300">Preview Width</span>
+              <input
+                type="number"
+                min={120}
+                step={10}
+                className="input-field mt-1"
+                value={settings.timeline_preview_width}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    timeline_preview_width: Math.max(120, parseNonNegativeInt(e.target.value) || 420),
+                  }))
+                }
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-gray-300">Preview Height</span>
+              <input
+                type="number"
+                min={68}
+                step={2}
+                className="input-field mt-1"
+                value={settings.timeline_preview_height}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    timeline_preview_height: Math.max(68, parseNonNegativeInt(e.target.value) || 240),
+                  }))
+                }
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-gray-300">Preview FPS</span>
+              <input
+                type="number"
+                min={2}
+                max={30}
+                step={1}
+                className="input-field mt-1"
+                value={settings.timeline_preview_fps}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    timeline_preview_fps: Math.min(30, Math.max(2, parseNonNegativeInt(e.target.value) || 8)),
+                  }))
+                }
+              />
+            </label>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  timeline_preview_width: 320,
+                  timeline_preview_height: 180,
+                  timeline_preview_fps: 6,
+                }))
+              }
+            >
+              Lightweight
+            </button>
+            <button
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  timeline_preview_width: 420,
+                  timeline_preview_height: 240,
+                  timeline_preview_fps: 8,
+                }))
+              }
+            >
+              Balanced
+            </button>
+            <button
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  timeline_preview_width: 640,
+                  timeline_preview_height: 360,
+                  timeline_preview_fps: 12,
+                }))
+              }
+            >
+              High Quality
             </button>
           </div>
         </div>
