@@ -4,8 +4,11 @@ mod utils;
 use commands::{
     files::{
         load_staging_timeline, prewarm_staging_timeline_cache, read_image_base64,
-        read_image_thumbnail_base64, read_video_thumbnail_base64, rename_file,
-        reveal_in_explorer,
+        read_image_thumbnail_base64, read_video_thumbnail_base64,
+        read_video_hover_preview_base64,
+        prewarm_staging_timeline_thumbnails, rename_file,
+        start_import_prewarm_worker,
+        reveal_in_explorer, open_in_default_app,
     },
     import::{
         abort_import_job, clear_finished_import_jobs, list_import_jobs, list_staging_tree,
@@ -80,7 +83,11 @@ pub fn run() {
             read_image_base64,
             read_image_thumbnail_base64,
             read_video_thumbnail_base64,
+            read_video_hover_preview_base64,
+            prewarm_staging_timeline_thumbnails,
+            start_import_prewarm_worker,
             reveal_in_explorer,
+            open_in_default_app,
             load_staging_timeline,
             prewarm_staging_timeline_cache,
             // Staging Explorer tags

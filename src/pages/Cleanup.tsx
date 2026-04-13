@@ -29,6 +29,8 @@ export default function Cleanup() {
         stagingDir: staging,
         options,
       });
+      void invoke<boolean>("start_import_prewarm_worker", { stagingDir: staging }).catch(() => {
+      });
       setMessage(`Queued cleanup job: ${jobId}. Track it in Jobs tab.`);
     } catch (e) {
       setError(String(e));

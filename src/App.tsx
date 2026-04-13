@@ -16,7 +16,7 @@ import Logs from "./pages/Logs";
 
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "import",      label: "Import",       icon: "📥" },
-  { id: "stagingexplorer", label: "Staging Explorer", icon: "🗂️" },
+  { id: "stagingexplorer", label: "Video Timeline", icon: "🎬" },
   { id: "nameevents",  label: "Name Events",  icon: "🏷️" },
   { id: "postprocess", label: "Post Process",  icon: "⚙️" },
   { id: "review",      label: "Review",        icon: "🖼️" },

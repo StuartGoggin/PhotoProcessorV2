@@ -62,6 +62,8 @@ export default function Import() {
         stagingDir: staging,
         options,
       });
+      void invoke<boolean>("start_import_prewarm_worker", { stagingDir: staging }).catch(() => {
+      });
       setMessage(`Queued background job: ${jobId}. Track it in Jobs tab.`);
     } catch (e) {
       setError(String(e));

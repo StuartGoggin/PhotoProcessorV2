@@ -28,6 +28,7 @@ type SortColumn = "name" | "tags" | "group" | "size";
 type SortDirection = "asc" | "desc";
 type DensityMode = "compact" | "comfortable";
 type ViewMode = "list" | "timeline";
+type MediaFilter = "videos" | "photos" | "all";
 type ResizableColumn = "name" | "tags" | "group" | "size";
 type ColumnWidths = Record<ResizableColumn, number>;
 type PaneResizeSide = "left" | "right";
@@ -46,7 +47,10 @@ type TimelineSequence = {
 
 type TimelineLayoutItem = {
   item: TimelineMediaItem;
-  lane: 0 | 1;
+  laneSide: "left" | "right";
+  laneDepth: 0 | 1;
+  compact: boolean;
+  cardHeight: number;
   markerTop: number;
   markerHeight: number;
   cardTop: number;
@@ -64,6 +68,41 @@ type TimelineSession = {
   endMs: number;
 };
 
+type TimelineSessionBand = {
+  sessionId: string;
+  sessionIndex: number;
+  label: string;
+  top: number;
+  height: number;
+  color: string;
+  startMs: number;
+  endMs: number;
+};
+
+type TimelineSessionBoundary = {
+  boundaryIndex: number;
+  top: number;
+  gapMs: number;
+  leftEndMs: number;
+  rightStartMs: number;
+  gapTop: number;
+  gapHeight: number;
+  leftSessionLabel: string;
+  rightSessionLabel: string;
+  leftSessionIndex: number;
+  rightSessionIndex: number;
+  currentBreakPath: string | null;
+};
+
+type TimelineSessionContextMenu = {
+  sessionId: string;
+  x: number;
+  y: number;
+  splitBreakPath: string | null;
+  boundaryBreakPath: string | null;
+  clearBreakPath: string | null;
+};
+
 type TimelineGapMode = "auto" | "manual";
 
 type TimelineHoverPreview = {
@@ -74,7 +113,22 @@ type TimelineHoverPreview = {
   y: number;
 };
 
+type TimelineGapHover = {
+  boundaryIndex: number;
+  x: number;
+  y: number;
+};
+
 const VIEW_PREFS_KEY = "photogogo.stagingExplorer.viewPrefs.v1";
+
+const SESSION_BAND_COLORS = [
+  "rgba(56, 189, 248, 0.18)",
+  "rgba(16, 185, 129, 0.18)",
+  "rgba(251, 191, 36, 0.18)",
+  "rgba(244, 114, 182, 0.18)",
+  "rgba(168, 85, 247, 0.18)",
+  "rgba(14, 165, 233, 0.18)",
+];
 
 function normalizeTagList(tags: string[]): string[] {
   return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
@@ -183,6 +237,21 @@ function formatDuration(durationMs: number | null | undefined): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatGapDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
 }
 
 function median(values: number[]): number {
@@ -353,21 +422,33 @@ export default function StagingExplorer() {
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [density, setDensity] = useState<DensityMode>("comfortable");
   const [viewMode, setViewMode] = useState<ViewMode>("timeline");
+  const [mediaFilter, setMediaFilter] = useState<MediaFilter>("videos");
   const [showDetailsPane, setShowDetailsPane] = useState(false);
   const [showSidecarFiles, setShowSidecarFiles] = useState(false);
   const [timelineItems, setTimelineItems] = useState<TimelineMediaItem[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
-  const [timelineZoom, setTimelineZoom] = useState(1);
-  const [preloadVisibleThumbs, setPreloadVisibleThumbs] = useState(true);
+  const [timelineZoom, setTimelineZoom] = useState(0.6);
+  const [timelineVirtualizationEnabled, setTimelineVirtualizationEnabled] = useState(true);
+  const [alwaysCompactCards, setAlwaysCompactCards] = useState(false);
+  const [preloadVisibleThumbs, setPreloadVisibleThumbs] = useState(false);
+  const [autoPrewarmEnabled, setAutoPrewarmEnabled] = useState(false);
   const [timelineThumbByPath, setTimelineThumbByPath] = useState<Record<string, string>>({});
+  const [timelineVideoPreviewByPath, setTimelineVideoPreviewByPath] = useState<Record<string, string>>({});
   const [timelineHoverPreview, setTimelineHoverPreview] = useState<TimelineHoverPreview | null>(null);
+  const [timelineHoverVideoError, setTimelineHoverVideoError] = useState(false);
+  const [timelineGapHover, setTimelineGapHover] = useState<TimelineGapHover | null>(null);
+  const [timelineViewportRange, setTimelineViewportRange] = useState({ top: 0, height: 0 });
   const [timelineGapMode, setTimelineGapMode] = useState<TimelineGapMode>("auto");
   const [manualSequenceGapMs, setManualSequenceGapMs] = useState(90_000);
   const [manualSessionGapMs, setManualSessionGapMs] = useState(10 * 60_000);
   const [forcedSequenceBreaks, setForcedSequenceBreaks] = useState<string[]>([]);
   const [suppressedSequenceBreaks, setSuppressedSequenceBreaks] = useState<string[]>([]);
-  const [collapsedSessionIds, setCollapsedSessionIds] = useState<string[]>([]);
   const [sessionLabels, setSessionLabels] = useState<Record<string, string>>({});
+  const [timelineSessionMenu, setTimelineSessionMenu] = useState<TimelineSessionContextMenu | null>(null);
+  const [draggingBoundary, setDraggingBoundary] = useState<{
+    boundaryIndex: number;
+    currentBreakPath: string | null;
+  } | null>(null);
   const [contextMenuFilePath, setContextMenuFilePath] = useState<string | null>(null);
   const [contextMenuTagOpen, setContextMenuTagOpen] = useState(false);
   const [contextMenuFocusIndex, setContextMenuFocusIndex] = useState(0);
@@ -389,6 +470,7 @@ export default function StagingExplorer() {
   const paneScopeRef = useRef<HTMLDivElement | null>(null);
   const timelineViewportRef = useRef<HTMLDivElement | null>(null);
   const prewarmStartedForRef = useRef<string | null>(null);
+  const thumbPrewarmStartedForRef = useRef(new Set<string>());
   const loadingTimelineThumbsRef = useRef(new Set<string>());
   const queuedTimelineThumbsRef = useRef(new Set<string>());
   const timelineThumbQueueRef = useRef<Array<{ relativePath: string; kind: "image" | "video"; priority: number; order: number }>>([]);
@@ -397,6 +479,8 @@ export default function StagingExplorer() {
   const timelineScrollingRef = useRef(false);
   const timelineScrollIdleTimerRef = useRef<number | null>(null);
   const timelineThumbPreloadRafRef = useRef<number | null>(null);
+  const timelineViewportRafRef = useRef<number | null>(null);
+  const loadingTimelineVideoPreviewsRef = useRef(new Set<string>());
 
   const stagingDir = settings?.staging_dir ?? "";
 
@@ -439,13 +523,18 @@ export default function StagingExplorer() {
           const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
           return !SIDECAR_EXTS.has(ext);
         });
+    const byMedia = mediaFilter === "videos"
+      ? withoutSidecars.filter((file) => file.isVideo)
+      : mediaFilter === "photos"
+        ? withoutSidecars.filter((file) => file.isImage)
+        : withoutSidecars;
     const filtered = query
-      ? withoutSidecars.filter((file) =>
+      ? byMedia.filter((file) =>
           file.name.toLowerCase().includes(query) ||
           file.relativePath.toLowerCase().includes(query) ||
           fileKind(file).toLowerCase().includes(query),
         )
-      : withoutSidecars;
+      : byMedia;
 
     const sorted = [...filtered].sort((left, right) => {
       const leftEntry = tagEntryByPath.get(left.relativePath);
@@ -476,22 +565,27 @@ export default function StagingExplorer() {
     });
 
     return sorted;
-  }, [selectedDayNode, searchQuery, sortColumn, sortDirection, tagEntryByPath, groupLabelById, showSidecarFiles]);
+  }, [selectedDayNode, searchQuery, sortColumn, sortDirection, tagEntryByPath, groupLabelById, showSidecarFiles, mediaFilter]);
 
   const visibleTimelineItems = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
+    const byMedia = mediaFilter === "videos"
+      ? timelineItems.filter((item) => item.kind === "video")
+      : mediaFilter === "photos"
+        ? timelineItems.filter((item) => item.kind === "image")
+        : timelineItems;
     const filtered = query
-      ? timelineItems.filter((item) =>
+      ? byMedia.filter((item) =>
           item.name.toLowerCase().includes(query) ||
           item.relativePath.toLowerCase().includes(query) ||
           item.kind.toLowerCase().includes(query),
         )
-      : timelineItems;
+      : byMedia;
 
     return [...filtered].sort((left, right) =>
       left.timestampMs - right.timestampMs || left.relativePath.localeCompare(right.relativePath),
     );
-  }, [timelineItems, searchQuery]);
+  }, [timelineItems, searchQuery, mediaFilter]);
 
   const suggestedThresholds = useMemo(
     () => suggestTimelineThresholds(visibleTimelineItems),
@@ -534,26 +628,55 @@ export default function StagingExplorer() {
     const maxMs = Math.max(...renderTimelineItems.map((item) => item.endTimestampMs));
     const spanMs = Math.max(60_000, maxMs - minMs);
     const spanMinutes = spanMs / 60_000;
-    const pxPerMinute = clamp((1100 / Math.max(spanMinutes, 45)) * timelineZoom, 8, 64);
+    // Quadratic zoom curve so higher zoom values dramatically spread cards apart.
+    // Cap raised to 800px/min so zoom can fully expand dense multi-hour days.
+    const basePxPerMinute = 1100 / Math.max(spanMinutes, 45);
+    const pxPerMinute = clamp(basePxPerMinute * Math.pow(timelineZoom, 2.5), 8, 800);
     const baseHeight = Math.max(820, spanMinutes * pxPerMinute + 140);
     const topPadding = 60;
     const pxPerMs = (baseHeight - topPadding * 2) / spanMs;
+    const compactCards = alwaysCompactCards || timelineZoom < 0.9;
+    const laneSpacing = compactCards ? 56 : 72;
 
-    const laneBottoms: [number, number] = [topPadding, topPadding];
     const items: TimelineLayoutItem[] = [];
+    const lastTopByLane: [[number, number], [number, number]] = [[-100_000, -100_000], [-100_000, -100_000]];
     for (const sequence of timelineSequences) {
       sequence.items.forEach((item, itemIndex) => {
-        const lane = ((sequence.sessionIndex + itemIndex) % 2) as 0 | 1;
         const markerTop = topPadding + (item.timestampMs - minMs) * pxPerMs;
         const markerHeight = Math.max(item.durationMs ? item.durationMs * pxPerMs : 0, item.kind === "video" ? 16 : 10);
-        const cardHeight = item.kind === "video" ? 96 : 76;
+        const cardHeight = compactCards
+          ? item.kind === "video" ? 76 : 62
+          : item.kind === "video" ? 96 : 76;
+        // Anchor cards to timeline time so they stay aligned with marker position.
         const desiredTop = markerTop - cardHeight / 2;
-        const cardTop = Math.max(desiredTop, laneBottoms[lane]);
-        laneBottoms[lane] = cardTop + cardHeight + 14;
+        const cardTop = clamp(desiredTop, 12, baseHeight - cardHeight - 12);
+
+        // Adaptive lane spread: choose among 4 lanes (left/right x depth) to minimize overlap.
+        let bestSide: 0 | 1 = ((sequence.sessionIndex + itemIndex) % 2) as 0 | 1;
+        let bestDepth: 0 | 1 = 0;
+        let bestScore = -Number.MAX_VALUE;
+        for (const side of [0, 1] as const) {
+          for (const depth of [0, 1] as const) {
+            const gap = cardTop - lastTopByLane[side][depth];
+            const nonOverlapBonus = gap >= laneSpacing ? 120 : 0;
+            const preferredSideBonus = side === (((sequence.sessionIndex + itemIndex) % 2) as 0 | 1) ? 8 : 0;
+            const depthPenalty = depth === 0 ? 4 : 0;
+            const score = gap + nonOverlapBonus + preferredSideBonus + depthPenalty;
+            if (score > bestScore) {
+              bestScore = score;
+              bestSide = side;
+              bestDepth = depth;
+            }
+          }
+        }
+        lastTopByLane[bestSide][bestDepth] = cardTop;
 
         items.push({
           item,
-          lane,
+          laneSide: bestSide === 0 ? "left" : "right",
+          laneDepth: bestDepth,
+          compact: compactCards,
+          cardHeight,
           markerTop,
           markerHeight,
           cardTop,
@@ -563,8 +686,7 @@ export default function StagingExplorer() {
       });
     }
 
-    const packedBottom = Math.max(laneBottoms[0], laneBottoms[1]) + 56;
-    const height = Math.max(baseHeight, packedBottom);
+    const height = baseHeight;
 
     const tickIntervalMinutes = spanMinutes <= 30 ? 5 : spanMinutes <= 120 ? 10 : 15;
     const tickIntervalMs = tickIntervalMinutes * 60_000;
@@ -578,7 +700,35 @@ export default function StagingExplorer() {
     }
 
     return { minMs, maxMs, height, topPadding, items, ticks, pxPerMs };
-  }, [timelineSequences, renderTimelineItems, timelineZoom]);
+  }, [timelineSequences, renderTimelineItems, timelineZoom, alwaysCompactCards]);
+
+  const visibleTimelineLayoutItems = useMemo(() => {
+    if (!timelineLayout) {
+      return [] as Array<{ layoutItem: TimelineLayoutItem; index: number }>;
+    }
+
+    const allItems = timelineLayout.items.map((layoutItem, index) => ({ layoutItem, index }));
+    if (!timelineVirtualizationEnabled) {
+      return allItems;
+    }
+
+    const viewportHeight = timelineViewportRange.height;
+    if (viewportHeight < 80) {
+      // If viewport metrics are not stable yet, avoid culling to prevent flicker/disappear.
+      return allItems;
+    }
+
+    const buffer = Math.max(1200, viewportHeight * 2);
+    const visibleTop = timelineViewportRange.top - buffer;
+    const visibleBottom = timelineViewportRange.top + viewportHeight + buffer;
+    const virtualized = allItems.filter(({ layoutItem }) => {
+      const cardTop = layoutItem.cardTop;
+        const cardBottom = cardTop + layoutItem.cardHeight;
+      return !(cardBottom < visibleTop || cardTop > visibleBottom);
+    });
+
+    return virtualized.length > 0 ? virtualized : allItems;
+  }, [timelineLayout, timelineVirtualizationEnabled, timelineViewportRange]);
 
   const selectedPreviewFile = useMemo(() => {
     const fromFiles = files.find((file) => file.relativePath === selectedPreviewPath);
@@ -663,6 +813,7 @@ export default function StagingExplorer() {
         sortDirection?: SortDirection;
         density?: DensityMode;
         viewMode?: ViewMode;
+        mediaFilter?: MediaFilter;
         showDetailsPane?: boolean;
         columnWidths?: Partial<ColumnWidths>;
         leftPaneWidth?: number;
@@ -670,12 +821,14 @@ export default function StagingExplorer() {
         showSidecarFiles?: boolean;
         timelineGapMode?: TimelineGapMode;
         timelineZoom?: number;
+        timelineVirtualizationEnabled?: boolean;
+        alwaysCompactCards?: boolean;
         preloadVisibleThumbs?: boolean;
+        autoPrewarmEnabled?: boolean;
         manualSequenceGapMs?: number;
         manualSessionGapMs?: number;
         forcedSequenceBreaks?: string[];
         suppressedSequenceBreaks?: string[];
-        collapsedSessionIds?: string[];
         sessionLabels?: Record<string, string>;
       };
 
@@ -693,6 +846,9 @@ export default function StagingExplorer() {
       }
       if (parsed.viewMode === "list" || parsed.viewMode === "timeline") {
         setViewMode(parsed.viewMode);
+      }
+      if (parsed.mediaFilter === "videos" || parsed.mediaFilter === "photos" || parsed.mediaFilter === "all") {
+        setMediaFilter(parsed.mediaFilter);
       }
       if (typeof parsed.showDetailsPane === "boolean") {
         setShowDetailsPane(parsed.showDetailsPane);
@@ -718,10 +874,19 @@ export default function StagingExplorer() {
         setTimelineGapMode(parsed.timelineGapMode);
       }
       if (typeof parsed.timelineZoom === "number") {
-        setTimelineZoom(clamp(parsed.timelineZoom, 0.5, 2.5));
+        setTimelineZoom(clamp(parsed.timelineZoom, 0.2, 4.0));
+      }
+      if (typeof parsed.timelineVirtualizationEnabled === "boolean") {
+        setTimelineVirtualizationEnabled(parsed.timelineVirtualizationEnabled);
+      }
+      if (typeof parsed.alwaysCompactCards === "boolean") {
+        setAlwaysCompactCards(parsed.alwaysCompactCards);
       }
       if (typeof parsed.preloadVisibleThumbs === "boolean") {
         setPreloadVisibleThumbs(parsed.preloadVisibleThumbs);
+      }
+      if (typeof parsed.autoPrewarmEnabled === "boolean") {
+        setAutoPrewarmEnabled(parsed.autoPrewarmEnabled);
       }
       if (typeof parsed.manualSequenceGapMs === "number") {
         setManualSequenceGapMs(parsed.manualSequenceGapMs);
@@ -734,9 +899,6 @@ export default function StagingExplorer() {
       }
       if (Array.isArray(parsed.suppressedSequenceBreaks)) {
         setSuppressedSequenceBreaks(parsed.suppressedSequenceBreaks.filter((value): value is string => typeof value === "string"));
-      }
-      if (Array.isArray(parsed.collapsedSessionIds)) {
-        setCollapsedSessionIds(parsed.collapsedSessionIds.filter((value): value is string => typeof value === "string"));
       }
       if (parsed.sessionLabels && typeof parsed.sessionLabels === "object") {
         setSessionLabels(parsed.sessionLabels);
@@ -752,6 +914,7 @@ export default function StagingExplorer() {
       sortDirection,
       density,
       viewMode,
+      mediaFilter,
       showDetailsPane,
       columnWidths,
       leftPaneWidth,
@@ -759,19 +922,21 @@ export default function StagingExplorer() {
       showSidecarFiles,
       timelineGapMode,
       timelineZoom,
+      timelineVirtualizationEnabled,
+      alwaysCompactCards,
       preloadVisibleThumbs,
+      autoPrewarmEnabled,
       manualSequenceGapMs,
       manualSessionGapMs,
       forcedSequenceBreaks,
       suppressedSequenceBreaks,
-      collapsedSessionIds,
       sessionLabels,
     };
     try {
       window.localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify(payload));
     } catch {
     }
-  }, [searchQuery, sortColumn, sortDirection, density, viewMode, showDetailsPane, columnWidths, leftPaneWidth, rightPaneWidth, showSidecarFiles, timelineGapMode, timelineZoom, preloadVisibleThumbs, manualSequenceGapMs, manualSessionGapMs, forcedSequenceBreaks, suppressedSequenceBreaks, collapsedSessionIds, sessionLabels]);
+  }, [searchQuery, sortColumn, sortDirection, density, viewMode, mediaFilter, showDetailsPane, columnWidths, leftPaneWidth, rightPaneWidth, showSidecarFiles, timelineGapMode, timelineZoom, timelineVirtualizationEnabled, alwaysCompactCards, preloadVisibleThumbs, autoPrewarmEnabled, manualSequenceGapMs, manualSessionGapMs, forcedSequenceBreaks, suppressedSequenceBreaks, sessionLabels]);
 
   useEffect(() => {
     if (!stagingDir || !selectedDay?.relativePath) {
@@ -785,6 +950,7 @@ export default function StagingExplorer() {
     void invoke<TimelineMediaItem[]>("load_staging_timeline", {
       stagingDir,
       relativeDir: selectedDay.relativePath,
+      fastMode: true,
     })
       .then((items) => {
         if (!cancelled) {
@@ -810,8 +976,11 @@ export default function StagingExplorer() {
 
   useEffect(() => {
     setTimelineThumbByPath({});
+    setTimelineVideoPreviewByPath({});
     setTimelineHoverPreview(null);
+    setTimelineHoverVideoError(false);
     loadingTimelineThumbsRef.current.clear();
+    loadingTimelineVideoPreviewsRef.current.clear();
     queuedTimelineThumbsRef.current.clear();
     timelineThumbQueueRef.current = [];
     timelineThumbQueueOrderRef.current = 0;
@@ -827,6 +996,29 @@ export default function StagingExplorer() {
     schedulePreloadVisibleTimelineThumbs();
   }, [timelineLayout, viewMode, preloadVisibleThumbs, timelineZoom]);
 
+  useEffect(() => {
+    if (viewMode !== "timeline") {
+      return;
+    }
+
+    for (const { layoutItem } of visibleTimelineLayoutItems) {
+      const kind = layoutItem.item.kind as "image" | "video";
+      enqueueTimelineThumb(layoutItem.item.relativePath, kind, kind === "video" ? 4 : 3);
+    }
+  }, [visibleTimelineLayoutItems, viewMode, stagingDir]);
+
+  useEffect(() => {
+    if (viewMode !== "timeline" || !timelineViewportRef.current) {
+      return;
+    }
+
+    const viewport = timelineViewportRef.current;
+    setTimelineViewportRange({
+      top: viewport.scrollTop,
+      height: viewport.clientHeight,
+    });
+  }, [viewMode, timelineLayout]);
+
   useEffect(() => () => {
     if (timelineThumbPreloadRafRef.current !== null) {
       window.cancelAnimationFrame(timelineThumbPreloadRafRef.current);
@@ -836,9 +1028,16 @@ export default function StagingExplorer() {
       window.clearTimeout(timelineScrollIdleTimerRef.current);
       timelineScrollIdleTimerRef.current = null;
     }
+    if (timelineViewportRafRef.current !== null) {
+      window.cancelAnimationFrame(timelineViewportRafRef.current);
+      timelineViewportRafRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
+    if (!autoPrewarmEnabled) {
+      return;
+    }
     if (!stagingDir || directories.length === 0) {
       return;
     }
@@ -854,7 +1053,35 @@ export default function StagingExplorer() {
     }, 1400);
 
     return () => window.clearTimeout(timer);
-  }, [stagingDir, directories.length]);
+  }, [autoPrewarmEnabled, stagingDir, directories.length]);
+
+  useEffect(() => {
+    if (!autoPrewarmEnabled) {
+      return;
+    }
+    if (!stagingDir || !selectedDay?.relativePath || timelineItems.length === 0) {
+      return;
+    }
+
+    const key = `${stagingDir}|${selectedDay.relativePath}`;
+    if (thumbPrewarmStartedForRef.current.has(key)) {
+      return;
+    }
+    thumbPrewarmStartedForRef.current.add(key);
+
+    const timer = window.setTimeout(() => {
+      void invoke<number>("prewarm_staging_timeline_thumbnails", {
+        stagingDir,
+        relativeDir: selectedDay.relativePath,
+        maxWidth: 220,
+        maxHeight: 140,
+        maxItems: 220,
+      }).catch(() => {
+      });
+    }, 900);
+
+    return () => window.clearTimeout(timer);
+  }, [autoPrewarmEnabled, stagingDir, selectedDay?.relativePath, timelineItems.length]);
 
   useEffect(() => {
     if (!contextMenuLayerRef.current) {
@@ -998,6 +1225,7 @@ export default function StagingExplorer() {
         setContextMenuFilePath(null);
         setContextMenuTagOpen(false);
         setContextMenuFocusIndex(0);
+        setTimelineSessionMenu(null);
       }
     }
 
@@ -1012,6 +1240,9 @@ export default function StagingExplorer() {
         setContextMenuFilePath(null);
         setContextMenuTagOpen(false);
         setContextMenuFocusIndex(0);
+      }
+      if (!target.closest(".staging-session-menu")) {
+        setTimelineSessionMenu(null);
       }
     }
 
@@ -1097,6 +1328,7 @@ export default function StagingExplorer() {
   function onRowClick(filePath: string, event: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
     setContextMenuFilePath(null);
     setContextMenuTagOpen(false);
+    setTimelineSessionMenu(null);
     setSelectedPreviewPath(filePath);
 
     if (event.ctrlKey || event.metaKey) {
@@ -1125,6 +1357,7 @@ export default function StagingExplorer() {
     setContextMenuFilePath(relativePath);
     setContextMenuTagOpen(false);
     setContextMenuFocusIndex(0);
+    setTimelineSessionMenu(null);
   }
 
   async function revealFile(relativePath: string) {
@@ -1137,6 +1370,19 @@ export default function StagingExplorer() {
       await invoke("reveal_in_explorer", { path: toAbsolutePath(relativePath) });
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  async function openFileInSystemViewer(relativePath: string) {
+    if (!stagingDir) {
+      return;
+    }
+
+    setError(null);
+    try {
+      await invoke("open_in_default_app", { path: toAbsolutePath(relativePath) });
+    } catch (e) {
+      setError(`Could not open file in system viewer: ${String(e)}`);
     }
   }
 
@@ -1285,16 +1531,105 @@ export default function StagingExplorer() {
     setSuppressedSequenceBreaks((current) => current.filter((value) => value !== relativePath));
   }
 
-  function toggleSessionCollapsed(sessionId: string) {
-    setCollapsedSessionIds((current) => current.includes(sessionId)
-      ? current.filter((value) => value !== sessionId)
-      : [...current, sessionId]);
-  }
-
   function selectSession(session: TimelineSession) {
     const paths = session.items.map((item) => item.relativePath).filter((path) => selectionOrder.includes(path));
     setCheckedPaths(paths);
     setLastCheckedPath(paths.length > 0 ? paths[paths.length - 1] : null);
+  }
+
+  function findClosestSplitPath(timestampMs: number, minIndex: number, maxIndex: number): string | null {
+    if (maxIndex - minIndex < 1) {
+      return null;
+    }
+
+    const clampedMin = Math.max(1, minIndex + 1);
+    const clampedMax = Math.min(visibleTimelineItems.length - 1, maxIndex);
+    if (clampedMin > clampedMax) {
+      return null;
+    }
+
+    let bestPath: string | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let index = clampedMin; index <= clampedMax; index += 1) {
+      const item = visibleTimelineItems[index];
+      const distance = Math.abs(item.timestampMs - timestampMs);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPath = item.relativePath;
+      }
+    }
+
+    return bestPath;
+  }
+
+  function splitSessionAtTimestamp(session: TimelineSession, timestampMs: number) {
+    const indices = session.items
+      .map((item) => timelineItemIndexByPath.get(item.relativePath))
+      .filter((index): index is number => typeof index === "number")
+      .sort((left, right) => left - right);
+    if (indices.length < 2) {
+      return;
+    }
+
+    const breakPath = findClosestSplitPath(timestampMs, indices[0], indices[indices.length - 1]);
+    if (breakPath) {
+      splitSequenceBefore(breakPath);
+    }
+  }
+
+  function moveSessionBoundary(currentBreakPath: string | null, timestampMs: number, minIndex: number, maxIndex: number): string | null {
+    const nextBreakPath = findClosestSplitPath(timestampMs, minIndex, maxIndex);
+    if (!nextBreakPath) {
+      return currentBreakPath;
+    }
+
+    if (currentBreakPath === nextBreakPath) {
+      return currentBreakPath;
+    }
+
+    if (currentBreakPath) {
+      mergeSequenceWithPrevious(currentBreakPath);
+    }
+    splitSequenceBefore(nextBreakPath);
+    return nextBreakPath;
+  }
+
+  function openTimelineSessionMenu(session: TimelineSession, event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const timestampMs = clientYToTimelineTimestamp(event.clientY) ?? session.startMs;
+    const indices = session.items
+      .map((item) => timelineItemIndexByPath.get(item.relativePath))
+      .filter((index): index is number => typeof index === "number")
+      .sort((left, right) => left - right);
+
+    const minIndex = indices[0] ?? 0;
+    const maxIndex = indices[indices.length - 1] ?? 0;
+    const splitBreakPath = indices.length >= 2
+      ? findClosestSplitPath(timestampMs, minIndex, maxIndex)
+      : null;
+    const boundaryBreakPath = minIndex > 0
+      ? visibleTimelineItems[minIndex]?.relativePath ?? null
+      : null;
+    const clearBreakPath = [splitBreakPath, boundaryBreakPath].find((path) =>
+      Boolean(path && (forcedSequenceBreaks.includes(path) || suppressedSequenceBreaks.includes(path))),
+    ) ?? null;
+
+    const menuWidth = 230;
+    const menuHeight = 220;
+    const margin = 8;
+    const x = Math.max(margin, Math.min(event.clientX, window.innerWidth - menuWidth - margin));
+    const y = Math.max(margin, Math.min(event.clientY, window.innerHeight - menuHeight - margin));
+
+    setTimelineSessionMenu({
+      sessionId: session.id,
+      x,
+      y,
+      splitBreakPath,
+      boundaryBreakPath,
+      clearBreakPath,
+    });
   }
 
   async function tagSession(session: TimelineSession) {
@@ -1323,15 +1658,14 @@ export default function StagingExplorer() {
   function resetTimelineOverrides() {
     setForcedSequenceBreaks([]);
     setSuppressedSequenceBreaks([]);
-    setCollapsedSessionIds([]);
   }
 
   function setZoomLevel(nextZoom: number) {
-    setTimelineZoom(clamp(nextZoom, 0.5, 2.5));
+    setTimelineZoom(clamp(nextZoom, 0.2, 4.0));
   }
 
   function nudgeZoom(delta: number) {
-    setTimelineZoom((current) => clamp(current + delta, 0.5, 2.5));
+    setTimelineZoom((current) => clamp(current + delta, 0.2, 4.0));
   }
 
   function processTimelineThumbQueue() {
@@ -1354,8 +1688,8 @@ export default function StagingExplorer() {
       const path = toAbsolutePath(next.relativePath);
       const command = next.kind === "video" ? "read_video_thumbnail_base64" : "read_image_thumbnail_base64";
       const payload = next.kind === "video"
-        ? { path, maxWidth: 220, maxHeight: 140 }
-        : { path, maxWidth: 220, maxHeight: 140, quality: 68 };
+        ? { path, maxWidth: 220, maxHeight: 140, stagingDir: stagingDir }
+        : { path, maxWidth: 220, maxHeight: 140, quality: 68, stagingDir: stagingDir };
 
       void invoke<string>(command, payload)
         .then((base64) => {
@@ -1431,6 +1765,17 @@ export default function StagingExplorer() {
   }
 
   function onTimelineViewportScroll() {
+    const viewport = timelineViewportRef.current;
+    if (viewport) {
+      if (timelineViewportRafRef.current !== null) {
+        window.cancelAnimationFrame(timelineViewportRafRef.current);
+      }
+      timelineViewportRafRef.current = window.requestAnimationFrame(() => {
+        timelineViewportRafRef.current = null;
+        setTimelineViewportRange({ top: viewport.scrollTop, height: viewport.clientHeight });
+      });
+    }
+
     timelineScrollingRef.current = true;
     if (timelineScrollIdleTimerRef.current !== null) {
       window.clearTimeout(timelineScrollIdleTimerRef.current);
@@ -1447,6 +1792,96 @@ export default function StagingExplorer() {
   function loadTimelineThumb(relativePath: string, kind: "image" | "video", priority = 3) {
     enqueueTimelineThumb(relativePath, kind, priority);
   }
+
+  function loadTimelineVideoPreview(relativePath: string) {
+    if (!stagingDir || timelineVideoPreviewByPath[relativePath] || loadingTimelineVideoPreviewsRef.current.has(relativePath)) {
+      return;
+    }
+
+    loadingTimelineVideoPreviewsRef.current.add(relativePath);
+    void invoke<string>("read_video_hover_preview_base64", {
+      path: toAbsolutePath(relativePath),
+      maxWidth: 480,
+      maxHeight: 270,
+      seconds: 2.2,
+      stagingDir,
+    })
+      .then((base64) => {
+        setTimelineVideoPreviewByPath((current) => ({
+          ...current,
+          [relativePath]: `data:video/mp4;base64,${base64}`,
+        }));
+      })
+      .catch(() => {
+      })
+      .finally(() => {
+        loadingTimelineVideoPreviewsRef.current.delete(relativePath);
+      });
+  }
+
+  function clientYToTimelineTimestamp(clientY: number): number | null {
+    const viewport = timelineViewportRef.current;
+    if (!viewport || !timelineLayout) {
+      return null;
+    }
+
+    const rect = viewport.getBoundingClientRect();
+    const yInViewport = clientY - rect.top;
+    const yInTimeline = viewport.scrollTop + yInViewport;
+    const relativeY = clamp(yInTimeline - timelineLayout.topPadding, 0, timelineLayout.height - timelineLayout.topPadding * 2);
+    return Math.round(timelineLayout.minMs + (relativeY / timelineLayout.pxPerMs));
+  }
+
+  useEffect(() => {
+    if (!draggingBoundary) {
+      return;
+    }
+    const activeBoundary = draggingBoundary;
+
+    function onMouseMove(event: MouseEvent) {
+      const timestampMs = clientYToTimelineTimestamp(event.clientY);
+      if (timestampMs === null) {
+        return;
+      }
+
+      const leftSession = timelineSessions[activeBoundary.boundaryIndex];
+      const rightSession = timelineSessions[activeBoundary.boundaryIndex + 1];
+      if (!leftSession || !rightSession) {
+        return;
+      }
+
+      const leftIndices = leftSession.items
+        .map((item) => timelineItemIndexByPath.get(item.relativePath))
+        .filter((value): value is number => typeof value === "number")
+        .sort((left, right) => left - right);
+      const rightIndices = rightSession.items
+        .map((item) => timelineItemIndexByPath.get(item.relativePath))
+        .filter((value): value is number => typeof value === "number")
+        .sort((left, right) => left - right);
+
+      if (leftIndices.length === 0 || rightIndices.length === 0) {
+        return;
+      }
+
+      const minIndex = leftIndices[0];
+      const maxIndex = rightIndices[rightIndices.length - 1];
+      const nextBreakPath = moveSessionBoundary(activeBoundary.currentBreakPath, timestampMs, minIndex, maxIndex);
+      if (nextBreakPath !== activeBoundary.currentBreakPath) {
+        setDraggingBoundary((current) => current ? { ...current, currentBreakPath: nextBreakPath } : current);
+      }
+    }
+
+    function onMouseUp() {
+      setDraggingBoundary(null);
+    }
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [draggingBoundary, timelineSessions, timelineItemIndexByPath, timelineLayout]);
 
   function onHeaderClick(column: SortColumn) {
     if (sortColumn === column) {
@@ -1574,6 +2009,65 @@ export default function StagingExplorer() {
 
   const activeItemCount = viewMode === "timeline" ? renderTimelineItems.length : files.length;
   const sessionCount = timelineSessions.length;
+
+  const sessionBands = useMemo((): TimelineSessionBand[] => {
+    if (!timelineLayout) {
+      return [];
+    }
+
+    return timelineSessions.map((session, index) => {
+      const top = timelineLayout.topPadding + (session.startMs - timelineLayout.minMs) * timelineLayout.pxPerMs;
+      const bottom = timelineLayout.topPadding + (session.endMs - timelineLayout.minMs) * timelineLayout.pxPerMs;
+      return {
+        sessionId: session.id,
+        sessionIndex: session.sessionIndex,
+        label: session.label,
+        top,
+        height: Math.max(24, bottom - top),
+        color: SESSION_BAND_COLORS[index % SESSION_BAND_COLORS.length],
+        startMs: session.startMs,
+        endMs: session.endMs,
+      };
+    });
+  }, [timelineLayout, timelineSessions]);
+
+  const sessionBoundaries = useMemo((): TimelineSessionBoundary[] => {
+    if (timelineSessions.length < 2 || !timelineLayout) {
+      return [];
+    }
+
+    const boundaries: TimelineSessionBoundary[] = [];
+    for (let index = 0; index < timelineSessions.length - 1; index += 1) {
+      const left = timelineSessions[index];
+      const right = timelineSessions[index + 1];
+      const top = timelineLayout.topPadding + (right.startMs - timelineLayout.minMs) * timelineLayout.pxPerMs;
+      const leftEndTop = timelineLayout.topPadding + (left.endMs - timelineLayout.minMs) * timelineLayout.pxPerMs;
+      const rightFirstSequence = right.sequences[0];
+      const gapMs = Math.max(0, right.startMs - left.endMs);
+      boundaries.push({
+        boundaryIndex: index,
+        top,
+        gapMs,
+        leftEndMs: left.endMs,
+        rightStartMs: right.startMs,
+        gapTop: Math.min(leftEndTop, top),
+        gapHeight: Math.max(14, Math.abs(top - leftEndTop)),
+        leftSessionLabel: left.label,
+        rightSessionLabel: right.label,
+        leftSessionIndex: left.sessionIndex,
+        rightSessionIndex: right.sessionIndex,
+        currentBreakPath: rightFirstSequence?.breakBeforePath ?? null,
+      });
+    }
+
+    return boundaries;
+  }, [timelineSessions, timelineLayout]);
+
+  const hoveredGapBoundary = useMemo(
+    () => (timelineGapHover ? sessionBoundaries.find((entry) => entry.boundaryIndex === timelineGapHover.boundaryIndex) ?? null : null),
+    [timelineGapHover, sessionBoundaries],
+  );
+
   const timelineDynamicCss = useMemo(() => {
     if (!timelineLayout) {
       return "";
@@ -1588,11 +2082,6 @@ export default function StagingExplorer() {
       const bottom = timelineLayout.topPadding + (sequence.endMs - timelineLayout.minMs) * timelineLayout.pxPerMs;
       rules.push(`.timeline-sequence-${index}{top:${top}px;height:${Math.max(26, bottom - top)}px;}`);
     });
-    timelineLayout.items.forEach((layoutItem, index) => {
-      rules.push(`.timeline-marker-${index}{top:${layoutItem.markerTop}px;height:${layoutItem.markerHeight}px;}`);
-      rules.push(`.timeline-card-${index}{top:${layoutItem.cardTop}px;animation-delay:${index * 28}ms;}`);
-      rules.push(`.timeline-connector-${index}{top:${layoutItem.markerTop - layoutItem.cardTop + 6}px;}`);
-    });
     return rules.join("\n");
   }, [timelineLayout, timelineSequences]);
 
@@ -1605,6 +2094,17 @@ export default function StagingExplorer() {
     const y = Math.min(window.innerHeight - 260, timelineHoverPreview.y + 18);
     return `.staging-timeline-hover-preview{left:${x}px;top:${y}px;}`;
   }, [timelineHoverPreview]);
+
+  const timelineHoverVideoSrc = useMemo(() => {
+    if (!timelineHoverPreview || timelineHoverPreview.kind !== "video") {
+      return null;
+    }
+    return timelineVideoPreviewByPath[timelineHoverPreview.relativePath] ?? null;
+  }, [timelineHoverPreview, timelineVideoPreviewByPath]);
+
+  useEffect(() => {
+    setTimelineHoverVideoError(false);
+  }, [timelineHoverPreview?.relativePath, timelineHoverPreview?.kind]);
 
   return (
     <div className="p-4 h-full">
@@ -1652,6 +2152,29 @@ export default function StagingExplorer() {
                 Comfortable
               </button>
             </div>
+            <div className="flex items-center rounded-md border border-surface-600 overflow-hidden" title="Filter media shown in list and timeline">
+              <button
+                className={`px-2 py-1.5 text-xs ${mediaFilter === "videos" ? "bg-accent/20 text-white" : "bg-surface-900 text-gray-300"}`}
+                onClick={() => setMediaFilter("videos")}
+                type="button"
+              >
+                Videos
+              </button>
+              <button
+                className={`px-2 py-1.5 text-xs border-l border-surface-600 ${mediaFilter === "photos" ? "bg-accent/20 text-white" : "bg-surface-900 text-gray-300"}`}
+                onClick={() => setMediaFilter("photos")}
+                type="button"
+              >
+                Photos
+              </button>
+              <button
+                className={`px-2 py-1.5 text-xs border-l border-surface-600 ${mediaFilter === "all" ? "bg-accent/20 text-white" : "bg-surface-900 text-gray-300"}`}
+                onClick={() => setMediaFilter("all")}
+                type="button"
+              >
+                All
+              </button>
+            </div>
             <button
               className={`px-3 py-1.5 text-xs rounded border ${showSidecarFiles ? "border-accent bg-accent/20 text-white" : "border-surface-600 bg-surface-900 text-gray-400"}`}
               onClick={() => setShowSidecarFiles((v) => !v)}
@@ -1668,6 +2191,16 @@ export default function StagingExplorer() {
             >
               {showDetailsPane ? "Hide Details" : "Show Details"}
             </button>
+            {selectedPreviewFile?.isVideo && (
+              <button
+                className="btn-secondary px-3 py-1.5 text-xs"
+                onClick={() => void openFileInSystemViewer(selectedPreviewFile.relativePath)}
+                type="button"
+                title="Open selected video in your default system player"
+              >
+                Open Video
+              </button>
+            )}
             <div className="ml-auto text-xs text-gray-500">
               {viewMode === "timeline" ? `Timeline items: ${activeItemCount} • Sequences: ${timelineSequences.length} • Sessions: ${sessionCount}` : `Items: ${activeItemCount}`} • Checked: {checkedPaths.length}
             </div>
@@ -1833,7 +2366,9 @@ export default function StagingExplorer() {
                       }
 
                       event.preventDefault();
-                      const delta = event.deltaY < 0 ? 0.08 : -0.08;
+                      // Larger nudge at higher zoom levels for consistent perceptual feel.
+                      const step = clamp(timelineZoom * 0.12, 0.06, 0.28);
+                      const delta = event.deltaY < 0 ? step : -step;
                       nudgeZoom(delta);
                     }}
                     title="Scroll to move timeline. Use Ctrl + Mouse Wheel to zoom."
@@ -1894,8 +2429,8 @@ export default function StagingExplorer() {
                           <input
                             className="w-28"
                             type="range"
-                            min={0.5}
-                            max={2.5}
+                            min={0.2}
+                            max={4.0}
                             step={0.05}
                             value={timelineZoom}
                             onChange={(event) => setZoomLevel(Number(event.target.value))}
@@ -1908,11 +2443,38 @@ export default function StagingExplorer() {
                         <label className="flex items-center gap-2 text-xs text-gray-300">
                           <input
                             type="checkbox"
+                            checked={timelineVirtualizationEnabled}
+                            onChange={(event) => setTimelineVirtualizationEnabled(event.target.checked)}
+                            className="h-4 w-4"
+                          />
+                          Virtualize timeline cards
+                        </label>
+                        <label className="flex items-center gap-2 text-xs text-gray-300">
+                          <input
+                            type="checkbox"
+                            checked={alwaysCompactCards}
+                            onChange={(event) => setAlwaysCompactCards(event.target.checked)}
+                            className="h-4 w-4"
+                          />
+                          Always compact cards
+                        </label>
+                        <label className="flex items-center gap-2 text-xs text-gray-300">
+                          <input
+                            type="checkbox"
                             checked={preloadVisibleThumbs}
                             onChange={(event) => setPreloadVisibleThumbs(event.target.checked)}
                             className="h-4 w-4"
                           />
-                          Preload visible thumbs
+                          Preload nearby thumbs
+                        </label>
+                        <label className="flex items-center gap-2 text-xs text-gray-300">
+                          <input
+                            type="checkbox"
+                            checked={autoPrewarmEnabled}
+                            onChange={(event) => setAutoPrewarmEnabled(event.target.checked)}
+                            className="h-4 w-4"
+                          />
+                          Background prewarm
                         </label>
                         <button className="btn-secondary px-3 py-1.5 text-xs" onClick={resetTimelineOverrides} type="button">
                           Reset Overrides
@@ -1920,83 +2482,8 @@ export default function StagingExplorer() {
                       </div>
                     </div>
 
-                    <div className="mb-4 grid gap-3 xl:grid-cols-2">
-                      {timelineSessions.map((session) => {
-                        const collapsed = collapsedSessionIds.includes(session.id);
-                        return (
-                          <div key={session.id} className="rounded-2xl border border-surface-700 bg-surface-850/70 p-4">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <input
-                                className="input-field h-8 max-w-[220px] text-sm"
-                                value={sessionLabels[session.id] ?? session.label}
-                                onChange={(event) => setSessionLabels((current) => ({ ...current, [session.id]: event.target.value }))}
-                                placeholder={`Session ${session.sessionIndex + 1}`}
-                              />
-                              <div className="text-xs text-gray-400">{formatTimelineTick(session.startMs)} to {formatTimelineTick(session.endMs)}</div>
-                              <button className="btn-secondary px-3 py-1.5 text-xs ml-auto" type="button" onClick={() => toggleSessionCollapsed(session.id)}>
-                                {collapsed ? "Expand" : "Collapse"}
-                              </button>
-                              <button className="btn-secondary px-3 py-1.5 text-xs" type="button" onClick={() => selectSession(session)}>
-                                Select
-                              </button>
-                              <button className="btn-secondary px-3 py-1.5 text-xs" type="button" onClick={() => void tagSession(session)}>
-                                Tag Session
-                              </button>
-                            </div>
-                            <div className="mt-2 text-xs text-gray-500">
-                              {session.sequences.length} sequence{session.sequences.length === 1 ? "" : "s"} • {session.items.length} item{session.items.length === 1 ? "" : "s"}
-                            </div>
-                            {!collapsed && (
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              {session.sequences.map((sequence) => {
-                                const breakPath = sequence.breakBeforePath;
-                                const hasForcedBreak = breakPath ? forcedSequenceBreaks.includes(breakPath) : false;
-                                const hasSuppressedBreak = breakPath ? suppressedSequenceBreaks.includes(breakPath) : false;
-                                return (
-                                  <div key={sequence.id} className="rounded-xl border border-surface-700 bg-surface-900/80 px-3 py-2 text-xs text-gray-300">
-                                    <div className="font-medium text-white">{formatTimelineTick(sequence.startMs)} to {formatTimelineTick(sequence.endMs)}</div>
-                                    <div className="mt-1 text-gray-500">{sequence.items.length} item{sequence.items.length === 1 ? "" : "s"}</div>
-                                    {breakPath && (
-                                      <div className="mt-2 flex gap-2">
-                                        <button className="btn-secondary px-2 py-1 text-[11px]" type="button" onClick={() => mergeSequenceWithPrevious(breakPath)}>
-                                          Merge Prev
-                                        </button>
-                                        <button className="btn-secondary px-2 py-1 text-[11px]" type="button" onClick={() => splitSequenceBefore(breakPath)}>
-                                          Split Here
-                                        </button>
-                                        {(hasForcedBreak || hasSuppressedBreak) && (
-                                          <button className="btn-secondary px-2 py-1 text-[11px]" type="button" onClick={() => clearSequenceOverride(breakPath)}>
-                                            Clear
-                                          </button>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <div className="mb-4 grid gap-3 md:grid-cols-3">
-                      <div className="rounded-xl border border-surface-700 bg-surface-850/70 px-4 py-3">
-                        <div className="text-[11px] uppercase tracking-[0.24em] text-cyan-300/80">Detected Sessions</div>
-                        <div className="mt-1 text-2xl font-semibold text-white">{sessionCount}</div>
-                        <div className="text-xs text-gray-400">Large gaps create new match blocks.</div>
-                      </div>
-                      <div className="rounded-xl border border-surface-700 bg-surface-850/70 px-4 py-3">
-                        <div className="text-[11px] uppercase tracking-[0.24em] text-emerald-300/80">Detected Sequences</div>
-                        <div className="mt-1 text-2xl font-semibold text-white">{timelineSequences.length}</div>
-                        <div className="text-xs text-gray-400">Short gaps keep clips together inside a sequence.</div>
-                      </div>
-                      <div className="rounded-xl border border-surface-700 bg-surface-850/70 px-4 py-3">
-                        <div className="text-[11px] uppercase tracking-[0.24em] text-amber-300/80">Covered Range</div>
-                        <div className="mt-1 text-sm font-semibold text-white">{formatTimelineTick(timelineLayout.minMs)} to {formatTimelineTick(timelineLayout.maxMs)}</div>
-                        <div className="text-xs text-gray-400">Video bars use measured duration from ffprobe when available.</div>
-                      </div>
+                    <div className="mb-3 rounded-xl border border-surface-700 bg-surface-850/70 px-4 py-2 text-xs text-gray-400">
+                      Sessions are shown as color bands on the timeline. Click a band to split a session there, or drag a boundary handle to rebalance adjacent sessions.
                     </div>
 
                     <div className="staging-timeline staging-timeline-day rounded-[28px] border border-surface-700 bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.12),_transparent_36%),linear-gradient(180deg,rgba(15,23,42,0.98),rgba(2,6,23,0.92))]">
@@ -2008,9 +2495,149 @@ export default function StagingExplorer() {
                         </div>
                       ))}
 
+                      {sessionBands.map((band) => {
+                        const session = timelineSessions.find((entry) => entry.id === band.sessionId);
+                        return (
+                          <div
+                            key={band.sessionId}
+                            className="staging-timeline-session-band"
+                            style={{ top: band.top, height: band.height, backgroundColor: band.color }}
+                            onContextMenu={(event) => {
+                              if (!session) {
+                                return;
+                              }
+                              openTimelineSessionMenu(session, event);
+                            }}
+                            onClick={(event) => {
+                              const timestampMs = clientYToTimelineTimestamp(event.clientY);
+                              if (!session || timestampMs === null) {
+                                return;
+                              }
+                              splitSessionAtTimestamp(session, timestampMs);
+                            }}
+                            onDoubleClick={() => {
+                              if (session) {
+                                selectSession(session);
+                              }
+                            }}
+                            title={`${band.label} (${formatTimelineTick(band.startMs)} to ${formatTimelineTick(band.endMs)}). Click to split. Double-click to select session.`}
+                          >
+                            <div className="staging-timeline-session-band-label">
+                              <span>{band.label}</span>
+                              <span>{formatTimelineTick(band.startMs)} to {formatTimelineTick(band.endMs)}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {sessionBoundaries.map((boundary) => {
+                        const leftSession = timelineSessions.find((session) => session.sessionIndex === boundary.leftSessionIndex);
+                        const rightSession = timelineSessions.find((session) => session.sessionIndex === boundary.rightSessionIndex);
+                        if (!leftSession || !rightSession) {
+                          return null;
+                        }
+
+                        const leftIndices = leftSession.items
+                          .map((item) => timelineItemIndexByPath.get(item.relativePath))
+                          .filter((value): value is number => typeof value === "number")
+                          .sort((left, right) => left - right);
+                        const rightIndices = rightSession.items
+                          .map((item) => timelineItemIndexByPath.get(item.relativePath))
+                          .filter((value): value is number => typeof value === "number")
+                          .sort((left, right) => left - right);
+                        const dragDisabled = leftIndices.length < 1 || rightIndices.length < 1 || rightIndices[rightIndices.length - 1] - leftIndices[0] < 2;
+
+                        return (
+                          <div key={`session-boundary-${boundary.boundaryIndex}`}>
+                            <div
+                              className="staging-timeline-gap-hit-area"
+                              style={{ top: boundary.gapTop, height: boundary.gapHeight }}
+                              onMouseEnter={(event) => {
+                                setTimelineGapHover({
+                                  boundaryIndex: boundary.boundaryIndex,
+                                  x: event.clientX,
+                                  y: event.clientY,
+                                });
+                              }}
+                              onMouseMove={(event) => {
+                                setTimelineGapHover((current) => current && current.boundaryIndex === boundary.boundaryIndex
+                                  ? { ...current, x: event.clientX, y: event.clientY }
+                                  : {
+                                      boundaryIndex: boundary.boundaryIndex,
+                                      x: event.clientX,
+                                      y: event.clientY,
+                                    });
+                              }}
+                              onMouseLeave={() => {
+                                setTimelineGapHover((current) =>
+                                  current?.boundaryIndex === boundary.boundaryIndex ? null : current,
+                                );
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="staging-timeline-session-boundary"
+                              style={{ top: boundary.top }}
+                              onMouseEnter={(event) => {
+                                setTimelineGapHover({
+                                  boundaryIndex: boundary.boundaryIndex,
+                                  x: event.clientX,
+                                  y: event.clientY,
+                                });
+                              }}
+                              onMouseMove={(event) => {
+                                setTimelineGapHover((current) => current && current.boundaryIndex === boundary.boundaryIndex
+                                  ? { ...current, x: event.clientX, y: event.clientY }
+                                  : {
+                                      boundaryIndex: boundary.boundaryIndex,
+                                      x: event.clientX,
+                                      y: event.clientY,
+                                    });
+                              }}
+                              onMouseLeave={() => {
+                                setTimelineGapHover((current) =>
+                                  current?.boundaryIndex === boundary.boundaryIndex ? null : current,
+                                );
+                              }}
+                              onMouseDown={(event) => {
+                                event.preventDefault();
+                                if (dragDisabled) {
+                                  return;
+                                }
+                                setDraggingBoundary({
+                                  boundaryIndex: boundary.boundaryIndex,
+                                  currentBreakPath: boundary.currentBreakPath,
+                                });
+                              }}
+                              disabled={dragDisabled}
+                              title={`Drag to move boundary between ${boundary.leftSessionLabel} and ${boundary.rightSessionLabel}`}
+                            >
+                              <span className="staging-timeline-session-boundary-line" />
+                              <span className="staging-timeline-session-boundary-handle">Drag split</span>
+                            </button>
+                          </div>
+                        );
+                      })}
+
+                      {timelineGapHover && hoveredGapBoundary && (
+                        <div
+                          className="staging-timeline-gap-tooltip"
+                          style={{
+                            left: Math.min(window.innerWidth - 280, timelineGapHover.x + 14),
+                            top: Math.min(window.innerHeight - 120, timelineGapHover.y + 14),
+                          }}
+                        >
+                          <div className="staging-timeline-gap-tooltip-title">Session Gap</div>
+                          <div className="staging-timeline-gap-tooltip-duration">{formatGapDuration(hoveredGapBoundary.gapMs)}</div>
+                          <div className="staging-timeline-gap-tooltip-range">
+                            {formatClock(hoveredGapBoundary.leftEndMs)} to {formatClock(hoveredGapBoundary.rightStartMs)}
+                          </div>
+                        </div>
+                      )}
+
                       {timelineSequences.map((sequence, index) => (
                         <div key={sequence.id} className={`staging-timeline-sequence timeline-sequence-${index}`}>
-                          <div className="staging-timeline-sequence-label">
+                          <div className={`staging-timeline-sequence-label ${index % 2 === 0 ? "is-right" : "is-left"}`}>
                             <span>Session {sequence.sessionIndex + 1}</span>
                             <span>Sequence {sequence.sequenceIndex + 1}</span>
                             <span>{sequence.items.length} item{sequence.items.length === 1 ? "" : "s"}</span>
@@ -2018,7 +2645,7 @@ export default function StagingExplorer() {
                         </div>
                       ))}
 
-                      {timelineLayout.items.map((layoutItem, index) => {
+                      {visibleTimelineLayoutItems.map(({ layoutItem, index }) => {
                         const entry = tagEntryByPath.get(layoutItem.item.relativePath);
                         const checked = checkedPaths.includes(layoutItem.item.relativePath);
                         const selectedPreview = selectedPreviewPath === layoutItem.item.relativePath;
@@ -2029,11 +2656,18 @@ export default function StagingExplorer() {
 
                         return (
                           <div key={layoutItem.item.relativePath}>
-                            <div className={`staging-timeline-marker timeline-marker-${index} ${layoutItem.item.kind === "video" ? "is-video" : "is-image"}`} />
                             <div
-                              className={`staging-timeline-card timeline-card-${index} ${selectedPreview ? "is-selected" : ""} ${layoutItem.lane === 0 ? "is-left" : "is-right"}`}
+                              className={`staging-timeline-marker ${layoutItem.item.kind === "video" ? "is-video" : "is-image"}`}
+                              style={{ top: layoutItem.markerTop, height: layoutItem.markerHeight }}
+                            />
+                            <div
+                              className={`staging-timeline-card ${selectedPreview ? "is-selected" : ""} ${layoutItem.laneSide === "left" ? "is-left" : "is-right"} ${layoutItem.laneDepth === 1 ? "lane-deep" : ""} ${layoutItem.compact ? "is-compact" : ""}`}
+                              style={{ top: layoutItem.cardTop }}
                               onMouseEnter={(event) => {
                                 loadTimelineThumb(layoutItem.item.relativePath, kind, 4);
+                                if (kind === "video") {
+                                  loadTimelineVideoPreview(layoutItem.item.relativePath);
+                                }
                                 setTimelineHoverPreview({
                                   relativePath: layoutItem.item.relativePath,
                                   name: layoutItem.item.name,
@@ -2041,11 +2675,6 @@ export default function StagingExplorer() {
                                   x: event.clientX,
                                   y: event.clientY,
                                 });
-                              }}
-                              onMouseMove={(event) => {
-                                setTimelineHoverPreview((current) => current && current.relativePath === layoutItem.item.relativePath
-                                  ? { ...current, x: event.clientX, y: event.clientY }
-                                  : current);
                               }}
                               onMouseLeave={() => {
                                 setTimelineHoverPreview((current) => current && current.relativePath === layoutItem.item.relativePath ? null : current);
@@ -2057,7 +2686,10 @@ export default function StagingExplorer() {
                               }}
                               title="Click to preview. Ctrl+Click toggles check. Shift+Click checks range."
                             >
-                              <span className={`staging-timeline-card-connector timeline-connector-${index}`} />
+                              <span
+                                className="staging-timeline-card-connector"
+                                style={{ top: layoutItem.markerTop - layoutItem.cardTop + 6 }}
+                              />
                               <div className="flex items-start gap-3">
                                 <input
                                   type="checkbox"
@@ -2086,10 +2718,17 @@ export default function StagingExplorer() {
                                     <span className="staging-timeline-mini-thumb-fallback">{kind === "video" ? "VID" : "IMG"}</span>
                                   )}
                                 </button>
-                                <button
-                                  type="button"
-                                  className="min-w-0 flex-1 text-left"
+                                <div
+                                  className="min-w-0 flex-1 cursor-pointer"
+                                  role="button"
+                                  tabIndex={0}
                                   onClick={(event) => onRowClick(layoutItem.item.relativePath, event)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                      event.preventDefault();
+                                      onRowClick(layoutItem.item.relativePath, event);
+                                    }
+                                  }}
                                   title="Click to preview. Ctrl+Click toggles check. Shift+Click checks range."
                                 >
                                   <div className="flex items-center justify-between gap-3">
@@ -2103,13 +2742,17 @@ export default function StagingExplorer() {
                                     <span>{formatDuration(layoutItem.item.durationMs)}</span>
                                     <span>{formatSize(layoutItem.item.size)}</span>
                                   </div>
-                                  <div className="mt-2 truncate text-[11px] text-gray-500">{layoutItem.item.relativePath}</div>
-                                  <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-                                    <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-emerald-200">{entry?.tags.length ? entry.tags.join(", ") : "No tags"}</span>
-                                    {groupLabel && <span className="rounded-full bg-amber-300/10 px-2 py-0.5 text-amber-200">{groupLabel}</span>}
-                                    <span className="rounded-full bg-surface-800 px-2 py-0.5 text-gray-300">{layoutItem.item.timestampSource}</span>
-                                  </div>
-                                </button>
+                                  {!layoutItem.compact && (
+                                    <>
+                                      <div className="mt-2 truncate text-[11px] text-gray-500">{layoutItem.item.relativePath}</div>
+                                      <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                                        <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-emerald-200">{entry?.tags.length ? entry.tags.join(", ") : "No tags"}</span>
+                                        {groupLabel && <span className="rounded-full bg-amber-300/10 px-2 py-0.5 text-amber-200">{groupLabel}</span>}
+                                        <span className="rounded-full bg-surface-800 px-2 py-0.5 text-gray-300">{layoutItem.item.timestampSource}</span>
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -2124,7 +2767,19 @@ export default function StagingExplorer() {
                           <span className="staging-timeline-hover-preview-kind">{timelineHoverPreview.kind}</span>
                         </div>
                         <div className="staging-timeline-hover-preview-body">
-                          {timelineThumbByPath[timelineHoverPreview.relativePath] ? (
+                          {timelineHoverPreview.kind === "video" && timelineHoverVideoSrc && !timelineHoverVideoError ? (
+                            <video
+                              className="staging-timeline-hover-preview-video"
+                              src={timelineHoverVideoSrc}
+                              poster={timelineThumbByPath[timelineHoverPreview.relativePath]}
+                              autoPlay
+                              muted
+                              loop
+                              playsInline
+                              preload="metadata"
+                              onError={() => setTimelineHoverVideoError(true)}
+                            />
+                          ) : timelineThumbByPath[timelineHoverPreview.relativePath] ? (
                             <img
                               src={timelineThumbByPath[timelineHoverPreview.relativePath]}
                               alt={timelineHoverPreview.name}
@@ -2140,6 +2795,86 @@ export default function StagingExplorer() {
                   </div>
                 )}
               </div>
+
+            {timelineSessionMenu && (() => {
+              const session = timelineSessions.find((entry) => entry.id === timelineSessionMenu.sessionId);
+              if (!session) {
+                return null;
+              }
+
+              return (
+                <div
+                  className="staging-session-menu fixed z-30 w-56 rounded-md border border-surface-600 bg-surface-900 shadow-lg shadow-black/50 p-1"
+                  style={{ left: timelineSessionMenu.x, top: timelineSessionMenu.y }}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-200 truncate" title={session.label}>
+                    {session.label}
+                  </div>
+                  <div className="my-1 border-t border-surface-700" role="separator" />
+                  <button
+                    type="button"
+                    className="w-full text-left px-2 py-1.5 text-xs text-gray-200 hover:bg-surface-700 rounded disabled:opacity-40"
+                    onClick={() => {
+                      if (timelineSessionMenu.splitBreakPath) {
+                        splitSequenceBefore(timelineSessionMenu.splitBreakPath);
+                      }
+                      setTimelineSessionMenu(null);
+                    }}
+                    disabled={!timelineSessionMenu.splitBreakPath}
+                  >
+                    ✂ Split Here
+                  </button>
+                  <button
+                    type="button"
+                    className="w-full text-left px-2 py-1.5 text-xs text-gray-200 hover:bg-surface-700 rounded disabled:opacity-40"
+                    onClick={() => {
+                      if (timelineSessionMenu.boundaryBreakPath) {
+                        mergeSequenceWithPrevious(timelineSessionMenu.boundaryBreakPath);
+                      }
+                      setTimelineSessionMenu(null);
+                    }}
+                    disabled={!timelineSessionMenu.boundaryBreakPath}
+                  >
+                    ⤴ Merge With Previous
+                  </button>
+                  <button
+                    type="button"
+                    className="w-full text-left px-2 py-1.5 text-xs text-gray-200 hover:bg-surface-700 rounded disabled:opacity-40"
+                    onClick={() => {
+                      if (timelineSessionMenu.clearBreakPath) {
+                        clearSequenceOverride(timelineSessionMenu.clearBreakPath);
+                      }
+                      setTimelineSessionMenu(null);
+                    }}
+                    disabled={!timelineSessionMenu.clearBreakPath}
+                  >
+                    ↺ Clear Override
+                  </button>
+                  <div className="my-1 border-t border-surface-700" role="separator" />
+                  <button
+                    type="button"
+                    className="w-full text-left px-2 py-1.5 text-xs text-gray-200 hover:bg-surface-700 rounded"
+                    onClick={() => {
+                      selectSession(session);
+                      setTimelineSessionMenu(null);
+                    }}
+                  >
+                    ☑ Select Session
+                  </button>
+                  <button
+                    type="button"
+                    className="w-full text-left px-2 py-1.5 text-xs text-gray-200 hover:bg-surface-700 rounded"
+                    onClick={() => {
+                      void tagSession(session);
+                      setTimelineSessionMenu(null);
+                    }}
+                  >
+                    🏷 Tag Session
+                  </button>
+                </div>
+              );
+            })()}
 
             {contextMenuFile && (
               <div ref={contextMenuLayerRef} className="staging-context-menu fixed z-30 w-56 rounded-md border border-surface-600 bg-surface-900 shadow-lg shadow-black/50 p-1">
@@ -2161,6 +2896,19 @@ export default function StagingExplorer() {
                 </button>
                 <button type="button" data-cm-item="true" className="w-full text-left px-2 py-1.5 text-xs text-gray-200 hover:bg-surface-700 rounded" onClick={() => revealFile(contextMenuFile.relativePath)}>
                   📂 Reveal In Explorer
+                </button>
+                <button
+                  type="button"
+                  data-cm-item="true"
+                  className="w-full text-left px-2 py-1.5 text-xs text-gray-200 hover:bg-surface-700 rounded"
+                  onClick={() => {
+                    void openFileInSystemViewer(contextMenuFile.relativePath);
+                    setContextMenuFilePath(null);
+                    setContextMenuTagOpen(false);
+                    setContextMenuFocusIndex(0);
+                  }}
+                >
+                  ▶ Open In Default App
                 </button>
 
                 <div className="my-1 border-t border-surface-700" role="separator" />
@@ -2413,7 +3161,16 @@ export default function StagingExplorer() {
                       {selectedPreviewFile.isImage && previewDataUrl ? (
                         <img src={previewDataUrl} alt={selectedPreviewFile.name} className="max-h-[320px] max-w-full object-contain" />
                       ) : selectedPreviewFile.isVideo ? (
-                        <div className="text-sm text-gray-500 p-4 text-center">Video selected. Inline video preview is not enabled yet.</div>
+                        <div className="text-sm text-gray-400 p-4 text-center space-y-3">
+                          <div>Video selected. Inline video preview is not enabled yet.</div>
+                          <button
+                            type="button"
+                            className="btn-secondary px-3 py-1.5 text-xs"
+                            onClick={() => void openFileInSystemViewer(selectedPreviewFile.relativePath)}
+                          >
+                            Open In System Video Player
+                          </button>
+                        </div>
                       ) : (
                         <div className="text-sm text-gray-500 p-4 text-center">No preview available for this file type.</div>
                       )}

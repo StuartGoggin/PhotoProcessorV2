@@ -7,18 +7,27 @@ use image::codecs::jpeg::JpegEncoder;
 use image::ImageReader;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::fs::File;
 use std::fs::Metadata;
+use std::hash::{Hash, Hasher};
 use std::io::BufReader;
 use std::io::Cursor;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 const TIMELINE_CACHE_VERSION: u32 = 1;
 const TIMELINE_CACHE_FILE: &str = ".photogogo.timeline-cache.json";
+const IMPORT_PREWARM_CYCLES: usize = 24;
+const IMPORT_PREWARM_INTERVAL_SECS: u64 = 20;
+
+static ACTIVE_IMPORT_PREWARM_WORKERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,6 +125,80 @@ fn modified_ms_from_metadata(metadata: &Metadata) -> Option<i64> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+}
+
+fn active_import_prewarm_workers() -> &'static Mutex<HashSet<String>> {
+    ACTIVE_IMPORT_PREWARM_WORKERS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn thumb_cache_root(staging_dir: Option<&str>) -> PathBuf {
+    if let Some(staging_dir) = staging_dir {
+        let root = PathBuf::from(staging_dir);
+        return root.join(".photogogo").join("thumb-cache");
+    }
+
+    std::env::temp_dir().join("photogogo").join("thumb-cache")
+}
+
+fn build_thumb_cache_file_path_with_ext(
+    cache_root: &Path,
+    path: &Path,
+    kind: &str,
+    max_width: u32,
+    max_height: u32,
+    quality: u8,
+    extension: &str,
+) -> PathBuf {
+    let metadata = fs::metadata(path).ok();
+    let size = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+    let modified_ms = metadata
+        .as_ref()
+        .and_then(modified_ms_from_metadata)
+        .unwrap_or_default();
+
+    let mut hasher = DefaultHasher::new();
+    path.to_string_lossy().hash(&mut hasher);
+    kind.hash(&mut hasher);
+    max_width.hash(&mut hasher);
+    max_height.hash(&mut hasher);
+    quality.hash(&mut hasher);
+    size.hash(&mut hasher);
+    modified_ms.hash(&mut hasher);
+
+    cache_root.join(format!("{:016x}.{}", hasher.finish(), extension))
+}
+
+fn build_thumb_cache_file_path(
+    cache_root: &Path,
+    path: &Path,
+    kind: &str,
+    max_width: u32,
+    max_height: u32,
+    quality: u8,
+) -> PathBuf {
+    build_thumb_cache_file_path_with_ext(
+        cache_root,
+        path,
+        kind,
+        max_width,
+        max_height,
+        quality,
+        "jpg",
+    )
+}
+
+fn read_cached_thumb(path: &Path) -> Option<Vec<u8>> {
+    if !path.exists() {
+        return None;
+    }
+    fs::read(path).ok()
+}
+
+fn write_cached_thumb(path: &Path, data: &[u8]) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, data);
 }
 
 fn file_modified_ms(path: &std::path::Path) -> Option<i64> {
@@ -254,6 +337,66 @@ fn render_video_thumbnail(path: &std::path::Path, max_width: u32, max_height: u3
     }
 }
 
+fn render_video_hover_preview(
+    path: &std::path::Path,
+    max_width: u32,
+    max_height: u32,
+    seconds: f32,
+) -> Result<Vec<u8>, String> {
+    let mut last_error = String::new();
+    let clip_seconds = seconds.clamp(0.8, 4.0);
+
+    for ffmpeg_binary in ffmpeg_candidates() {
+        let scale_filter = format!(
+            "fps=15,scale={}:{}:force_original_aspect_ratio=decrease",
+            max_width, max_height
+        );
+        let output = Command::new(&ffmpeg_binary)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                "00:00:00.5",
+                "-i",
+            ])
+            .arg(path)
+            .args([
+                "-an",
+                "-t",
+                &format!("{:.2}", clip_seconds),
+                "-vf",
+                &scale_filter,
+                "-movflags",
+                "frag_keyframe+empty_moov",
+                "-c:v",
+                "mpeg4",
+                "-q:v",
+                "6",
+                "-f",
+                "mp4",
+                "-",
+            ])
+            .output();
+
+        let Ok(output) = output else { continue; };
+        if output.status.success() && !output.stdout.is_empty() {
+            return Ok(output.stdout);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            last_error = stderr;
+        }
+    }
+
+    if last_error.is_empty() {
+        Err("Unable to render video hover preview with ffmpeg".to_string())
+    } else {
+        Err(last_error)
+    }
+}
+
 fn parse_ffprobe_creation_time(value: &str) -> Option<i64> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -327,7 +470,8 @@ fn probe_video_timeline_metadata(path: &std::path::Path) -> (Option<i64>, Option
 }
 
 #[tauri::command]
-pub fn load_staging_timeline(staging_dir: String, relative_dir: String) -> Result<Vec<TimelineMediaItem>, String> {
+pub fn load_staging_timeline(staging_dir: String, relative_dir: String, fast_mode: Option<bool>) -> Result<Vec<TimelineMediaItem>, String> {
+    let fast_mode = fast_mode.unwrap_or(false);
     let root = PathBuf::from(&staging_dir);
     let target = if relative_dir.trim().is_empty() {
         root.clone()
@@ -387,15 +531,23 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String) -> Resul
         }
 
         let (timestamp_ms, duration_ms, timestamp_source) = if kind == "video" {
-            let (video_timestamp, video_duration) = probe_video_timeline_metadata(path);
-            if let Some(timestamp_ms) = video_timestamp.or_else(|| file_modified_ms(path)) {
+            if fast_mode {
+                if let Some(timestamp_ms) = file_modified_ms(path) {
+                    (timestamp_ms, None, "filesystem-fast".to_string())
+                } else {
+                    continue;
+                }
+            } else {
+                let (video_timestamp, video_duration) = probe_video_timeline_metadata(path);
+                if let Some(timestamp_ms) = video_timestamp.or_else(|| file_modified_ms(path)) {
                 (
                     timestamp_ms,
                     video_duration,
                     if video_timestamp.is_some() { "ffprobe" } else { "filesystem" }.to_string(),
                 )
-            } else {
-                continue;
+                } else {
+                    continue;
+                }
             }
         } else {
             let image_timestamp = image_capture_timestamp_ms(path);
@@ -414,19 +566,21 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String) -> Resul
             .map(|duration| timestamp_ms.saturating_add(duration))
             .unwrap_or(timestamp_ms);
 
-        cache.insert(
-            relative_path.clone(),
-            TimelineCacheEntry {
-                relative_path: relative_path.clone(),
-                kind: kind.to_string(),
-                size,
-                modified_ms,
-                timestamp_ms,
-                end_timestamp_ms,
-                duration_ms,
-                timestamp_source: timestamp_source.clone(),
-            },
-        );
+        if !fast_mode {
+            cache.insert(
+                relative_path.clone(),
+                TimelineCacheEntry {
+                    relative_path: relative_path.clone(),
+                    kind: kind.to_string(),
+                    size,
+                    modified_ms,
+                    timestamp_ms,
+                    end_timestamp_ms,
+                    duration_ms,
+                    timestamp_source: timestamp_source.clone(),
+                },
+            );
+        }
 
         items.push(TimelineMediaItem {
             relative_path,
@@ -456,7 +610,9 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String) -> Resul
         seen_paths.contains(relative_path)
     });
 
-    let _ = save_timeline_cache(&root, &cache);
+    if !fast_mode {
+        let _ = save_timeline_cache(&root, &cache);
+    }
 
     items.sort_by(|left, right| {
         left.timestamp_ms
@@ -469,7 +625,7 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String) -> Resul
 
 #[tauri::command]
 pub fn prewarm_staging_timeline_cache(staging_dir: String) -> Result<usize, String> {
-    let items = load_staging_timeline(staging_dir, String::new())?;
+    let items = load_staging_timeline(staging_dir, String::new(), Some(false))?;
     Ok(items.len())
 }
 
@@ -491,10 +647,29 @@ pub fn read_image_base64(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn read_image_thumbnail_base64(path: String, max_width: Option<u32>, max_height: Option<u32>, quality: Option<u8>) -> Result<String, String> {
+pub fn read_image_thumbnail_base64(
+    path: String,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    quality: Option<u8>,
+    staging_dir: Option<String>,
+) -> Result<String, String> {
     let width = max_width.unwrap_or(220).clamp(32, 1200);
     let height = max_height.unwrap_or(160).clamp(32, 1200);
     let jpeg_quality = quality.unwrap_or(72).clamp(25, 95);
+
+    let cache_root = thumb_cache_root(staging_dir.as_deref());
+    let cache_file = build_thumb_cache_file_path(
+        &cache_root,
+        Path::new(&path),
+        "image",
+        width,
+        height,
+        jpeg_quality,
+    );
+    if let Some(cached) = read_cached_thumb(&cache_file) {
+        return Ok(base64_encode(&cached));
+    }
 
     let decoded = ImageReader::open(&path)
         .map_err(|error| error.to_string())?
@@ -507,16 +682,139 @@ pub fn read_image_thumbnail_base64(path: String, max_width: Option<u32>, max_hei
     encoder
         .encode_image(&thumbnail)
         .map_err(|error| error.to_string())?;
+    write_cached_thumb(&cache_file, encoded.get_ref());
     Ok(base64_encode(encoded.get_ref()))
 }
 
 #[tauri::command]
-pub fn read_video_thumbnail_base64(path: String, max_width: Option<u32>, max_height: Option<u32>) -> Result<String, String> {
+pub fn read_video_thumbnail_base64(
+    path: String,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    staging_dir: Option<String>,
+) -> Result<String, String> {
     let width = max_width.unwrap_or(220).clamp(32, 1200);
     let height = max_height.unwrap_or(160).clamp(32, 1200);
 
+    let cache_root = thumb_cache_root(staging_dir.as_deref());
+    let cache_file = build_thumb_cache_file_path(
+        &cache_root,
+        Path::new(&path),
+        "video",
+        width,
+        height,
+        72,
+    );
+    if let Some(cached) = read_cached_thumb(&cache_file) {
+        return Ok(base64_encode(&cached));
+    }
+
     let data = render_video_thumbnail(std::path::Path::new(&path), width, height)?;
+    write_cached_thumb(&cache_file, &data);
     Ok(base64_encode(&data))
+}
+
+#[tauri::command]
+pub fn read_video_hover_preview_base64(
+    path: String,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    seconds: Option<f32>,
+    staging_dir: Option<String>,
+) -> Result<String, String> {
+    let width = max_width.unwrap_or(480).clamp(120, 1280);
+    let height = max_height.unwrap_or(270).clamp(68, 720);
+    let clip_seconds = seconds.unwrap_or(2.2).clamp(0.8, 4.0);
+    let cache_quality = (clip_seconds * 10.0).round().clamp(0.0, 255.0) as u8;
+
+    let cache_root = thumb_cache_root(staging_dir.as_deref());
+    let cache_file = build_thumb_cache_file_path_with_ext(
+        &cache_root,
+        Path::new(&path),
+        "video-hover-preview",
+        width,
+        height,
+        cache_quality,
+        "mp4",
+    );
+    if let Some(cached) = read_cached_thumb(&cache_file) {
+        return Ok(base64_encode(&cached));
+    }
+
+    let data = render_video_hover_preview(Path::new(&path), width, height, clip_seconds)?;
+    write_cached_thumb(&cache_file, &data);
+    Ok(base64_encode(&data))
+}
+
+#[tauri::command]
+pub fn prewarm_staging_timeline_thumbnails(
+    staging_dir: String,
+    relative_dir: String,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    max_items: Option<usize>,
+) -> Result<usize, String> {
+    let width = max_width.unwrap_or(220).clamp(32, 1200);
+    let height = max_height.unwrap_or(160).clamp(32, 1200);
+    let limit = max_items.unwrap_or(180).clamp(1, 5_000);
+
+    let items = load_staging_timeline(staging_dir.clone(), relative_dir, Some(false))?;
+    let mut warmed = 0usize;
+    let root = PathBuf::from(&staging_dir);
+
+    for item in items.into_iter().take(limit) {
+        let absolute_path = root.join(item.relative_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let path_text = absolute_path.to_string_lossy().to_string();
+
+        let result = if item.kind == "video" {
+            read_video_thumbnail_base64(path_text, Some(width), Some(height), Some(staging_dir.clone()))
+        } else {
+            read_image_thumbnail_base64(path_text, Some(width), Some(height), Some(68), Some(staging_dir.clone()))
+        };
+
+        if result.is_ok() {
+            warmed += 1;
+        }
+    }
+
+    Ok(warmed)
+}
+
+#[tauri::command]
+pub fn start_import_prewarm_worker(staging_dir: String) -> Result<bool, String> {
+    let normalized = staging_dir.trim().to_string();
+    if normalized.is_empty() {
+        return Err("staging_dir is required".to_string());
+    }
+
+    let workers = active_import_prewarm_workers();
+    {
+        let mut guard = workers.lock().map_err(|_| "prewarm lock poisoned".to_string())?;
+        if guard.contains(&normalized) {
+            return Ok(false);
+        }
+        guard.insert(normalized.clone());
+    }
+
+    std::thread::spawn(move || {
+        for _ in 0..IMPORT_PREWARM_CYCLES {
+            let _ = prewarm_staging_timeline_cache(normalized.clone());
+            let _ = prewarm_staging_timeline_thumbnails(
+                normalized.clone(),
+                String::new(),
+                Some(220),
+                Some(140),
+                Some(160),
+            );
+            std::thread::sleep(Duration::from_secs(IMPORT_PREWARM_INTERVAL_SECS));
+        }
+
+        if let Ok(mut guard) = active_import_prewarm_workers().lock() {
+            guard.remove(&normalized);
+        }
+    });
+
+    Ok(true)
 }
 
 #[tauri::command]
@@ -550,5 +848,32 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
         Err("Reveal in Explorer is only implemented on Windows".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn open_in_default_app(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("Path does not exist: {}", target.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .status()
+            .map_err(|e| e.to_string())?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("Failed to open in default app: {}", target.display()))
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Open in default app is only implemented on Windows".to_string())
     }
 }
