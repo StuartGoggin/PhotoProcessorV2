@@ -2326,6 +2326,19 @@ fn build_tree(path: &Path, root: &Path) -> anyhow::Result<serde_json::Value> {
             .collect();
         entries.sort();
         for entry in entries {
+            let entry_name_lower = entry
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            // Skip internal cache/metadata paths so they don't bloat the tree.
+            if entry_name_lower.starts_with(".photogogo") {
+                continue;
+            }
+            // Skip generated preview sidecar files stored alongside media.
+            if entry.is_file() && entry_name_lower.contains(".pgg.") {
+                continue;
+            }
             children.push(build_tree(&entry, root)?);
         }
         Ok(serde_json::json!({

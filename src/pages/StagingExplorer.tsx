@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useSettings } from "../hooks";
 import type {
   ApplyEventNamingRequest,
@@ -347,7 +347,10 @@ function buildTimelineSequences(
     if (forceBreak || (autoBreak && !suppressBreak)) {
       pushCurrentSequence(gapFromPreviousSequence);
       const sessionGap = Math.max(0, current.timestampMs - lastSequenceEndMs);
-      if (sessionGap > sessionGapMs) {
+      // A user-forced break always starts a new session so the session bands
+      // visibly split. Auto-breaks only promote to a new session when the gap
+      // exceeds the session threshold.
+      if (forceBreak || sessionGap > sessionGapMs) {
         sessionIndex += 1;
       }
       gapFromPreviousSequence = sessionGap;
@@ -384,8 +387,8 @@ function buildTimelineSessions(sequences: TimelineSequence[], labels: Record<str
       label: labels[sessionId]?.trim() || `Session ${sessionIndex + 1}`,
       sequences: sessionSequences,
       items,
-      startMs: Math.min(...items.map((item) => item.timestampMs)),
-      endMs: Math.max(...items.map((item) => item.endTimestampMs)),
+      startMs: items.reduce((min, item) => Math.min(min, item.timestampMs), Infinity),
+      endMs: items.reduce((max, item) => Math.max(max, item.endTimestampMs), -Infinity),
     };
   });
 }
@@ -781,15 +784,15 @@ export default function StagingExplorer() {
     setLoading(true);
     setError(null);
     try {
-      const [loadedDirectories, loadedTree, loadedCatalog, loadedTags] = await Promise.all([
+      // Phase 1: load lightweight data first so the directory list and timeline
+      // can render without waiting for the full recursive tree walk.
+      const [loadedDirectories, loadedCatalog, loadedTags] = await Promise.all([
         invoke<EventDayDirectory[]>("list_event_day_directories", { stagingDir }),
-        invoke<TreeNode>("list_staging_tree", { stagingDir }),
         invoke<EventNamingCatalog>("load_event_naming_catalog"),
         invoke<StagingTagsState>("load_staging_tags", { stagingDir }),
       ]);
 
       setDirectories(loadedDirectories);
-      setTreeNodes(loadedTree?.children ?? []);
       setCatalog(loadedCatalog);
       setTagsState(loadedTags);
 
@@ -801,6 +804,15 @@ export default function StagingExplorer() {
     } finally {
       setLoading(false);
     }
+
+    // Phase 2: load the full file tree in the background — only needed for the List view.
+    void invoke<TreeNode>("list_staging_tree", { stagingDir })
+      .then((loadedTree) => {
+        setTreeNodes(loadedTree?.children ?? []);
+      })
+      .catch(() => {
+        setTreeNodes([]);
+      });
   }
 
   useEffect(() => {
@@ -954,26 +966,45 @@ export default function StagingExplorer() {
     }
 
     let cancelled = false;
+    const relativeDir = selectedDay.relativePath;
     setTimelineLoading(true);
 
-    void invoke<TimelineMediaItem[]>("load_staging_timeline", {
+    // Phase 1: fast load — uses cached timestamps or filesystem mtime (no EXIF/ffprobe).
+    // The UI becomes interactive immediately.
+    invoke<TimelineMediaItem[]>("load_staging_timeline", {
       stagingDir,
-      relativeDir: selectedDay.relativePath,
+      relativeDir,
       fastMode: true,
     })
       .then((items) => {
-        if (!cancelled) {
-          setTimelineItems(items);
+        if (cancelled) {
+          return;
         }
+        setTimelineItems(items);
+        setTimelineLoading(false);
+
+        // Phase 2: if any items used filesystem timestamps (not served from EXIF cache),
+        // rebuild in the background to get accurate capture times. This also populates the
+        // disk cache so subsequent cold starts are instant.
+        if (!items.some((item) => item.timestampSource === "filesystem")) {
+          return;
+        }
+        void invoke<TimelineMediaItem[]>("load_staging_timeline", {
+          stagingDir,
+          relativeDir,
+          fastMode: false,
+        })
+          .then((accurateItems) => {
+            if (!cancelled) {
+              setTimelineItems(accurateItems);
+            }
+          })
+          .catch(() => {});
       })
       .catch((timelineError) => {
         if (!cancelled) {
           setTimelineItems([]);
           setError(String(timelineError));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
           setTimelineLoading(false);
         }
       });
@@ -1048,17 +1079,27 @@ export default function StagingExplorer() {
     }
   }, [visibleTimelineLayoutItems, viewMode, stagingDir]);
 
-  useEffect(() => {
+  const handleTimelineScroll = useCallback(() => {
     if (viewMode !== "timeline" || !timelineViewportRef.current) {
       return;
     }
-
     const viewport = timelineViewportRef.current;
     setTimelineViewportRange({
       top: viewport.scrollTop,
       height: viewport.clientHeight,
     });
-  }, [viewMode, timelineLayout]);
+  }, [viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== "timeline" || !timelineViewportRef.current) {
+      return;
+    }
+    const viewport = timelineViewportRef.current;
+    const debounceTimer = setTimeout(() => {
+      handleTimelineScroll();
+    }, 50);
+    return () => clearTimeout(debounceTimer);
+  }, [viewMode, timelineLayout, handleTimelineScroll]);
 
   useEffect(() => () => {
     if (timelineThumbPreloadRafRef.current !== null) {
@@ -1846,18 +1887,18 @@ export default function StagingExplorer() {
       delete next[relativePath];
       return next;
     });
-    void invoke<string>("read_video_hover_preview_path", {
+    void invoke<string>("read_video_hover_preview_base64", {
       path: toAbsolutePath(relativePath),
       maxWidth: previewWidth,
       maxHeight: previewHeight,
       previewFps,
       stagingDir,
     })
-      .then((previewPath) => {
-        if (!previewPath || typeof previewPath !== "string") {
-          throw new Error("No hover preview path returned");
+      .then((base64Data) => {
+        if (!base64Data || typeof base64Data !== "string") {
+          throw new Error("No hover preview data returned");
         }
-        const previewSrc = convertFileSrc(previewPath);
+        const previewSrc = `data:video/mp4;base64,${base64Data}`;
         setTimelineVideoPreviewByPath((current) => ({
           ...current,
           [relativePath]: previewSrc,

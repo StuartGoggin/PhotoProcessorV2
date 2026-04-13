@@ -587,8 +587,9 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String, fast_mod
 
         let (timestamp_ms, duration_ms, timestamp_source) = if kind == "video" {
             if fast_mode {
-                if let Some(timestamp_ms) = file_modified_ms(path) {
-                    (timestamp_ms, None, "filesystem-fast".to_string())
+                // Fast path: use already-computed filesystem modified time, no ffprobe subprocess.
+                if modified_ms > 0 {
+                    (modified_ms, None, "filesystem".to_string())
                 } else {
                     continue;
                 }
@@ -603,6 +604,14 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String, fast_mod
                 } else {
                     continue;
                 }
+            }
+        } else if fast_mode {
+            // Fast path: use filesystem modified time to avoid EXIF reads on cold-cache startup.
+            // A background rebuild (fastMode: false) will provide accurate EXIF timestamps.
+            if modified_ms > 0 {
+                (modified_ms, None, "filesystem".to_string())
+            } else {
+                continue;
             }
         } else {
             let image_timestamp = image_capture_timestamp_ms(path);
