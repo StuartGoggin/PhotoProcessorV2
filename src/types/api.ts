@@ -1,5 +1,5 @@
 /**
- * API types — mirror the Rust structs exposed via Tauri commands/events.
+ * API types â€” mirror the Rust structs exposed via Tauri commands/events.
  * Keep in sync with src-tauri/src/commands/*.rs
  */
 
@@ -16,6 +16,7 @@ export interface ImportProgress {
   speed_mbps: number;
   skipped: number;
   errors: string[];
+  phase: string;
 }
 
 export interface ImportResult {

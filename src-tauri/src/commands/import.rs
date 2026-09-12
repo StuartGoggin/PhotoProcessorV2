@@ -22,6 +22,7 @@ pub struct ImportProgress {
     pub speed_mbps: f64,
     pub skipped: usize,
     pub errors: Vec<String>,
+    pub phase: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,7 +46,8 @@ fn extract_exif_date(path: &Path) -> Option<chrono::NaiveDateTime> {
         .read_from_container(&mut bufreader)
         .ok()?;
 
-    let field = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
+    let field = exif
+        .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
         .or_else(|| exif.get_field(exif::Tag::DateTime, exif::In::PRIMARY))?;
 
     if let exif::Value::Ascii(ref vec) = field.value {
@@ -70,11 +72,7 @@ fn file_mtime_as_datetime(path: &Path) -> chrono::NaiveDateTime {
         .naive_local()
 }
 
-fn destination_path(
-    staging_dir: &Path,
-    dt: &chrono::NaiveDateTime,
-    src_path: &Path,
-) -> PathBuf {
+fn destination_path(staging_dir: &Path, dt: &chrono::NaiveDateTime, src_path: &Path) -> PathBuf {
     let date_subdir = staging_dir
         .join(format!("{}", dt.format("%Y")))
         .join(format!("{}", dt.format("%m")))
@@ -87,7 +85,6 @@ fn destination_path(
         .to_lowercase();
     date_subdir.join(format!("{}.{}", stem, ext))
 }
-
 
 #[tauri::command]
 pub async fn start_import(
@@ -102,8 +99,35 @@ pub async fn start_import(
         return Err(format!("Source directory does not exist: {}", source_dir));
     }
 
-    // Single-pass directory walk to collect all supported files
+    // Emit scanning phase â€” lets the frontend know we're walking the directory
+    let _ = app.emit(
+        "import-progress",
+        ImportProgress {
+            total: 0,
+            done: 0,
+            current_file: String::new(),
+            speed_mbps: 0.0,
+            skipped: 0,
+            errors: vec![],
+            phase: "scanning".to_string(),
+        },
+    );
+
+    // Move blocking work off the async runtime so tokio isn't stalled
+    let result = tokio::task::spawn_blocking(move || {
+        run_import(app, source, staging)
+    })
+    .await
+    .map_err(|e| format!("Task panicked: {}", e))??;
+
+    Ok(result)
+}
+
+/// All blocking I/O â€” runs on a dedicated thread via spawn_blocking.
+fn run_import(app: AppHandle, source: PathBuf, staging: PathBuf) -> Result<ImportResult, String> {
+    // Walk source directory and collect supported files
     let all_files: Vec<PathBuf> = WalkDir::new(&source)
+        .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
@@ -112,6 +136,21 @@ pub async fn start_import(
         .collect();
 
     let total = all_files.len();
+
+    // Emit how many files were found so the console updates immediately
+    let _ = app.emit(
+        "import-progress",
+        ImportProgress {
+            total,
+            done: 0,
+            current_file: format!("Found {} file(s) â€” starting copy...", total),
+            speed_mbps: 0.0,
+            skipped: 0,
+            errors: vec![],
+            phase: "found".to_string(),
+        },
+    );
+
     if total == 0 {
         return Ok(ImportResult {
             imported: 0,
@@ -120,14 +159,12 @@ pub async fn start_import(
         });
     }
 
-    // Group by parent directory to improve sequential reads on SD card
+    // Group by parent directory to improve sequential SD card reads
     let mut by_dir: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
     for f in all_files {
         let dir = f.parent().unwrap_or(Path::new("/")).to_path_buf();
         by_dir.entry(dir).or_default().push(f);
     }
-
-    // Flatten back in directory-grouped order
     let ordered_files: Vec<PathBuf> = by_dir.into_values().flatten().collect();
 
     let done_count = Arc::new(AtomicU64::new(0));
@@ -136,16 +173,8 @@ pub async fn start_import(
     let start_time = Instant::now();
     let errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
 
-    let staging_clone = staging.clone();
-    let app_clone = app.clone();
-    let done_clone = done_count.clone();
-    let skipped_clone = skipped_count.clone();
-    let bytes_clone = bytes_copied.clone();
-    let errors_clone = errors.clone();
-
-    // Use rayon for parallel file processing (bounded by CPU count, good for I/O too)
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(12)
+        .num_threads(4) // keep lower for I/O-bound SD card reads
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -154,35 +183,29 @@ pub async fn start_import(
             let dt = extract_exif_date(src_path)
                 .unwrap_or_else(|| file_mtime_as_datetime(src_path));
 
-            let base_dest = destination_path(&staging_clone, &dt, src_path);
+            let base_dest = destination_path(&staging, &dt, src_path);
 
-            // Create destination directory
             if let Some(parent) = base_dest.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
-                    errors_clone
-                        .lock()
-                        .unwrap()
-                        .push(format!("{}: {}", src_path.display(), e));
+                    errors.lock().unwrap().push(format!("{}: {}", src_path.display(), e));
                     return;
                 }
             }
 
-            // Check for same-content duplicate by size comparison
-            let src_size = fs::metadata(src_path).map(|m| m.len()).unwrap_or(0);
             let dest = unique_dest(base_dest);
 
             match fs::copy(src_path, &dest) {
                 Ok(bytes) => {
-                    bytes_clone.fetch_add(bytes, Ordering::Relaxed);
-                    let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
-                    let skipped = skipped_clone.load(Ordering::Relaxed);
+                    bytes_copied.fetch_add(bytes, Ordering::Relaxed);
+                    let done = done_count.fetch_add(1, Ordering::Relaxed) + 1;
+                    let skipped = skipped_count.load(Ordering::Relaxed);
                     let elapsed = start_time.elapsed().as_secs_f64();
                     let speed = if elapsed > 0.0 {
-                        (bytes_clone.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0)) / elapsed
+                        (bytes_copied.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0)) / elapsed
                     } else {
                         0.0
                     };
-                    let _ = app_clone.emit(
+                    let _ = app.emit(
                         "import-progress",
                         ImportProgress {
                             total,
@@ -195,12 +218,12 @@ pub async fn start_import(
                             speed_mbps: speed,
                             skipped: skipped as usize,
                             errors: vec![],
+                            phase: "copying".to_string(),
                         },
                     );
-                    let _ = src_size; // suppress unused warning
                 }
                 Err(e) => {
-                    errors_clone
+                    errors
                         .lock()
                         .unwrap()
                         .push(format!("{}: {}", src_path.display(), e));
@@ -210,12 +233,9 @@ pub async fn start_import(
     });
 
     let final_errors = errors.lock().unwrap().clone();
-    let imported = done_count.load(Ordering::Relaxed) as usize;
-    let skipped = skipped_count.load(Ordering::Relaxed) as usize;
-
     Ok(ImportResult {
-        imported,
-        skipped,
+        imported: done_count.load(Ordering::Relaxed) as usize,
+        skipped: skipped_count.load(Ordering::Relaxed) as usize,
         errors: final_errors,
     })
 }
@@ -231,11 +251,7 @@ pub fn list_staging_tree(staging_dir: String) -> Result<serde_json::Value, Strin
 }
 
 fn build_tree(path: &Path, root: &Path) -> anyhow::Result<serde_json::Value> {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string();
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
     let rel = path
         .strip_prefix(root)
         .unwrap_or(path)
@@ -243,29 +259,19 @@ fn build_tree(path: &Path, root: &Path) -> anyhow::Result<serde_json::Value> {
         .replace('\\', "/");
 
     if path.is_dir() {
-        let mut children: Vec<serde_json::Value> = vec![];
         let mut entries: Vec<PathBuf> = fs::read_dir(path)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .collect();
         entries.sort();
-        for entry in entries {
-            children.push(build_tree(&entry, root)?);
-        }
-        Ok(serde_json::json!({
-            "name": name,
-            "path": rel,
-            "type": "dir",
-            "children": children,
-        }))
+        let children: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| build_tree(e, root))
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(serde_json::json!({ "name": name, "path": rel, "type": "dir", "children": children }))
     } else {
         let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        Ok(serde_json::json!({
-            "name": name,
-            "path": rel,
-            "type": "file",
-            "size": size,
-        }))
+        Ok(serde_json::json!({ "name": name, "path": rel, "type": "file", "size": size }))
     }
 }
-
