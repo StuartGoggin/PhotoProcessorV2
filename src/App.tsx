@@ -4,6 +4,8 @@ import { useJobsMonitor } from "./hooks";
 import { JobsPanel } from "./components";
 import Import from "./pages/Import";
 import StagingExplorer from "./pages/StagingExplorer";
+import VideoStudio from "./pages/VideoStudio";
+import StudioJobs from "./components/StudioJobs";
 import NameEvents from "./pages/NameEvents";
 import Cleanup from "./pages/Cleanup";
 import Jobs from "./pages/Jobs";
@@ -17,6 +19,7 @@ import Logs from "./pages/Logs";
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "import",      label: "Import",       icon: "📥" },
   { id: "stagingexplorer", label: "Video Timeline", icon: "🎬" },
+  { id: "videostudio", label: "Video Studio", icon: "🎞️" },
   { id: "nameevents",  label: "Name Events",  icon: "🏷️" },
   { id: "postprocess", label: "Post Process",  icon: "⚙️" },
   { id: "review",      label: "Review",        icon: "🖼️" },
@@ -99,6 +102,7 @@ export default function App() {
   const pageContent: Record<Page, React.ReactNode> = {
     import: <Import />,
     stagingexplorer: <StagingExplorer />,
+    videostudio: null,
     nameevents: <NameEvents />,
     cleanup: <Cleanup />,
     jobs: <Jobs />,
@@ -144,11 +148,13 @@ export default function App() {
 
         {/* Page content */}
         <main className="flex-1 overflow-auto bg-surface-900">
+          <div hidden={page !== "videostudio"}><VideoStudio onOpenJobs={() => setPage("jobs")} /></div>
           {pageContent[page]}
         </main>
       </div>
 
       {/* Jobs panel (bottom frame) */}
+      <StudioJobs compact onOpen={() => setPage("videostudio")} />
       <JobsPanel importJobs={importJobs} processJobs={processJobs} loading={loading} />
     </div>
   );

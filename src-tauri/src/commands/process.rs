@@ -1110,10 +1110,10 @@ fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec
 }
 
 #[derive(Debug, Clone)]
-struct FfmpegCapabilities {
-    binary: PathBuf,
-    has_vidstab: bool,
-    has_h264_nvenc: bool,
+pub(super) struct FfmpegCapabilities {
+    pub(super) binary: PathBuf,
+    pub(super) has_vidstab: bool,
+    pub(super) has_h264_nvenc: bool,
     nvenc_probe_error: Option<String>,
 }
 
@@ -1195,7 +1195,7 @@ fn probe_h264_nvenc(binary: &Path) -> Result<(), String> {
     }
 }
 
-fn detect_ffmpeg_capabilities() -> Result<FfmpegCapabilities, String> {
+pub(super) fn detect_ffmpeg_capabilities() -> Result<FfmpegCapabilities, String> {
     let mut last_error = None;
 
     for candidate in ffmpeg_candidates() {

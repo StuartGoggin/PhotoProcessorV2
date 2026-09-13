@@ -23,6 +23,7 @@ Thumbs.db
 
 
 tools/ffmpeg/
+test-output/
 tools/ffmpeg-n71-test/
 *.zip
 *.exe

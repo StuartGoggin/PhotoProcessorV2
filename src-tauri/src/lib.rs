@@ -2,6 +2,7 @@ mod commands;
 mod utils;
 
 use commands::{
+    video_studio::{studio_inspect, studio_frame, studio_save_project, studio_load_project, studio_list_jobs, studio_control_job, studio_start_render, studio_ai_review, studio_validate_project},
     files::{
         load_staging_timeline, prewarm_staging_timeline_cache, read_image_base64,
         read_image_thumbnail_base64, read_video_thumbnail_base64,
@@ -44,6 +45,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            studio_inspect, studio_frame, studio_save_project, studio_load_project, studio_list_jobs, studio_control_job, studio_start_render, studio_ai_review, studio_validate_project,
             // Settings
             load_settings,
             save_settings,
