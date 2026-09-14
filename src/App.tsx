@@ -122,7 +122,12 @@ export default function App() {
         <aside className="app-sidebar bg-surface-800 border-r border-surface-600 flex flex-col">
           <div className="px-4 py-5 border-b border-surface-600">
             <h1 className="text-lg font-bold text-white tracking-tight">PhotoGoGo</h1>
-            <p className="text-xs text-gray-500 mt-0.5">v2.0</p>
+            <div className="mt-1 text-xs text-gray-400 select-text" aria-label="Application version and build">
+              <p>Version {__APP_BUILD__.version}</p>
+              <p className="mt-1 text-[10px] leading-relaxed break-all" title={`Built ${__APP_BUILD__.builtAt} (UTC)`}>
+                Build {__APP_BUILD__.buildId}
+              </p>
+            </div>
           </div>
           <nav className="flex-1 p-2 space-y-1">
             {NAV_ITEMS.map((item) => (
