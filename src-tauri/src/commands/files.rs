@@ -1143,6 +1143,28 @@ pub fn open_in_default_app(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
+        let extension = target.extension().and_then(|ext| ext.to_str())
+            .unwrap_or_default().to_ascii_lowercase();
+        if target.is_file() && matches!(extension.as_str(),
+            "mp4" | "mov" | "m4v" | "mkv" | "avi" | "webm" | "mts" | "m2ts" | "mpg" | "mpeg" | "wmv" | "3gp") {
+            let player = ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"]
+                .iter()
+                .filter_map(std::env::var_os)
+                .map(|root| PathBuf::from(root).join("VideoLAN").join("VLC").join("vlc.exe"))
+                .find(|candidate| candidate.is_file())
+                .ok_or("VLC Media Player was not found. Install VLC to play videos from PhotoGoGo.")?;
+            // `canonicalize` produces a Windows extended path (`\\\\?\\...`).
+            // VLC interprets that form as a malformed file URL, so retain the
+            // user-facing absolute path after the existence check above.
+            let video = target.clone();
+            Command::new(player)
+                .arg("--play-and-pause")
+                .arg("--")
+                .arg(video)
+                .spawn()
+                .map_err(|e| format!("Could not launch VLC: {e}"))?;
+            return Ok(());
+        }
         let status = Command::new("cmd")
             .args(["/C", "start", "", &path])
             .status()

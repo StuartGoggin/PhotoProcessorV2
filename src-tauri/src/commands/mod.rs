@@ -1,6 +1,7 @@
 pub mod files;
 pub mod faces;
 pub mod import;
+mod import_safety;
 pub mod logs;
 pub mod naming;
 pub mod process;
@@ -8,3 +9,4 @@ pub mod settings;
 pub mod staging_tags;
 pub mod tidy;
 pub mod transfer;
+pub mod video_studio;
