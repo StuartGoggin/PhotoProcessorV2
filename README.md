@@ -87,6 +87,31 @@ FFmpeg executable and append `-- --include-ignored --nocapture`. Set
 `PHOTOGOGO_STUDIO_TEST_DIR` to the repo's ignored `test-output` folder to retain
 synthetic results there for visual inspection; otherwise they use the system temp folder.
 
+## Restart-safe imports
+
+Normal imports copy into a private `.photogogo-import` directory alongside the
+destination date folder's media, flush the temporary file, and verify its size
+and MD5 against the source before publishing its final filename. Publication
+never replaces an existing destination. A failed copy removes its temporary file;
+after a forced exit, the next attempt replaces its matching orphan `.partial` file.
+Completed files are detected by their actual content, even without a checksum
+sidecar. Existing sidecars are treated as hints and checked against the media bytes.
+
+Import jobs are serialized in the application. A filesystem lock also prevents
+two updated app instances from importing into the same staging root simultaneously;
+the OS releases it when a process exits. Pause/Abort still takes effect between
+files, including verification. Source and staging folders must not be nested.
+Verification adds disk reads and can make imports slower on removable drives.
+
+Old incomplete files created by earlier app versions are **not** automatically
+deleted or overwritten; those need separate inspection. Do not run an older app
+instance against the same staging folder, since it does not honour this lock.
+The `.photogogo-import.lock` file is internal metadata and should be left in place.
+
+Fast isolated copy/restart tests (no full Tauri build required):
+`rustc --edition 2021 --test tests/import_safety.rs -o test-output/import-safety-tests.exe`,
+then run `test-output/import-safety-tests.exe`. Create `test-output` first if absent.
+
 ## Development
 
 MP4 stabilization requires an FFmpeg build with the `vidstabdetect` and `vidstabtransform` filters. Running [run.ps1](run.ps1) now bootstraps a repo-local Windows GPL build into `tools/ffmpeg/bin/ffmpeg.exe` and exports `PHOTOGOGO_FFMPEG` automatically. If the detected build also exposes `h264_nvenc`, PhotoGoGo will use NVIDIA H.264 encoding for stabilized outputs.
