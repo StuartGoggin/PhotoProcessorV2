@@ -1,16 +1,16 @@
 use image::{DynamicImage, GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::async_runtime;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
@@ -451,7 +451,7 @@ fn parse_positive_env_usize(name: &str) -> Option<usize> {
         .filter(|value| *value > 0)
 }
 
-fn stabilization_load_policy(app: Option<&AppHandle>) -> StabilizeLoadPolicy {
+fn stabilization_load_policy(app: Option<&AppHandle>, file_count: usize) -> StabilizeLoadPolicy {
     let cores = num_cpus().max(1);
 
     let (settings_parallel, settings_threads) = app
@@ -472,16 +472,22 @@ fn stabilization_load_policy(app: Option<&AppHandle>) -> StabilizeLoadPolicy {
         })
         .unwrap_or((None, None));
 
-    // Conservative defaults: avoid running many heavy ffmpeg processes in parallel.
-    let default_parallel_jobs = if cores >= 12 { 2 } else { 1 };
+    // Use the full CPU budget by default. Stabilization has two passes and the
+    // vid.stab filters are CPU-bound; reserving a fixed percentage makes a
+    // single large video unnecessarily slow.
+    // A single source cannot benefit from a second FFmpeg process, so give it
+    // the entire CPU budget. For a batch, two workers keep the machine busy
+    // without multiplying simultaneous disk reads and writes excessively.
+    let default_parallel_jobs = if file_count > 1 && cores >= 12 { 2 } else { 1 };
     let max_parallel_jobs = parse_positive_env_usize("PHOTOGOGO_STABILIZE_MAX_PARALLEL")
         .or(settings_parallel)
         .unwrap_or(default_parallel_jobs)
         .clamp(1, cores);
 
-    // Budget ffmpeg threads to roughly 70% of available cores, then split per parallel job.
-    let thread_budget = ((cores * 7) / 10).max(1);
-    let default_threads_per_job = (thread_budget / max_parallel_jobs).max(1).min(6);
+    // Split all available logical cores between concurrent videos. The user can
+    // still override this with settings or PHOTOGOGO_STABILIZE_FFMPEG_THREADS.
+    let thread_budget = cores;
+    let default_threads_per_job = (thread_budget / max_parallel_jobs).max(1);
     let requested_threads = parse_positive_env_usize("PHOTOGOGO_STABILIZE_FFMPEG_THREADS")
         .or(settings_threads)
         .unwrap_or(default_threads_per_job);
@@ -1306,32 +1312,87 @@ fn run_ffmpeg_command(
     job_id: Option<&str>,
     working_dir: Option<&Path>,
 ) -> Result<(), String> {
+    const DEFAULT_STALL_TIMEOUT: Duration = Duration::from_secs(120);
+    const RECENT_STDERR_LINES: usize = 12;
+
+    let stall_timeout = parse_positive_env_usize("PHOTOGOGO_FFMPEG_STALL_TIMEOUT_SECS")
+        .map(|seconds| Duration::from_secs(seconds as u64))
+        .unwrap_or(DEFAULT_STALL_TIMEOUT);
+
     let mut command = Command::new(binary);
-    command.args(args);
+    // Emit machine-readable progress on stderr, where this worker already has a
+    // live reader. `-nostdin` also protects headless runs from an interactive
+    // FFmpeg prompt that would otherwise leave the process alive indefinitely.
+    command
+        .arg("-nostdin")
+        .arg("-progress")
+        .arg("pipe:2")
+        .arg("-nostats")
+        .args(args);
 
     if let Some(dir) = working_dir {
         command.current_dir(dir);
     }
 
     let mut child = command
+        // FFmpeg accepts interactive commands on stdin. A desktop worker has no
+        // useful console, so explicitly disable stdin to prevent it waiting for
+        // input after a recoverable FFmpeg prompt or a detached console change.
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
 
-    let stderr_reader = child.stderr.take().map(|mut stderr| {
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    let stderr_reader = child.stderr.take().map(|stderr| {
         thread::spawn(move || {
-            let mut text = String::new();
-            let _ = stderr.read_to_string(&mut text);
-            text
+            for line in BufReader::new(stderr).lines() {
+                match line {
+                    Ok(line) => {
+                        if stderr_tx.send(line).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
         })
     });
 
+    let mut last_progress_at = Instant::now();
+    let mut recent_stderr = VecDeque::with_capacity(RECENT_STDERR_LINES);
+
     loop {
+        while let Ok(line) = stderr_rx.try_recv() {
+            // -progress pipe:2 emits regular key=value updates. Seeing one is
+            // the strongest portable signal that FFmpeg is still advancing.
+            last_progress_at = Instant::now();
+            if recent_stderr.len() == RECENT_STDERR_LINES {
+                recent_stderr.pop_front();
+            }
+            recent_stderr.push_back(line.clone());
+
+            if let Some(job_id) = job_id {
+                if let Some(value) = line.strip_prefix("out_time=") {
+                    update_process_status_line(job_id, format!("FFmpeg active: {}", value));
+                } else if line == "progress=continue" {
+                    update_process_status_line(job_id, "FFmpeg active".to_string());
+                }
+            }
+        }
+
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            let stderr_text = stderr_reader
-                .map(|handle| handle.join().unwrap_or_default())
-                .unwrap_or_default();
+            if let Some(handle) = stderr_reader {
+                let _ = handle.join();
+            }
+            while let Ok(line) = stderr_rx.try_recv() {
+                if recent_stderr.len() == RECENT_STDERR_LINES {
+                    recent_stderr.pop_front();
+                }
+                recent_stderr.push_back(line);
+            }
+            let stderr_text = recent_stderr.into_iter().collect::<Vec<_>>().join("\n");
 
             if status.success() {
                 return Ok(());
@@ -1348,8 +1409,30 @@ fn run_ffmpeg_command(
         if is_process_abort_requested(job_id) {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = stderr_reader.map(|handle| handle.join());
+            if let Some(handle) = stderr_reader {
+                let _ = handle.join();
+            }
             return Err("Process job aborted while FFmpeg was running".to_string());
+        }
+
+        if last_progress_at.elapsed() >= stall_timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(handle) = stderr_reader {
+                let _ = handle.join();
+            }
+            while let Ok(line) = stderr_rx.try_recv() {
+                if recent_stderr.len() == RECENT_STDERR_LINES {
+                    recent_stderr.pop_front();
+                }
+                recent_stderr.push_back(line);
+            }
+            let tail = recent_stderr.into_iter().collect::<Vec<_>>().join("\n");
+            return Err(format!(
+                "FFmpeg stopped reporting progress for {} seconds and was terminated.{}",
+                stall_timeout.as_secs(),
+                if tail.is_empty() { String::new() } else { format!(" Last output:\n{}", tail) }
+            ));
         }
 
         thread::sleep(Duration::from_millis(200));
@@ -2217,7 +2300,7 @@ fn run_process_task(
     };
 
     let stabilize_load_policy = if matches!(task, ProcessTask::Stabilize) {
-        let policy = stabilization_load_policy(Some(&app));
+        let policy = stabilization_load_policy(Some(&app), total);
         let cores = num_cpus().max(1);
 
         let _ = append_app_log(
