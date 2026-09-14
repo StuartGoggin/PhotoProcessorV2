@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -1319,6 +1319,47 @@ fn run_ffmpeg_command(
         .map(|seconds| Duration::from_secs(seconds as u64))
         .unwrap_or(DEFAULT_STALL_TIMEOUT);
 
+    let log_level = env::var("PHOTOGOGO_FFMPEG_LOGLEVEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "verbose".to_string());
+    let mut effective_args = args.to_vec();
+    if let Some(index) = effective_args.iter().position(|arg| arg == "-loglevel") {
+        if let Some(value) = effective_args.get_mut(index + 1) {
+            *value = log_level.clone();
+        }
+    } else {
+        effective_args.insert(0, log_level.clone());
+        effective_args.insert(0, "-loglevel".to_string());
+    }
+
+    let debug_log_path = working_dir.map(|dir| dir.join("ffmpeg-debug.log"));
+    let mut debug_log = debug_log_path.as_ref().and_then(|path| {
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+    });
+    let command_summary = format!(
+        "{} {}",
+        binary.display(),
+        effective_args
+            .iter()
+            .map(|arg| format!("{:?}", arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    if let Some(log) = debug_log.as_mut() {
+        let _ = writeln!(log, "[{}] START {}", now_string(), command_summary);
+    }
+    if let Some(job_id) = job_id {
+        append_process_job_log(job_id, format!("FFmpeg console started (loglevel={}): {}", log_level, command_summary));
+        if let Some(path) = &debug_log_path {
+            append_process_job_log(job_id, format!("FFmpeg debug log: {}", path.display()));
+        }
+    }
+
     let mut command = Command::new(binary);
     // Emit machine-readable progress on stderr, where this worker already has a
     // live reader. `-nostdin` also protects headless runs from an interactive
@@ -1328,7 +1369,7 @@ fn run_ffmpeg_command(
         .arg("-progress")
         .arg("pipe:2")
         .arg("-nostats")
-        .args(args);
+        .args(&effective_args);
 
     if let Some(dir) = working_dir {
         command.current_dir(dir);
@@ -1363,9 +1404,17 @@ fn run_ffmpeg_command(
     let mut last_progress_at = Instant::now();
     let mut last_progress_position: Option<String> = None;
     let mut recent_stderr = VecDeque::with_capacity(RECENT_STDERR_LINES);
+    let mut last_console_update = Instant::now() - Duration::from_secs(2);
+    let mut console_frame = String::new();
+    let mut console_fps = String::new();
+    let mut console_time = String::new();
+    let mut console_speed = String::new();
 
     loop {
         while let Ok(line) = stderr_rx.try_recv() {
+            if let Some(log) = debug_log.as_mut() {
+                let _ = writeln!(log, "[{}] {}", now_string(), line);
+            }
             // FFmpeg emits status records even when an input read has stalled.
             // Refresh the watchdog only when the encoded/analyzed position
             // actually advances, rather than for a repeated progress=continue.
@@ -1384,11 +1433,31 @@ fn run_ffmpeg_command(
             }
             recent_stderr.push_back(line.clone());
 
+            if let Some(value) = line.strip_prefix("frame=") {
+                console_frame = value.to_string();
+            } else if let Some(value) = line.strip_prefix("fps=") {
+                console_fps = value.to_string();
+            } else if let Some(value) = line.strip_prefix("out_time=") {
+                console_time = value.to_string();
+            } else if let Some(value) = line.strip_prefix("speed=") {
+                console_speed = value.to_string();
+            }
+
             if let Some(job_id) = job_id {
                 if let Some(value) = line.strip_prefix("out_time=") {
                     update_process_status_line(job_id, format!("FFmpeg active: {}", value));
-                } else if line == "progress=continue" {
-                    update_process_status_line(job_id, "FFmpeg active".to_string());
+                }
+                if line == "progress=continue" && last_console_update.elapsed() >= Duration::from_secs(1) {
+                    append_process_job_log(
+                        job_id,
+                        format!(
+                            "ffmpeg progress frame={} fps={} out_time={} speed={}",
+                            console_frame, console_fps, console_time, console_speed
+                        ),
+                    );
+                    last_console_update = Instant::now();
+                } else if !line.contains('=') {
+                    append_process_job_log(job_id, format!("ffmpeg: {}", line));
                 }
             }
         }
@@ -1406,10 +1475,16 @@ fn run_ffmpeg_command(
             let stderr_text = recent_stderr.into_iter().collect::<Vec<_>>().join("\n");
 
             if status.success() {
+                if let Some(log) = debug_log.as_mut() {
+                    let _ = writeln!(log, "[{}] EXIT success", now_string());
+                }
                 return Ok(());
             }
 
             let message = stderr_text.trim();
+            if let Some(log) = debug_log.as_mut() {
+                let _ = writeln!(log, "[{}] EXIT failure: {}", now_string(), message);
+            }
             return Err(if message.is_empty() {
                 format!("FFmpeg exited with status {}", status)
             } else {
@@ -1422,6 +1497,9 @@ fn run_ffmpeg_command(
             let _ = child.wait();
             if let Some(handle) = stderr_reader {
                 let _ = handle.join();
+            }
+            if let Some(log) = debug_log.as_mut() {
+                let _ = writeln!(log, "[{}] EXIT cancelled by user", now_string());
             }
             return Err("Process job aborted while FFmpeg was running".to_string());
         }
@@ -1439,6 +1517,9 @@ fn run_ffmpeg_command(
                 recent_stderr.push_back(line);
             }
             let tail = recent_stderr.into_iter().collect::<Vec<_>>().join("\n");
+            if let Some(log) = debug_log.as_mut() {
+                let _ = writeln!(log, "[{}] EXIT watchdog timeout; last output:\n{}", now_string(), tail);
+            }
             return Err(format!(
                 "FFmpeg stopped reporting progress for {} seconds and was terminated.{}",
                 stall_timeout.as_secs(),
