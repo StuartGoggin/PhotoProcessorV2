@@ -1361,13 +1361,24 @@ fn run_ffmpeg_command(
     });
 
     let mut last_progress_at = Instant::now();
+    let mut last_progress_position: Option<String> = None;
     let mut recent_stderr = VecDeque::with_capacity(RECENT_STDERR_LINES);
 
     loop {
         while let Ok(line) = stderr_rx.try_recv() {
-            // -progress pipe:2 emits regular key=value updates. Seeing one is
-            // the strongest portable signal that FFmpeg is still advancing.
-            last_progress_at = Instant::now();
+            // FFmpeg emits status records even when an input read has stalled.
+            // Refresh the watchdog only when the encoded/analyzed position
+            // actually advances, rather than for a repeated progress=continue.
+            let progress_position = line
+                .strip_prefix("out_time_us=")
+                .or_else(|| line.strip_prefix("out_time_ms="))
+                .or_else(|| line.strip_prefix("frame="));
+            if let Some(position) = progress_position {
+                if last_progress_position.as_deref() != Some(position) {
+                    last_progress_position = Some(position.to_string());
+                    last_progress_at = Instant::now();
+                }
+            }
             if recent_stderr.len() == RECENT_STDERR_LINES {
                 recent_stderr.pop_front();
             }
