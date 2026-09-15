@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
+    env,
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -99,13 +100,21 @@ fn checkpoint(id: &str) -> Result<(), String> {
 fn command(binary: &Path) -> Command {
     let mut c = Command::new(binary);
     c.stdin(Stdio::null());
-    c.env("OMP_NUM_THREADS", "2");
+    c.env("OMP_NUM_THREADS", studio_ffmpeg_threads().to_string());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         c.creation_flags(0x08000000);
     }
     c
+}
+fn studio_ffmpeg_threads() -> usize {
+    if let Some(value) = env::var_os("PHOTOGOGO_STUDIO_FFMPEG_THREADS") {
+        if let Ok(threads) = value.to_string_lossy().trim().parse::<usize>() {
+            return threads.clamp(1, 64);
+        }
+    }
+    thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 64)
 }
 fn ffprobe(ff: &Path) -> PathBuf {
     ff.with_file_name(if cfg!(windows) {
@@ -350,7 +359,9 @@ fn run(
             "-progress",
             "pipe:1",
             "-threads",
-            "2",
+            &studio_ffmpeg_threads().to_string(),
+            "-filter_threads",
+            &studio_ffmpeg_threads().to_string(),
         ])
         .args(args)
         .current_dir(dir)
@@ -445,7 +456,8 @@ fn wrap_title(text: &str, limit: usize) -> String {
 fn drawtext(file: &str, size: u32, y: &str, duration: Option<f64>) -> String {
     format!("drawtext=fontfile=font.ttf:textfile={file}:expansion=none:fontsize={size}:fontcolor=white:x=40:y={y}:box=1:boxcolor=0x0c1930@0.85:boxborderw=18{}", duration.map(|s| format!(":enable='lt(t,{s})'")).unwrap_or_default())
 }
-fn encoder(p: &Project, nvenc: bool) -> Vec<String> {
+fn encoder(p: &Project, nvenc: bool, qsv: bool) -> Vec<String> {
+    let threads = studio_ffmpeg_threads().to_string();
     let rate = if p.width == 3840 {
         "32M"
     } else if p.width == 1920 {
@@ -455,7 +467,7 @@ fn encoder(p: &Project, nvenc: bool) -> Vec<String> {
     };
     [
         "-c:v",
-        if nvenc { "h264_nvenc" } else { "libx264" },
+        if nvenc { "h264_nvenc" } else if qsv { "h264_qsv" } else { "libx264" },
         "-preset",
         if nvenc { "p4" } else { "veryfast" },
         "-b:v",
@@ -477,7 +489,7 @@ fn encoder(p: &Project, nvenc: bool) -> Vec<String> {
         "-video_track_timescale",
         "90000",
         "-threads",
-        "2",
+        &threads,
     ]
     .iter()
     .map(|s| s.to_string())
@@ -506,6 +518,20 @@ fn render(
     }
     let cap = detect_ffmpeg_capabilities()?;
     let ff = &cap.binary;
+    let threads = studio_ffmpeg_threads();
+    let encoder_name = if cap.has_h264_nvenc {
+        "NVIDIA NVENC"
+    } else if cap.has_h264_qsv {
+        "Intel Quick Sync"
+    } else {
+        "libx264 CPU"
+    };
+    update(id, |j| {
+        j.logs.push(format!(
+            "Performance: FFmpeg threads={} filter threads={} OMP threads={} encoder={}",
+            threads, threads, threads, encoder_name
+        ));
+    });
     p.clips.retain(|c| c.include);
     if p.clips.is_empty() {
         return Err("Select at least one clip".into());
@@ -623,7 +649,7 @@ fn render(
             "-vf".into(),
             filter,
         ];
-        args.extend(encoder(&p, cap.has_h264_nvenc));
+        args.extend(encoder(&p, cap.has_h264_nvenc, cap.has_h264_qsv));
         args.push("opening.mp4".into());
         run(
             ff,
@@ -709,7 +735,7 @@ fn render(
             "-af".into(),
             "apad,asetpts=PTS-STARTPTS".into(),
         ]);
-        args.extend(encoder(&p, cap.has_h264_nvenc));
+        args.extend(encoder(&p, cap.has_h264_nvenc, cap.has_h264_qsv));
         args.push(clean.clone());
         run(
             ff,
@@ -733,7 +759,7 @@ fn render(
                 "-t".into(),
                 seconds.to_string(),
             ];
-            args.extend(encoder(&p, cap.has_h264_nvenc));
+            args.extend(encoder(&p, cap.has_h264_nvenc, cap.has_h264_qsv));
             args.push(titled.clone());
             run(
                 ff,
@@ -791,7 +817,7 @@ fn render(
                 "-t".into(),
                 dur.to_string(),
             ];
-            args.extend(encoder(&p, cap.has_h264_nvenc));
+            args.extend(encoder(&p, cap.has_h264_nvenc, cap.has_h264_qsv));
             args.push(replay.clone());
             run(
                 ff,

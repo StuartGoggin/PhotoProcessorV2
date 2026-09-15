@@ -1120,6 +1120,7 @@ pub(super) struct FfmpegCapabilities {
     pub(super) binary: PathBuf,
     pub(super) has_vidstab: bool,
     pub(super) has_h264_nvenc: bool,
+    pub(super) has_h264_qsv: bool,
     nvenc_probe_error: Option<String>,
 }
 
@@ -1201,6 +1202,47 @@ fn probe_h264_nvenc(binary: &Path) -> Result<(), String> {
     }
 }
 
+fn probe_h264_qsv(binary: &Path) -> Result<(), String> {
+    let output = Command::new(binary)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-init_hw_device",
+            "qsv=qsv",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=size=16x16:rate=1:color=black",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "h264_qsv",
+            "-b:v",
+            "100k",
+            "-an",
+            "-f",
+            "null",
+            "-",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stderr.is_empty() {
+        Err(stderr)
+    } else if !stdout.is_empty() {
+        Err(stdout)
+    } else {
+        Err(format!("Intel Quick Sync probe failed with status {}", output.status))
+    }
+}
+
 pub(super) fn detect_ffmpeg_capabilities() -> Result<FfmpegCapabilities, String> {
     let mut last_error = None;
 
@@ -1222,11 +1264,14 @@ pub(super) fn detect_ffmpeg_capabilities() -> Result<FfmpegCapabilities, String>
                 } else {
                     None
                 };
+                let qsv_listed = encoder_blob.contains("h264_qsv");
+                let qsv_available = qsv_listed && probe_h264_qsv(&candidate).is_ok();
 
                 return Ok(FfmpegCapabilities {
                     binary: candidate,
                     has_vidstab: filter_blob.contains("vidstabdetect") && filter_blob.contains("vidstabtransform"),
                     has_h264_nvenc: nvenc_listed && nvenc_probe.is_none(),
+                    has_h264_qsv: qsv_available,
                     nvenc_probe_error: nvenc_probe,
                 });
             }
