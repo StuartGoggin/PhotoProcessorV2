@@ -3,13 +3,13 @@ use super::process::detect_ffmpeg_capabilities;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env,
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     thread,
     time::Duration,
 };
@@ -114,7 +114,17 @@ fn studio_ffmpeg_threads() -> usize {
             return threads.clamp(1, 64);
         }
     }
-    thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 64)
+    let logical = thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    (logical / studio_parallel_clip_workers()).clamp(1, 64)
+}
+fn studio_parallel_clip_workers() -> usize {
+    if let Some(value) = env::var_os("PHOTOGOGO_STUDIO_PARALLEL_CLIPS") {
+        if let Ok(workers) = value.to_string_lossy().trim().parse::<usize>() {
+            return workers.clamp(1, 4);
+        }
+    }
+    // Two workers keep the 8-thread laptop busy while avoiding QSV, disk and thermal contention.
+    (thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 4).clamp(1, 2)
 }
 fn ffprobe(ff: &Path) -> PathBuf {
     ff.with_file_name(if cfg!(windows) {
@@ -430,6 +440,141 @@ fn run(
     let errors = error_reader.join().unwrap_or_default();
     result.map_err(|e| format!("{}: {}", e, errors.trim()))
 }
+
+fn analyse_clip_stabilization(
+    ff: PathBuf,
+    work: PathBuf,
+    id: String,
+    clip: Clip,
+    index: usize,
+    offset: f64,
+    seconds: f64,
+    base: f64,
+    span: f64,
+) -> Result<(), String> {
+    let (step, shake, accuracy) = match clip.stabilization.as_str() {
+        "gentle" => (8, 3, 10),
+        "balanced" => (6, 4, 15),
+        _ => (4, 6, 15),
+    };
+    let trf = format!("motion_{index}.trf");
+    run(
+        &ff,
+        vec![
+            "-ss".into(),
+            offset.to_string(),
+            "-i".into(),
+            clip.path,
+            "-t".into(),
+            seconds.to_string(),
+            "-vf".into(),
+            format!(
+                "vidstabdetect=stepsize={step}:shakiness={shake}:accuracy={accuracy}:mincontrast=0.25:result={trf}"
+            ),
+            "-an".into(),
+            "-f".into(),
+            "null".into(),
+            "-".into(),
+        ],
+        &work,
+        &id,
+        &format!("{}: analyse shake", clip.chapter),
+        seconds,
+        base,
+        span,
+    )
+}
+
+fn analyse_stabilized_clips_in_parallel(
+    ff: &Path,
+    work: &Path,
+    id: &str,
+    clips: &[Clip],
+    preview: bool,
+    preview_start: Option<f64>,
+    preview_length: Option<f64>,
+) -> Result<(), String> {
+    let pending: VecDeque<_> = clips
+        .iter()
+        .cloned()
+        .enumerate()
+        .filter(|(_, clip)| clip.stabilization != "off")
+        .collect();
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let workers = studio_parallel_clip_workers().min(pending.len());
+    let threads = studio_ffmpeg_threads();
+    update(id, |job| {
+        job.logs.push(format!(
+            "Parallel shake analysis: {workers} workers × {threads} FFmpeg/filter threads ({} clips)",
+            pending.len()
+        ));
+    });
+    let queue = Arc::new(Mutex::new(pending));
+    let failure = Arc::new(Mutex::new(None::<String>));
+    let count = clips.len().max(1) as f64;
+    let mut handles = Vec::with_capacity(workers);
+
+    for _ in 0..workers {
+        let queue = Arc::clone(&queue);
+        let failure = Arc::clone(&failure);
+        let ff = ff.to_path_buf();
+        let work = work.to_path_buf();
+        let id = id.to_string();
+        handles.push(thread::spawn(move || loop {
+            if failure.lock().map(|value| value.is_some()).unwrap_or(true) {
+                return;
+            }
+            let Some((index, clip)) = queue.lock().ok().and_then(|mut q| q.pop_front()) else {
+                return;
+            };
+            let offset = if preview { preview_start.unwrap_or(0.) } else { 0. };
+            if offset >= clip.duration {
+                if let Ok(mut value) = failure.lock() {
+                    *value = Some("Preview starts beyond the end of a clip".into());
+                }
+                return;
+            }
+            if preview_length
+                .map(|length| offset + length > clip.duration + 0.04)
+                .unwrap_or(false)
+            {
+                if let Ok(mut value) = failure.lock() {
+                    *value = Some("Preview range extends beyond the end of a clip".into());
+                }
+                return;
+            }
+            let seconds = if preview {
+                (clip.duration - offset).min(preview_length.unwrap_or(12.))
+            } else {
+                clip.duration
+            };
+            let base = 2. + 21.25 * index as f64 / count;
+            let span = 21.25 / count;
+            if let Err(error) = analyse_clip_stabilization(
+                ff.clone(), work.clone(), id.clone(), clip, index, offset, seconds, base, span,
+            ) {
+                if let Ok(mut value) = failure.lock() {
+                    if value.is_none() {
+                        *value = Some(error);
+                    }
+                }
+                return;
+            }
+        }));
+    }
+    for handle in handles {
+        handle.join().map_err(|_| "Parallel shake-analysis worker panicked".to_string())?;
+    }
+    let result = failure
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+        .map_or(Ok(()), Err);
+    result
+}
 fn text_asset(dir: &Path, name: &str, text: &str) -> Result<(), String> {
     fs::write(dir.join(name), text).map_err(|e| e.to_string())
 }
@@ -627,6 +772,15 @@ fn render(
         .ok_or("A TrueType font (Arial or DejaVu Sans) is required")?;
     fs::copy(font, work.join("font.ttf")).map_err(|e| e.to_string())?;
     let mut segments: Vec<(String, String)> = vec![];
+    analyse_stabilized_clips_in_parallel(
+        ff,
+        &work,
+        id,
+        &p.clips,
+        preview,
+        preview_start,
+        preview_length,
+    )?;
     if p.title_seconds > 0. && !p.title.is_empty() {
         text_asset(&work, "opening.txt", &wrap_title(&p.title, 28))?;
         text_asset(&work, "subtitle.txt", &wrap_title(&p.subtitle, 44))?;
@@ -666,8 +820,8 @@ fn render(
     let count = p.clips.len();
     for (i, c) in p.clips.iter().enumerate() {
         checkpoint(id)?;
-        let base = 2. + 85. * i as f64 / count as f64;
-        let span = 85. / count as f64;
+        let base = 23.25 + 63.75 * i as f64 / count as f64;
+        let span = 63.75 / count as f64;
         let offset = if preview {
             preview_start.unwrap_or(0.)
         } else {
@@ -689,13 +843,12 @@ fn render(
         };
         let mut filter = format!("scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={}",p.width,p.height,p.width,p.height,p.fps);
         if c.stabilization != "off" {
-            let (step, shake, accuracy, smooth) = match c.stabilization.as_str() {
-                "gentle" => (8, 3, 10, 18),
-                "balanced" => (6, 4, 15, 30),
-                _ => (4, 6, 15, 48),
+            let smooth = match c.stabilization.as_str() {
+                "gentle" => 18,
+                "balanced" => 30,
+                _ => 48,
             };
             let trf = format!("motion_{i}.trf");
-            run(ff,vec!["-ss".into(),offset.to_string(),"-i".into(),c.path.clone(),"-t".into(),seconds.to_string(),"-vf".into(),format!("vidstabdetect=stepsize={step}:shakiness={shake}:accuracy={accuracy}:mincontrast=0.25:result={trf}"),"-an".into(),"-f".into(),"null".into(),"-".into()],&work,id,&format!("{}: analyse shake",c.chapter),seconds,base,span*0.25)?;
             let (zoom, optzoom, speed) = match c.framing.as_str() {
                 "maxFrame" => (0, 0, 0.0),
                 "aggressiveCrop" => (8, 2, 0.4),
@@ -744,7 +897,7 @@ fn render(
             id,
             &format!("{}: render full clip", c.chapter),
             seconds,
-            base + span * 0.25,
+            base,
             span * 0.4,
         )?;
         if !c.title.is_empty() && c.title_seconds > 0. {
@@ -768,7 +921,7 @@ fn render(
                 id,
                 &format!("{}: clip title", c.chapter),
                 seconds,
-                base + span * 0.65,
+                base + span * 0.4,
                 span * 0.1,
             )?;
             segments.push((titled, c.chapter.clone()));
@@ -826,7 +979,7 @@ fn render(
                 id,
                 &format!("{}: replay {}", c.chapter, j + 1),
                 dur,
-                base + span * 0.75,
+                base + span * 0.5,
                 span * 0.25,
             )?;
             segments.push((replay, format!("Replay - {}", r.caption)));
