@@ -684,6 +684,11 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
           Originals are untouched. Rendering needs temporary disk space and may take longer than
           playback at 4K.
         </p>
+        <p className="text-sm text-cyan-200">
+          Finished fragments are retained in <code>.photogogo-video-studio-cache</code>, grouped
+          by resolution and frame rate. Unchanged source and edit settings are reused; only changed
+          clips, titles, or recaps are rendered again.
+        </p>
         <button
           className="btn-primary"
           disabled={busy || !included.length || !approved || !project.outputDir}
