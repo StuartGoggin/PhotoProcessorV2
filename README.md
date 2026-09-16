@@ -62,10 +62,17 @@ Video Studio is a separate page for repeatable training-video projects:
 Projects autosave locally; **Save snapshot** creates a portable JSON edit recipe
 (source media paths remain absolute). Existing snapshots cannot be overwritten.
 Every render creates a unique folder containing the video, project snapshot and
-verification record. Originals and previous exports are never overwritten.
-Disk-space and FAT32 size checks run before encoding; final frame counts and
-duration are checked before publishing the output. Failed/cancelled runs remove
-their temporary media but retain the project snapshot for diagnosis.
+verification record. Originals and previous exports are never overwritten. Verified
+fragments are retained under `.photogogo-video-studio-cache`, grouped by resolution
+and frame rate; filenames include the source name, format, and settings signature.
+Only matching source bytes, output format, stabilisation/framing, title, and replay
+settings reuse a fragment, so title-only edits retain the expensive stabilised base.
+Each cache MP4 also needs its matching verification record—partial or orphaned MP4s
+are never reused. Disk-space and FAT32 size checks run before encoding; final frame
+counts and duration are checked before publishing the output. Renders stay in a
+`.partial` folder until their video and verification record are complete, then the
+whole folder is renamed atomically. Failed/cancelled work is therefore never shown as
+a completed render.
 
 Background progress remains visible when changing pages. Pause takes effect at
 the next processing boundary; cancel stops active FFmpeg. Keep the app open:

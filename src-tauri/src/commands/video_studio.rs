@@ -1,5 +1,7 @@
 //! Local, non-destructive Video Studio projects and background renders.
 use super::process::detect_ffmpeg_capabilities;
+use crate::utils::compute_md5;
+use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -483,6 +485,212 @@ fn encoder(p: &Project, nvenc: bool) -> Vec<String> {
     .map(|s| s.to_string())
     .collect()
 }
+
+// Cache files are deliberately versioned. Bumping this value invalidates old
+// fragments if the rendering pipeline itself changes, while preserving them for
+// manual inspection rather than deleting user output.
+const FRAGMENT_CACHE_VERSION: &str = "video-studio-fragment-v1";
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FragmentRecord {
+    version: String,
+    signature: String,
+    bytes: u64,
+    duration: f64,
+}
+
+fn format_key(p: &Project) -> String {
+    format!("{}x{}-{}fps", p.width, p.height, p.fps)
+}
+
+fn cache_slug(value: &str) -> String {
+    let slug: String = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "clip".into()
+    } else {
+        slug.chars().take(48).collect()
+    }
+}
+
+fn signature(parts: &[String]) -> String {
+    let mut digest = Md5::new();
+    for part in parts {
+        digest.update(part.as_bytes());
+        digest.update([0]);
+    }
+    hex::encode(digest.finalize())
+}
+
+fn source_signature(path: &Path) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    let modified = metadata
+        .modified()
+        .map_err(|error| error.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    // This byte hash means cache reuse is never based on a filename, timestamp,
+    // or stale sidecar alone. It is much cheaper than re-encoding a clip.
+    let bytes = compute_md5(path).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "{}|{}|{}|{}|{}",
+        path.to_string_lossy(),
+        metadata.len(),
+        modified,
+        bytes,
+        FRAGMENT_CACHE_VERSION
+    ))
+}
+
+fn fragment_record_path(video: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.verified.json", video.to_string_lossy()))
+}
+
+fn cached_video_is_valid(
+    ff: &Path,
+    path: &Path,
+    p: &Project,
+    expected_seconds: f64,
+    expected_signature: &str,
+) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    let record = fs::read(fragment_record_path(path))
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<FragmentRecord>(&raw).ok());
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !matches!(record, Some(FragmentRecord {
+        version,
+        signature,
+        bytes,
+        ..
+    }) if version == FRAGMENT_CACHE_VERSION && signature == expected_signature && bytes == metadata.len())
+    {
+        return false;
+    }
+    let Ok(info) = inspect(ff, path) else {
+        return false;
+    };
+    let streams = match info["streams"].as_array() {
+        Some(streams) => streams,
+        None => return false,
+    };
+    let video_ok = streams.iter().any(|stream| {
+        stream["codec_type"] == "video"
+            && stream["width"] == p.width
+            && stream["height"] == p.height
+    });
+    let audio_ok = streams.iter().any(|stream| stream["codec_type"] == "audio");
+    video_ok
+        && audio_ok
+        && duration(&info)
+            .map(|actual| (actual - expected_seconds).abs() <= 0.12)
+            .unwrap_or(false)
+}
+
+fn cache_name(kind: &str, clip: &Clip, p: &Project, key: &str) -> String {
+    let source_name = Path::new(&clip.path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("clip");
+    format!(
+        "{kind}__{}__{}__{}.mp4",
+        cache_slug(source_name),
+        format_key(p),
+        &key[..12]
+    )
+}
+
+fn concat_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', "\\'")
+}
+
+fn note_fragment(id: &str, action: &str, path: &Path) {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("fragment");
+    update(id, |job| job.logs.push(format!("{action}: {name}")));
+}
+
+fn publish_fragment(
+    generated: &Path,
+    cache_file: &Path,
+    ff: &Path,
+    p: &Project,
+    expected_seconds: f64,
+    signature: &str,
+) -> Result<(), String> {
+    // We only replace a cache entry after it failed validation for the exact
+    // current signature. Render outputs and originals are never overwritten.
+    let info = inspect(ff, generated)?;
+    if !cached_output_matches(&info, p, expected_seconds) {
+        return Err("Rendered fragment failed verification before publication".into());
+    }
+    if cache_file.exists() {
+        fs::remove_file(cache_file).map_err(|error| error.to_string())?;
+    }
+    let record_path = fragment_record_path(cache_file);
+    if record_path.exists() {
+        fs::remove_file(&record_path).map_err(|error| error.to_string())?;
+    }
+    fs::rename(generated, cache_file).map_err(|error| error.to_string())?;
+    let record = FragmentRecord {
+        version: FRAGMENT_CACHE_VERSION.into(),
+        signature: signature.into(),
+        bytes: fs::metadata(cache_file)
+            .map_err(|error| error.to_string())?
+            .len(),
+        duration: expected_seconds,
+    };
+    let partial_record = record_path.with_extension("json.partial");
+    if partial_record.exists() {
+        fs::remove_file(&partial_record).map_err(|error| error.to_string())?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&partial_record)
+        .map_err(|error| error.to_string())?;
+    file.write_all(&serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())?;
+    drop(file);
+    fs::rename(&partial_record, &record_path).map_err(|error| error.to_string())
+}
+
+fn cached_output_matches(info: &Value, p: &Project, expected_seconds: f64) -> bool {
+    let Some(streams) = info["streams"].as_array() else {
+        return false;
+    };
+    let video_ok = streams.iter().any(|stream| {
+        stream["codec_type"] == "video"
+            && stream["width"] == p.width
+            && stream["height"] == p.height
+    });
+    let audio_ok = streams.iter().any(|stream| stream["codec_type"] == "audio");
+    video_ok
+        && audio_ok
+        && duration(info)
+            .map(|actual| (actual - expected_seconds).abs() <= 0.12)
+            .unwrap_or(false)
+}
 fn render(
     mut p: Project,
     root: String,
@@ -564,12 +772,24 @@ fn render(
         &output_root,
         (estimate_seconds * (bitrate + 256_000.) / 8. * 1.15) as u64,
     )?;
-    let folder = output_root.join(format!(
+    let final_folder = output_root.join(format!(
         "VideoStudio-{}-{}",
         if preview { "preview" } else { "render" },
         id
     ));
+    // A folder becomes visible as a completed render only through this final
+    // rename. Interrupted jobs remain clearly marked `.partial`.
+    let folder = PathBuf::from(format!("{}.partial", final_folder.to_string_lossy()));
     fs::create_dir(&folder).map_err(|e| e.to_string())?;
+    // Fragments live beside, not inside, individual render folders. The cache is
+    // scoped to the output format, and each filename includes its exact settings
+    // signature. It is intentionally retained after a successful render.
+    let fragment_cache = output_root
+        .join(".photogogo-video-studio-cache")
+        .join(format_key(&p));
+    if !preview {
+        fs::create_dir_all(&fragment_cache).map_err(|error| error.to_string())?;
+    }
     let work = folder.join("work");
     fs::create_dir(&work).map_err(|e| e.to_string())?;
     struct RenderCleanup {
@@ -600,7 +820,7 @@ fn render(
         .find(|f| f.exists())
         .ok_or("A TrueType font (Arial or DejaVu Sans) is required")?;
     fs::copy(font, work.join("font.ttf")).map_err(|e| e.to_string())?;
-    let mut segments: Vec<(String, String)> = vec![];
+    let mut segments: Vec<(PathBuf, String)> = vec![];
     if p.title_seconds > 0. && !p.title.is_empty() {
         text_asset(&work, "opening.txt", &wrap_title(&p.title, 28))?;
         text_asset(&work, "subtitle.txt", &wrap_title(&p.subtitle, 44))?;
@@ -635,7 +855,7 @@ fn render(
             0.,
             2.,
         )?;
-        segments.push(("opening.mp4".into(), "Opening title".into()));
+        segments.push((work.join("opening.mp4"), "Opening title".into()));
     }
     let count = p.clips.len();
     for (i, c) in p.clips.iter().enumerate() {
@@ -661,8 +881,23 @@ fn render(
         } else {
             c.duration
         };
+        let source_key = if preview {
+            String::new()
+        } else {
+            source_signature(Path::new(&c.path))?
+        };
+        let base_key = signature(&[
+            "base".into(),
+            source_key.clone(),
+            format_key(&p),
+            c.stabilization.clone(),
+            c.framing.clone(),
+            cap.has_h264_nvenc.to_string(),
+        ]);
+        let base_cache = fragment_cache.join(cache_name("base", c, &p, &base_key));
+        let reuse_base = !preview && cached_video_is_valid(ff, &base_cache, &p, seconds, &base_key);
         let mut filter = format!("scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={}",p.width,p.height,p.width,p.height,p.fps);
-        if c.stabilization != "off" {
+        if !reuse_base && c.stabilization != "off" {
             let (step, shake, accuracy, smooth) = match c.stabilization.as_str() {
                 "gentle" => (8, 3, 10, 18),
                 "balanced" => (6, 4, 15, 30),
@@ -682,69 +917,101 @@ fn render(
             .as_array()
             .map(|s| s.iter().any(|s| s["codec_type"] == "audio"))
             .unwrap_or(false);
-        let clean = format!("clip_{i}.mp4");
-        let mut args = vec![
-            "-ss".into(),
-            offset.to_string(),
-            "-i".into(),
-            c.path.clone(),
-        ];
-        if !audio {
-            args.extend([
-                "-f".into(),
-                "lavfi".into(),
-                "-i".into(),
-                "anullsrc=r=48000:cl=stereo".into(),
-            ]);
-        }
-        args.extend([
-            "-map".into(),
-            "0:v:0".into(),
-            "-map".into(),
-            if audio { "0:a:0" } else { "1:a:0" }.into(),
-            "-t".into(),
-            seconds.to_string(),
-            "-vf".into(),
-            filter,
-            "-af".into(),
-            "apad,asetpts=PTS-STARTPTS".into(),
-        ]);
-        args.extend(encoder(&p, cap.has_h264_nvenc));
-        args.push(clean.clone());
-        run(
-            ff,
-            args,
-            &work,
-            id,
-            &format!("{}: render full clip", c.chapter),
-            seconds,
-            base + span * 0.25,
-            span * 0.4,
-        )?;
-        if !c.title.is_empty() && c.title_seconds > 0. {
-            let file = format!("title_{i}.txt");
-            text_asset(&work, &file, &wrap_title(&c.title, 44))?;
-            let titled = format!("titled_{i}.mp4");
+        let generated_clean = work.join(format!("clip_{i}.mp4"));
+        let clean = if reuse_base {
+            note_fragment(id, "Reused base fragment", &base_cache);
+            base_cache.clone()
+        } else {
             let mut args = vec![
+                "-ss".into(),
+                offset.to_string(),
                 "-i".into(),
-                clean.clone(),
-                "-vf".into(),
-                drawtext(&file, p.width / 48, "h-text_h-40", Some(c.title_seconds)),
+                c.path.clone(),
+            ];
+            if !audio {
+                args.extend([
+                    "-f".into(),
+                    "lavfi".into(),
+                    "-i".into(),
+                    "anullsrc=r=48000:cl=stereo".into(),
+                ]);
+            }
+            args.extend([
+                "-map".into(),
+                "0:v:0".into(),
+                "-map".into(),
+                if audio { "0:a:0" } else { "1:a:0" }.into(),
                 "-t".into(),
                 seconds.to_string(),
-            ];
+                "-vf".into(),
+                filter,
+                "-af".into(),
+                "apad,asetpts=PTS-STARTPTS".into(),
+            ]);
             args.extend(encoder(&p, cap.has_h264_nvenc));
-            args.push(titled.clone());
+            args.push(generated_clean.to_string_lossy().into_owned());
             run(
                 ff,
                 args,
                 &work,
                 id,
-                &format!("{}: clip title", c.chapter),
+                &format!("{}: render full clip", c.chapter),
                 seconds,
-                base + span * 0.65,
-                span * 0.1,
+                base + span * 0.25,
+                span * 0.4,
             )?;
+            if preview {
+                generated_clean
+            } else {
+                publish_fragment(&generated_clean, &base_cache, ff, &p, seconds, &base_key)?;
+                note_fragment(id, "Rendered base fragment", &base_cache);
+                base_cache.clone()
+            }
+        };
+        if !c.title.is_empty() && c.title_seconds > 0. {
+            let file = format!("title_{i}.txt");
+            text_asset(&work, &file, &wrap_title(&c.title, 44))?;
+            let title_key = signature(&[
+                "title".into(),
+                base_key.clone(),
+                c.title.clone(),
+                c.title_seconds.to_string(),
+            ]);
+            let title_cache = fragment_cache.join(cache_name("title", c, &p, &title_key));
+            let titled =
+                if !preview && cached_video_is_valid(ff, &title_cache, &p, seconds, &title_key) {
+                    note_fragment(id, "Reused titled fragment", &title_cache);
+                    title_cache
+                } else {
+                    let generated = work.join(format!("titled_{i}.mp4"));
+                    let mut args = vec![
+                        "-i".into(),
+                        clean.to_string_lossy().into_owned(),
+                        "-vf".into(),
+                        drawtext(&file, p.width / 48, "h-text_h-40", Some(c.title_seconds)),
+                        "-t".into(),
+                        seconds.to_string(),
+                    ];
+                    args.extend(encoder(&p, cap.has_h264_nvenc));
+                    args.push(generated.to_string_lossy().into_owned());
+                    run(
+                        ff,
+                        args,
+                        &work,
+                        id,
+                        &format!("{}: clip title", c.chapter),
+                        seconds,
+                        base + span * 0.65,
+                        span * 0.1,
+                    )?;
+                    if preview {
+                        generated
+                    } else {
+                        publish_fragment(&generated, &title_cache, ff, &p, seconds, &title_key)?;
+                        note_fragment(id, "Rendered titled fragment", &title_cache);
+                        title_cache
+                    }
+                };
             segments.push((titled, c.chapter.clone()));
         } else {
             segments.push((clean.clone(), c.chapter.clone()));
@@ -765,44 +1032,67 @@ fn render(
                     wrap_title(&r.caption, 44)
                 ),
             )?;
-            let replay = format!("replay_{i}_{j}.mp4");
             let dur = (r.end - r.start) / r.speed;
+            let replay_key = signature(&[
+                "replay".into(),
+                base_key.clone(),
+                r.start.to_string(),
+                r.end.to_string(),
+                r.speed.to_string(),
+                r.caption.clone(),
+            ]);
+            let replay_cache =
+                fragment_cache.join(cache_name(&format!("replay-{}", j + 1), c, &p, &replay_key));
             let atempo = if r.speed == 0.25 {
                 "atempo=0.5,atempo=0.5".into()
             } else {
                 format!("atempo={}", r.speed)
             };
-            let mut args = vec![
-                "-ss".into(),
-                r.start.to_string(),
-                "-t".into(),
-                (r.end - r.start).to_string(),
-                "-i".into(),
-                clean.clone(),
-                "-vf".into(),
-                format!(
-                    "setpts=(PTS-STARTPTS)/{},fps={},{}",
-                    r.speed,
-                    p.fps,
-                    drawtext(&caption, p.width / 52, "40", None)
-                ),
-                "-af".into(),
-                format!("{atempo},volume=0.65,apad"),
-                "-t".into(),
-                dur.to_string(),
-            ];
-            args.extend(encoder(&p, cap.has_h264_nvenc));
-            args.push(replay.clone());
-            run(
-                ff,
-                args,
-                &work,
-                id,
-                &format!("{}: replay {}", c.chapter, j + 1),
-                dur,
-                base + span * 0.75,
-                span * 0.25,
-            )?;
+            let replay =
+                if !preview && cached_video_is_valid(ff, &replay_cache, &p, dur, &replay_key) {
+                    note_fragment(id, "Reused replay fragment", &replay_cache);
+                    replay_cache
+                } else {
+                    let generated = work.join(format!("replay_{i}_{j}.mp4"));
+                    let mut args = vec![
+                        "-ss".into(),
+                        r.start.to_string(),
+                        "-t".into(),
+                        (r.end - r.start).to_string(),
+                        "-i".into(),
+                        clean.to_string_lossy().into_owned(),
+                        "-vf".into(),
+                        format!(
+                            "setpts=(PTS-STARTPTS)/{},fps={},{}",
+                            r.speed,
+                            p.fps,
+                            drawtext(&caption, p.width / 52, "40", None)
+                        ),
+                        "-af".into(),
+                        format!("{atempo},volume=0.65,apad"),
+                        "-t".into(),
+                        dur.to_string(),
+                    ];
+                    args.extend(encoder(&p, cap.has_h264_nvenc));
+                    args.push(generated.to_string_lossy().into_owned());
+                    run(
+                        ff,
+                        args,
+                        &work,
+                        id,
+                        &format!("{}: replay {}", c.chapter, j + 1),
+                        dur,
+                        base + span * 0.75,
+                        span * 0.25,
+                    )?;
+                    if preview {
+                        generated
+                    } else {
+                        publish_fragment(&generated, &replay_cache, ff, &p, dur, &replay_key)?;
+                        note_fragment(id, "Rendered replay fragment", &replay_cache);
+                        replay_cache
+                    }
+                };
             segments.push((replay, format!("Replay - {}", r.caption)));
         }
     }
@@ -811,7 +1101,7 @@ fn render(
     let mut total = 0.;
     let mut frames = 0_u64;
     for (file, title) in &segments {
-        let info = inspect(ff, &work.join(file))?;
+        let info = inspect(ff, file)?;
         let v = info["streams"]
             .as_array()
             .and_then(|s| s.iter().find(|s| s["codec_type"] == "video"))
@@ -822,7 +1112,7 @@ fn render(
             .ok_or("Cannot verify segment frames")?;
         let d = n as f64 / p.fps as f64;
         frames += n;
-        concat.push_str(&format!("file '{file}'\nduration {d:.8}\n"));
+        concat.push_str(&format!("file '{}'\nduration {d:.8}\n", concat_path(file)));
         let safe = title
             .replace('\\', "\\\\")
             .replace('=', "\\=")
@@ -909,14 +1199,29 @@ fn render(
     fs::write(
         folder.join("verification.json"),
         serde_json::to_vec_pretty(
-            &json!({"frames":frames,"duration":total,"chapters":segments.len(),"output":output}),
+            &json!({
+                "frames":frames,
+                "duration":total,
+                "chapters":segments.len(),
+                "output":output,
+                "fragmentCache": if preview { Value::Null } else { json!(fragment_cache) },
+                "fragments": segments.iter().map(|(path, title)| json!({"path":path,"chapter":title})).collect::<Vec<_>>(),
+            }),
         )
         .unwrap(),
     )
     .map_err(|e| e.to_string())?;
     // Only our own newly-created work directory is removed; source clips are outside it.
     fs::remove_dir_all(&work).map_err(|e| e.to_string())?;
-    Ok(output.to_string_lossy().into_owned())
+    fs::rename(&folder, &final_folder).map_err(|error| error.to_string())?;
+    Ok(final_folder
+        .join(if preview {
+            "preview.mp4"
+        } else {
+            "training-video.mp4"
+        })
+        .to_string_lossy()
+        .into_owned())
 }
 
 fn check_file_size_limit(path: &Path, bytes: u64) -> Result<(), String> {
@@ -1100,6 +1405,33 @@ mod tests {
         p.clips[0].replays[0].end = 0.;
         assert!(studio_validate_project(p.clone()).is_ok());
         assert!(validate(&p).is_err());
+    }
+    #[test]
+    fn fragment_cache_names_are_format_and_setting_specific() {
+        let mut p = project(Path::new("."));
+        let clip = p.clips[0].clone();
+        let first = signature(&[
+            "base".into(),
+            "source-bytes".into(),
+            format_key(&p),
+            clip.stabilization.clone(),
+            clip.framing.clone(),
+            "false".into(),
+        ]);
+        let name = cache_name("base", &clip, &p, &first);
+        assert!(name.contains("1280x720-25fps"));
+        assert!(name.contains("source"));
+        p.width = 1920;
+        let changed_format = signature(&[
+            "base".into(),
+            "source-bytes".into(),
+            format_key(&p),
+            clip.stabilization.clone(),
+            clip.framing.clone(),
+            "false".into(),
+        ]);
+        assert_ne!(first, changed_format);
+        assert_eq!(cache_slug("20260911_223311.mp4"), "20260911-223311-mp4");
     }
     #[test]
     fn cancellation_checkpoint_stops_work() {
