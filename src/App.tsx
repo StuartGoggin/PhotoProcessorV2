@@ -153,19 +153,14 @@ export default function App() {
 
         {/* Page content */}
         <main className="flex-1 overflow-auto bg-surface-900">
-          <div hidden={page !== "videostudio"}><VideoStudio onOpenJobs={() => setPage("jobs")} /></div>
+          <div hidden={page !== "videostudio"}><VideoStudio jobs={studioJobs} onOpenJobs={() => setPage("jobs")} /></div>
           {pageContent[page]}
         </main>
       </div>
 
       {/* Jobs panel (bottom frame) */}
       <StudioJobs compact onOpen={() => setPage("videostudio")} />
-      <JobsPanel
-        importJobs={importJobs}
-        processJobs={processJobs}
-        studioJobs={studioJobs}
-        loading={loading}
-      />
+      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} loading={loading} />
     </div>
   );
 }

@@ -1,6 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { confirm } from "@tauri-apps/plugin-dialog";
+import { STUDIO_CLEARED, notifyStudioCleared } from "../utils/studioWorkflow";
 import { invoke } from "@tauri-apps/api/core";
 import type { StudioJob } from "../types/videoStudio";
+import StudioJobDiagnostics from "./StudioJobDiagnostics";
 export default function StudioJobs({
   compact = false,
   onOpen,
@@ -10,15 +13,35 @@ export default function StudioJobs({
 }) {
   const [jobs, setJobs] = useState<StudioJob[]>([]);
   const [error, setError] = useState("");
+  const [clearing, setClearing] = useState(false);
+  const [message, setMessage] = useState("");
+  const generation = useRef(0);
+  useEffect(() => {
+    const clear = () => { generation.current++; setJobs([]); };
+    window.addEventListener(STUDIO_CLEARED, clear);
+    return () => window.removeEventListener(STUDIO_CLEARED, clear);
+  }, []);
+  async function clearAll() {
+    setClearing(true);
+    setError("");
+    try {
+      if (!await confirm("Stop all active Studio jobs and clear queued, completed, failed and interrupted attempts? Clip render status will reset and the next render will start fresh. Source clips, project edits, music, exported videos and diagnostic files stay on disk.", { title: "Clear all Studio renders?", kind: "warning" })) return;
+      const result = await invoke<{ cleared: number }>("studio_clear_jobs");
+      notifyStudioCleared();
+      setMessage(`Cleared ${result.cleared} Studio jobs. Ready to render from scratch.`);
+    } catch (e) { setError(String(e)); }
+    finally { setClearing(false); }
+  }
   useEffect(() => {
     let alive = true,
       pending = false;
     const refresh = async () => {
       if (pending) return;
       pending = true;
+      const epoch = generation.current;
       try {
         const data = await invoke<StudioJob[]>("studio_list_jobs");
-        if (alive) {
+        if (alive && epoch === generation.current) {
           setJobs(data);
           setError("");
         }
@@ -42,6 +65,10 @@ export default function StudioJobs({
       setError(String(e));
     }
   }
+  async function retry(id: string) {
+    try { await invoke("studio_retry_job", { id }); setError(""); }
+    catch (e) { setError(String(e)); }
+  }
   const active = jobs.filter((j) => ["queued", "running"].includes(j.status));
   if (compact)
     return active.length ? (
@@ -54,10 +81,16 @@ export default function StudioJobs({
     ) : null;
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold">Background renders and previews</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold">Render history & recovery</h2>
+        <button className="btn-secondary" disabled={clearing} onClick={() => void clearAll()}>
+          {clearing ? "Stopping jobs and clearing…" : "Clear all Studio renders"}
+        </button>
+      </div>
+      {message && <p role="status" className="text-sm text-cyan-200">{message}</p>}
       <p className="text-sm text-gray-400">
-        You may change pages. Keep the app open. Pause takes effect between steps; Cancel interrupts
-        FFmpeg.
+        Work continues while you change pages. Pause takes effect between steps. After an interruption,
+        resume the saved request to reuse verified clips and finish the video.
       </p>
       {error && (
         <p role="alert" className="text-red-400">
@@ -75,13 +108,15 @@ export default function StudioJobs({
             </span>
           </div>
           <p className="text-sm">{j.phase}</p>
+          <p className="text-xs text-gray-400">{j.kind} · {j.width}×{j.height} · {j.fps} fps · {j.bitrateMbps ?? "—"} Mbps · {j.artifacts?.length ?? 0} clips saved</p>
           <progress
             className="w-full"
             max="100"
             value={j.progress}
             aria-label={`${j.name} progress`}
           />
-          <div className="flex gap-2">
+          <fieldset disabled={clearing} className="flex gap-2">
+            {["interrupted", "failed", "cancelled"].includes(j.status) && <button className="btn-primary" onClick={() => void retry(j.id)}>Resume saved render</button>}
             {["running", "queued"].includes(j.status) && (
               <>
                 <button
@@ -119,9 +154,10 @@ export default function StudioJobs({
                 </button>
               </>
             )}
-          </div>
+          </fieldset>
           {j.output && <p className="text-xs break-all">{j.output}</p>}
-          {j.error && <p className="text-red-400 text-sm break-all">{j.error}</p>}
+          {j.error && <p className={j.status === "retried" ? "text-gray-400 text-sm break-all" : "text-red-400 text-sm break-all"}>{j.status === "retried" ? "Previous attempt error: " : ""}{j.error}</p>}
+          <StudioJobDiagnostics job={j} />
           <details>
             <summary className="text-sm cursor-pointer">Processing log</summary>
             <pre className="text-xs whitespace-pre-wrap">{j.logs.join("\n")}</pre>

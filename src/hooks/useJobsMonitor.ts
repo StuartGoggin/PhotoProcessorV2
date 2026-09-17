@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { STUDIO_CLEARED } from "../utils/studioWorkflow";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import type { StudioJob } from "../types/videoStudio";
@@ -19,10 +20,17 @@ export function useJobsMonitor(enabled = true, interval = 500): JobsMonitorResul
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [processJobs, setProcessJobs] = useState<ProcessJob[]>([]);
   const [studioJobs, setStudioJobs] = useState<StudioJob[]>([]);
+  const generation = useRef(0);
+  useEffect(() => {
+    const clear = () => { generation.current++; setStudioJobs([]); };
+    window.addEventListener(STUDIO_CLEARED, clear);
+    return () => window.removeEventListener(STUDIO_CLEARED, clear);
+  }, []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function loadJobs() {
+    const epoch = generation.current;
     if (!enabled) return;
     setLoading(true);
     setError(null);
@@ -34,7 +42,7 @@ export function useJobsMonitor(enabled = true, interval = 500): JobsMonitorResul
       ]);
       setImportJobs(importData);
       setProcessJobs(processData);
-      setStudioJobs(studioData);
+      if (epoch === generation.current) setStudioJobs(studioData);
     } catch (e) {
       setError(String(e));
     } finally {
