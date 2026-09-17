@@ -19,7 +19,63 @@ export interface StudioClip {
   reviewed: boolean;
   notes: string;
   replays: StudioReplay[];
+  rendered?: StudioClipRender | null;
+  revision?: number;
 }
+export interface StudioClipRender {
+  path: string;
+  width: number;
+  height: number;
+  fps: number;
+  duration: number;
+  renderedAt: string;
+  bitrateMbps: number;
+  revision: number;
+  signature: string;
+  available?: boolean;
+}
+export interface MusicSection {
+  name: string;
+  bars: number;
+  energy: number;
+}
+export interface MusicDirection {
+  title: string;
+  summary: string;
+  genre: string;
+  mood: string;
+  key: string;
+  mode: "major" | "minor";
+  bpm: number;
+  energy: number;
+  instruments: string[];
+  chordProgression: string[];
+  arrangement: MusicSection[];
+}
+export interface BackgroundMusic {
+  enabled: boolean;
+  creativeBrief: string;
+  direction: MusicDirection | null;
+  midiPath: string;
+  lmmsPath: string;
+  audioPath: string;
+  musicVolume: number;
+  originalVolume: number;
+  requestId: string;
+  projectPath: string;
+}
+export const newBackgroundMusic = (): BackgroundMusic => ({
+  enabled: false,
+  creativeBrief: "",
+  direction: null,
+  midiPath: "",
+  lmmsPath: "",
+  audioPath: "",
+  musicVolume: 28,
+  originalVolume: 45,
+  requestId: "",
+  projectPath: "",
+});
 export interface StudioProject {
   version: number;
   name: string;
@@ -32,6 +88,9 @@ export interface StudioProject {
   height: number;
   fps: number;
   clips: StudioClip[];
+  music: BackgroundMusic;
+  assembleRenderedClips?: boolean;
+  bitrateMbps: number;
 }
 export interface StudioJob {
   id: string;
@@ -44,6 +103,27 @@ export interface StudioJob {
   logs: string[];
   cancelled: boolean;
   paused: boolean;
+  kind?: "preview" | "clip" | "project" | "assembly" | "music";
+  clipId?: string | null;
+  width?: number;
+  height?: number;
+  fps?: number;
+  duration?: number;
+  bitrateMbps?: number;
+  targets?: { clipId: string; sourcePath: string; revision: number }[];
+  artifacts?: { clipId: string; sourcePath: string; rendered: StudioClipRender }[];
+  musicRequestId?: string;
+  musicProjectPath?: string | null;
+  createdAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  heartbeatAt?: string;
+  progressAt?: string;
+  processId?: number | null;
+  processName?: string;
+  logPath?: string;
+  retryOf?: string | null;
+  retriedAs?: string | null;
 }
 export const newProject = (): StudioProject => ({
   version: 1,
@@ -57,6 +137,9 @@ export const newProject = (): StudioProject => ({
   height: 2160,
   fps: 50,
   clips: [],
+  music: newBackgroundMusic(),
+  assembleRenderedClips: true,
+  bitrateMbps: 32,
 });
 export const clipName = (path: string) => path.split(/[\\/]/).pop() || path;
 export const timecode = (seconds: number) =>

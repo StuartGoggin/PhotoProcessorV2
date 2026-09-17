@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import { ProgressBar } from "../components";
+import StudioJobs from "../components/StudioJobs";
 import { getProcessAttemptLabel, getProcessResultLabel, getProcessResultToken } from "../utils";
 
 function pct(done: number, total: number): number {
@@ -328,6 +329,10 @@ export default function Jobs() {
           {error}
         </div>
       )}
+
+      <div className="card mb-6">
+        <StudioJobs />
+      </div>
 
       {importJobs.length === 0 && processJobs.length === 0 ? (
         <div className="card text-sm text-gray-400">No jobs yet.</div>

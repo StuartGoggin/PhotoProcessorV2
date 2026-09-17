@@ -38,7 +38,7 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(208);
   const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
-  const { importJobs, processJobs, loading } = useJobsMonitor(true, 500);
+  const { importJobs, processJobs, studioJobs, loading } = useJobsMonitor(true, 500);
 
   useEffect(() => {
     try {
@@ -153,14 +153,14 @@ export default function App() {
 
         {/* Page content */}
         <main className="flex-1 overflow-auto bg-surface-900">
-          <div hidden={page !== "videostudio"}><VideoStudio onOpenJobs={() => setPage("jobs")} /></div>
+          <div hidden={page !== "videostudio"}><VideoStudio jobs={studioJobs} onOpenJobs={() => setPage("jobs")} /></div>
           {pageContent[page]}
         </main>
       </div>
 
       {/* Jobs panel (bottom frame) */}
       <StudioJobs compact onOpen={() => setPage("videostudio")} />
-      <JobsPanel importJobs={importJobs} processJobs={processJobs} loading={loading} />
+      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} loading={loading} />
     </div>
   );
 }

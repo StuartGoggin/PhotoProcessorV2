@@ -1,17 +1,20 @@
 import { useRef, useEffect, useState } from "react";
 import type { ImportJob, ProcessJob } from "../types";
+import type { StudioJob } from "../types/videoStudio";
 import JobTile from "./JobTile";
 import JobConsole from "./JobConsole";
+import StudioJobTile from "./StudioJobTile";
 
 type Job = (ImportJob & { jobType: "import" }) | (ProcessJob & { jobType: "process" });
 
 interface JobsPanelProps {
   importJobs: ImportJob[];
   processJobs: ProcessJob[];
+  studioJobs?: StudioJob[];
   loading?: boolean;
 }
 
-export default function JobsPanel({ importJobs, processJobs, loading = false }: JobsPanelProps) {
+export default function JobsPanel({ importJobs, processJobs, studioJobs = [], loading = false }: JobsPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -92,8 +95,9 @@ export default function JobsPanel({ importJobs, processJobs, loading = false }: 
     return b.id.localeCompare(a.id);
   });
 
-  const hasJobs = jobs.length > 0;
-  const activeCount = jobs.filter((j) => ["running", "paused", "queued"].includes(j.status)).length;
+  const sortedStudioJobs = [...studioJobs].sort((a, b) => b.id.localeCompare(a.id));
+  const hasJobs = jobs.length + sortedStudioJobs.length > 0;
+  const activeCount = [...jobs, ...sortedStudioJobs].filter((j) => ["running", "paused", "queued"].includes(j.status)).length;
   const selectedJob = selectedJobId
     ? jobs.find((j) => j.id === selectedJobId)?.jobType === "import"
       ? importJobs.find((j) => j.id === selectedJobId)
@@ -121,7 +125,7 @@ export default function JobsPanel({ importJobs, processJobs, loading = false }: 
           {loading && <div className="text-xs text-gray-500 animate-pulse">Syncing...</div>}
         </div>
         <div className="text-xs text-gray-400">
-          Total: {jobs.length} {hasJobs && `• Scroll right to see ${jobs.filter((j) => j.status === "completed").length} completed`}
+          Total: {jobs.length + sortedStudioJobs.length} {hasJobs && `• Scroll right to see ${jobs.filter((j) => j.status === "completed").length + sortedStudioJobs.filter((j) => j.status === "completed").length} completed`}
         </div>
       </div>
 
@@ -134,6 +138,7 @@ export default function JobsPanel({ importJobs, processJobs, loading = false }: 
               ref={scrollRef}
               className="jobs-panel-scroll-strip w-full h-full overflow-x-scroll overflow-y-hidden scroll-smooth px-6 py-4 space-x-4 flex items-start"
             >
+              {sortedStudioJobs.map((job) => <StudioJobTile key={`studio-${job.id}`} job={job} />)}
               {jobs.map((job) => (
                 <JobTile
                   key={`${job.jobType}-${job.id}`}
