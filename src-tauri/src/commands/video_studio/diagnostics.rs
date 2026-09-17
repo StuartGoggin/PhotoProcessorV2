@@ -65,19 +65,24 @@ pub(super) fn run_process(binary: &Path, args: &[String], dir: &Path, id: &str,
         job.process_name = binary.file_name().unwrap_or_default().to_string_lossy().into_owned();
         job.logs.push(format!("Launching {:?}; args={args:?}; working directory={}; stdout={}; stderr={}", binary, dir.display(), stdout_path.display(), stderr_path.display()));
     });
-    let mut child = command(binary).args(args).current_dir(dir).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr))
+    let threads = args.windows(2).filter(|pair| pair[0] == "-threads").last().map(|pair| pair[1].as_str()).unwrap_or("2");
+    let mut child = command(binary).env("OMP_NUM_THREADS", threads).args(args).current_dir(dir).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr))
         .spawn().map_err(|e| format!("{phase}: could not launch {}: {e}", binary.display()))?;
+    super::studio_hardware::supervise_child(&mut child)?;
     let pid = child.id();
-    update(id, |job| { job.process_id = Some(pid); job.logs.push(format!("Process started: PID {pid}")); });
+    let key = dir.to_string_lossy().into_owned();
+    update(id, |job| { job.process_id = Some(pid); job.process_ids.push(pid); for task in &mut job.active_tasks { if task.key == key { task.process_id = Some(pid); } } job.logs.push(format!("Process started: PID {pid}")); });
     let started = std::time::Instant::now();
     let mut heartbeat = std::time::Instant::now();
     let mut report = std::time::Instant::now();
     let mut last_progress = String::new();
+    let mut advanced = std::time::Instant::now();
     let result = loop {
-        let cancelled = jobs().lock().map(|s| s.get(id).map(|j| j.cancelled).unwrap_or(true)).unwrap_or(true);
-        if cancelled || timeout.map(|limit| started.elapsed() >= limit).unwrap_or(false) {
+        let cancelled = jobs().lock().map(|s| s.get(id).map(|j| j.cancelled || j.worker_error.is_some()).unwrap_or(true)).unwrap_or(true);
+        let stalled = progress.is_some() && advanced.elapsed() >= Duration::from_secs(300);
+        if cancelled || stalled || timeout.map(|limit| started.elapsed() >= limit).unwrap_or(false) {
             let _ = child.kill(); let _ = child.wait();
-            break Err(if cancelled { "Cancelled".to_string() } else { "Process timed out".to_string() });
+            break Err(if cancelled { "Cancelled".to_string() } else if stalled { "FFmpeg made no progress for five minutes; retry or use CPU encoding".to_string() } else { "Process timed out".to_string() });
         }
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -91,13 +96,15 @@ pub(super) fn run_process(binary: &Path, args: &[String], dir: &Path, id: &str,
             let text = tail(&stdout_path, 8192).unwrap_or_default();
             let value = text.lines().rev().find_map(|line| line.strip_prefix("out_time_us=")).unwrap_or("").to_string();
             let changed = !value.is_empty() && value != last_progress;
+            if changed { advanced = std::time::Instant::now(); }
+            if let (Some((seconds, base, span)), Ok(us)) = (progress, value.parse::<f64>()) {
+                let fps = text.lines().rev().find_map(|line| line.strip_prefix("fps=")).and_then(|v| v.parse().ok());
+                let speed = text.lines().rev().find_map(|line| line.strip_prefix("speed=")).and_then(|v| v.trim_end_matches('x').parse().ok());
+                record_progress(id, &key, phase, base + span * (us / 1_000_000. / seconds.max(0.01)).clamp(0., 1.), fps, speed);
+            }
             update(id, |job| {
                 job.heartbeat_at = chrono::Utc::now().to_rfc3339();
                 if changed { job.progress_at = job.heartbeat_at.clone(); }
-                if let (Some((seconds, base, span)), Ok(us)) = (progress, value.parse::<f64>()) {
-                    let step = (base + span * (us / 1_000_000. / seconds.max(0.01)).clamp(0., 1.)).min(99.);
-                    job.progress = job.progress_base + step * if job.progress_scale > 0. { job.progress_scale } else { 1. };
-                }
                 if report.elapsed() >= Duration::from_secs(30) {
                     let summary: Vec<_> = text.lines().rev().filter(|line| ["frame=", "fps=", "out_time=", "speed="].iter().any(|key| line.starts_with(key))).take(4).collect();
                     job.logs.push(format!("PID {pid} alive; elapsed {:.0}s; {}", started.elapsed().as_secs_f64(), summary.join("; ")));
@@ -109,7 +116,7 @@ pub(super) fn run_process(binary: &Path, args: &[String], dir: &Path, id: &str,
         }
         thread::sleep(Duration::from_millis(200));
     };
-    update(id, |job| { job.process_id = None; job.heartbeat_at = chrono::Utc::now().to_rfc3339(); job.phase = format!("{phase}: process exited; checking result"); });
+    update(id, |job| { job.process_ids.retain(|entry| *entry != pid); job.process_id = job.process_ids.last().copied(); job.heartbeat_at = chrono::Utc::now().to_rfc3339(); job.phase = format!("{phase}: process exited; checking result"); });
     result.map_err(|error| format!("{phase}: {error}\n{}\nDetailed log: {log_path}", tail(&stderr_path, 8192).unwrap_or_default()))
 }
 

@@ -11,7 +11,7 @@ project.outputDir = "D:\\Videos\\Training exports";
 project.clips = ["Warm-up", "Technique practice", "Final run"].map((chapter, index) => ({
   id: `preview-${index}`, path: `D:\\Videos\\${chapter}.mp4`, chapter, duration: 25 + 10 * index,
   title: chapter, titleSeconds: 4, include: true, reviewed: index < 2,
-  notes: "", replays: [], stabilization: "off", framing: "edgeSafe", revision: 0,
+  notes: "", replays: [], stabilization: "off", stabilizationMethod: "quality", customStabilization: { radius: 16, blockSize: 8, contrast: 125 }, framing: "edgeSafe", revision: 0,
   rendered: index === 0 ? { path: "D:/out/first.mp4", width: 3840, height: 2160, fps: 50, bitrateMbps: 32, revision: 0, signature: "fixture", renderedAt: new Date().toISOString(), duration: 25 } : null,
 }));
 localStorage.setItem("photogogo.videoStudio.project.v1", JSON.stringify(project));

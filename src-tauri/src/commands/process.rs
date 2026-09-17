@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -599,6 +599,15 @@ pub(crate) fn is_process_abort_requested(job_id: Option<&str>) -> bool {
     }
 }
 
+fn is_process_paused_or_aborted(job_id: Option<&str>) -> bool {
+    let Some(job_id) = job_id else { return false; };
+    process_jobs_store().lock()
+        .map(|jobs| jobs.get(job_id)
+            .map(|job| job.pause_requested || job.abort_requested)
+            .unwrap_or(true))
+        .unwrap_or(true)
+}
+
 #[tauri::command]
 pub fn list_process_jobs() -> Result<Vec<ProcessJob>, String> {
     let jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
@@ -1119,9 +1128,11 @@ fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec
 pub(super) struct FfmpegCapabilities {
     pub(super) binary: PathBuf,
     pub(super) has_vidstab: bool,
+    pub(super) has_deshake: bool,
     pub(super) has_h264_nvenc: bool,
     pub(super) has_h264_qsv: bool,
-    nvenc_probe_error: Option<String>,
+    pub(super) nvenc_probe_error: Option<String>,
+    pub(super) qsv_probe_error: Option<String>,
 }
 
 fn ffmpeg_candidates() -> Vec<PathBuf> {
@@ -1142,51 +1153,86 @@ fn ffmpeg_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-fn command_output(binary: &Path, args: &[&str]) -> Result<std::process::Output, String> {
-    Command::new(binary)
+pub(super) fn command_output(binary: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    command_output_limited(binary, args, 256 * 1024, Duration::from_secs(12))
+}
+
+fn read_command_output(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
+    let mut retained = Vec::new();
+    let mut truncated = false;
+    let mut buffer = [0u8; 4096];
+    while let Ok(count) = reader.read(&mut buffer) {
+        if count == 0 { break; }
+        let keep = count.min(limit.saturating_sub(retained.len()));
+        retained.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < count;
+    }
+    (retained, truncated)
+}
+
+#[test]
+fn studio_inspection_output_budget_does_not_silently_truncate_json() {
+    let expected = vec![b' '; 300_000];
+    let (large, truncated) = read_command_output(std::io::Cursor::new(&expected), 64 * 1024 * 1024);
+    assert_eq!(large, expected);
+    assert!(!truncated);
+    let (small, truncated) = read_command_output(std::io::Cursor::new(&expected), 256 * 1024);
+    assert_eq!(small.len(), 256 * 1024);
+    assert!(truncated);
+}
+
+pub(super) fn command_output_limited(binary: &Path, args: &[&str], stdout_limit: usize, timeout: Duration) -> Result<std::process::Output, String> {
+    let mut command = Command::new(binary);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let mut child = command
         .args(args)
-        .output()
-        .map_err(|e| e.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    // Drain both streams while retaining bounded diagnostics. Waiting for exit
+    // before reading can deadlock when a filters/encoders listing fills a pipe.
+    let stdout = child.stdout.take().map(|pipe| thread::spawn(move || read_command_output(pipe, stdout_limit)));
+    let stderr = child.stderr.take().map(|pipe| thread::spawn(move || read_command_output(pipe, 256 * 1024)));
+    let started = Instant::now();
+    let result = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Err(err) => break Err(err.to_string()),
+            Ok(None) if started.elapsed() >= timeout => {
+                break Err(format!("FFmpeg/ffprobe inspection timed out after {} seconds", timeout.as_secs()));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+        }
+    };
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let (stdout, truncated) = stdout.and_then(|handle| handle.join().ok()).unwrap_or_default();
+    let (stderr, _) = stderr.and_then(|handle| handle.join().ok()).unwrap_or_default();
+    if truncated && result.is_ok() {
+        return Err(format!("FFmpeg/ffprobe output exceeded the {} MiB inspection limit", stdout_limit / 1024 / 1024));
+    }
+    result.map(|status| std::process::Output { status, stdout, stderr })
 }
 
-fn probe_h264_nvenc(binary: &Path) -> Result<(), String> {
-    let probe_root = env::temp_dir().join(format!(
-        "photogogo_nvenc_probe_{}_{}",
-        std::process::id(),
-        chrono::Utc::now().timestamp_millis()
-    ));
-    let output_path = probe_root.join("probe.mp4");
-    fs::create_dir_all(&probe_root).map_err(|e| e.to_string())?;
-
-    let output = Command::new(binary)
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=size=16x16:rate=1:color=black",
-            "-frames:v",
-            "1",
-            "-c:v",
-            "h264_nvenc",
-            "-preset",
-            "p7",
-            "-cq",
-            "18",
-            "-b:v",
-            "0",
-            "-an",
-            "-y",
-        ])
-        .arg(&output_path)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    let _ = fs::remove_file(&output_path);
-    let _ = fs::remove_dir_all(&probe_root);
-
+fn probe_h264_encoder(binary: &Path, encoder: &str) -> Result<(), String> {
+    // 16x16 falsely rejects working hardware encoders with minimum dimensions.
+    // Use ordinary video dimensions and the same system-memory frame path as
+    // the CPU stabilisation filters. The null muxer creates no temporary files.
+    let output = command_output(binary, &[
+        "-hide_banner", "-nostdin", "-loglevel", "error",
+        "-threads", "1", "-filter_threads", "1",
+        "-f", "lavfi", "-i", "color=size=1280x720:rate=30:color=black",
+        "-frames:v", "3", "-pix_fmt", "yuv420p", "-c:v", encoder,
+        "-b:v", "2M", "-an", "-f", "null", "-",
+    ])?;
     if output.status.success() {
         return Ok(());
     }
@@ -1198,52 +1244,33 @@ fn probe_h264_nvenc(binary: &Path) -> Result<(), String> {
     } else if !stdout.is_empty() {
         Err(stdout)
     } else {
-        Err(format!("NVENC probe failed with status {}", output.status))
-    }
-}
-
-fn probe_h264_qsv(binary: &Path) -> Result<(), String> {
-    let output = Command::new(binary)
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-init_hw_device",
-            "qsv=qsv",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=size=16x16:rate=1:color=black",
-            "-frames:v",
-            "1",
-            "-c:v",
-            "h264_qsv",
-            "-b:v",
-            "100k",
-            "-an",
-            "-f",
-            "null",
-            "-",
-        ])
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !stderr.is_empty() {
-        Err(stderr)
-    } else if !stdout.is_empty() {
-        Err(stdout)
-    } else {
-        Err(format!("Intel Quick Sync probe failed with status {}", output.status))
+        Err(format!("{} probe failed with status {}", encoder, output.status))
     }
 }
 
 pub(super) fn detect_ffmpeg_capabilities() -> Result<FfmpegCapabilities, String> {
+    type CacheEntry = (std::ffi::OsString, std::ffi::OsString, Instant, Result<FfmpegCapabilities, String>);
+    static CACHE: OnceLock<Mutex<Option<CacheEntry>>> = OnceLock::new();
+    let override_key = env::var_os("PHOTOGOGO_FFMPEG").unwrap_or_default();
+    let path_key = env::var_os("PATH").unwrap_or_default();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock()
+        .map_err(|_| "FFmpeg capability cache lock failed".to_string())?;
+    if let Some((previous_override, previous_path, when, result)) = cache.as_ref() {
+        let ttl = if result.is_ok() { 300 } else { 15 };
+        if previous_override == &override_key && previous_path == &path_key
+            && when.elapsed() < Duration::from_secs(ttl)
+        {
+            return result.clone();
+        }
+    }
+    // Serialize the initial probes so simultaneous queues do not each allocate
+    // hardware sessions. Failures expire quickly, allowing driver/tool repair.
+    let result = detect_ffmpeg_capabilities_uncached();
+    *cache = Some((override_key, path_key, Instant::now(), result.clone()));
+    result
+}
+
+fn detect_ffmpeg_capabilities_uncached() -> Result<FfmpegCapabilities, String> {
     let mut last_error = None;
 
     for candidate in ffmpeg_candidates() {
@@ -1260,19 +1287,25 @@ pub(super) fn detect_ffmpeg_capabilities() -> Result<FfmpegCapabilities, String>
                 let encoder_blob = format!("{}\n{}", encoders_stdout, encoders_stderr);
                 let nvenc_listed = encoder_blob.contains("h264_nvenc");
                 let nvenc_probe = if nvenc_listed {
-                    probe_h264_nvenc(&candidate).err()
+                    probe_h264_encoder(&candidate, "h264_nvenc").err()
                 } else {
                     None
                 };
                 let qsv_listed = encoder_blob.contains("h264_qsv");
-                let qsv_available = qsv_listed && probe_h264_qsv(&candidate).is_ok();
+                let qsv_probe = if qsv_listed {
+                    probe_h264_encoder(&candidate, "h264_qsv").err()
+                } else {
+                    None
+                };
 
                 return Ok(FfmpegCapabilities {
                     binary: candidate,
                     has_vidstab: filter_blob.contains("vidstabdetect") && filter_blob.contains("vidstabtransform"),
+                    has_deshake: filter_blob.lines().any(|line| line.split_whitespace().nth(1) == Some("deshake")),
                     has_h264_nvenc: nvenc_listed && nvenc_probe.is_none(),
-                    has_h264_qsv: qsv_available,
+                    has_h264_qsv: qsv_listed && qsv_probe.is_none(),
                     nvenc_probe_error: nvenc_probe,
+                    qsv_probe_error: qsv_probe,
                 });
             }
             Ok(version) => {
@@ -1315,8 +1348,7 @@ fn ffprobe_candidates_for_ffmpeg(ffmpeg_binary: &Path) -> Vec<PathBuf> {
 
 fn probe_video_bitrate_bps(ffmpeg_binary: &Path, input_path: &Path) -> Option<u64> {
     for ffprobe_binary in ffprobe_candidates_for_ffmpeg(ffmpeg_binary) {
-        let output = Command::new(&ffprobe_binary)
-            .args([
+        let output = command_output(&ffprobe_binary, &[
                 "-v",
                 "error",
                 "-select_streams",
@@ -1325,9 +1357,8 @@ fn probe_video_bitrate_bps(ffmpeg_binary: &Path, input_path: &Path) -> Option<u6
                 "stream=bit_rate:format=bit_rate",
                 "-of",
                 "default=nokey=1:noprint_wrappers=1",
-            ])
-            .arg(input_path)
-            .output();
+                &input_path.to_string_lossy(),
+            ]);
 
         let Ok(output) = output else { continue; };
         if !output.status.success() {
@@ -1349,6 +1380,25 @@ fn probe_video_bitrate_bps(ffmpeg_binary: &Path, input_path: &Path) -> Option<u6
     }
 
     None
+}
+
+fn probe_video_dimensions(ffmpeg_binary: &Path, input_path: &Path) -> (u32, u32) {
+    for candidate in ffprobe_candidates_for_ffmpeg(ffmpeg_binary) {
+        if let Ok(output) = command_output(&candidate, &[
+            "-v", "error", "-select_streams", "v:0", "-show_entries",
+            "stream=width,height", "-of", "csv=s=x:p=0", &input_path.to_string_lossy(),
+        ]) {
+            if output.status.success() {
+                if let Some((width, height)) = String::from_utf8_lossy(&output.stdout).trim().split_once('x') {
+                    if let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>()) {
+                        if width > 0 && height > 0 { return (width, height); }
+                    }
+                }
+            }
+        }
+    }
+    // Unknown footage should not be admitted with a tiny memory reservation.
+    (3840, 2160)
 }
 
 fn run_ffmpeg_command(
@@ -1406,6 +1456,12 @@ fn run_ffmpeg_command(
     }
 
     let mut command = Command::new(binary);
+    if let Some(index) = effective_args.iter().position(|arg| arg == "-threads") {
+        if let Some(threads) = effective_args.get(index + 1) {
+            // vid.stab uses OpenMP independently of FFmpeg's codec setting.
+            command.env("OMP_NUM_THREADS", threads);
+        }
+    }
     // Emit machine-readable progress on stderr, where this worker already has a
     // live reader. `-nostdin` also protects headless runs from an interactive
     // FFmpeg prompt that would otherwise leave the process alive indefinitely.
@@ -1430,6 +1486,7 @@ fn run_ffmpeg_command(
         .spawn()
         .map_err(|e| e.to_string())?;
 
+    super::studio_hardware::supervise_child(&mut child)?;
     let (stderr_tx, stderr_rx) = mpsc::channel();
     let stderr_reader = child.stderr.take().map(|stderr| {
         thread::spawn(move || {
@@ -1592,6 +1649,27 @@ fn stabilize_mp4(
         ));
     }
 
+    let (width, height) = probe_video_dimensions(&capabilities.binary, path);
+    let resource_permit = loop {
+        if wait_if_process_paused_or_aborted(job_id) {
+            return Err(anyhow::anyhow!("Process job aborted while waiting for video capacity"));
+        }
+        match super::studio_hardware::acquire_with_threads(
+            width, height, "max", ffmpeg_threads,
+            || is_process_paused_or_aborted(job_id),
+        ) {
+            Ok(permit) => break permit,
+            Err(_) if is_process_paused_or_aborted(job_id) && !is_process_abort_requested(job_id) => continue,
+            Err(error) => return Err(anyhow::Error::msg(error)),
+        }
+    };
+    let ffmpeg_threads = resource_permit.threads();
+    if let Some(job_id) = job_id {
+        append_process_job_log(job_id, format!(
+            "shared video capacity acquired: {}x{} input, {} CPU threads", width, height, ffmpeg_threads
+        ));
+    }
+
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("video");
     let out_path = path
         .parent()
@@ -1663,6 +1741,8 @@ fn stabilize_mp4(
         "error".to_string(),
         "-threads".to_string(),
         ffmpeg_threads.to_string(),
+        "-filter_threads".to_string(),
+        ffmpeg_threads.to_string(),
         "-i".to_string(),
         path.to_string_lossy().into_owned(),
         "-vf".to_string(),
@@ -1681,6 +1761,8 @@ fn stabilize_mp4(
         "error".to_string(),
         "-threads".to_string(),
         ffmpeg_threads.to_string(),
+        "-filter_threads".to_string(),
+        ffmpeg_threads.to_string(),
         "-i".to_string(),
         path.to_string_lossy().into_owned(),
         "-vf".to_string(),
@@ -1691,6 +1773,8 @@ fn stabilize_mp4(
         "+use_metadata_tags".to_string(),
         "-c:v".to_string(),
         video_encoder.to_string(),
+        "-threads".to_string(),
+        ffmpeg_threads.to_string(),
     ];
 
     if capabilities.has_h264_nvenc {

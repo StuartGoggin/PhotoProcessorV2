@@ -25,6 +25,14 @@ test("clip render matches resolution, frame rate and bitrate", () => {
     assert.equal(isClipReady({ ...clip, rendered }, { ...project, ...change }), false);
   }
 });
+test("new stabilization controls invalidate existing clip renders", () => {
+  for (const change of [{ stabilizationMethod: "fast" }, { customStabilization: { radius: 32, blockSize: 8, contrast: 125 } }]) {
+    const edited = editClip({ ...clip, rendered }, change);
+    assert.equal(edited.revision, 1);
+    assert.equal(edited.reviewed, false);
+    assert.equal(isClipReady(edited, project), false);
+  }
+});
 test("a completed old job cannot restore ready status after an edit", () => {
   const first = applyCompletedRenders(project, [job]);
   const edited = { ...first, clips: [editClip(first.clips[0], { title: "New title" })] };

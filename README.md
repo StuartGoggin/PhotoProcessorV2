@@ -55,6 +55,18 @@ Video Studio is a separate page for repeatable training-video projects:
    crop cap; maximum-frame mode may show borders. Compare previews before approval.
      **Render clip** creates a standalone clip with its titles, stabilisation and
      recaps, using the project's output resolution, frame rate and bitrate.
+4. Choose project defaults or per-clip Gentle/Balanced/Strong/Custom stabilisation.
+   New projects use **Fast preset (one pass)** with Balanced strength: no separate
+   camera-shake analysis pass. The deshake filter still estimates motion while
+   processing each frame; a fixed preset cannot remove that necessary work.
+   Fast framing uses mirrored edges plus an optional fixed 4% or 10% dimension crop.
+   Mirroring/cropping can be visible on large movements. **Quality (two pass)**
+   retains vid.stab for difficult footage; old projects keep their existing method.
+   In Quality mode, edge-safe zoom is not a fixed crop cap and maximum-frame mode
+   may show borders. Compare a preview before approving clips. Changing defaults
+   and applying them to clips resets their review approval.
+   **Export this fragment only** creates a clean full-clip export without titles
+   or recaps, using that clip's stabilisation settings.
 5. Render a 720p clip or replay preview, review each included clip, then queue the
    final 720p, 1080p, or 4K video. Original audio is retained, and replay audio is
    slowed with pitch preservation. Silent sources receive a silent audio track.
@@ -103,6 +115,35 @@ request, checks source/output hashes and format, reuses verified clips/fragments
 and reruns unfinished work. It does not resume a partially encoded frame stream.
 Keep source files and output/cache folders available; missing or changed assets
 are rebuilt. Each retry creates a new output folder. Exports open in the system player.
+The production queue shows active clip tasks, selected encoder, CPU thread budget,
+FPS/playback speed, approximate ETA, elapsed time, and cache reuse. Reorder waiting
+jobs, pause/resume, cancel, retry, or retry using CPU. Pause finishes active FFmpeg
+steps, then releases capacity at the next boundary; Cancel interrupts active FFmpeg.
+Background progress remains visible when changing pages. Keep the app open to
+continue processing. Recipes and job history are saved in app-data `studio-jobs`.
+The previous `video-studio-queue.json` format is migrated once and archived, without
+discarding older saved requests. After a restart,
+unfinished work is marked **Interrupted** and waits for explicit Resume; verified
+fragments are reused. A queue lock prevents two app instances owning that queue.
+On Windows, long-running video workers belong to a kill-on-close Job Object, so
+closing/crashing the app also stops its FFmpeg children instead of orphaning them.
+Recovery-file errors are shown, and damaged files are preserved for investigation.
+Exports open in the system player.
+
+**Maximum throughput** uses the available logical CPU budget and up to four FFmpeg
+processes, shared with Post Process stabilization. **Balanced** leaves some CPU
+headroom and uses fewer workers. Up to two projects dispatch work; CPU, estimated
+RAM, source/output resolution and output-drive reservations bound concurrency.
+CPU-heavy filters may not scale to every core, and I/O/verification can be the
+bottleneck: 100% utilization at every instant is not a useful completion guarantee.
+
+**Automatic hardware** tries NVIDIA NVENC, then Intel Quick Sync, then CPU encoding.
+Selection requires a real bounded encode probe, not just an encoder name in FFmpeg.
+Probe results are cached briefly. Stabilization/title filters remain on CPU;
+GPU encoding is not a fully GPU-resident pipeline. A driver failure during a render
+is visible in the log; **Retry using CPU** provides an explicit recovery path.
+CPU encoding can also be selected before queuing a project and may be faster for
+short, filter-heavy clips. Encoder choice is included in fragment cache signatures.
 
 Optional **AI review** sends only the displayed sampled frames to the OpenAI API
 after explicit confirmation. Supply your own API key (kept in memory, not saved)
@@ -130,8 +171,25 @@ exercise real media. Run separately with `--ignored --nocapture --test-threads=1
 For native media tests, set `PHOTOGOGO_FFMPEG` to the FFmpeg executable.
 Run all Studio tests with `-- --include-ignored --nocapture --test-threads=1`.
 Set `PHOTOGOGO_LMMS` if LMMS is not installed at `C:/Program Files/LMMS/lmms.exe`. Set
+Video Studio requires FFmpeg and ffprobe, with drawtext for titles, deshake for
+Fast mode, and vid.stab for Quality mode. Post Process retains its two-pass method
+but shares the bounded CPU/RAM resource pool.
+
+Windows tests: `./scripts/test-video-studio.ps1` reuses the release build cache and
+loads the MSVC environment. UI model tests: `node scripts/test-video-studio-ui.mjs`.
+To include synthetic parallel/cache/quality/audio and cancellation render tests,
+set `PHOTOGOGO_FFMPEG` to the FFmpeg executable and add `-Smoke`. Set
 `PHOTOGOGO_STUDIO_TEST_DIR` to the repo's ignored `test-output` folder to retain
 synthetic results there for visual inspection; otherwise they use the system temp folder.
+
+`scripts/benchmark-video-studio.ps1` provides repeatable synthetic jitter and pan
+comparisons, with frame/audio/source-hash checks and contact sheets. On the local
+Intel Ultra 7 / Intel Arc test machine, two 8-second 720p clips took 10.12/10.45 s
+using the former two-pass CPU path, 6.64/5.62 s with Fast CPU (1.52–1.86x faster),
+and 7.98/7.13 s with Fast Quick Sync. These isolated two-thread results are not a
+parallel-queue benchmark or a promise of equivalent stabilization quality on
+real footage. NVIDIA could not be validated locally because this machine has no
+NVIDIA device. Preview representative camera footage before choosing a preset.
 
 ## Restart-safe imports
 
@@ -160,7 +218,10 @@ then run `test-output/import-safety-tests.exe`. Create `test-output` first if ab
 
 ## Development
 
-MP4 stabilization requires an FFmpeg build with the `vidstabdetect` and `vidstabtransform` filters. Running [run.ps1](run.ps1) now bootstraps a repo-local Windows GPL build into `tools/ffmpeg/bin/ffmpeg.exe` and exports `PHOTOGOGO_FFMPEG` automatically. If the detected build also exposes `h264_nvenc`, PhotoGoGo will use NVIDIA H.264 encoding for stabilized outputs.
+Post Process MP4 stabilization and Studio Quality mode require `vidstabdetect` and
+`vidstabtransform`; Studio Fast mode requires `deshake`. Running [run.ps1](run.ps1)
+bootstraps a repo-local Windows GPL build into `tools/ffmpeg/bin/ffmpeg.exe` and
+exports `PHOTOGOGO_FFMPEG`. Hardware encoders must pass an actual runtime probe.
 
 Face recognition can be packaged without requiring end users to install Python. The production build can pull a prebuilt face bundle (Python runtime + wheelhouse) from a local zip path or URL.
 
@@ -177,11 +238,32 @@ npm run tauri build
 # Build release with bundled face runtime (no manual Python install for end users)
 # Option A: set once in your shell/session
 $env:PHOTOGOGO_FACE_BUNDLE_SOURCE = "https://your-host/face-scan-bundle-win64.zip"
-npm run release
+.\scripts\build-release.ps1
 
 # Option B: place src-tauri/resources/face-scan-bundle.zip, then run
-npm run release
+.\scripts\build-release.ps1
+
+# Build a basic installer without the optional offline face-recognition bundle
+.\scripts\build-release.ps1 -SkipFaceBundle
 ```
+
+The release script performs a locked `npm ci` and passes `--locked` to Cargo, requires a working Rust MSVC
+toolchain, and invokes npm through Node's local CLI rather than a potentially
+misconfigured global npm wrapper. It writes Windows installer artifacts under
+`src-tauri/target/release/bundle/`.
+
+### Windows release prerequisites
+
+- Node.js with npm (an LTS release is recommended).
+- Rust's `stable-x86_64-pc-windows-msvc` toolchain and the Microsoft C++ Build Tools.
+- Outbound HTTPS access to `registry.npmjs.org`, `static.rust-lang.org`, and the Rust crate registry.
+- A face-scan bundle only when offline face recognition must be included. Use
+  `-SkipFaceBundle` to create an installer without that optional feature.
+
+The first successful release downloads the locked Node/Rust dependencies, so it
+can take several minutes. Later releases reuse their local caches. The script
+stops before compiling if Node dependencies or an active Rust compiler are not
+available, instead of leaving a partial installer behind.
 
 ## Code Quality
 

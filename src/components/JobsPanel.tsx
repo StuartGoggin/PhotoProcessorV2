@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 import type { ImportJob, ProcessJob } from "../types";
 import type { StudioJob } from "../types/videoStudio";
+import { sortStudioJobs, isPendingStudioJob } from "../types/videoStudio";
 import JobTile from "./JobTile";
 import JobConsole from "./JobConsole";
 import StudioJobTile from "./StudioJobTile";
@@ -95,9 +96,9 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs = [], lo
     return b.id.localeCompare(a.id);
   });
 
-  const sortedStudioJobs = [...studioJobs].sort((a, b) => b.id.localeCompare(a.id));
+  const sortedStudioJobs = sortStudioJobs(studioJobs);
   const hasJobs = jobs.length + sortedStudioJobs.length > 0;
-  const activeCount = [...jobs, ...sortedStudioJobs].filter((j) => ["running", "paused", "queued"].includes(j.status)).length;
+  const activeCount = jobs.filter((j) => ["running", "paused", "queued"].includes(j.status)).length + sortedStudioJobs.filter(isPendingStudioJob).length;
   const selectedJob = selectedJobId
     ? jobs.find((j) => j.id === selectedJobId)?.jobType === "import"
       ? importJobs.find((j) => j.id === selectedJobId)

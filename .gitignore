@@ -2,6 +2,7 @@
 node_modules/
 dist/
 .tauri/
+.build-cache/
 
 # Rust
 src-tauri/target/

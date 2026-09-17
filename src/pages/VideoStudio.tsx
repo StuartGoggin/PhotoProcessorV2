@@ -10,6 +10,7 @@ import StudioBackgroundMusic from "../components/StudioBackgroundMusic";
 import StudioOutputSettings from "../components/StudioOutputSettings";
 import { STUDIO_CLEARED, resetProjectRenders } from "../utils/studioWorkflow";
 import { applyCompletedRenders, clipJob, clipStatus, editClip, isClipReady, normalizeProject, outputLabel } from "../utils/studioWorkflow";
+import StudioStabilizationFields from "../components/StudioStabilizationFields";
 
 const KEY = "photogogo.videoStudio.project.v1";
 const input = "bg-surface-900 rounded border border-surface-600 px-3 py-2 w-full text-sm";
@@ -45,7 +46,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
       try {
         const raw = localStorage.getItem(KEY);
         if (raw) {
-          const p = JSON.parse(raw);
+          const p = normalizeProject(JSON.parse(raw));
           await invoke("studio_validate_project", { project: p });
           if (alive) setProject(normalizeProject(p));
         }
@@ -116,6 +117,18 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
     const timer = window.setInterval(() => void refresh(), 30000);
     return () => { alive = false; window.clearInterval(timer); };
   }, [renderedPaths, loaded]);
+  function applyDefaults(onlySelected = false) {
+    setProject((prev) => ({
+      ...prev,
+        clips: prev.clips.map((c) => (onlySelected ? c.id === selected : c.include) ? editClip(c, {
+        stabilization: prev.defaultStabilization,
+        stabilizationMethod: prev.defaultStabilizationMethod,
+        customStabilization: { ...prev.defaultCustomStabilization },
+        reviewed: false,
+        }) : c),
+    }));
+    setMessage(`Project stabilisation applied to ${onlySelected ? "the selected clip" : "included clips"}. Review approval has been reset for those clips.`);
+  }
   function replay(id: string, p: Partial<StudioReplay>) {
     if (clip)
       edit(clip.id, { replays: clip.replays.map((r) => (r.id === id ? { ...r, ...p } : r)) });
@@ -161,7 +174,9 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
             chapter: clipName(c.path),
             title: "",
             titleSeconds: 4,
-            stabilization: "off" as const,
+            stabilization: prev.defaultStabilization,
+            stabilizationMethod: prev.defaultStabilizationMethod,
+            customStabilization: { ...prev.defaultCustomStabilization },
             framing: "edgeSafe" as const,
             reviewed: false,
             notes: "",
@@ -392,7 +407,62 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
         </div>
       </section>
       </details>
-      <div className="grid lg:grid-cols-[minmax(260px,1fr)_minmax(400px,2fr)] gap-4">
+      <section className="bg-surface-800 rounded-lg p-4 space-y-3">
+        <h2 className="font-semibold">Stabilisation defaults & performance</h2>
+        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-3">
+          <label>
+            Stabiliser
+            <select className={input} value={project.defaultStabilizationMethod} onChange={(e) => patch({
+              defaultStabilizationMethod: e.target.value as StudioProject["defaultStabilizationMethod"],
+              ...(e.target.value === "quality" && project.defaultStabilization === "custom" ? { defaultStabilization: "balanced" as const } : {}),
+            })}>
+              <option value="fast">Fast — one pass</option>
+              <option value="quality">Quality — two passes</option>
+            </select>
+          </label>
+          <label>
+            Default preset
+            <select className={input} value={project.defaultStabilization} onChange={(e) => patch({ defaultStabilization: e.target.value as StudioProject["defaultStabilization"] })}>
+              <option value="off">Off</option>
+              <option value="gentle">Gentle — tracking pans</option>
+              <option value="balanced">Balanced</option>
+              <option value="strong">Strong</option>
+              {project.defaultStabilizationMethod === "fast" && <option value="custom">Custom</option>}
+            </select>
+          </label>
+          <label>
+            Hardware use
+            <select className={input} value={project.performance} onChange={(e) => patch({ performance: e.target.value as StudioProject["performance"] })}>
+              <option value="max">Maximum throughput</option>
+              <option value="balanced">Balanced — more room for other apps</option>
+            </select>
+          </label>
+          <label>
+            Encoder
+            <select aria-label="Encoder" className={input} value={project.encoderPreference} onChange={(e) => patch({ encoderPreference: e.target.value as StudioProject["encoderPreference"] })}>
+              <option value="auto">Automatic — NVIDIA, Intel, then CPU</option>
+              <option value="cpu">CPU — compatibility fallback</option>
+            </select>
+          </label>
+        </div>
+        {project.defaultStabilization === "custom" && <StudioStabilizationFields value={project.defaultCustomStabilization} onChange={(defaultCustomStabilization) => patch({ defaultCustomStabilization })} />}
+        <p className="text-sm text-gray-400">
+          Fast stabilisation estimates movement while rendering, with no separate shake-analysis pass.
+          Quality uses two passes and takes longer. Defaults apply to newly added clips; existing clips keep their settings until you apply them below.
+        </p>
+        <p className="text-xs text-gray-400">
+          {project.encoderPreference === "cpu"
+            ? "CPU encoding is selected for this project. Change Encoder above to use available hardware."
+            : "Hardware encoding is selected automatically: NVIDIA when available, then Intel, then CPU."}{" "}
+          Parallel work is bounded by CPU, memory and hardware capacity; utilisation varies with the footage and filters.
+        </p>
+        <div className="flex flex-wrap gap-2 items-center">
+          <button className="btn-secondary" disabled={!included.length || busy} onClick={() => applyDefaults()}>Apply to {included.length} included clip(s)</button>
+          <button className="btn-secondary" disabled={!clip || busy} onClick={() => applyDefaults(true)}>Apply to selected clip</button>
+          <span className="text-xs text-amber-200">Applying defaults resets the affected clips’ review approval.</span>
+        </div>
+      </section>
+      <div className="grid xl:grid-cols-[minmax(260px,1fr)_minmax(400px,2fr)] gap-4">
         <section className="bg-surface-800 rounded-lg p-4 space-y-3">
           <div className="flex justify-between">
             <div><p className="text-xs tracking-widest uppercase text-cyan-300 mb-1">02 / Clips</p><h2 className="font-semibold">Prepare your sequence</h2><p className="text-xs text-gray-400">{included.length} included · {readyCount} ready</p></div>
@@ -433,7 +503,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                   <span className="block truncate text-sm">{c.chapter}</span>
                   <small>
                     {timecode(c.duration)} · {c.reviewed ? "Approved" : "Needs review"} ·{" "}
-                    {c.stabilization}
+                    {c.stabilization}{c.stabilization !== "off" ? ` · ${c.stabilizationMethod}` : ""}
                   </small>
                   <small className={`block mt-1 ${isClipReady(c, project) ? "text-emerald-300" : "text-amber-200"}`}>
                     {clipStatus(c, project, jobs)}
@@ -545,9 +615,20 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                   />
                 </label>
                 <label>
-                  Stabilisation
+                  Stabiliser for this clip
+                  <select aria-label="Stabiliser for this clip" className={input} value={clip.stabilizationMethod} onChange={(e) => edit(clip.id, {
+                    stabilizationMethod: e.target.value as StudioClip["stabilizationMethod"],
+                    ...(e.target.value === "quality" && clip.stabilization === "custom" ? { stabilization: "balanced" as const } : {}),
+                  })}>
+                    <option value="fast">Fast — one pass</option>
+                    <option value="quality">Quality — two passes</option>
+                  </select>
+                </label>
+                <label>
+                  Stabilisation preset
                   <select
                     className={input}
+                    aria-label="Stabilisation preset"
                     value={clip.stabilization}
                     onChange={(e) =>
                       edit(clip.id, {
@@ -559,6 +640,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                     <option value="gentle">Gentle — tracking pans</option>
                     <option value="balanced">Balanced</option>
                     <option value="strong">Strong</option>
+                    {clip.stabilizationMethod === "fast" && <option value="custom">Custom</option>}
                   </select>
                 </label>
                 <label>
@@ -570,15 +652,18 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                       edit(clip.id, { framing: e.target.value as StudioClip["framing"] })
                     }
                   >
-                    <option value="edgeSafe">Edge-safe automatic zoom</option>
-                    <option value="maxFrame">Maximum frame — borders may show</option>
-                    <option value="aggressiveCrop">More crop</option>
+                    <option value="edgeSafe">{clip.stabilizationMethod === "fast" ? "Mirror edges + 4% crop" : "Edge-safe automatic zoom"}</option>
+                    <option value="maxFrame">{clip.stabilizationMethod === "fast" ? "Mirror edges — no crop" : "Maximum frame — borders may show"}</option>
+                    <option value="aggressiveCrop">{clip.stabilizationMethod === "fast" ? "Mirror edges + 10% crop" : "More crop"}</option>
                   </select>
                 </label>
               </div>
+              {clip.stabilization === "custom" && <StudioStabilizationFields key={clip.id} value={clip.customStabilization} onChange={(customStabilization) => edit(clip.id, { customStabilization })} />}
               <p className="text-xs text-gray-400">
-                Stabilisation precedes titles and recaps. Automatic zoom is not a fixed crop limit;
-                compare previews for rider framing.
+                {clip.stabilizationMethod === "fast"
+                  ? "Fast mode corrects movement in one pass and mirrors moving edges. Fixed crop reduces edge artifacts but cannot guarantee they disappear, and can cut off subjects. Preview pans and rider framing before approving."
+                  : "Quality mode analyses movement before rendering. Automatic zoom is not a fixed crop limit; compare previews for rider framing."}
+                {" "}Stabilisation precedes titles and recaps. Changing a clip’s settings resets its review approval.
               </p>
               <StudioAiReview
                 clip={clip}

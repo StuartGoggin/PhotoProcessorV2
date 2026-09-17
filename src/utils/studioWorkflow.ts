@@ -1,4 +1,4 @@
-import { newBackgroundMusic, type StudioClip, type StudioJob, type StudioProject } from "../types/videoStudio";
+import { normalizeProject as normalizeHardware, newBackgroundMusic, type StudioClip, type StudioJob, type StudioProject } from "../types/videoStudio";
 
 export const STUDIO_CLEARED = "studio-renders-cleared";
 export function resetProjectRenders(project: StudioProject): StudioProject {
@@ -17,9 +17,9 @@ export const suggestedBitrate = (width: number) => width === 3840 ? 32 : width =
 export const outputLabel = (p: Pick<StudioProject, "width" | "height" | "fps" | "bitrateMbps">) =>
   `${p.width}×${p.height} · ${p.fps} fps · ${p.bitrateMbps} Mbps`;
 export const normalizeProject = (p: StudioProject): StudioProject => ({
-  ...p, bitrateMbps: p.bitrateMbps || suggestedBitrate(p.width),
+  ...normalizeHardware(p), bitrateMbps: p.bitrateMbps || suggestedBitrate(p.width),
   music: { ...newBackgroundMusic(), ...p.music },
-  clips: p.clips.map((clip) => ({ ...clip, revision: clip.revision ?? 0 })),
+  clips: normalizeHardware(p).clips.map((clip) => ({ ...clip, revision: clip.revision ?? 0 })),
 });
 export function isClipReady(clip: StudioClip, p: StudioProject): boolean {
   const r = clip.rendered;
@@ -27,7 +27,7 @@ export function isClipReady(clip: StudioClip, p: StudioProject): boolean {
     && r.height === p.height && r.fps === p.fps && r.bitrateMbps === p.bitrateMbps;
 }
 export function editClip(clip: StudioClip, patch: Partial<StudioClip>): StudioClip {
-  const changed = ["path", "duration", "title", "titleSeconds", "stabilization", "framing", "replays"]
+  const changed = ["path", "duration", "title", "titleSeconds", "stabilization", "stabilizationMethod", "customStabilization", "framing", "replays"]
     .some((key) => key in patch && JSON.stringify(patch[key as keyof StudioClip]) !== JSON.stringify(clip[key as keyof StudioClip]));
   return { ...clip, ...patch, revision: (clip.revision ?? 0) + (changed ? 1 : 0),
     reviewed: patch.reviewed ?? (changed ? false : clip.reviewed) };
@@ -45,7 +45,7 @@ export function applyCompletedRenders(project: StudioProject, jobs: StudioJob[])
   return changed ? { ...project, clips } : project;
 }
 export function clipJob(clip: StudioClip, project: StudioProject, jobs: StudioJob[]): StudioJob | undefined {
-  return jobs.find((job) => job.kind !== "preview" && ["queued", "running"].includes(job.status)
+  return jobs.find((job) => job.kind !== "preview" && ["queued", "running", "paused"].includes(job.status)
     && job.width === project.width && job.height === project.height && job.fps === project.fps && job.bitrateMbps === project.bitrateMbps
     && job.targets?.some((target) => target.clipId === clip.id && target.sourcePath === clip.path && target.revision === (clip.revision ?? 0)));
 }

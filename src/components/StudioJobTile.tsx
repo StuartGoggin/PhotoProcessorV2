@@ -14,7 +14,7 @@ const statusStyle: Record<string, string> = {
 
 export default function StudioJobTile({ job }: { job: StudioJob }) {
   const [error, setError] = useState("");
-  const active = ["queued", "running"].includes(job.status);
+  const active = ["queued", "running", "paused"].includes(job.status);
   async function control(action: "pause" | "resume" | "cancel") {
     try {
       await invoke("studio_control_job", { id: job.id, action });

@@ -3,6 +3,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { STUDIO_CLEARED, notifyStudioCleared } from "../utils/studioWorkflow";
 import { invoke } from "@tauri-apps/api/core";
 import type { StudioJob } from "../types/videoStudio";
+import { isPendingStudioJob, sortStudioJobs } from "../types/videoStudio";
 import StudioJobDiagnostics from "./StudioJobDiagnostics";
 export default function StudioJobs({
   compact = false,
@@ -13,6 +14,8 @@ export default function StudioJobs({
 }) {
   const [jobs, setJobs] = useState<StudioJob[]>([]);
   const [error, setError] = useState("");
+  const [fetchError, setFetchError] = useState("");
+  const [pendingJob, setPendingJob] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [message, setMessage] = useState("");
   const generation = useRef(0);
@@ -43,10 +46,10 @@ export default function StudioJobs({
         const data = await invoke<StudioJob[]>("studio_list_jobs");
         if (alive && epoch === generation.current) {
           setJobs(data);
-          setError("");
+          setFetchError("");
         }
       } catch (e) {
-        if (alive) setError(String(e));
+        if (alive) setFetchError(String(e));
       } finally {
         pending = false;
       }
@@ -59,17 +62,18 @@ export default function StudioJobs({
     };
   }, []);
   async function control(id: string, action: string) {
+    setPendingJob(id); setError("");
     try {
       await invoke("studio_control_job", { id, action });
     } catch (e) {
       setError(String(e));
-    }
+    } finally { setPendingJob(null); }
   }
   async function retry(id: string) {
     try { await invoke("studio_retry_job", { id }); setError(""); }
     catch (e) { setError(String(e)); }
   }
-  const active = jobs.filter((j) => ["queued", "running"].includes(j.status));
+  const active = sortStudioJobs(jobs).filter(isPendingStudioJob);
   if (compact)
     return active.length ? (
       <div className="px-4 py-2 bg-surface-800 border-t border-surface-600 text-sm text-cyan-200">
@@ -92,13 +96,13 @@ export default function StudioJobs({
         Work continues while you change pages. Pause takes effect between steps. After an interruption,
         resume the saved request to reuse verified clips and finish the video.
       </p>
-      {error && (
+      {(error || fetchError) && (
         <p role="alert" className="text-red-400">
-          {error}
+          {error || fetchError}
         </p>
       )}
       {!jobs.length && <p>No renders queued yet.</p>}
-      {jobs.map((j) => (
+      {sortStudioJobs(jobs).map((j) => (
         <div key={j.id} className="p-3 rounded bg-surface-800 space-y-2">
           <div className="flex justify-between">
             <strong>{j.name}</strong>
@@ -108,6 +112,14 @@ export default function StudioJobs({
             </span>
           </div>
           <p className="text-sm">{j.phase}</p>
+          <p className="text-xs text-gray-400">{j.queuePosition ? `Queue #${j.queuePosition} · ` : ""}{j.encoder || "Encoder selected when started"} · {j.workerLimit || 0} worker limit · {j.cacheHits || 0} cache hits</p>
+          {j.hardwareNote && <p className="text-xs text-gray-400">{j.hardwareNote}</p>}
+          {!!j.elapsedSeconds && <p className="text-xs text-gray-400">Elapsed {Math.round(j.elapsedSeconds)}s{j.etaSeconds != null ? ` · approximately ${Math.ceil(j.etaSeconds)}s remaining` : ""}</p>}
+          {j.persistenceError && <p role="alert" className="text-amber-300">Recovery checkpoint: {j.persistenceError}</p>}
+          {!!j.activeTasks?.length && <div className="space-y-2">{j.activeTasks.map((task) => <div key={task.key} className="text-xs">
+            <p>{task.phase} · {Math.round(task.progress)}% {task.fps ? `· ${task.fps.toFixed(1)} fps` : ""} {task.speed ? `· ${task.speed.toFixed(2)}×` : ""} {task.processId ? `· PID ${task.processId}` : ""}</p>
+            <progress className="w-full" max={100} value={task.progress} aria-label={`${task.phase} progress`} />
+          </div>)}</div>}
           <p className="text-xs text-gray-400">{j.kind} · {j.width}×{j.height} · {j.fps} fps · {j.bitrateMbps ?? "—"} Mbps · {j.artifacts?.length ?? 0} clips saved</p>
           <progress
             className="w-full"
@@ -115,9 +127,11 @@ export default function StudioJobs({
             value={j.progress}
             aria-label={`${j.name} progress`}
           />
-          <fieldset disabled={clearing} className="flex gap-2">
+          <fieldset disabled={clearing || pendingJob !== null} className="flex flex-wrap gap-2">
+            {j.status === "queued" && <><button className="btn-secondary" onClick={() => void control(j.id, "up")}>Move earlier</button><button className="btn-secondary" onClick={() => void control(j.id, "down")}>Move later</button></>}
+            {["interrupted", "failed", "cancelled"].includes(j.status) && j.kind !== "music" && <button className="btn-secondary" onClick={() => void control(j.id, "retryCpu")}>Retry with CPU</button>}
             {["interrupted", "failed", "cancelled"].includes(j.status) && <button className="btn-primary" onClick={() => void retry(j.id)}>Resume saved render</button>}
-            {["running", "queued"].includes(j.status) && (
+            {["running", "queued", "paused"].includes(j.status) && (
               <>
                 <button
                   className="btn-secondary"

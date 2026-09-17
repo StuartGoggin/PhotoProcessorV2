@@ -8,7 +8,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const failures = [];
   page.on("pageerror", (error) => failures.push(error.message));
-  await page.goto("http://127.0.0.1:1431/studio-preview.html");
+  await page.goto(process.env.STUDIO_TEST_URL || "http://127.0.0.1:1431/studio-preview.html");
   await page.getByRole("heading", { name: "Choose once. Use for every clip." }).waitFor();
   await page.locator("main").evaluate((node) => node.scrollTo(0, 0));
   await page.screenshot({ path: "qa/video-studio-desktop.png", fullPage: true });
@@ -57,5 +57,21 @@ try {
   const cleared = await page.evaluate(() => JSON.parse(localStorage.getItem("photogogo.videoStudio.project.v1")));
   assert.ok(cleared.clips.every((clip) => !clip.rendered));
   assert.equal(cleared.clips.length, 3);
+  await page.getByLabel("Encoder", { exact: true }).selectOption("cpu");
+  await page.getByLabel("Stabiliser for this clip", { exact: true }).selectOption("fast");
+  await page.getByLabel("Stabilisation preset", { exact: true }).selectOption("custom");
+  await page.getByLabel("Block size (pixels)", { exact: true }).fill("16");
+  await page.getByLabel("I reviewed this clip, titles and replay ranges").check();
+  await page.getByRole("button", { name: /Render clip ·/ }).click();
+  await page.waitForFunction(() => window.__lastStudioRequest?.project.encoderPreference === "cpu");
+  const customRequest = await page.evaluate(() => window.__lastStudioRequest);
+  const custom = customRequest.project;
+  const customClip = custom.clips.find((clip) => clip.id === customRequest.clipId);
+  assert.equal(custom.encoderPreference, "cpu");
+  assert.equal(customClip.stabilizationMethod, "fast");
+  assert.equal(customClip.customStabilization.blockSize, 16);
+  await page.getByRole("button", { name: "Apply to selected clip", exact: true }).click();
+  assert.equal(await page.getByLabel("I reviewed this clip, titles and replay ranges").isChecked(), false);
+  assert.deepEqual(failures, []);
   console.log("PASS: render dispatch, edit invalidation, resolution/FPS/bitrate propagation, final assembly and responsive layout.");
 } finally { await browser.close(); }
