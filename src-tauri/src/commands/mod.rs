@@ -10,3 +10,4 @@ pub mod staging_tags;
 pub mod tidy;
 pub mod transfer;
 pub mod video_studio;
+mod studio_hardware;

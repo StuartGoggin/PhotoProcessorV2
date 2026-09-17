@@ -2,6 +2,7 @@ import { useRef, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import type { StudioJob } from "../types/videoStudio";
+import { isPendingStudioJob } from "../types/videoStudio";
 import JobTile from "./JobTile";
 import JobConsole from "./JobConsole";
 
@@ -17,9 +18,10 @@ interface JobsPanelProps {
   loading?: boolean;
 }
 
-function studioStatus(job: StudioJob): "queued" | "running" | "paused" | "aborted" | "completed" | "failed" {
+function studioStatus(job: StudioJob): "queued" | "running" | "paused" | "interrupted" | "retried" | "aborted" | "completed" | "failed" {
   if (job.cancelled || job.status === "cancelled") return "aborted";
-  if (job.paused) return "paused";
+  if (job.status === "interrupted") return job.recoverable ? "interrupted" : "retried";
+  if (job.paused || job.status === "paused") return "paused";
   if (job.status === "queued" || job.status === "running" || job.status === "completed" || job.status === "failed") {
     return job.status;
   }
@@ -29,8 +31,8 @@ function studioStatus(job: StudioJob): "queued" | "running" | "paused" | "aborte
 function StudioQueueTile({ job, isSelected, onClick }: { job: StudioJob; isSelected: boolean; onClick: () => void }) {
   const status = studioStatus(job);
   const statusColor = {
-    queued: "text-blue-200", running: "text-emerald-200", paused: "text-amber-200",
-    aborted: "text-red-200", completed: "text-emerald-300", failed: "text-red-300",
+    queued: "text-blue-200", running: "text-emerald-200", paused: "text-amber-200", interrupted: "text-amber-200",
+    aborted: "text-red-200", completed: "text-emerald-300", failed: "text-red-300", retried: "text-gray-300",
   }[status];
   return (
     <div onClick={onClick} className={`flex-shrink-0 w-72 rounded-lg border border-violet-700 bg-violet-950/30 cursor-pointer p-4 space-y-3 transition-all ${status === "running" ? "ring-2 ring-violet-500" : ""} ${isSelected ? "ring-2 ring-blue-500" : "hover:shadow-md"}`}>
@@ -46,9 +48,45 @@ function StudioQueueTile({ job, isSelected, onClick }: { job: StudioJob; isSelec
   );
 }
 
-function StudioQueueConsole({ job, onClose, onControl }: { job: StudioJob; onClose: () => void; onControl: (id: string, action: "pause" | "resume" | "cancel") => void }) {
-  const active = ["queued", "running"].includes(job.status) && !job.cancelled;
-  return <div className="h-full flex flex-col p-4 gap-3"><div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold text-white">Video Studio render</h3><p className="text-xs text-gray-400 break-all">{job.name} · {job.phase || "Queued"}</p></div><button className="btn-secondary px-3 py-1 text-xs" onClick={onClose}>Close</button></div><div className="flex gap-2">{active && <><button className="btn-secondary" onClick={() => onControl(job.id, job.paused ? "resume" : "pause")}>{job.paused ? "Resume" : "Pause"}</button><button className="btn-danger" onClick={() => onControl(job.id, "cancel")}>Cancel</button></>}{job.output && <button className="btn-secondary" onClick={() => void invoke("reveal_in_explorer", { path: job.output })}>Show file</button>}</div>{job.error && <p className="text-sm text-red-300 break-all">{job.error}</p>}<label className="text-xs text-gray-400">Render console</label><pre className="flex-1 min-h-0 overflow-auto bg-surface-950 border border-surface-600 rounded-lg p-3 text-xs text-green-300 font-mono whitespace-pre-wrap">{job.logs.join("\n") || "Waiting for the render worker to write diagnostics…"}</pre></div>;
+type StudioControl = "pause" | "resume" | "cancel" | "retry" | "retryCpu";
+
+function StudioQueueConsole({ job, onClose, onControl }: { job: StudioJob; onClose: () => void; onControl: (id: string, action: StudioControl) => Promise<void> }) {
+  const [controlError, setControlError] = useState("");
+  const [pending, setPending] = useState(false);
+  const active = isPendingStudioJob(job) && !job.cancelled;
+  const resumable = job.paused || job.status === "paused" || job.status === "interrupted";
+  async function control(action: StudioControl) {
+    setControlError("");
+    setPending(true);
+    try { await onControl(job.id, action); }
+    catch (e) { setControlError(String(e)); }
+    finally { setPending(false); }
+  }
+  useEffect(() => { setControlError(""); }, [job.id]);
+  return (
+    <div className="h-full flex flex-col p-4 gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <div><h3 className="font-semibold text-white">Video Studio render</h3><p className="text-xs text-gray-400 break-all">{job.name} · {job.phase || "Queued"}</p></div>
+        <button className="btn-secondary px-3 py-1 text-xs" onClick={onClose}>Close</button>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {active && <>
+          {(job.status !== "interrupted" || job.recoverable) && <button className="btn-secondary" disabled={pending} onClick={() => void control(resumable ? "resume" : "pause")}>{resumable ? "Resume" : "Pause"}</button>}
+          <button className="btn-danger" disabled={pending} onClick={() => void control("cancel")}>Cancel</button>
+        </>}
+        {job.recoverable && ["failed", "cancelled"].includes(job.status) && <>
+          <button className="btn-secondary" disabled={pending} onClick={() => void control("retry")}>Retry</button>
+          <button className="btn-secondary" disabled={pending} onClick={() => void control("retryCpu")}>Retry using CPU</button>
+        </>}
+        {job.output && <button className="btn-secondary" onClick={() => void invoke("reveal_in_explorer", { path: job.output }).catch((e) => setControlError(String(e)))}>Show file</button>}
+      </div>
+      {job.status === "interrupted" && job.recoverable && <p className="text-xs text-amber-200">Processing stopped when the app closed. Resume to reuse completed work.</p>}
+      {controlError && <p role="alert" className="text-sm text-red-300 break-all">{controlError}</p>}
+      {job.error && <p className="text-sm text-red-300 break-all">{job.error}</p>}
+      <label className="text-xs text-gray-400">Render console</label>
+      <pre className="flex-1 min-h-0 overflow-auto bg-surface-950 border border-surface-600 rounded-lg p-3 text-xs text-green-300 font-mono whitespace-pre-wrap">{job.logs.join("\n") || "Waiting for the render worker to write diagnostics…"}</pre>
+    </div>
+  );
 }
 
 export default function JobsPanel({ importJobs, processJobs, studioJobs, loading = false }: JobsPanelProps) {
@@ -123,7 +161,7 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs, loading
     const bStatus = b.status;
 
     // Active jobs first (running > paused > queued > aborted)
-    const statusOrder = { running: 0, paused: 1, queued: 2, aborted: 3, completed: 4, failed: 5 };
+    const statusOrder = { running: 0, paused: 1, interrupted: 1, queued: 2, aborted: 3, completed: 4, retried: 4, failed: 5 };
     const aOrder = (statusOrder[aStatus as keyof typeof statusOrder] ?? 99) as number;
     const bOrder = (statusOrder[bStatus as keyof typeof statusOrder] ?? 99) as number;
 
@@ -134,10 +172,10 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs, loading
   });
 
   const hasJobs = jobs.length > 0;
-  const activeCount = jobs.filter((j) => ["running", "paused", "queued"].includes(j.status)).length;
+  const activeCount = jobs.filter((j) => ["running", "paused", "interrupted", "queued"].includes(j.status)).length;
   const selectedJob = selectedJobKey ? jobs.find((j) => j.key === selectedJobKey) ?? null : null;
 
-  async function controlStudioJob(id: string, action: "pause" | "resume" | "cancel") {
+  async function controlStudioJob(id: string, action: StudioControl) {
     await invoke("studio_control_job", { id, action });
   }
 
@@ -194,7 +232,7 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs, loading
         {selectedJob && (
           <div className="w-1/2 border-l border-surface-700 transition-all duration-300 flex flex-col">
             {selectedJob.kind === "studio" ? (
-              <StudioQueueConsole job={selectedJob.job} onClose={() => setSelectedJobKey(null)} onControl={(id, action) => void controlStudioJob(id, action)} />
+              <StudioQueueConsole job={selectedJob.job} onClose={() => setSelectedJobKey(null)} onControl={controlStudioJob} />
             ) : (
               <JobConsole job={selectedJob.job} onClose={() => setSelectedJobKey(null)} />
             )}

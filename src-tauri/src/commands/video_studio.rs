@@ -1,7 +1,10 @@
 //! Local, non-destructive Video Studio projects and background renders.
 use super::process::detect_ffmpeg_capabilities;
+use super::studio_hardware;
+mod queue;
 use crate::utils::compute_md5;
 use md5::{Digest, Md5};
+pub use queue::init_queue;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -10,10 +13,43 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex, OnceLock,
+    },
     thread,
     time::Duration,
 };
+
+fn quality_method() -> String {
+    "quality".into()
+}
+fn max_performance() -> String {
+    "max".into()
+}
+fn auto_encoder() -> String {
+    "auto".into()
+}
+fn off_preset() -> String {
+    "off".into()
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CustomStabilization {
+    pub radius: u32,
+    pub block_size: u32,
+    pub contrast: u32,
+}
+impl Default for CustomStabilization {
+    fn default() -> Self {
+        Self {
+            radius: 16,
+            block_size: 8,
+            contrast: 125,
+        }
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +72,10 @@ pub struct Clip {
     pub title: String,
     pub title_seconds: f64,
     pub stabilization: String,
+    #[serde(default = "quality_method")]
+    pub stabilization_method: String,
+    #[serde(default)]
+    pub custom_stabilization: CustomStabilization,
     pub framing: String,
     pub reviewed: bool,
     pub notes: String,
@@ -55,9 +95,28 @@ pub struct Project {
     pub height: u32,
     pub fps: u32,
     pub clips: Vec<Clip>,
+    #[serde(default = "off_preset")]
+    pub default_stabilization: String,
+    #[serde(default = "quality_method")]
+    pub default_stabilization_method: String,
+    #[serde(default)]
+    pub default_custom_stabilization: CustomStabilization,
+    #[serde(default = "max_performance")]
+    pub performance: String,
+    #[serde(default = "auto_encoder")]
+    pub encoder_preference: String,
 }
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ActiveTask {
+    pub key: String,
+    pub phase: String,
+    pub progress: f64,
+    pub fps: Option<f64>,
+    pub speed: Option<f64>,
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct StudioJob {
     pub id: String,
     pub name: String,
@@ -69,6 +128,25 @@ pub struct StudioJob {
     pub logs: Vec<String>,
     pub cancelled: bool,
     pub paused: bool,
+    pub queue_position: Option<usize>,
+    pub active_tasks: Vec<ActiveTask>,
+    pub encoder: String,
+    pub hardware_note: String,
+    pub worker_limit: usize,
+    pub threads_per_worker: usize,
+    pub cache_hits: usize,
+    pub elapsed_seconds: f64,
+    pub eta_seconds: Option<f64>,
+    pub recoverable: bool,
+    pub persistence_error: Option<String>,
+    #[serde(skip)]
+    started_ms: Option<i64>,
+    #[serde(skip)]
+    work_progress: HashMap<String, f64>,
+    #[serde(skip)]
+    work_weights: HashMap<String, f64>,
+    #[serde(skip)]
+    worker_error: Option<String>,
 }
 fn jobs() -> &'static Mutex<HashMap<String, StudioJob>> {
     static JOBS: OnceLock<Mutex<HashMap<String, StudioJob>>> = OnceLock::new();
@@ -78,6 +156,9 @@ fn update(id: &str, f: impl FnOnce(&mut StudioJob)) {
     if let Ok(mut jobs) = jobs().lock() {
         if let Some(job) = jobs.get_mut(id) {
             f(job);
+            if job.logs.len() > 250 {
+                job.logs.drain(..job.logs.len() - 250);
+            }
         }
     }
 }
@@ -92,6 +173,9 @@ fn checkpoint(id: &str) -> Result<(), String> {
         if job.cancelled {
             return Err("Cancelled".into());
         }
+        if let Some(error) = job.worker_error {
+            return Err(error);
+        }
         if !job.paused {
             return Ok(());
         }
@@ -101,7 +185,6 @@ fn checkpoint(id: &str) -> Result<(), String> {
 fn command(binary: &Path) -> Command {
     let mut c = Command::new(binary);
     c.stdin(Stdio::null());
-    c.env("OMP_NUM_THREADS", "2");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -117,8 +200,9 @@ fn ffprobe(ff: &Path) -> PathBuf {
     })
 }
 fn inspect(ff: &Path, path: &Path) -> Result<Value, String> {
-    let out = command(&ffprobe(ff))
-        .args([
+    let out = super::process::command_output_limited(
+        &ffprobe(ff),
+        &[
             "-v",
             "error",
             "-show_streams",
@@ -126,10 +210,11 @@ fn inspect(ff: &Path, path: &Path) -> Result<Value, String> {
             "-show_format",
             "-of",
             "json",
-        ])
-        .arg(path)
-        .output()
-        .map_err(|e| e.to_string())?;
+            &path.to_string_lossy(),
+        ],
+        64 * 1024 * 1024,
+        Duration::from_secs(30),
+    )?;
     if !out.status.success() {
         return Err(format!(
             "Could not inspect {}: {}",
@@ -164,6 +249,16 @@ fn source(root: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 fn validate(p: &Project) -> Result<(), String> {
+    if !["max", "balanced"].contains(&p.performance.as_str())
+        || !["auto", "cpu"].contains(&p.encoder_preference.as_str())
+    {
+        return Err("Unknown hardware or performance policy".into());
+    }
+    validate_preset(
+        &p.default_stabilization,
+        &p.default_stabilization_method,
+        &p.default_custom_stabilization,
+    )?;
     if p.version != 1 || p.clips.len() > 500 {
         return Err("Unsupported project version or too many clips".into());
     }
@@ -183,9 +278,12 @@ fn validate(p: &Project) -> Result<(), String> {
         if !ids.insert(&c.id) {
             return Err("Duplicate clip ID".into());
         }
-        if !["off", "gentle", "balanced", "strong"].contains(&c.stabilization.as_str())
-            || !["edgeSafe", "maxFrame", "aggressiveCrop"].contains(&c.framing.as_str())
-        {
+        validate_preset(
+            &c.stabilization,
+            &c.stabilization_method,
+            &c.custom_stabilization,
+        )?;
+        if !["edgeSafe", "maxFrame", "aggressiveCrop"].contains(&c.framing.as_str()) {
             return Err("Unknown stabilisation preset".into());
         }
         if !c.duration.is_finite()
@@ -211,6 +309,51 @@ fn validate(p: &Project) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn validate_preset(preset: &str, method: &str, custom: &CustomStabilization) -> Result<(), String> {
+    if !["off", "gentle", "balanced", "strong", "custom"].contains(&preset)
+        || !["fast", "quality"].contains(&method)
+        || (preset == "custom" && method != "fast")
+    {
+        return Err("Unknown stabilisation preset or method (custom requires fast mode)".into());
+    }
+    if !(16..=64).contains(&custom.radius)
+        || custom.radius % 16 != 0
+        || !(4..=128).contains(&custom.block_size)
+        || !(1..=255).contains(&custom.contrast)
+    {
+        return Err(
+            "Custom stabilisation needs radius 16/32/48/64, block size 4-128 and contrast 1-255"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn fast_filter(c: &Clip) -> String {
+    let radius = match c.stabilization.as_str() {
+        "gentle" => 16,
+        "balanced" => 32,
+        "strong" => 48,
+        _ => c.custom_stabilization.radius,
+    };
+    let (block, contrast) = if c.stabilization == "custom" {
+        (
+            c.custom_stabilization.block_size,
+            c.custom_stabilization.contrast,
+        )
+    } else {
+        (8, 125)
+    };
+    // Fixed, explicit crop after motion correction. It is not an automatic guarantee
+    // of edge-free footage; mirrored pixels can remain with large camera movement.
+    let crop = match c.framing.as_str() {
+        "edgeSafe" => ",crop=trunc(iw*0.96/2)*2:trunc(ih*0.96/2)*2",
+        "aggressiveCrop" => ",crop=trunc(iw*0.90/2)*2:trunc(ih*0.90/2)*2",
+        _ => "",
+    };
+    format!("deshake=rx={radius}:ry={radius}:blocksize={block}:contrast={contrast}:search=less:edge=mirror{crop}")
 }
 #[tauri::command]
 pub async fn studio_inspect(staging_dir: String, paths: Vec<String>) -> Result<Vec<Value>, String> {
@@ -306,29 +449,34 @@ pub fn studio_list_jobs() -> Vec<StudioJob> {
         .lock()
         .map(|j| j.values().cloned().collect())
         .unwrap_or_default();
-    list.sort_by(|a, b| b.id.cmp(&a.id));
+    for job in &mut list {
+        if let Some(start) = job.started_ms {
+            job.elapsed_seconds =
+                (chrono::Utc::now().timestamp_millis() - start).max(0) as f64 / 1000.;
+        }
+        job.eta_seconds =
+            if job.status == "running" && !job.paused && job.progress > 3. && job.progress < 99. {
+                Some(job.elapsed_seconds * (100. - job.progress) / job.progress)
+            } else {
+                None
+            };
+    }
+    list.sort_by(|a, b| {
+        a.queue_position
+            .unwrap_or(usize::MAX)
+            .cmp(&b.queue_position.unwrap_or(usize::MAX))
+            .then(b.id.cmp(&a.id))
+    });
     list
 }
 #[tauri::command]
 pub fn studio_control_job(id: String, action: String) -> Result<(), String> {
-    if !["pause", "resume", "cancel"].contains(&action.as_str()) {
-        return Err("Unknown action".into());
-    }
-    let mut store = jobs().lock().map_err(|e| e.to_string())?;
-    let job = store.get_mut(&id).ok_or("Unknown job")?;
-    if !["queued", "running"].contains(&job.status.as_str()) {
-        return Err("Job is already finished".into());
-    }
-    match action.as_str() {
-        "pause" => job.paused = true,
-        "resume" => job.paused = false,
-        _ => job.cancelled = true,
-    }
-    Ok(())
+    queue::control(&id, &action)
 }
 fn run(
     ff: &Path,
-    args: Vec<String>,
+    p: &Project,
+    mut args: Vec<String>,
     dir: &Path,
     id: &str,
     phase: &str,
@@ -336,13 +484,75 @@ fn run(
     base: f64,
     span: f64,
 ) -> Result<(), String> {
-    checkpoint(id)?;
+    let budget = studio_hardware::policy(p.width, p.height, &p.performance);
+    let workers = budget.workers.min(p.clips.len().max(1));
+    let requested_threads = (budget.workers * budget.threads / workers).max(1);
+    let permit = loop {
+        checkpoint(id)?;
+        match studio_hardware::acquire_with_threads(
+            p.width,
+            p.height,
+            &p.performance,
+            requested_threads,
+            || stopped_or_paused(id),
+        ) {
+            Ok(permit) => break permit,
+            Err(error) => {
+                if jobs()
+                    .lock()
+                    .ok()
+                    .and_then(|s| {
+                        s.get(id)
+                            .map(|j| j.paused && !j.cancelled && j.worker_error.is_none())
+                    })
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    };
+    // The same budget applies to decoder, filter graph, encoder and OpenMP.
+    let threads = permit.threads().to_string();
+    let last = args.pop().ok_or("FFmpeg output is missing")?;
+    args.extend(["-threads".into(), threads.clone(), last]);
+    let key = dir
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     update(id, |j| {
-        j.phase = phase.into();
-        j.progress = base;
+        j.status = "running".into();
+        j.threads_per_worker = permit.threads();
         j.logs.push(phase.into());
+        j.active_tasks.push(ActiveTask {
+            key: key.clone(),
+            phase: phase.into(),
+            ..ActiveTask::default()
+        });
     });
+    record_progress(id, &key, phase, base, None, None);
+    struct ActiveGuard<'a> {
+        id: &'a str,
+        key: String,
+    }
+    impl Drop for ActiveGuard<'_> {
+        fn drop(&mut self) {
+            update(self.id, |j| {
+                j.active_tasks.retain(|t| t.key != self.key);
+                if j.paused && j.active_tasks.is_empty() {
+                    j.status = "paused".into();
+                }
+            });
+        }
+    }
+    let _active = ActiveGuard {
+        id,
+        key: key.clone(),
+    };
     let mut child = command(ff)
+        .env("OMP_NUM_THREADS", &threads)
         .args([
             "-hide_banner",
             "-nostdin",
@@ -352,7 +562,11 @@ fn run(
             "-progress",
             "pipe:1",
             "-threads",
-            "2",
+            &threads,
+            "-filter_threads",
+            &threads,
+            "-filter_complex_threads",
+            &threads,
         ])
         .args(args)
         .current_dir(dir)
@@ -360,6 +574,7 @@ fn run(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
+    studio_hardware::supervise_child(&mut child)?;
     let stderr = child.stderr.take().unwrap();
     let error_reader = thread::spawn(move || {
         let mut reader = BufReader::new(stderr);
@@ -378,23 +593,62 @@ fn run(
     });
     let stdout = child.stdout.take().unwrap();
     let job_id = id.to_string();
+    let phase_name = phase.to_string();
+    let progress_key = key.clone();
+    let last_progress = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
+        chrono::Utc::now().timestamp_millis(),
+    ));
+    let progress_clock = last_progress.clone();
     let reader = thread::spawn(move || {
+        let mut fps = None;
+        let mut speed = None;
+        let mut last_time = -1.;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(value) = line.strip_prefix("fps=") {
+                fps = value.parse::<f64>().ok().filter(|v| v.is_finite());
+            }
+            if let Some(value) = line.strip_prefix("speed=") {
+                speed = value
+                    .trim_end_matches('x')
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite() && *v > 0.);
+            }
             if let Some(n) = line
                 .strip_prefix("out_time_us=")
                 .and_then(|v| v.parse::<f64>().ok())
             {
-                update(&job_id, |j| {
-                    j.progress =
-                        (base + span * (n / 1_000_000. / seconds.max(0.01)).clamp(0., 1.)).min(99.)
-                });
+                if n > last_time {
+                    progress_clock.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+                    last_time = n;
+                }
+                record_progress(
+                    &job_id,
+                    &progress_key,
+                    &phase_name,
+                    base + span * (n / 1_000_000. / seconds.max(0.01)).clamp(0., 1.),
+                    fps,
+                    speed,
+                );
             }
         }
     });
     let result = loop {
+        if chrono::Utc::now().timestamp_millis() - last_progress.load(Ordering::Relaxed) > 300_000 {
+            let _ = child.kill();
+            let _ = child.wait();
+            break Err(
+                "FFmpeg made no progress for five minutes; retry the job or use CPU encoding"
+                    .into(),
+            );
+        }
         if jobs()
             .lock()
-            .map(|s| s.get(id).map(|j| j.cancelled).unwrap_or(true))
+            .map(|s| {
+                s.get(id)
+                    .map(|j| j.cancelled || j.worker_error.is_some())
+                    .unwrap_or(true)
+            })
             .unwrap_or(true)
         {
             let _ = child.kill();
@@ -419,7 +673,134 @@ fn run(
     };
     let _ = reader.join();
     let errors = error_reader.join().unwrap_or_default();
+    if result.is_ok() {
+        record_progress(id, &key, phase, base + span, None, None);
+    }
     result.map_err(|e| format!("{}: {}", e, errors.trim()))
+}
+
+fn stopped_or_paused(id: &str) -> bool {
+    jobs()
+        .lock()
+        .map(|s| {
+            s.get(id)
+                .map(|j| j.cancelled || j.paused || j.worker_error.is_some())
+                .unwrap_or(true)
+        })
+        .unwrap_or(true)
+}
+
+fn record_progress(
+    id: &str,
+    key: &str,
+    phase: &str,
+    progress: f64,
+    fps: Option<f64>,
+    speed: Option<f64>,
+) {
+    update(id, |j| {
+        for task in &mut j.active_tasks {
+            if task.key == key {
+                task.progress = progress.clamp(0., 100.);
+                task.fps = fps;
+                task.speed = speed;
+            }
+        }
+        if key.starts_with("clip_") {
+            let old = j.work_progress.entry(key.into()).or_insert(0.);
+            *old = old.max(progress.clamp(0., 100.));
+            let total: f64 = j.work_weights.values().sum();
+            if total > 0. {
+                j.progress = j
+                    .progress
+                    .max(
+                        2. + 0.85
+                            * j.work_weights
+                                .iter()
+                                .map(|(key, weight)| {
+                                    weight * j.work_progress.get(key).copied().unwrap_or(0.)
+                                })
+                                .sum::<f64>()
+                            / total,
+                    )
+                    .min(99.);
+            }
+        } else {
+            j.progress = j.progress.max(progress).min(99.);
+        }
+        j.phase = if j.active_tasks.len() > 1 {
+            format!("{} clip tasks active", j.active_tasks.len())
+        } else {
+            phase.into()
+        };
+    });
+}
+
+fn lock_fragment(path: &Path, id: &str) -> Result<fs::File, String> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path.with_extension("lock"))
+        .map_err(|e| e.to_string())?;
+    loop {
+        checkpoint(id)?;
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => return Ok(file),
+            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+                thread::sleep(Duration::from_millis(100))
+            }
+            Err(error) => return Err(format!("Fragment cache lock failed: {error}")),
+        }
+    }
+}
+
+fn disk_reservations() -> &'static Mutex<HashMap<String, u64>> {
+    static RESERVED: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    RESERVED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn volume_key(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetVolumePathNameW(path: *const u16, output: *mut u16, length: u32) -> i32;
+        }
+        let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut output = vec![0u16; 1024];
+        // SAFETY: both null-terminated path and sized output buffer remain valid.
+        if unsafe { GetVolumePathNameW(name.as_ptr(), output.as_mut_ptr(), output.len() as u32) }
+            != 0
+        {
+            let end = output.iter().position(|c| *c == 0).unwrap_or(output.len());
+            return String::from_utf16_lossy(&output[..end]).to_lowercase();
+        }
+    }
+    // Conservative grouping when volume discovery is unavailable.
+    "unknown-volume".into()
+}
+struct DiskReservation(String, u64);
+impl Drop for DiskReservation {
+    fn drop(&mut self) {
+        if let Ok(mut reserved) = disk_reservations().lock() {
+            if let Some(bytes) = reserved.get_mut(&self.0) {
+                *bytes = bytes.saturating_sub(self.1);
+            }
+        }
+    }
+}
+fn reserve_disk(output: &Path, bytes: u64) -> Result<DiskReservation, String> {
+    let mut reserved = disk_reservations().lock().map_err(|e| e.to_string())?;
+    let key = volume_key(output);
+    let volume_reserved = reserved.entry(key.clone()).or_insert(0);
+    let available = fs2::available_space(output).map_err(|e| e.to_string())?;
+    if available < volume_reserved.saturating_add(bytes) {
+        return Err("Other active renders have reserved the available disk space. Free space or retry after they finish.".into());
+    }
+    *volume_reserved += bytes;
+    Ok(DiskReservation(key, bytes))
 }
 fn text_asset(dir: &Path, name: &str, text: &str) -> Result<(), String> {
     fs::write(dir.join(name), text).map_err(|e| e.to_string())
@@ -447,7 +828,7 @@ fn wrap_title(text: &str, limit: usize) -> String {
 fn drawtext(file: &str, size: u32, y: &str, duration: Option<f64>) -> String {
     format!("drawtext=fontfile=font.ttf:textfile={file}:expansion=none:fontsize={size}:fontcolor=white:x=40:y={y}:box=1:boxcolor=0x0c1930@0.85:boxborderw=18{}", duration.map(|s| format!(":enable='lt(t,{s})'")).unwrap_or_default())
 }
-fn encoder(p: &Project, nvenc: bool) -> Vec<String> {
+fn encoder(p: &Project, encoder_name: &str) -> Vec<String> {
     let rate = if p.width == 3840 {
         "32M"
     } else if p.width == 1920 {
@@ -457,9 +838,15 @@ fn encoder(p: &Project, nvenc: bool) -> Vec<String> {
     };
     [
         "-c:v",
-        if nvenc { "h264_nvenc" } else { "libx264" },
+        encoder_name,
         "-preset",
-        if nvenc { "p4" } else { "veryfast" },
+        if encoder_name == "h264_nvenc" {
+            "p4"
+        } else if encoder_name == "h264_qsv" {
+            "fast"
+        } else {
+            "veryfast"
+        },
         "-b:v",
         rate,
         "-maxrate",
@@ -478,8 +865,6 @@ fn encoder(p: &Project, nvenc: bool) -> Vec<String> {
         "2",
         "-video_track_timescale",
         "90000",
-        "-threads",
-        "2",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -489,7 +874,7 @@ fn encoder(p: &Project, nvenc: bool) -> Vec<String> {
 // Cache files are deliberately versioned. Bumping this value invalidates old
 // fragments if the rendering pipeline itself changes, while preserving them for
 // manual inspection rather than deleting user output.
-const FRAGMENT_CACHE_VERSION: &str = "video-studio-fragment-v1";
+const FRAGMENT_CACHE_VERSION: &str = "video-studio-fragment-v2";
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -626,7 +1011,12 @@ fn note_fragment(id: &str, action: &str, path: &Path) {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("fragment");
-    update(id, |job| job.logs.push(format!("{action}: {name}")));
+    update(id, |job| {
+        job.logs.push(format!("{action}: {name}"));
+        if action.starts_with("Reused") {
+            job.cache_hits += 1;
+        }
+    });
 }
 
 fn publish_fragment(
@@ -636,12 +1026,19 @@ fn publish_fragment(
     p: &Project,
     expected_seconds: f64,
     signature: &str,
+    id: &str,
 ) -> Result<(), String> {
+    let _guard = lock_fragment(cache_file, id)?;
     // We only replace a cache entry after it failed validation for the exact
     // current signature. Render outputs and originals are never overwritten.
     let info = inspect(ff, generated)?;
     if !cached_output_matches(&info, p, expected_seconds) {
         return Err("Rendered fragment failed verification before publication".into());
+    }
+    if cached_video_is_valid(ff, cache_file, p, expected_seconds, signature) {
+        // Another worker won this publication race. Keep its verified result.
+        fs::remove_file(generated).map_err(|error| error.to_string())?;
+        return Ok(());
     }
     if cache_file.exists() {
         fs::remove_file(cache_file).map_err(|error| error.to_string())?;
@@ -714,6 +1111,33 @@ fn render(
     }
     let cap = detect_ffmpeg_capabilities()?;
     let ff = &cap.binary;
+    let encoder_name = if p.encoder_preference == "cpu" {
+        "libx264"
+    } else {
+        studio_hardware::select_encoder(&cap)
+    };
+    if p.clips
+        .iter()
+        .any(|c| c.stabilization != "off" && c.stabilization_method == "fast")
+        && !cap.has_deshake
+    {
+        return Err("This FFmpeg build lacks the single-pass deshake filter".into());
+    }
+    let policy = studio_hardware::policy(p.width, p.height, &p.performance);
+    update(id, |job| {
+        job.encoder = encoder_name.into();
+        job.hardware_note = if p.encoder_preference == "cpu" {
+            "CPU encoding explicitly selected".into()
+        } else {
+            studio_hardware::note(&cap)
+        };
+        job.worker_limit = policy.workers;
+        job.threads_per_worker = policy.threads;
+        job.logs.push(format!(
+            "Encoder: {encoder_name}; up to {} workers, {} threads each",
+            policy.workers, policy.threads
+        ));
+    });
     p.clips.retain(|c| c.include);
     if p.clips.is_empty() {
         return Err("Select at least one clip".into());
@@ -728,7 +1152,11 @@ fn render(
         clip.path = path.to_string_lossy().into_owned();
     }
     validate(&p)?;
-    if p.clips.iter().any(|c| c.stabilization != "off") && !cap.has_vidstab {
+    if p.clips
+        .iter()
+        .any(|c| c.stabilization != "off" && c.stabilization_method == "quality")
+        && !cap.has_vidstab
+    {
         return Err("This FFmpeg build lacks vid.stab filters".into());
     }
     let output_root = PathBuf::from(&p.output_dir);
@@ -772,6 +1200,7 @@ fn render(
         &output_root,
         (estimate_seconds * (bitrate + 256_000.) / 8. * 1.15) as u64,
     )?;
+    let _disk_reservation = reserve_disk(&output_root, required)?;
     let final_folder = output_root.join(format!(
         "VideoStudio-{}-{}",
         if preview { "preview" } else { "render" },
@@ -843,10 +1272,11 @@ fn render(
             "-vf".into(),
             filter,
         ];
-        args.extend(encoder(&p, cap.has_h264_nvenc));
+        args.extend(encoder(&p, encoder_name));
         args.push("opening.mp4".into());
         run(
             ff,
+            &p,
             args,
             &work,
             id,
@@ -858,243 +1288,81 @@ fn render(
         segments.push((work.join("opening.mp4"), "Opening title".into()));
     }
     let count = p.clips.len();
-    for (i, c) in p.clips.iter().enumerate() {
-        checkpoint(id)?;
-        let base = 2. + 85. * i as f64 / count as f64;
-        let span = 85. / count as f64;
-        let offset = if preview {
-            preview_start.unwrap_or(0.)
-        } else {
-            0.
-        };
-        if offset >= c.duration {
-            return Err("Preview starts beyond the end of the clip".into());
-        }
-        if preview_length
-            .map(|length| offset + length > c.duration + 0.04)
-            .unwrap_or(false)
-        {
-            return Err("Preview range extends beyond the end of the source".into());
-        }
-        let seconds = if preview {
-            (c.duration - offset).min(preview_length.unwrap_or(12.))
-        } else {
-            c.duration
-        };
-        let source_key = if preview {
-            String::new()
-        } else {
-            source_signature(Path::new(&c.path))?
-        };
-        let base_key = signature(&[
-            "base".into(),
-            source_key.clone(),
-            format_key(&p),
-            c.stabilization.clone(),
-            c.framing.clone(),
-            cap.has_h264_nvenc.to_string(),
-        ]);
-        let base_cache = fragment_cache.join(cache_name("base", c, &p, &base_key));
-        let reuse_base = !preview && cached_video_is_valid(ff, &base_cache, &p, seconds, &base_key);
-        let mut filter = format!("scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={}",p.width,p.height,p.width,p.height,p.fps);
-        if !reuse_base && c.stabilization != "off" {
-            let (step, shake, accuracy, smooth) = match c.stabilization.as_str() {
-                "gentle" => (8, 3, 10, 18),
-                "balanced" => (6, 4, 15, 30),
-                _ => (4, 6, 15, 48),
-            };
-            let trf = format!("motion_{i}.trf");
-            run(ff,vec!["-ss".into(),offset.to_string(),"-i".into(),c.path.clone(),"-t".into(),seconds.to_string(),"-vf".into(),format!("vidstabdetect=stepsize={step}:shakiness={shake}:accuracy={accuracy}:mincontrast=0.25:result={trf}"),"-an".into(),"-f".into(),"null".into(),"-".into()],&work,id,&format!("{}: analyse shake",c.chapter),seconds,base,span*0.25)?;
-            let (zoom, optzoom, speed) = match c.framing.as_str() {
-                "maxFrame" => (0, 0, 0.0),
-                "aggressiveCrop" => (8, 2, 0.4),
-                _ => (4, 2, 0.25),
-            };
-            filter = format!("vidstabtransform=input={trf}:smoothing={smooth}:zoom={zoom}:optzoom={optzoom}:zoomspeed={speed}:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0,{filter}");
-        }
-        let info = inspect(ff, Path::new(&c.path))?;
-        let audio = info["streams"]
-            .as_array()
-            .map(|s| s.iter().any(|s| s["codec_type"] == "audio"))
-            .unwrap_or(false);
-        let generated_clean = work.join(format!("clip_{i}.mp4"));
-        let clean = if reuse_base {
-            note_fragment(id, "Reused base fragment", &base_cache);
-            base_cache.clone()
-        } else {
-            let mut args = vec![
-                "-ss".into(),
-                offset.to_string(),
-                "-i".into(),
-                c.path.clone(),
-            ];
-            if !audio {
-                args.extend([
-                    "-f".into(),
-                    "lavfi".into(),
-                    "-i".into(),
-                    "anullsrc=r=48000:cl=stereo".into(),
-                ]);
-            }
-            args.extend([
-                "-map".into(),
-                "0:v:0".into(),
-                "-map".into(),
-                if audio { "0:a:0" } else { "1:a:0" }.into(),
-                "-t".into(),
-                seconds.to_string(),
-                "-vf".into(),
-                filter,
-                "-af".into(),
-                "apad,asetpts=PTS-STARTPTS".into(),
-            ]);
-            args.extend(encoder(&p, cap.has_h264_nvenc));
-            args.push(generated_clean.to_string_lossy().into_owned());
-            run(
-                ff,
-                args,
-                &work,
-                id,
-                &format!("{}: render full clip", c.chapter),
-                seconds,
-                base + span * 0.25,
-                span * 0.4,
-            )?;
-            if preview {
-                generated_clean
-            } else {
-                publish_fragment(&generated_clean, &base_cache, ff, &p, seconds, &base_key)?;
-                note_fragment(id, "Rendered base fragment", &base_cache);
-                base_cache.clone()
-            }
-        };
-        if !c.title.is_empty() && c.title_seconds > 0. {
-            let file = format!("title_{i}.txt");
-            text_asset(&work, &file, &wrap_title(&c.title, 44))?;
-            let title_key = signature(&[
-                "title".into(),
-                base_key.clone(),
-                c.title.clone(),
-                c.title_seconds.to_string(),
-            ]);
-            let title_cache = fragment_cache.join(cache_name("title", c, &p, &title_key));
-            let titled =
-                if !preview && cached_video_is_valid(ff, &title_cache, &p, seconds, &title_key) {
-                    note_fragment(id, "Reused titled fragment", &title_cache);
-                    title_cache
-                } else {
-                    let generated = work.join(format!("titled_{i}.mp4"));
-                    let mut args = vec![
-                        "-i".into(),
-                        clean.to_string_lossy().into_owned(),
-                        "-vf".into(),
-                        drawtext(&file, p.width / 48, "h-text_h-40", Some(c.title_seconds)),
-                        "-t".into(),
-                        seconds.to_string(),
-                    ];
-                    args.extend(encoder(&p, cap.has_h264_nvenc));
-                    args.push(generated.to_string_lossy().into_owned());
-                    run(
-                        ff,
-                        args,
-                        &work,
-                        id,
-                        &format!("{}: clip title", c.chapter),
-                        seconds,
-                        base + span * 0.65,
-                        span * 0.1,
-                    )?;
-                    if preview {
-                        generated
-                    } else {
-                        publish_fragment(&generated, &title_cache, ff, &p, seconds, &title_key)?;
-                        note_fragment(id, "Rendered titled fragment", &title_cache);
-                        title_cache
-                    }
-                };
-            segments.push((titled, c.chapter.clone()));
-        } else {
-            segments.push((clean.clone(), c.chapter.clone()));
-        }
-        for (j, r) in c
-            .replays
+    update(id, |job| {
+        job.work_weights = p
+            .clips
             .iter()
-            .filter(|r| r.enabled && (!preview || r.end <= seconds))
             .enumerate()
-        {
-            let caption = format!("replay_{i}_{j}.txt");
-            text_asset(
-                &work,
-                &caption,
-                &format!(
-                    "REPLAY | {}% SPEED\n{}",
-                    (r.speed * 100.) as u32,
-                    wrap_title(&r.caption, 44)
-                ),
-            )?;
-            let dur = (r.end - r.start) / r.speed;
-            let replay_key = signature(&[
-                "replay".into(),
-                base_key.clone(),
-                r.start.to_string(),
-                r.end.to_string(),
-                r.speed.to_string(),
-                r.caption.clone(),
-            ]);
-            let replay_cache =
-                fragment_cache.join(cache_name(&format!("replay-{}", j + 1), c, &p, &replay_key));
-            let atempo = if r.speed == 0.25 {
-                "atempo=0.5,atempo=0.5".into()
-            } else {
-                format!("atempo={}", r.speed)
-            };
-            let replay =
-                if !preview && cached_video_is_valid(ff, &replay_cache, &p, dur, &replay_key) {
-                    note_fragment(id, "Reused replay fragment", &replay_cache);
-                    replay_cache
-                } else {
-                    let generated = work.join(format!("replay_{i}_{j}.mp4"));
-                    let mut args = vec![
-                        "-ss".into(),
-                        r.start.to_string(),
-                        "-t".into(),
-                        (r.end - r.start).to_string(),
-                        "-i".into(),
-                        clean.to_string_lossy().into_owned(),
-                        "-vf".into(),
-                        format!(
-                            "setpts=(PTS-STARTPTS)/{},fps={},{}",
-                            r.speed,
-                            p.fps,
-                            drawtext(&caption, p.width / 52, "40", None)
-                        ),
-                        "-af".into(),
-                        format!("{atempo},volume=0.65,apad"),
-                        "-t".into(),
-                        dur.to_string(),
-                    ];
-                    args.extend(encoder(&p, cap.has_h264_nvenc));
-                    args.push(generated.to_string_lossy().into_owned());
-                    run(
+            .map(|(i, c)| {
+                let weight = c.duration
+                    + c.replays
+                        .iter()
+                        .filter(|r| r.enabled)
+                        .map(|r| (r.end - r.start) / r.speed)
+                        .sum::<f64>();
+                (format!("clip_{i}"), weight)
+            })
+            .collect();
+    });
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<Option<Result<Vec<(PathBuf, String)>, String>>>> =
+        Mutex::new(vec![None; count]);
+    thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for _ in 0..policy.workers.min(count) {
+            workers.push(scope.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= count {
+                    break;
+                }
+                let clip_work = work.join(format!("clip_{i}"));
+                let result = (|| {
+                    checkpoint(id)?;
+                    fs::create_dir(&clip_work).map_err(|e| e.to_string())?;
+                    fs::copy(work.join("font.ttf"), clip_work.join("font.ttf"))
+                        .map_err(|e| e.to_string())?;
+                    render_clip(
+                        &p,
+                        &p.clips[i],
+                        i,
                         ff,
-                        args,
-                        &work,
+                        encoder_name,
+                        preview,
+                        preview_start,
+                        preview_length,
                         id,
-                        &format!("{}: replay {}", c.chapter, j + 1),
-                        dur,
-                        base + span * 0.75,
-                        span * 0.25,
-                    )?;
-                    if preview {
-                        generated
-                    } else {
-                        publish_fragment(&generated, &replay_cache, ff, &p, dur, &replay_key)?;
-                        note_fragment(id, "Rendered replay fragment", &replay_cache);
-                        replay_cache
-                    }
-                };
-            segments.push((replay, format!("Replay - {}", r.caption)));
+                        &clip_work,
+                        &fragment_cache,
+                    )
+                })();
+                if let Err(error) = &result {
+                    update(id, |job| {
+                        if job.worker_error.is_none() {
+                            job.worker_error = Some(error.clone());
+                        }
+                    });
+                }
+                results.lock().unwrap()[i] = Some(result);
+            }));
         }
+        for worker in workers {
+            if worker.join().is_err() {
+                update(id, |job| {
+                    job.worker_error = Some("Clip worker panicked".into())
+                });
+            }
+        }
+    });
+    if let Some(error) = jobs()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(id)
+        .and_then(|j| j.worker_error.clone())
+    {
+        return Err(error);
+    }
+    for result in results.into_inner().map_err(|e| e.to_string())? {
+        segments.extend(result.ok_or("Clip worker did not return a result")??);
     }
     let mut concat = String::new();
     let mut metadata = String::from(";FFMETADATA1\n");
@@ -1131,6 +1399,7 @@ fn render(
     let partial = folder.join("video.partial.mp4");
     run(
         ff,
+        &p,
         vec![
             "-f".into(),
             "concat".into(),
@@ -1222,6 +1491,309 @@ fn render(
         })
         .to_string_lossy()
         .into_owned())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_clip(
+    p: &Project,
+    c: &Clip,
+    i: usize,
+    ff: &Path,
+    encoder_name: &str,
+    preview: bool,
+    preview_start: Option<f64>,
+    preview_length: Option<f64>,
+    id: &str,
+    work: &Path,
+    fragment_cache: &Path,
+) -> Result<Vec<(PathBuf, String)>, String> {
+    let info = inspect(ff, Path::new(&c.path))?;
+    let video = info["streams"]
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["codec_type"] == "video"));
+    let mut resource_project = p.clone();
+    resource_project.width = p.width.max(
+        video
+            .and_then(|v| v["width"].as_u64())
+            .unwrap_or(3840)
+            .min(u32::MAX as u64) as u32,
+    );
+    resource_project.height = p.height.max(
+        video
+            .and_then(|v| v["height"].as_u64())
+            .unwrap_or(2160)
+            .min(u32::MAX as u64) as u32,
+    );
+    let mut segments = Vec::new();
+    checkpoint(id)?;
+    let base = 0.;
+    let span = 100.;
+    let offset = if preview {
+        preview_start.unwrap_or(0.)
+    } else {
+        0.
+    };
+    if offset >= c.duration {
+        return Err("Preview starts beyond the end of the clip".into());
+    }
+    if preview_length
+        .map(|length| offset + length > c.duration + 0.04)
+        .unwrap_or(false)
+    {
+        return Err("Preview range extends beyond the end of the source".into());
+    }
+    let seconds = if preview {
+        (c.duration - offset).min(preview_length.unwrap_or(12.))
+    } else {
+        c.duration
+    };
+    let source_key = if preview {
+        String::new()
+    } else {
+        source_signature(Path::new(&c.path))?
+    };
+    let base_key = signature(&[
+        "base".into(),
+        source_key.clone(),
+        format_key(&p),
+        c.stabilization.clone(),
+        c.stabilization_method.clone(),
+        serde_json::to_string(&c.custom_stabilization).map_err(|e| e.to_string())?,
+        c.framing.clone(),
+        encoder_name.to_string(),
+    ]);
+    let base_cache = fragment_cache.join(cache_name("base", c, &p, &base_key));
+    let reuse_base = if preview {
+        false
+    } else {
+        let _guard = lock_fragment(&base_cache, id)?;
+        cached_video_is_valid(ff, &base_cache, &p, seconds, &base_key)
+    };
+    let mut filter = format!("scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={}",p.width,p.height,p.width,p.height,p.fps);
+    if !reuse_base && c.stabilization != "off" && c.stabilization_method == "quality" {
+        let (step, shake, accuracy, smooth) = match c.stabilization.as_str() {
+            "gentle" => (8, 3, 10, 18),
+            "balanced" => (6, 4, 15, 30),
+            _ => (4, 6, 15, 48),
+        };
+        let trf = format!("motion_{i}.trf");
+        run(ff,&resource_project,vec!["-ss".into(),offset.to_string(),"-i".into(),c.path.clone(),"-t".into(),seconds.to_string(),"-vf".into(),format!("vidstabdetect=stepsize={step}:shakiness={shake}:accuracy={accuracy}:mincontrast=0.25:result={trf}"),"-an".into(),"-f".into(),"null".into(),"-".into()],&work,id,&format!("{}: analyse shake",c.chapter),seconds,base,span*0.25)?;
+        let (zoom, optzoom, speed) = match c.framing.as_str() {
+            "maxFrame" => (0, 0, 0.0),
+            "aggressiveCrop" => (8, 2, 0.4),
+            _ => (4, 2, 0.25),
+        };
+        filter = format!("vidstabtransform=input={trf}:smoothing={smooth}:zoom={zoom}:optzoom={optzoom}:zoomspeed={speed}:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0,{filter}");
+    }
+    if !reuse_base && c.stabilization != "off" && c.stabilization_method == "fast" {
+        filter = format!("{},{}", fast_filter(c), filter);
+    }
+    let analysis_share = if c.stabilization != "off" && c.stabilization_method == "quality" {
+        0.25
+    } else {
+        0.
+    };
+    let audio = info["streams"]
+        .as_array()
+        .map(|s| s.iter().any(|s| s["codec_type"] == "audio"))
+        .unwrap_or(false);
+    let generated_clean = work.join(format!("clip_{i}.mp4"));
+    let clean = if reuse_base {
+        note_fragment(id, "Reused base fragment", &base_cache);
+        base_cache.clone()
+    } else {
+        let mut args = vec![
+            "-ss".into(),
+            offset.to_string(),
+            "-i".into(),
+            c.path.clone(),
+        ];
+        if !audio {
+            args.extend([
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                "anullsrc=r=48000:cl=stereo".into(),
+            ]);
+        }
+        args.extend([
+            "-map".into(),
+            "0:v:0".into(),
+            "-map".into(),
+            if audio { "0:a:0" } else { "1:a:0" }.into(),
+            "-t".into(),
+            seconds.to_string(),
+            "-vf".into(),
+            filter,
+            "-af".into(),
+            "apad,asetpts=PTS-STARTPTS".into(),
+        ]);
+        args.extend(encoder(&p, encoder_name));
+        args.push(generated_clean.to_string_lossy().into_owned());
+        run(
+            ff,
+            &resource_project,
+            args,
+            &work,
+            id,
+            &format!("{}: render full clip", c.chapter),
+            seconds,
+            base + span * analysis_share,
+            span * (0.65 - analysis_share),
+        )?;
+        if preview {
+            generated_clean
+        } else {
+            publish_fragment(
+                &generated_clean,
+                &base_cache,
+                ff,
+                &p,
+                seconds,
+                &base_key,
+                id,
+            )?;
+            note_fragment(id, "Rendered base fragment", &base_cache);
+            base_cache.clone()
+        }
+    };
+    if !c.title.is_empty() && c.title_seconds > 0. {
+        let file = format!("title_{i}.txt");
+        text_asset(&work, &file, &wrap_title(&c.title, 44))?;
+        let title_key = signature(&[
+            "title".into(),
+            base_key.clone(),
+            c.title.clone(),
+            c.title_seconds.to_string(),
+        ]);
+        let title_cache = fragment_cache.join(cache_name("title", c, &p, &title_key));
+        let titled = if !preview && cached_video_is_valid(ff, &title_cache, &p, seconds, &title_key)
+        {
+            note_fragment(id, "Reused titled fragment", &title_cache);
+            title_cache
+        } else {
+            let generated = work.join(format!("titled_{i}.mp4"));
+            let mut args = vec![
+                "-i".into(),
+                clean.to_string_lossy().into_owned(),
+                "-vf".into(),
+                drawtext(&file, p.width / 48, "h-text_h-40", Some(c.title_seconds)),
+                "-t".into(),
+                seconds.to_string(),
+            ];
+            args.extend(encoder(&p, encoder_name));
+            args.push(generated.to_string_lossy().into_owned());
+            run(
+                ff,
+                &resource_project,
+                args,
+                &work,
+                id,
+                &format!("{}: clip title", c.chapter),
+                seconds,
+                base + span * 0.65,
+                span * 0.1,
+            )?;
+            if preview {
+                generated
+            } else {
+                publish_fragment(&generated, &title_cache, ff, &p, seconds, &title_key, id)?;
+                note_fragment(id, "Rendered titled fragment", &title_cache);
+                title_cache
+            }
+        };
+        segments.push((titled, c.chapter.clone()));
+    } else {
+        segments.push((clean.clone(), c.chapter.clone()));
+    }
+    let replay_count = c
+        .replays
+        .iter()
+        .filter(|r| r.enabled && (!preview || r.end <= seconds))
+        .count()
+        .max(1) as f64;
+    for (j, r) in c
+        .replays
+        .iter()
+        .filter(|r| r.enabled && (!preview || r.end <= seconds))
+        .enumerate()
+    {
+        let caption = format!("replay_{i}_{j}.txt");
+        text_asset(
+            &work,
+            &caption,
+            &format!(
+                "REPLAY | {}% SPEED\n{}",
+                (r.speed * 100.) as u32,
+                wrap_title(&r.caption, 44)
+            ),
+        )?;
+        let dur = (r.end - r.start) / r.speed;
+        let replay_key = signature(&[
+            "replay".into(),
+            base_key.clone(),
+            r.start.to_string(),
+            r.end.to_string(),
+            r.speed.to_string(),
+            r.caption.clone(),
+        ]);
+        let replay_cache =
+            fragment_cache.join(cache_name(&format!("replay-{}", j + 1), c, &p, &replay_key));
+        let atempo = if r.speed == 0.25 {
+            "atempo=0.5,atempo=0.5".into()
+        } else {
+            format!("atempo={}", r.speed)
+        };
+        let replay = if !preview && cached_video_is_valid(ff, &replay_cache, &p, dur, &replay_key) {
+            note_fragment(id, "Reused replay fragment", &replay_cache);
+            replay_cache
+        } else {
+            let generated = work.join(format!("replay_{i}_{j}.mp4"));
+            let mut args = vec![
+                "-ss".into(),
+                r.start.to_string(),
+                "-t".into(),
+                (r.end - r.start).to_string(),
+                "-i".into(),
+                clean.to_string_lossy().into_owned(),
+                "-vf".into(),
+                format!(
+                    "setpts=(PTS-STARTPTS)/{},fps={},{}",
+                    r.speed,
+                    p.fps,
+                    drawtext(&caption, p.width / 52, "40", None)
+                ),
+                "-af".into(),
+                format!("{atempo},volume=0.65,apad"),
+                "-t".into(),
+                dur.to_string(),
+            ];
+            args.extend(encoder(&p, encoder_name));
+            args.push(generated.to_string_lossy().into_owned());
+            run(
+                ff,
+                &resource_project,
+                args,
+                &work,
+                id,
+                &format!("{}: replay {}", c.chapter, j + 1),
+                dur,
+                base + span * (0.75 + 0.25 * j as f64 / replay_count),
+                span * 0.25 / replay_count,
+            )?;
+            if preview {
+                generated
+            } else {
+                publish_fragment(&generated, &replay_cache, ff, &p, dur, &replay_key, id)?;
+                note_fragment(id, "Rendered replay fragment", &replay_cache);
+                replay_cache
+            }
+        };
+        segments.push((replay, format!("Replay - {}", r.caption)));
+    }
+
+    record_progress(id, &format!("clip_{i}"), "Clip ready", 100., None, None);
+    Ok(segments)
 }
 
 fn check_file_size_limit(path: &Path, bytes: u64) -> Result<(), String> {
@@ -1326,7 +1898,7 @@ pub async fn studio_ai_review(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn project(root: &Path) -> Project {
+    pub(super) fn project(root: &Path) -> Project {
         Project {
             version: 1,
             name: "Smoke test".into(),
@@ -1338,6 +1910,11 @@ mod tests {
             width: 1280,
             height: 720,
             fps: 25,
+            default_stabilization: "off".into(),
+            default_stabilization_method: "quality".into(),
+            default_custom_stabilization: CustomStabilization::default(),
+            performance: "max".into(),
+            encoder_preference: "auto".into(),
             clips: vec![Clip {
                 id: "one".into(),
                 path: root.join("source.mp4").to_string_lossy().into_owned(),
@@ -1347,6 +1924,8 @@ mod tests {
                 title: "Full clip title".into(),
                 title_seconds: 1.,
                 stabilization: "gentle".into(),
+                stabilization_method: "fast".into(),
+                custom_stabilization: CustomStabilization::default(),
                 framing: "edgeSafe".into(),
                 reviewed: true,
                 notes: "".into(),
@@ -1360,6 +1939,43 @@ mod tests {
                 }],
             }],
         }
+    }
+    #[test]
+    fn old_projects_keep_quality_and_custom_presets_are_bounded() {
+        let mut p = project(Path::new("."));
+        let mut legacy = serde_json::to_value(&p).unwrap();
+        for field in [
+            "defaultStabilization",
+            "defaultStabilizationMethod",
+            "defaultCustomStabilization",
+            "performance",
+            "encoderPreference",
+        ] {
+            legacy.as_object_mut().unwrap().remove(field);
+        }
+        legacy["clips"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("stabilizationMethod");
+        legacy["clips"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("customStabilization");
+        let restored: Project = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.clips[0].stabilization_method, "quality");
+        assert_eq!(restored.encoder_preference, "auto");
+        assert!(validate(&restored).is_ok());
+        p.clips[0].stabilization = "custom".into();
+        p.clips[0].custom_stabilization.radius = 64;
+        assert!(validate(&p).is_ok());
+        let filter = fast_filter(&p.clips[0]);
+        assert!(filter.starts_with("deshake=rx=64:ry=64:"));
+        assert!(!filter.contains("vidstab"));
+        p.clips[0].custom_stabilization.radius = 65;
+        assert!(validate(&p).is_err());
+        p.clips[0].custom_stabilization.radius = 64;
+        p.clips[0].stabilization_method = "quality".into();
+        assert!(validate(&p).is_err());
     }
     #[test]
     fn rejects_bad_ranges_and_settings() {
@@ -1449,9 +2065,78 @@ mod tests {
                 logs: vec![],
                 cancelled: true,
                 paused: false,
+                ..StudioJob::default()
             },
         );
         assert_eq!(checkpoint(id), Err("Cancelled".into()));
+        jobs().lock().unwrap().remove(id);
+    }
+    #[test]
+    #[ignore = "requires local FFmpeg; verifies pause-before-start and active child cancellation"]
+    fn pause_and_active_cancellation_smoke() {
+        let cap = detect_ffmpeg_capabilities().unwrap();
+        let root = std::env::var_os("PHOTOGOGO_STUDIO_TEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!(
+                "studio-cancel-{}",
+                chrono::Utc::now().timestamp_millis()
+            ));
+        fs::create_dir_all(&root).unwrap();
+        let id = "smoke-cancel";
+        jobs().lock().unwrap().insert(
+            id.into(),
+            StudioJob {
+                id: id.into(),
+                status: "running".into(),
+                paused: true,
+                ..StudioJob::default()
+            },
+        );
+        let worker = thread::spawn(move || {
+            run(
+                &cap.binary,
+                &project(&root),
+                vec![
+                    "-re".into(),
+                    "-f".into(),
+                    "lavfi".into(),
+                    "-i".into(),
+                    "testsrc2=size=320x180:rate=25".into(),
+                    "-t".into(),
+                    "20".into(),
+                    "-f".into(),
+                    "null".into(),
+                    "-".into(),
+                ],
+                &root,
+                id,
+                "Cancellation test",
+                20.,
+                0.,
+                100.,
+            )
+        });
+        thread::sleep(Duration::from_millis(300));
+        assert!(jobs().lock().unwrap()[id].active_tasks.is_empty());
+        update(id, |j| j.paused = false);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while jobs().lock().unwrap()[id].active_tasks.is_empty()
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let started = !jobs().lock().unwrap()[id].active_tasks.is_empty();
+        update(id, |j| j.cancelled = true);
+        let stopped = std::time::Instant::now();
+        let result = worker.join().unwrap();
+        assert!(started, "Child did not start after resume");
+        assert!(result.unwrap_err().contains("Cancelled"));
+        assert!(
+            stopped.elapsed() < Duration::from_secs(3),
+            "Cancellation did not stop the active child promptly"
+        );
+        assert!(jobs().lock().unwrap()[id].active_tasks.is_empty());
         jobs().lock().unwrap().remove(id);
     }
     #[test]
@@ -1517,7 +2202,12 @@ mod tests {
             source_path.to_str().unwrap()
         )
         .is_err());
-        for id in ["smoke-a", "smoke-b"] {
+        let mut duplicate = p.clips[0].clone();
+        duplicate.id = "two".into();
+        duplicate.chapter = "Second clip in sequence".into();
+        duplicate.title = "Second clip title".into();
+        p.clips.push(duplicate);
+        for id in ["smoke-a", "smoke-b", "smoke-cache", "smoke-quality"] {
             jobs().lock().unwrap().insert(
                 id.into(),
                 StudioJob {
@@ -1531,22 +2221,80 @@ mod tests {
                     logs: vec![],
                     cancelled: false,
                     paused: false,
+                    ..StudioJob::default()
                 },
             );
         }
-        let out = render(
+        let began = std::time::Instant::now();
+        let (out, peak_tasks) = thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                render(
+                    p.clone(),
+                    root.to_string_lossy().into_owned(),
+                    false,
+                    None,
+                    None,
+                    "smoke-a",
+                )
+            });
+            let mut peak_tasks = 0;
+            while !worker.is_finished() {
+                peak_tasks = peak_tasks.max(jobs().lock().unwrap()["smoke-a"].active_tasks.len());
+                thread::sleep(Duration::from_millis(10));
+            }
+            (worker.join().unwrap().unwrap(), peak_tasks)
+        });
+        let initial_seconds = began.elapsed().as_secs_f64();
+        if studio_hardware::policy(p.width, p.height, &p.performance).workers >= 2 {
+            assert!(peak_tasks >= 2, "Parallel clip workers never overlapped");
+        }
+        let info = inspect(&cap.binary, Path::new(&out)).unwrap();
+        assert!((duration(&info).unwrap() - 11.4).abs() < 0.05);
+        assert_eq!(info["chapters"][1]["tags"]["title"], p.clips[0].chapter);
+        assert_eq!(info["chapters"][4]["tags"]["title"], p.clips[1].chapter);
+        assert!(!jobs().lock().unwrap()["smoke-a"]
+            .logs
+            .iter()
+            .any(|line| line.contains("analyse")));
+        assert_eq!(fs::read(&source_path).unwrap(), original);
+        let began = std::time::Instant::now();
+        let cached = render(
             p.clone(),
             root.to_string_lossy().into_owned(),
             false,
             None,
             None,
-            "smoke-a",
+            "smoke-cache",
         )
         .unwrap();
-        let info = inspect(&cap.binary, Path::new(&out)).unwrap();
-        assert!((duration(&info).unwrap() - 6.2).abs() < 0.05);
-        assert_eq!(fs::read(&source_path).unwrap(), original);
+        let cached_seconds = began.elapsed().as_secs_f64();
+        assert!(jobs().lock().unwrap()["smoke-cache"].cache_hits >= 8);
+        assert!(
+            (duration(&inspect(&cap.binary, Path::new(&cached)).unwrap()).unwrap() - 11.4).abs()
+                < 0.05
+        );
+        let mut quality = p.clone();
+        quality.clips.truncate(1);
+        quality.encoder_preference = "cpu".into();
+        quality.clips[0].stabilization_method = "quality".into();
+        quality.clips[0].title.clear();
+        quality.clips[0].replays.clear();
+        let quality_out = render(
+            quality,
+            root.to_string_lossy().into_owned(),
+            false,
+            None,
+            None,
+            "smoke-quality",
+        )
+        .unwrap();
+        assert_eq!(jobs().lock().unwrap()["smoke-quality"].encoder, "libx264");
+        assert!(
+            (duration(&inspect(&cap.binary, Path::new(&quality_out)).unwrap()).unwrap() - 3.).abs()
+                < 0.05
+        );
         let mut silent = p.clone();
+        silent.clips.truncate(1);
         silent.clips[0].stabilization = "off".into();
         silent.clips[0].title.clear();
         silent.clips[0].replays.clear();
@@ -1585,7 +2333,21 @@ mod tests {
             "smoke-a"
         )
         .is_err());
-        println!("Verified smoke outputs: {out}; {second}");
+        let cache_hits = jobs().lock().unwrap()["smoke-cache"].cache_hits;
+        let used_encoder = jobs().lock().unwrap()["smoke-a"].encoder.clone();
+        fs::write(
+            root.join("smoke-report.json"),
+            serde_json::to_vec_pretty(&json!({
+                "parallelTasksObserved": peak_tasks, "initialSeconds": initial_seconds,
+                "cachedSeconds": cached_seconds, "cacheHits": cache_hits,
+                "encoder": used_encoder,
+                "sourceUnchanged": fs::read(&source_path).unwrap() == original,
+                "verifiedOutputs": [&out, &cached, &quality_out, &second],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        println!("Verified parallel/cache/quality/silent smoke outputs: {out}; {cached}; {quality_out}; {second}");
     }
 }
 #[tauri::command]
@@ -1596,67 +2358,11 @@ pub fn studio_start_render(
     preview_start: Option<f64>,
     preview_length: Option<f64>,
 ) -> Result<String, String> {
-    validate(&project)?;
-    let id = format!(
-        "{}-{}",
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default(),
-        std::process::id()
-    );
-    jobs().lock().map_err(|e| e.to_string())?.insert(
-        id.clone(),
-        StudioJob {
-            id: id.clone(),
-            name: project.name.clone(),
-            status: "queued".into(),
-            phase: "Queued".into(),
-            progress: 0.,
-            output: None,
-            error: None,
-            logs: vec![],
-            cancelled: false,
-            paused: false,
-        },
-    );
-    let worker_id = id.clone();
-    tauri::async_runtime::spawn(async move {
-        let task_id = worker_id.clone();
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            static RENDER_LOCK: Mutex<()> = Mutex::new(());
-            let _guard = loop {
-                checkpoint(&task_id)?;
-                match RENDER_LOCK.try_lock() {
-                    Ok(guard) => break guard,
-                    Err(std::sync::TryLockError::WouldBlock) => {
-                        thread::sleep(Duration::from_millis(200))
-                    }
-                    Err(_) => return Err("Render queue lock failed".into()),
-                }
-            };
-            update(&task_id, |j| j.status = "running".into());
-            render(
-                project,
-                staging_dir,
-                preview,
-                preview_start,
-                preview_length,
-                &task_id,
-            )
-        })
-        .await
-        .map_err(|e| e.to_string())
-        .and_then(|r| r);
-        update(&worker_id, |j| match result {
-            Ok(path) => {
-                j.status = "completed".into();
-                j.phase = "Verified".into();
-                j.progress = 100.;
-                j.output = Some(path);
-            }
-            Err(error) => {
-                j.status = if j.cancelled { "cancelled" } else { "failed" }.into();
-                j.error = Some(error);
-            }
-        });
-    });
-    Ok(id)
+    queue::enqueue(queue::Request {
+        project,
+        staging_dir,
+        preview,
+        preview_start,
+        preview_length,
+    })
 }
