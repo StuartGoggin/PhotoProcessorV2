@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { StudioJob } from "../types/videoStudio";
-import { isPendingStudioJob, sortStudioJobs } from "../types/videoStudio";
+import { formatStudioMetric, isPendingStudioJob, liveStudioScheduler, sortStudioJobs } from "../types/videoStudio";
+import StudioSchedulerStatus from "./StudioSchedulerStatus";
 
 const percent = (value: number) => Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
 const duration = (seconds: number) => {
@@ -51,6 +52,7 @@ export default function StudioJobs({ compact = false, onOpen }: { compact?: bool
   }
   const orderedJobs = sortStudioJobs(jobs);
   const active = orderedJobs.filter(isPendingStudioJob);
+  const scheduler = liveStudioScheduler(jobs);
   const maxQueuePosition = Math.max(0, ...jobs.map((j) => j.queuePosition ?? 0));
   const error = actionError || fetchError;
   if (compact) {
@@ -71,6 +73,7 @@ export default function StudioJobs({ compact = false, onOpen }: { compact?: bool
         After an app restart, resume interrupted jobs to reuse completed work. Keep the app open for processing to continue.
       </p>
       {error && <p role="alert" className="text-red-400 break-words">{error}</p>}
+      <StudioSchedulerStatus jobs={jobs} />
       {!jobs.length && <p className="text-gray-400">No renders queued yet. Start with a clip preview to check your preset.</p>}
       {orderedJobs.map((j) => {
         const paused = j.status === "paused" || j.paused;
@@ -97,17 +100,19 @@ export default function StudioJobs({ compact = false, onOpen }: { compact?: bool
             </div>
             {(j.encoder || j.workerLimit > 0) && (
               <div className="rounded bg-surface-900 p-2 text-xs space-y-1">
-                <p>{j.encoder || "Detecting encoder"}{j.workerLimit > 0 ? ` · up to ${j.workerLimit} parallel task(s) · ${j.threadsPerWorker} CPU threads/task` : ""}</p>
+                <p>{j.encoder || "Detecting encoder"}{j.status === "running" && scheduler
+                  ? " · capacity is managed by the shared scheduler above"
+                  : j.workerLimit > 0 ? ` · configured limit: ${j.workerLimit} parallel task(s) · ${j.threadsPerWorker} CPU threads/task` : ""}</p>
                 {j.hardwareNote && <p className="text-gray-400">{j.hardwareNote}</p>}
               </div>
             )}
-            {!!j.activeTasks?.length && (
+            {j.status === "running" && !!j.activeTasks?.length && (
               <ul className="space-y-2 text-xs" aria-label={`${j.name} active work`}>
                 {j.activeTasks.map((task) => (
                   <li key={task.key} className="rounded border border-surface-600 p-2">
                     <div className="flex flex-wrap justify-between gap-2">
                       <span className="break-words">{task.phase}</span>
-                      <span>{Math.round(percent(task.progress))}%{task.fps != null && Number.isFinite(task.fps) ? ` · ${task.fps.toFixed(1)} fps` : ""}{task.speed != null && Number.isFinite(task.speed) ? ` · ${task.speed.toFixed(2)}× playback` : ""}</span>
+                      <span>{Math.round(percent(task.progress))}%{task.fps != null && Number.isFinite(task.fps) ? ` · ${task.fps.toFixed(1)} fps` : ""}{task.speed != null && Number.isFinite(task.speed) ? ` · ${task.speed.toFixed(2)}× playback` : ""} · {formatStudioMetric(task.threads, "threads")}</span>
                     </div>
                     <progress className="w-full" max="100" value={percent(task.progress)} aria-label={`${task.phase} progress`} />
                   </li>

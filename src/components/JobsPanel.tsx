@@ -2,9 +2,10 @@ import { useRef, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import type { StudioJob } from "../types/videoStudio";
-import { isPendingStudioJob } from "../types/videoStudio";
+import { formatStudioMetric, isPendingStudioJob } from "../types/videoStudio";
 import JobTile from "./JobTile";
 import JobConsole from "./JobConsole";
+import StudioSchedulerStatus from "./StudioSchedulerStatus";
 
 type Job = (ImportJob & { jobType: "import" }) | (ProcessJob & { jobType: "process" });
 type QueueItem =
@@ -83,6 +84,15 @@ function StudioQueueConsole({ job, onClose, onControl }: { job: StudioJob; onClo
       {job.status === "interrupted" && job.recoverable && <p className="text-xs text-amber-200">Processing stopped when the app closed. Resume to reuse completed work.</p>}
       {controlError && <p role="alert" className="text-sm text-red-300 break-all">{controlError}</p>}
       {job.error && <p className="text-sm text-red-300 break-all">{job.error}</p>}
+      {job.status === "running" && <details className="flex-shrink-0 max-h-44 overflow-y-auto text-xs">
+        <summary className="cursor-pointer text-cyan-200">Shared processing capacity & active task threads</summary>
+        <div className="mt-2 space-y-2">
+          <StudioSchedulerStatus jobs={[job]} />
+          {!!job.activeTasks?.length && <ul className="space-y-1" aria-label={`${job.name} active task threads`}>
+            {job.activeTasks.map((task) => <li key={task.key} className="break-words">{task.phase} · {formatStudioMetric(task.threads, "threads")}</li>)}
+          </ul>}
+        </div>
+      </details>}
       <label className="text-xs text-gray-400">Render console</label>
       <pre className="flex-1 min-h-0 overflow-auto bg-surface-950 border border-surface-600 rounded-lg p-3 text-xs text-green-300 font-mono whitespace-pre-wrap">{job.logs.join("\n") || "Waiting for the render worker to write diagnostics…"}</pre>
     </div>

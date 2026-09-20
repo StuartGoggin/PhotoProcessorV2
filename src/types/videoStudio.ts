@@ -49,6 +49,7 @@ export interface StudioProject {
   defaultStabilizationMethod: StudioStabilizationMethod;
   defaultCustomStabilization: StudioCustomStabilization;
   performance: "max" | "balanced";
+  adaptiveScheduling: boolean;
   encoderPreference: "auto" | "cpu";
   clips: StudioClip[];
 }
@@ -58,6 +59,21 @@ export interface StudioActiveTask {
   progress: number;
   fps: number | null;
   speed: number | null;
+  threads?: number;
+}
+export interface StudioSchedulerSnapshot {
+  adaptive: boolean;
+  targetWorkers: number;
+  activeWorkers: number;
+  reservedThreads: number;
+  cpuPercent: number | null;
+  availableMemoryBytes: number | null;
+  gpuEncoderPercent: number | null;
+  gpuDecoderPercent: number | null;
+  gpuComputePercent: number | null;
+  gpuMemoryFreeBytes: number | null;
+  throughputFps: number | null;
+  reason: string;
 }
 export interface StudioJob {
   id: string;
@@ -81,7 +97,28 @@ export interface StudioJob {
   etaSeconds: number | null;
   recoverable: boolean;
   persistenceError: string | null;
+  scheduler?: StudioSchedulerSnapshot | null;
 }
+// Snapshots describe the shared processing pool, not the individual job carrying them.
+// Never use persisted/final-job telemetry as a reading of the current machine.
+export const liveStudioScheduler = (jobs: StudioJob[]): StudioSchedulerSnapshot | null => {
+  for (const job of jobs) {
+    const snapshot = job.scheduler;
+    if (job.status !== "running" || !snapshot || typeof snapshot !== "object") continue;
+    if (typeof snapshot.adaptive !== "boolean") continue;
+    if (![snapshot.targetWorkers, snapshot.activeWorkers, snapshot.reservedThreads]
+      .every((value) => Number.isSafeInteger(value) && value >= 0)) continue;
+    return snapshot;
+  }
+  return null;
+};
+export const formatStudioMetric = (value: unknown, kind: "percent" | "memory" | "fps" | "threads"): string => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "N/A";
+  if (kind === "percent") return value <= 100 ? `${Math.round(value)}%` : "N/A";
+  if (kind === "memory") return `${(value / 1024 ** 3).toFixed(1)} GiB`;
+  if (kind === "fps") return `${value.toFixed(1)} fps`;
+  return Number.isSafeInteger(value) && value > 0 ? `${value} CPU thread(s) allocated` : "N/A";
+};
 export const isPendingStudioJob = (job: StudioJob) =>
   ["queued", "running", "paused"].includes(job.status) || (job.status === "interrupted" && job.recoverable);
 export const sortStudioJobs = (jobs: StudioJob[]) => {
@@ -111,6 +148,7 @@ export const newProject = (): StudioProject => ({
   defaultStabilizationMethod: "fast",
   defaultCustomStabilization: defaultCustomStabilization(),
   performance: "max",
+  adaptiveScheduling: true,
   encoderPreference: "auto",
   clips: [],
 });
@@ -122,6 +160,7 @@ export const normalizeProject = (project: StudioProject): StudioProject => ({
   defaultStabilizationMethod: project.defaultStabilizationMethod ?? "quality",
   defaultCustomStabilization: project.defaultCustomStabilization ?? defaultCustomStabilization(),
   performance: project.performance ?? "max",
+  adaptiveScheduling: project.adaptiveScheduling ?? true,
   encoderPreference: project.encoderPreference ?? "auto",
   clips: project.clips.map((clip) => ({
     ...clip,

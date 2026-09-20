@@ -11,3 +11,5 @@ pub mod tidy;
 pub mod transfer;
 pub mod video_studio;
 mod studio_hardware;
+mod studio_adaptive;
+mod studio_telemetry;

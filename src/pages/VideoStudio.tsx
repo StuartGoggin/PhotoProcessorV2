@@ -381,6 +381,23 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
             </select>
           </label>
         </div>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            className="mt-1"
+            type="checkbox"
+            checked={project.adaptiveScheduling}
+            onChange={(e) => patch({ adaptiveScheduling: e.target.checked })}
+            aria-describedby="studio-adaptive-help"
+          />
+          <span>
+            Adaptive scheduling
+            <span id="studio-adaptive-help" className="block text-xs text-gray-400">
+              Adjusts future task launches and thread allocations using measured load and available memory.
+              Preserves video quality and lets active steps finish. Off uses fixed safety limits.
+              This setting applies to new previews and renders; already queued work keeps its settings.
+            </span>
+          </span>
+        </label>
         {project.defaultStabilization === "custom" && <StudioStabilizationFields value={project.defaultCustomStabilization} onChange={(defaultCustomStabilization) => patch({ defaultCustomStabilization })} />}
         <p className="text-sm text-gray-400">
           Fast stabilisation estimates movement while rendering, with no separate shake-analysis pass.

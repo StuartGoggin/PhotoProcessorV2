@@ -15,7 +15,7 @@ use std::{
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock,
     },
     thread,
     time::Duration,
@@ -33,6 +33,7 @@ fn auto_encoder() -> String {
 fn off_preset() -> String {
     "off".into()
 }
+fn adaptive_default() -> bool { true }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -105,6 +106,14 @@ pub struct Project {
     pub performance: String,
     #[serde(default = "auto_encoder")]
     pub encoder_preference: String,
+    #[serde(default = "adaptive_default")]
+    pub adaptive_scheduling: bool,
+    // A shared countdown changes future phase allocations as clips complete;
+    // scheduling state never changes the saved recipe or fragment cache key.
+    #[serde(skip)]
+    remaining_clips: Option<Arc<AtomicUsize>>,
+    #[serde(skip)]
+    source_profile: String,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -114,6 +123,7 @@ pub struct ActiveTask {
     pub progress: f64,
     pub fps: Option<f64>,
     pub speed: Option<f64>,
+    pub threads: usize,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -139,6 +149,7 @@ pub struct StudioJob {
     pub eta_seconds: Option<f64>,
     pub recoverable: bool,
     pub persistence_error: Option<String>,
+    pub scheduler: Option<studio_hardware::SchedulerSnapshot>,
     #[serde(skip)]
     started_ms: Option<i64>,
     #[serde(skip)]
@@ -449,7 +460,9 @@ pub fn studio_list_jobs() -> Vec<StudioJob> {
         .lock()
         .map(|j| j.values().cloned().collect())
         .unwrap_or_default();
+    let scheduler = list.iter().any(|j| j.status == "running").then(studio_hardware::snapshot);
     for job in &mut list {
+        job.scheduler = if job.status == "running" { scheduler.clone() } else { None };
         if let Some(start) = job.started_ms {
             job.elapsed_seconds =
                 (chrono::Utc::now().timestamp_millis() - start).max(0) as f64 / 1000.;
@@ -484,16 +497,16 @@ fn run(
     base: f64,
     span: f64,
 ) -> Result<(), String> {
-    let budget = studio_hardware::policy(p.width, p.height, &p.performance);
-    let workers = budget.workers.min(p.clips.len().max(1));
-    let requested_threads = (budget.workers * budget.threads / workers).max(1);
+    let workload = studio_hardware::Workload::from_args(p.width, p.height, &args, &p.source_profile);
     let permit = loop {
         checkpoint(id)?;
-        match studio_hardware::acquire_with_threads(
+        match studio_hardware::acquire_studio(
             p.width,
             p.height,
             &p.performance,
-            requested_threads,
+            p.adaptive_scheduling,
+            || p.remaining_clips.as_ref().map_or(1, |n| n.load(Ordering::Relaxed)).max(1),
+            workload.clone(),
             || stopped_or_paused(id),
         ) {
             Ok(permit) => break permit,
@@ -525,10 +538,11 @@ fn run(
     update(id, |j| {
         j.status = "running".into();
         j.threads_per_worker = permit.threads();
-        j.logs.push(phase.into());
+        j.logs.push(format!("{phase} ({} requested CPU threads)", permit.threads()));
         j.active_tasks.push(ActiveTask {
             key: key.clone(),
             phase: phase.into(),
+            threads: permit.threads(),
             ..ActiveTask::default()
         });
     });
@@ -599,11 +613,15 @@ fn run(
         chrono::Utc::now().timestamp_millis(),
     ));
     let progress_clock = last_progress.clone();
+    let resource_id = permit.progress_id();
     let reader = thread::spawn(move || {
         let mut fps = None;
         let mut speed = None;
         let mut last_time = -1.;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(frames) = line.strip_prefix("frame=").and_then(|v| v.trim().parse::<u64>().ok()) {
+                studio_hardware::report_frames(resource_id, frames);
+            }
             if let Some(value) = line.strip_prefix("fps=") {
                 fps = value.parse::<f64>().ok().filter(|v| v.is_finite());
             }
@@ -633,7 +651,19 @@ fn run(
             }
         }
     });
+    let mut scheduler_poll = std::time::Instant::now();
+    let mut scheduler_note = String::new();
     let result = loop {
+        if scheduler_poll.elapsed() >= Duration::from_secs(2) {
+            let snapshot = studio_hardware::snapshot();
+            let note = format!("Scheduler: {} ({} active, target {}, {} requested threads total)",
+                snapshot.reason, snapshot.active_workers, snapshot.target_workers, snapshot.reserved_threads);
+            if scheduler_note != note {
+                update(id, |j| j.logs.push(note.clone()));
+                scheduler_note = note;
+            }
+            scheduler_poll = std::time::Instant::now();
+        }
         if chrono::Utc::now().timestamp_millis() - last_progress.load(Ordering::Relaxed) > 300_000 {
             let _ = child.kill();
             let _ = child.wait();
@@ -1134,8 +1164,8 @@ fn render(
         job.worker_limit = policy.workers;
         job.threads_per_worker = policy.threads;
         job.logs.push(format!(
-            "Encoder: {encoder_name}; up to {} workers, {} threads each",
-            policy.workers, policy.threads
+            "Encoder: {encoder_name}; initial {} workers, {} requested threads each; adaptive scheduling {}",
+            policy.workers, policy.threads, if p.adaptive_scheduling { "on" } else { "off" }
         ));
     });
     p.clips.retain(|c| c.include);
@@ -1288,6 +1318,7 @@ fn render(
         segments.push((work.join("opening.mp4"), "Opening title".into()));
     }
     let count = p.clips.len();
+    p.remaining_clips = Some(Arc::new(AtomicUsize::new(count)));
     update(id, |job| {
         job.work_weights = p
             .clips
@@ -1309,7 +1340,8 @@ fn render(
         Mutex::new(vec![None; count]);
     thread::scope(|scope| {
         let mut workers = Vec::new();
-        for _ in 0..policy.workers.min(count) {
+        let ceiling = if p.adaptive_scheduling { studio_hardware::adaptive_ceiling(&p.performance) } else { policy.workers };
+        for _ in 0..ceiling.min(count) {
             workers.push(scope.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 if i >= count {
@@ -1343,6 +1375,7 @@ fn render(
                     });
                 }
                 results.lock().unwrap()[i] = Some(result);
+                p.remaining_clips.as_ref().unwrap().fetch_sub(1, Ordering::Relaxed);
             }));
         }
         for worker in workers {
@@ -1512,6 +1545,12 @@ fn render_clip(
         .as_array()
         .and_then(|s| s.iter().find(|s| s["codec_type"] == "video"));
     let mut resource_project = p.clone();
+    // Compare like decoding/filtering classes, never a codec/fps change against
+    // a concurrency change. This is coarse workload matching, not a claim that
+    // different scenes have identical cost; stable windows are still required.
+    resource_project.source_profile = video.map(|v| signature(&[
+        "codec_name", "profile", "pix_fmt", "width", "height", "avg_frame_rate", "r_frame_rate", "field_order"
+    ].map(|key| v[key].to_string()))).unwrap_or_else(|| c.id.clone());
     resource_project.width = p.width.max(
         video
             .and_then(|v| v["width"].as_u64())
@@ -1915,6 +1954,9 @@ mod tests {
             default_custom_stabilization: CustomStabilization::default(),
             performance: "max".into(),
             encoder_preference: "auto".into(),
+            adaptive_scheduling: true,
+            remaining_clips: None,
+            source_profile: String::new(),
             clips: vec![Clip {
                 id: "one".into(),
                 path: root.join("source.mp4").to_string_lossy().into_owned(),
