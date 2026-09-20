@@ -2,6 +2,11 @@ pub mod files;
 pub mod faces;
 pub mod import;
 mod import_safety;
+mod import_scheduler;
+mod import_sessions;
+mod import_devices;
+#[cfg(test)]
+mod import_integration_tests;
 pub mod logs;
 pub mod naming;
 pub mod process;

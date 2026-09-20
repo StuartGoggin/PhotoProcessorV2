@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { ImportJob, ProcessJob } from "../types";
 import { getProcessAttemptLabel, getProcessResultLabel } from "../utils";
+import { ImportJobSchedulingStatus } from "./ImportSchedulingStatus";
+import { formatImportRate } from "../utils/importScheduling";
 
 type Job = ImportJob | ProcessJob;
 
@@ -238,8 +240,8 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
                 <div className="font-semibold text-white">{importJob?.imported ?? 0}</div>
               </div>
               <div className="bg-surface-800 rounded px-2 py-1.5">
-                <div className="text-gray-500 mb-0.5">Speed</div>
-                <div className="font-semibold text-white">{(importJob?.speedMbps ?? 0).toFixed(1)} MB/s</div>
+                <div className="text-gray-500 mb-0.5">Effective throughput</div>
+                <div className="font-semibold text-white">{formatImportRate(importJob?.speedMbps)}</div>
               </div>
             </>
           )}
@@ -353,6 +355,9 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
               ))}
             </div>
           </div>
+        )}
+        {importJob && (
+          <div className="mt-2"><ImportJobSchedulingStatus job={importJob} /></div>
         )}
         {importJob && (
           <div className="grid grid-cols-5 gap-2 text-xs mt-2">

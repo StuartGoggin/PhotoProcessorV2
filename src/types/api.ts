@@ -135,6 +135,17 @@ export interface ImportJob {
   done: number;
   skipped: number;
   speedMbps: number;
+  /** Optional for jobs saved before source-aware import scheduling. */
+  sourceDevice?: string;
+  sourceDeviceKey?: string;
+  sourceIdentityKnown?: boolean;
+  phase?: string;
+  waitReason?: string | null;
+  bytesRead?: number;
+  bytesCopied?: number;
+  sourceReadMbps?: number;
+  activeSources?: number;
+  maxSources?: number;
   currentFile: string;
   imported: number;
   md5SidecarHits: number;

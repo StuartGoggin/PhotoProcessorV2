@@ -193,19 +193,29 @@ NVIDIA device. Preview representative camera footage before choosing a preset.
 
 ## Restart-safe imports
 
-Normal imports copy into a private `.photogogo-import` directory alongside the
-destination date folder's media, flush the temporary file, and verify its size
-and MD5 against the source before publishing its final filename. Publication
-never replaces an existing destination. A failed copy removes its temporary file;
-after a forced exit, the next attempt replaces its matching orphan `.partial` file.
+Normal imports copy into a uniquely owned file in a private `.photogogo-import`
+directory alongside the destination date folder's media. The checksum is computed
+during that single full source read; the temporary destination is flushed and its
+size/MD5 independently verified before final publication. Publication never
+replaces an existing destination. A failed copy removes only its own temporary
+file; a newly locked session cleans precisely identified abandoned stream partials.
 Completed files are detected by their actual content, even without a checksum
 sidecar. Existing sidecars are treated as hints and checked against the media bytes.
 
-Import jobs are serialized in the application. A filesystem lock also prevents
-two updated app instances from importing into the same staging root simultaneously;
-the OS releases it when a process exits. Pause/Abort still takes effect between
-files, including verification. Source and staging folders must not be nested.
-Verification adds disk reads and can make imports slower on removable drives.
+Independent source devices can import concurrently (maximum four), with one
+sequential reader per device. Same-device jobs wait without blocking other cards;
+unknown device topology falls back to serial imports. Source media is revalidated
+at admission and per file. Reprocessing existing files remains exclusive. Shared
+staging sessions retain the filesystem lock against other app instances using the
+same staging root, while coordinating duplicates and final filenames internally.
+Pause/Abort is checked during streaming and while waiting to publish; destination
+verification finishes before the next control checkpoint. Source and staging
+folders must not be nested. Video encoding/thread allocation is unchanged.
+
+The queue shows source/device identity, waiting reasons, copy/verification phases,
+per-source read rates and combined known-source throughput. See
+[device-aware imports](docs/device-aware-imports.md) for safety details, limitations,
+tests and the real-card benchmark procedure.
 
 Old incomplete files created by earlier app versions are **not** automatically
 deleted or overwritten; those need separate inspection. Do not run an older app

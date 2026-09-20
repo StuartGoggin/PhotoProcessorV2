@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import { ProgressBar } from "../components";
 import StudioJobs from "../components/StudioJobs";
+import ImportSchedulingStatus, { ImportJobSchedulingStatus } from "../components/ImportSchedulingStatus";
+import { formatImportRate } from "../utils/importScheduling";
 import { getProcessAttemptLabel, getProcessResultLabel, getProcessResultToken } from "../utils";
 
 function pct(done: number, total: number): number {
@@ -341,6 +343,7 @@ export default function Jobs() {
           {importJobs.length > 0 && (
             <section className="space-y-3">
               <h3 className="text-sm uppercase tracking-wide text-gray-400">Import Jobs</h3>
+              <ImportSchedulingStatus jobs={importJobs} />
               {importJobs.map((job) => {
             const progress = pct(job.done, job.total);
             const doneLabel = job.total > 0 ? `${job.done}/${job.total}` : `${job.done}`;
@@ -381,7 +384,7 @@ export default function Jobs() {
                   <div>Log File: <span className="text-gray-200 break-all">{job.logFilePath}</span></div>
                   <div>Manifest File: <span className="text-gray-200 break-all">{job.manifestFilePath}</span></div>
                   <div>Mode: <span className="text-gray-200">{job.reprocessExisting ? "reprocess" : "import"}</span></div>
-                  <div>Speed: <span className="text-gray-200">{job.speedMbps.toFixed(1)} MB/s</span></div>
+                  <div>Effective throughput: <span className="text-gray-200">{formatImportRate(job.speedMbps)}</span></div>
                   <div>Source Files: <span className="text-gray-200">{job.sourceFileTotal}</span></div>
                   <div>Ignored Metadata: <span className="text-gray-200">{job.ignoredFileTotal}</span></div>
                   <div>Ignored Source .md5: <span className="text-gray-200">{job.ignoredLegacyMd5SidecarTotal}</span></div>
@@ -389,6 +392,8 @@ export default function Jobs() {
                   <div>MD5 Sidecar: <span className="text-gray-200">{job.md5SidecarHits}</span></div>
                   <div>MD5 Computed: <span className="text-gray-200">{job.md5Computed}</span></div>
                 </div>
+
+                <ImportJobSchedulingStatus job={job} />
 
                 <div>
                   <ProgressBar

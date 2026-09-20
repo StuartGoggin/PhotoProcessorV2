@@ -1,5 +1,6 @@
 import type { ImportJob, ProcessJob } from "../types";
 import { getProcessAttemptLabel, getProcessResultLabel } from "../utils";
+import { ImportJobSchedulingStatus } from "./ImportSchedulingStatus";
 
 type Job = ImportJob | ProcessJob;
 
@@ -189,6 +190,8 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
           </div>
         </div>
       </div>
+
+      {importJob && <ImportJobSchedulingStatus job={importJob} compact />}
 
       {/* Progress bar or completion stats */}
       {job.status === "completed" ? (

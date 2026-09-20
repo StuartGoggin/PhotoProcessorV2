@@ -1,4 +1,5 @@
 use rayon::prelude::*;
+use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -103,6 +104,18 @@ pub struct ImportJob {
     pub logs: Vec<String>,
     pub pause_requested: bool,
     pub abort_requested: bool,
+    pub source_device: String,
+    pub source_device_key: Option<String>,
+    pub source_identity_known: bool,
+    pub phase: String,
+    pub wait_reason: Option<String>,
+    pub bytes_read: u64,
+    pub bytes_copied: u64,
+    pub source_read_mbps: f64,
+    pub active_sources: usize,
+    pub max_sources: usize,
+    #[serde(skip)]
+    source_read_updated: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +148,38 @@ struct ImportManifestEntry {
 fn jobs_store() -> &'static Mutex<HashMap<String, ImportJob>> {
     static STORE: OnceLock<Mutex<HashMap<String, ImportJob>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn import_scheduler() -> &'static super::import_scheduler::Scheduler {
+    static SCHEDULER: OnceLock<super::import_scheduler::Scheduler> = OnceLock::new();
+    SCHEDULER.get_or_init(Default::default)
+}
+
+fn source_unchanged(path: &Path, expected: &super::import_devices::SourceIdentity) -> Result<(), String> {
+    let current = super::import_devices::resolve(path)?;
+    if current.media_id != expected.media_id || current.lanes != expected.lanes || current.certain != expected.certain {
+        return Err("Source card/device changed after this import was queued; reselect the card and queue a new import".into());
+    }
+    Ok(())
+}
+
+fn import_phase(id: Option<&str>, phase: &str, reason: Option<&str>) {
+    if let Some(id) = id {
+        update_job(id, |job| {
+            job.phase = phase.into();
+            job.wait_reason = reason.map(String::from);
+            if phase != "copying" { job.source_read_mbps = 0.0; }
+            if let Some(reason) = reason { job.current_file = reason.into(); }
+        });
+    }
+}
+
+fn import_control(id: Option<&str>) -> super::import_sessions::Control {
+    use super::import_sessions::Control;
+    let Some(id) = id else { return Control::Ready; };
+    jobs_store().lock().ok().and_then(|jobs| jobs.get(id).map(|job| {
+        if job.abort_requested { Control::Aborted } else if job.pause_requested { Control::Paused } else { Control::Ready }
+    })).unwrap_or(Control::Aborted)
 }
 
 fn next_job_id() -> String {
@@ -294,7 +339,7 @@ fn wait_if_paused_or_aborted(job_id: Option<&str>) -> bool {
 
         update_job(job_id, |job| {
             if matches!(job.status, ImportJobStatus::Paused) {
-                job.status = ImportJobStatus::Running;
+                job.status = if job.started_at.is_some() { ImportJobStatus::Running } else { ImportJobStatus::Queued };
             }
         });
         return false;
@@ -303,8 +348,17 @@ fn wait_if_paused_or_aborted(job_id: Option<&str>) -> bool {
 
 #[tauri::command]
 pub fn list_import_jobs() -> Result<Vec<ImportJob>, String> {
+    let active_sources = import_scheduler().active_sources();
     let jobs = jobs_store().lock().map_err(|e| e.to_string())?;
     let mut out: Vec<ImportJob> = jobs.values().cloned().collect();
+    for job in &mut out {
+        job.active_sources = active_sources;
+        job.max_sources = super::import_scheduler::MAX_SOURCES;
+        if !matches!(job.status, ImportJobStatus::Running) || job.phase != "copying"
+            || job.source_read_updated.map_or(true, |at| at.elapsed() > Duration::from_secs(3)) {
+            job.source_read_mbps = 0.0;
+        }
+    }
     out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(out)
 }
@@ -690,7 +744,7 @@ fn with_collision_suffix(base: &Path, suffix: u32) -> PathBuf {
     }
 }
 
-fn reserve_unique_destination(base: PathBuf, reserved: &Arc<Mutex<HashSet<PathBuf>>>) -> PathBuf {
+pub(super) fn reserve_unique_destination(base: PathBuf, reserved: &Arc<Mutex<HashSet<PathBuf>>>) -> PathBuf {
     let mut suffix = 0u32;
 
     loop {
@@ -711,6 +765,13 @@ fn reserve_unique_destination(base: PathBuf, reserved: &Arc<Mutex<HashSet<PathBu
 
         drop(guard);
         suffix += 1;
+    }
+}
+
+struct DestinationReservation(PathBuf, Arc<Mutex<HashSet<PathBuf>>>);
+impl Drop for DestinationReservation {
+    fn drop(&mut self) {
+        if let Ok(mut reserved) = self.1.lock() { reserved.remove(&self.0); }
     }
 }
 
@@ -890,52 +951,75 @@ fn run_import(
     staging_dir: String,
     opts: ImportOptions,
     job_id: Option<String>,
+    expected_source: Option<super::import_devices::SourceIdentity>,
 ) -> Result<ImportResult, String> {
-    let staging = PathBuf::from(&staging_dir);
-    // Serialize jobs in this app (including nested staging scopes), and use an OS
-    // lock to serialize separate app instances importing into the same root.
-    static IMPORT_GATE: Mutex<()> = Mutex::new(());
-    let _gate = loop {
-        if wait_if_paused_or_aborted(job_id.as_deref()) { return Err("Import aborted while waiting".into()); }
-        match IMPORT_GATE.try_lock() {
-            Ok(guard) => break guard,
-            Err(std::sync::TryLockError::WouldBlock) => {
-                if let Some(id)=job_id.as_deref() { update_job(id, |j|j.current_file="Waiting for another import to finish".into()); }
-                thread::sleep(Duration::from_millis(200));
-            },
-            Err(_) => return Err("Import queue lock failed".into()),
-        }
-    };
-    fs::create_dir_all(&staging).map_err(|e|e.to_string())?;
-    let staging_lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
-        .open(staging.join(".photogogo-import.lock")).map_err(|e|e.to_string())?;
-    loop {
-        if wait_if_paused_or_aborted(job_id.as_deref()) { return Err("Import aborted while waiting".into()); }
-        match fs2::FileExt::try_lock_exclusive(&staging_lock) {
-            Ok(()) => break,
-            Err(e) if e.kind()==std::io::ErrorKind::WouldBlock || e.raw_os_error()==Some(33) => {
-                if let Some(id)=job_id.as_deref() { update_job(id, |j|j.current_file="Waiting for staging import lock".into()); }
-                thread::sleep(Duration::from_millis(200));
-            },
-            Err(e) => return Err(format!("Could not lock staging for import: {e}")),
-        }
-    }
-    let source = if opts.reprocess_existing {
-        staging.clone()
-    } else {
-        PathBuf::from(&source_dir)
-    };
-
-    if !source.exists() {
-        return Err(format!("Source directory does not exist: {}", source_dir));
-    }
+    fs::create_dir_all(&staging_dir).map_err(|e| e.to_string())?;
+    let staging = fs::canonicalize(&staging_dir).map_err(|e| e.to_string())?;
+    let source = if opts.reprocess_existing { staging.clone() } else { PathBuf::from(&source_dir) };
+    let source_real = fs::canonicalize(&source).map_err(|e| format!("Source directory is unavailable: {e}"))?;
     if !opts.reprocess_existing {
-        let source_real=fs::canonicalize(&source).map_err(|e|e.to_string())?;
-        let staging_real=fs::canonicalize(&staging).map_err(|e|e.to_string())?;
-        if source_real.starts_with(&staging_real) || staging_real.starts_with(&source_real) {
+        let source_key = super::import_sessions::scope_key(&source_real);
+        let staging_key = super::import_sessions::scope_key(&staging);
+        if source_key.starts_with(&staging_key) || staging_key.starts_with(&source_key) {
             return Err("Source and staging must be separate, non-nested folders. Use reprocess for files already in staging.".into());
         }
     }
+    let identity = match expected_source { Some(identity) => identity, None => super::import_devices::resolve(&source)? };
+    source_unchanged(&source, &identity)?;
+    if let Some(id) = job_id.as_deref() {
+        update_job(id, |job| {
+            job.source_device = identity.label.clone();
+            job.source_device_key = identity.certain.then(|| identity.lanes.join(","));
+            job.source_identity_known = identity.certain;
+        });
+        append_job_log(id, format!("Import scheduling: source={} topology_known={} lanes={:?}; one sequential reader per source, maximum {} sources", identity.label, identity.certain, identity.lanes, super::import_scheduler::MAX_SOURCES));
+    }
+    let request = super::import_scheduler::Request {
+        devices: identity.lanes.clone(), known: identity.certain,
+        staging: super::import_sessions::scope_key(&staging), source: super::import_sessions::scope_key(&source_real),
+        exclusive: opts.reprocess_existing,
+    };
+    let mut admission = Some(import_scheduler().queue(request.clone())?);
+    let _gate = loop {
+        // A paused waiter must not act as a FIFO barrier for other devices.
+        match import_control(job_id.as_deref()) {
+            super::import_sessions::Control::Aborted => return Err("Import aborted while waiting".into()),
+            super::import_sessions::Control::Paused => {
+                admission.take();
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            },
+            super::import_sessions::Control::Ready => {},
+        }
+        if admission.is_none() { admission = Some(import_scheduler().queue(request.clone())?); }
+        match admission.as_mut().unwrap().try_acquire()? {
+            Ok(guard) => {
+                if import_control(job_id.as_deref()) != super::import_sessions::Control::Ready {
+                    drop(guard); admission.take(); continue;
+                }
+                break guard;
+            },
+            Err(reason) => {
+                import_phase(job_id.as_deref(), "waiting", Some(reason));
+                thread::sleep(Duration::from_millis(200));
+            },
+        }
+    };
+    source_unchanged(&source, &identity)?;
+    // The cohort, not each source job, owns the cross-process lock. Destination
+    // reservations and publication are shared while SD reads stay independent.
+    let session = loop {
+        if wait_if_paused_or_aborted(job_id.as_deref()) { return Err("Import aborted while waiting".into()); }
+        match super::import_sessions::try_open(&staging)? {
+            Some(session) => break session,
+            None => {
+                import_phase(job_id.as_deref(), "waiting", Some("Waiting for another application instance using staging"));
+                thread::sleep(Duration::from_millis(200));
+            },
+        }
+    };
+    source_unchanged(&source, &identity)?;
+    import_phase(job_id.as_deref(), "scanning", None);
 
     let mode = if opts.reprocess_existing { "reprocess" } else { "import" };
     let manifest_path = job_id
@@ -1224,7 +1308,8 @@ fn run_import(
     }
 
     // Flatten back in directory-grouped order
-    let ordered_files: Vec<PathBuf> = by_dir.into_values().flatten().collect();
+    let mut ordered_files: Vec<PathBuf> = by_dir.into_values().flatten().collect();
+    ordered_files.sort();
 
     let staging_existing_hashes = Arc::new(load_existing_staging_md5_hashes(&staging));
     let staging_size_index = Arc::new(build_staging_size_index(&staging));
@@ -1247,9 +1332,10 @@ fn run_import(
     let bytes_copied = Arc::new(AtomicU64::new(0));
     let start_time = Instant::now();
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
-    let reserved_destinations = Arc::new(Mutex::new(HashSet::<PathBuf>::new()));
-    let claimed_content_hashes = Arc::new(Mutex::new(HashMap::<String, PathBuf>::new()));
-    let publication_gate = Mutex::new(());
+    let reserved_destinations = session.reserved.clone();
+    let claimed_content_hashes = session.claimed.clone();
+    let source_bytes = AtomicU64::new(0);
+    let rate_window = Mutex::new((Instant::now(), 0u64));
 
     let staging_clone = staging.clone();
     let app_clone = app.clone();
@@ -1267,15 +1353,22 @@ fn run_import(
     let job_id_clone = job_id.clone();
     let manifest_path_clone = Arc::new(manifest_path.clone());
 
-    // Use rayon for parallel file processing (bounded by CPU count, good for I/O too)
+    // SD throughput is source-bound, not CPU-bound. Independent source jobs
+    // overlap, but never compete with many simultaneous reads on one card.
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads((num_cpus() * 2).max(4))
+        .num_threads(if opts.reprocess_existing { (num_cpus() * 2).max(4) } else { 1 })
         .build()
         .map_err(|e| e.to_string())?;
 
     pool.install(|| {
         ordered_files.par_iter().for_each(|src_path| {
             if wait_if_paused_or_aborted(job_id_clone.as_deref()) {
+                return;
+            }
+
+            if let Err(error) = source_unchanged(src_path, &identity) {
+                errors_clone.lock().unwrap().push(format!("{}: {error}", src_path.display()));
+                done_clone.fetch_add(1, Ordering::Relaxed);
                 return;
             }
 
@@ -1316,13 +1409,46 @@ fn run_import(
                 }
             };
 
-            let (src_md5, used_sidecar) = match md5_for_file(src_path, opts.reprocess_existing) {
+            let mut staged_copy = None;
+            let hash_result = if opts.reprocess_existing {
+                md5_for_file(src_path, true)
+            } else {
+                (|| -> Result<(String, bool), String> {
+                    let parent = base_dest.parent().ok_or("Missing destination folder")?;
+                    session.prepare_parent(parent)?;
+                    import_phase(job_id_clone.as_deref(), "copying", None);
+                    if let Some(id) = job_id_clone.as_deref() { update_job(id, |j| j.current_file = src_path.file_name().unwrap_or_default().to_string_lossy().into_owned()); }
+                    let mut digest = Md5::new();
+                    let mut staged = super::import_safety::stage_copy(src_path, parent, src_size, |chunk| {
+                        if wait_if_paused_or_aborted(job_id_clone.as_deref()) { return Err("Import cancelled; source retained".into()); }
+                        digest.update(chunk);
+                        let total = source_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
+                        let mut window = rate_window.lock().map_err(|_| "Import throughput state failed")?;
+                        let elapsed = window.0.elapsed().as_secs_f64().max(0.001);
+                        let rate = (total - window.1) as f64 / 1048576.0 / elapsed;
+                        if let Some(id) = job_id_clone.as_deref() { update_job(id, |j| {
+                            j.bytes_read = total; j.bytes_copied = total; j.source_read_mbps = rate;
+                            j.source_read_updated = Some(Instant::now()); j.phase = "copying".into();
+                        }); }
+                        if elapsed >= 1.0 { *window = (Instant::now(), total); }
+                        Ok(())
+                    })?;
+                    let hash = hex::encode(digest.finalize());
+                    if let Some(id) = job_id_clone.as_deref() { update_job(id, |j| { j.bytes_read = source_bytes.load(Ordering::Relaxed); j.bytes_copied = j.bytes_read; }); }
+                    import_phase(job_id_clone.as_deref(), "verifying", None);
+                    staged.verify(&hash, |path| compute_md5(path).map_err(|e| e.to_string()))?;
+                    source_unchanged(src_path, &identity)?;
+                    staged_copy = Some(staged);
+                    Ok((hash, false))
+                })()
+            };
+            let (src_md5, used_sidecar) = match hash_result {
                 Ok(v) => v,
                 Err(e) => {
                     errors_clone
                         .lock()
                         .unwrap()
-                        .push(format!("{}: failed to hash file: {}", src_path.display(), e));
+                        .push(format!("{}: failed to prepare verified source: {}", src_path.display(), e));
                     done_clone.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
@@ -1348,58 +1474,26 @@ fn run_import(
 
             // Do not skip another source merely because its first copy is still
             // in flight. A failed first copy must allow the next source to retry.
-            let _publication = publication_gate.lock().unwrap();
+            // Existing-file scans may read many same-sized NVMe candidates. Do
+            // that outside the shared publication lock, then revalidate the one
+            // chosen candidate before skipping. New concurrent publications are
+            // covered by the cohort's shared verified-content registry below.
+            import_phase(job_id_clone.as_deref(), "verifying", None);
+            let staging_duplicate = staging_has_same_content(&existing_hashes_clone, &size_index_clone, src_size, &src_md5, Some(src_path));
             if wait_if_paused_or_aborted(job_id_clone.as_deref()) { return; }
-            let source_batch_duplicate = {
-                let mut claimed = claimed_hashes_clone.lock().unwrap();
-                match claimed.get(&src_md5).cloned() {
-                    Some(duplicate_of) if duplicate_of.exists() => Some(duplicate_of),
-                    Some(duplicate_of) => {
-                        let warning = format!(
-                            "duplicate target missing '{}' for source '{}' in source batch; continuing import",
-                            duplicate_of.display(),
-                            src_path.display()
-                        );
-                        let _ = append_app_log(&app_clone, format!("{} warning {}", mode, warning));
-                        if let Some(job_id) = &job_id_clone {
-                            append_job_log(job_id, warning.clone());
-                        }
-                        if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
-                            append_manifest_entry(
-                                manifest_path,
-                                &ImportManifestEntry {
-                                    timestamp: now_string(),
-                                    kind: "warning".to_string(),
-                                    phase: Some("process".to_string()),
-                                    outcome: None,
-                                    status: None,
-                                    source_path: Some(src_path.display().to_string()),
-                                    destination_path: None,
-                                    duplicate_of: Some(duplicate_of.display().to_string()),
-                                    md5: Some(src_md5.clone()),
-                                    md5_source: Some(md5_source.to_string()),
-                                    dt_source: Some(dt_source.to_string()),
-                                    size: Some(src_size),
-                                    reason: Some("missing_duplicate_target".to_string()),
-                                    message: Some(warning),
-                                    source_file_total: None,
-                                    attempted_total: None,
-                                    ignored_file_total: None,
-                                    ignored_legacy_md5_sidecar_total: None,
-                                    unsupported_file_total: None,
-                                    imported_total: None,
-                                    skipped_total: None,
-                                    error_total: None,
-                                },
-                            );
-                        }
-                        claimed.insert(src_md5.clone(), src_path.to_path_buf());
-                        None
-                    }
-                    None => {
-                        claimed.insert(src_md5.clone(), src_path.to_path_buf());
-                        None
-                    }
+            import_phase(job_id_clone.as_deref(), "waiting", Some("Waiting to publish a verified file"));
+            let _publication = match session.acquire_publication(|| import_control(job_id_clone.as_deref())) {
+                Ok(Some(guard)) => guard,
+                Ok(None) => return,
+                Err(error) => { errors_clone.lock().unwrap().push(error); return; },
+            };
+            import_phase(job_id_clone.as_deref(), "publishing", None);
+            let source_batch_duplicate = match session.published_duplicate(&src_md5, src_size, |path| compute_md5(path).map_err(|e| e.to_string())) {
+                Ok(duplicate) => duplicate,
+                Err(error) => {
+                    errors_clone.lock().unwrap().push(format!("{}: failed shared duplicate check: {error}", src_path.display()));
+                    done_clone.fetch_add(1, Ordering::Relaxed);
+                    return;
                 }
             };
 
@@ -1505,11 +1599,12 @@ fn run_import(
                     return;
             }
 
-            match staging_has_same_content(&existing_hashes_clone, &size_index_clone, src_size, &src_md5, Some(src_path)) {
+            match staging_duplicate {
                 Ok(Some(duplicate_of)) => {
-                    if !duplicate_of.exists() {
+                    if !super::import_safety::matches_content(&duplicate_of, src_size, &src_md5,
+                        |path| compute_md5(path).map_err(|e| e.to_string())).unwrap_or(false) {
                         let warning = format!(
-                            "duplicate target missing '{}' for source '{}' in staging index; continuing import",
+                            "duplicate target changed or unavailable '{}' for source '{}' in staging index; continuing import",
                             duplicate_of.display(),
                             src_path.display()
                         );
@@ -1547,6 +1642,7 @@ fn run_import(
                             );
                         }
                     } else {
+                        claimed_hashes_clone.lock().unwrap().insert(src_md5.clone(), duplicate_of.clone());
                         bytes_clone.fetch_add(src_size, Ordering::Relaxed);
                         skipped_clone.fetch_add(1, Ordering::Relaxed);
                         let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1655,6 +1751,9 @@ fn run_import(
             } else {
                 reserve_unique_destination(base_dest, &reserved_clone)
             };
+            // Release reservations on success, failure, cancellation and panic.
+            // Published files themselves continue to prevent filename reuse.
+            let _reservation = DestinationReservation(dest.clone(), reserved_clone.clone());
 
             if opts.reprocess_existing && *src_path == dest {
                 if let Err(e) = set_file_times(src_path, &dt) {
@@ -1884,8 +1983,15 @@ fn run_import(
                 return;
             }
 
-            match super::import_safety::verified_copy(src_path, &dest, src_size, &src_md5,
-                |path| compute_md5(path).map_err(|e|e.to_string())) {
+            if import_control(job_id_clone.as_deref()) == super::import_sessions::Control::Aborted { return; }
+            let copied = if let Some(mut staged) = staged_copy {
+                let bytes = staged.bytes();
+                staged.publish(&dest).map(|_| bytes)
+            } else {
+                super::import_safety::verified_copy(src_path, &dest, src_size, &src_md5,
+                    |path| compute_md5(path).map_err(|e|e.to_string()))
+            };
+            match copied {
                 Ok(bytes) => {
                     claimed_hashes_clone.lock().unwrap().insert(src_md5.clone(), dest.clone());
                     if let Err(e) = set_file_times(&dest, &dt) {
@@ -2254,19 +2360,22 @@ pub async fn start_import(
 ) -> Result<ImportResult, String> {
     let opts = options.unwrap_or_default();
 
-    async_runtime::spawn_blocking(move || run_import(app, source_dir, staging_dir, opts, None))
+    async_runtime::spawn_blocking(move || run_import(app, source_dir, staging_dir, opts, None, None))
         .await
         .map_err(|e| format!("Import background task failed: {}", e))?
 }
 
 #[tauri::command]
-pub fn start_import_job(
+pub async fn start_import_job(
     app: AppHandle,
     source_dir: String,
     staging_dir: String,
     options: Option<ImportOptions>,
 ) -> Result<String, String> {
     let opts = options.unwrap_or_default();
+    let identity_path = PathBuf::from(if opts.reprocess_existing { &staging_dir } else { &source_dir });
+    let source_identity = async_runtime::spawn_blocking(move || super::import_devices::resolve(&identity_path))
+        .await.map_err(|e| format!("Source identification failed: {e}"))??;
     let job_id = next_job_id();
     let log_file_path = import_job_log_path(&staging_dir, &job_id);
     let manifest_file_path = import_job_manifest_path(&staging_dir, &job_id);
@@ -2298,6 +2407,14 @@ pub fn start_import_job(
         logs: vec![],
         pause_requested: false,
         abort_requested: false,
+        source_device: source_identity.label.clone(),
+        source_device_key: source_identity.certain.then(|| source_identity.lanes.join(",")),
+        source_identity_known: source_identity.certain,
+        phase: "waiting".into(),
+        wait_reason: Some("Waiting for source admission".into()),
+        bytes_read: 0, bytes_copied: 0, source_read_mbps: 0.0,
+        active_sources: 0, max_sources: super::import_scheduler::MAX_SOURCES,
+        source_read_updated: None,
     };
 
     {
@@ -2323,6 +2440,7 @@ pub fn start_import_job(
                 staging_dir,
                 opts,
                 Some(job_id_for_task),
+                Some(source_identity),
             )
         })
         .await.map_err(|e|e.to_string()).and_then(|result|result);
@@ -2335,6 +2453,11 @@ pub fn start_import_job(
             });
             append_job_log(&status_id, format!("Import stopped: {error}"));
         }
+        update_job(&status_id, |job| {
+            job.phase = match job.status { ImportJobStatus::Completed => "completed", ImportJobStatus::Aborted => "aborted", _ => "failed" }.into();
+            job.wait_reason = None;
+            job.source_read_mbps = 0.0;
+        });
     });
 
     Ok(job_id)
