@@ -22,6 +22,10 @@ use std::time::Duration;
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
+#[cfg(all(test, target_os = "windows"))]
+#[path = "files_windows_process_tests.rs"]
+mod windows_process_tests;
+
 const TIMELINE_CACHE_VERSION: u32 = 1;
 const TIMELINE_CACHE_FILE: &str = ".photogogo.timeline-cache.json";
 const IMPORT_PREWARM_CYCLES: usize = 24;
@@ -331,6 +335,18 @@ fn ffmpeg_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+fn background_media_command(program: &Path) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // A GUI parent otherwise opens a console for every preview/probe.
+        // Keep output() pipes and exit status; only suppress console creation.
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    command
+}
+
 fn render_video_thumbnail(path: &std::path::Path, max_width: u32, max_height: u32) -> Result<Vec<u8>, String> {
     render_video_thumbnail_at(path, max_width, max_height, 1.0)
 }
@@ -346,7 +362,7 @@ fn render_video_thumbnail_at(
     for ffmpeg_binary in ffmpeg_candidates() {
         let scale_filter = format!("scale={}:{}:force_original_aspect_ratio=decrease", max_width, max_height);
         let seek = format!("{:.3}", seek_seconds.max(0.0));
-        let output = Command::new(&ffmpeg_binary)
+        let output = background_media_command(&ffmpeg_binary)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -404,7 +420,7 @@ fn render_video_hover_preview_mp4_to_file(
     );
 
     for ffmpeg_binary in ffmpeg_candidates() {
-        let output = Command::new(&ffmpeg_binary)
+        let output = background_media_command(&ffmpeg_binary)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -470,7 +486,7 @@ fn parse_ffprobe_creation_time(value: &str) -> Option<i64> {
 
 fn probe_video_timeline_metadata(path: &std::path::Path) -> (Option<i64>, Option<i64>) {
     for ffprobe_binary in ffprobe_candidates() {
-        let output = Command::new(&ffprobe_binary)
+        let output = background_media_command(&ffprobe_binary)
             .args([
                 "-v",
                 "error",

@@ -14,6 +14,20 @@ A desktop photo management workflow app built with [Tauri](https://tauri.app/) (
 | **Transfer** | Copy staging to archive (NAS), generate + verify MD5 checksums |
 | **Settings** | Configure source, staging, and archive directory paths |
 
+## Windows background previews
+
+Version 2.0.13 fixes flashing console windows during import/staging preview
+generation. Background FFmpeg thumbnails, FFprobe metadata and hover previews
+run without console windows; captured errors and process exit status are retained.
+Import/device concurrency and Video Studio scheduling are unchanged. Deliberately
+opened VLC/Explorer windows are unaffected.
+
+Regression: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-background-processes.ps1`.
+This Windows desktop test uses a GUI-subsystem parent and synthetic console
+helpers, not real media. It intentionally opens **one control console** to prove
+the detector works; the background helpers must create none. A hidden-console
+test parent can mask the original bug. Visual Studio C++ Build Tools is required.
+
 ## Tech Stack
 
 - **Frontend:** React 18, TypeScript, Tailwind CSS, Vite
