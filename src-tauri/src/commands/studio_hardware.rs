@@ -838,7 +838,12 @@ fn acquire_adaptive_in(
             .as_ref()
             .map_or(policy.workers, |c| c.target)
             .min(ceiling_for(cores, performance));
-        let threads = (cpu_budget / target.min(ready_tasks().max(1)).max(1)).max(1);
+        // Restart-safe Studio can submit separate one-clip requests. Their
+        // project-local tail counts must not each claim the entire shared CPU.
+        let demand = ready_tasks()
+            .max(usage.processes + usage.waiting.len())
+            .max(1);
+        let threads = (cpu_budget / target.min(demand).max(1)).max(1);
         // Thread counts are per-pipeline hints, not CPU usage. Allow one bounded
         // overlap during a trial; existing FFmpeg pools cannot be retuned live.
         // Missing CPU telemetry restores the original strict reservation limit.
@@ -975,6 +980,44 @@ mod tests {
         )
         .unwrap();
         assert_eq!(tail.threads(), 12);
+    }
+
+    #[test]
+    fn separate_one_clip_requests_share_observed_spare_capacity() {
+        let pool = test_pool();
+        let first = acquire_adaptive_in(
+            pool,
+            1920,
+            1080,
+            "max",
+            || 1,
+            test_work(),
+            || false,
+            test_sample,
+            12,
+        )
+        .unwrap();
+        let mut checks = 0;
+        let second = acquire_adaptive_in(
+            pool,
+            1920,
+            1080,
+            "max",
+            || 1,
+            test_work(),
+            || {
+                checks += 1;
+                checks > 4
+            },
+            test_sample,
+            12,
+        )
+        .expect("a second one-clip request must share the global budget");
+        assert_eq!((first.threads(), second.threads()), (12, 6));
+        assert_eq!(pool.0.lock().unwrap().processes, 2);
+        drop(second);
+        drop(first);
+        assert_eq!(pool.0.lock().unwrap().threads, 0);
     }
 
     #[test]

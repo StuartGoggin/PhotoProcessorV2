@@ -50,6 +50,11 @@ Video Studio is a separate page for repeatable training-video projects:
 2. Play originals and generate review frames to check team consistency. Record
    notes and add editable recap ranges, captions, and 25%, 50%, or normal speed.
 3. Edit the opening title, subtitle/event date, clip titles, durations and chapters.
+4. Choose per-clip Gentle/Balanced/Strong two-pass vid.stab stabilisation and framing.
+   Stabilisation happens before titles and recaps. Edge-safe zoom is not a fixed
+   crop cap; maximum-frame mode may show borders. Compare previews before approval.
+     **Render clip** creates a standalone clip with its titles, stabilisation and
+     recaps, using the project's output resolution, frame rate and bitrate.
 4. Choose project defaults or per-clip Gentle/Balanced/Strong/Custom stabilisation.
    New projects use **Fast preset (one pass)** with Balanced strength: no separate
    camera-shake analysis pass. The deshake filter still estimates motion while
@@ -65,13 +70,33 @@ Video Studio is a separate page for repeatable training-video projects:
 5. Render a 720p clip or replay preview, review each included clip, then queue the
    final 720p, 1080p, or 4K video. Original audio is retained, and replay audio is
    slowed with pitch preservation. Silent sources receive a silent audio track.
+6. Optionally create background music: approve sparse still-frame analysis of the
+     included clips and an optional creative brief, refine the musical direction,
+     then choose **Generate soundtrack with LMMS**. A local synthesizer arranger
+     converts tempo, chords and energy into a self-contained editable LMMS project
+     and renders WAV audio in the job queue. Audio is attached automatically.
+     The current arranger uses a fixed synth palette; genre/instrument suggestions
+     are guidance for further editing in LMMS, not arbitrary audio-model generation.
+     You can alternatively select an existing audio file and adjust music/original
+     sound levels. AI analysis requires explicit upload consent and separately
+     billed OpenAI API access; the key remains session-only.
+
+Choose the output profile at the top: 720p, 1080p or 4K; 25, 30, 50 or 60 fps;
+and a target video bitrate of 1–150 Mbps (actual bitrate varies with content).
+Quick previews intentionally use 720p/4 Mbps. Clip rows show ready, queued or
+outdated status and the last rendered format. Editing video settings invalidates
+approval/readiness; notes, ordering and inclusion do not invalidate rendered media.
+**Render pending clips** queues reviewed missing clips. **Render & assemble complete
+video** prepares missing clips, reuses verified completed clips and stream-copies
+the video into the final assembly, optionally mixing music. Reordering or changing
+music does not require re-encoding unchanged clips.
 
 Projects autosave locally; **Save snapshot** creates a portable JSON edit recipe
 (source media paths remain absolute). Existing snapshots cannot be overwritten.
 Every render creates a unique folder containing the video, project snapshot and
 verification record. Originals and previous exports are never overwritten. Verified
 fragments are retained under `.photogogo-video-studio-cache`, grouped by resolution
-and frame rate; filenames include the source name, format, and settings signature.
+and frame rate/bitrate; filenames include the source name, format, and settings signature.
 Only matching source bytes, output format, stabilisation/framing, title, and replay
 settings reuse a fragment, so title-only edits retain the expensive stabilised base.
 Each cache MP4 also needs its matching verification record—partial or orphaned MP4s
@@ -81,13 +106,23 @@ counts and duration are checked before publishing the output. Renders stay in a
 whole folder is renamed atomically. Failed/cancelled work is therefore never shown as
 a completed render.
 
+Background progress remains visible when changing pages. Pause takes effect at
+the next processing boundary; cancel stops active FFmpeg/LMMS. Jobs are saved under
+the app-data `studio-jobs` directory before execution and after completed steps.
+After closing/restarting, unfinished jobs appear as **interrupted**. Choose
+**Resume saved render** in Studio or the app Jobs queue. This restores the original
+request, checks source/output hashes and format, reuses verified clips/fragments,
+and reruns unfinished work. It does not resume a partially encoded frame stream.
+Keep source files and output/cache folders available; missing or changed assets
+are rebuilt. Each retry creates a new output folder. Exports open in the system player.
 The production queue shows active clip tasks, selected encoder, CPU thread budget,
 FPS/playback speed, approximate ETA, elapsed time, and cache reuse. Reorder waiting
 jobs, pause/resume, cancel, retry, or retry using CPU. Pause finishes active FFmpeg
 steps, then releases capacity at the next boundary; Cancel interrupts active FFmpeg.
 Background progress remains visible when changing pages. Keep the app open to
-continue processing. Recipes and job history are saved in the app configuration
-folder (`video-studio-queue.json`, at most 100 retained recipes). After a restart,
+continue processing. Recipes and job history are saved in app-data `studio-jobs`.
+The previous `video-studio-queue.json` format is migrated once and archived, without
+discarding older saved requests. After a restart,
 unfinished work is marked **Interrupted** and waits for explicit Resume; verified
 fragments are reused. A queue lock prevents two app instances owning that queue.
 On Windows, long-running video workers belong to a kill-on-close Job Object, so
@@ -117,6 +152,25 @@ automatically approve, exclude, or change footage. Sparse frames can miss brief
 drops and cannot establish penalties: watch the original and verify every recap.
 The entire editing/rendering workflow also works without AI or an API key.
 
+Optional **background music** sends sparse representative stills—not source video
+or sound—to the OpenAI API after explicit confirmation. The API key is session-only.
+LMMS renders the generated editable synthesizer score locally. MIDI export is also
+available for manual instrument selection/editing. The selected WAV, MP3, FLAC, OGG, M4A, or AAC is never
+modified; the final render loops and fades it to the edit duration while retaining
+the chosen original-clip audio level.
+
+Video Studio requires FFmpeg and ffprobe, with drawtext and vid.stab for titles
+and stabilisation. Existing Post Process folder jobs retain their behaviour.
+Soundtrack generation requires a local [LMMS](https://lmms.io/) installation.
+
+Tests: `npm run test:studio` and `cargo test --lib --manifest-path src-tauri/Cargo.toml video_studio`.
+For browser checks, run Vite on port 1431, then `npm run test:studio:browser`
+(uses installed Microsoft Edge and a mocked desktop API; screenshots go to `qa`).
+Ignored native tests `restart_assembly_smoke`, `lmms_audio_smoke` and `render_smoke`
+exercise real media. Run separately with `--ignored --nocapture --test-threads=1`.
+For native media tests, set `PHOTOGOGO_FFMPEG` to the FFmpeg executable.
+Run all Studio tests with `-- --include-ignored --nocapture --test-threads=1`.
+Set `PHOTOGOGO_LMMS` if LMMS is not installed at `C:/Program Files/LMMS/lmms.exe`. Set
 Video Studio requires FFmpeg and ffprobe, with drawtext for titles, deshake for
 Fast mode, and vid.stab for Quality mode. Post Process retains its two-pass method
 but shares the bounded CPU/RAM resource pool.

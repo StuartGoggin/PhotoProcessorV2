@@ -2,22 +2,17 @@ mod commands;
 mod utils;
 
 use commands::{
-    video_studio::{studio_inspect, studio_frame, studio_save_project, studio_load_project, studio_list_jobs, studio_control_job, studio_start_render, studio_ai_review, studio_validate_project},
     files::{
-        load_staging_timeline, prewarm_staging_timeline_cache, read_image_base64,
-        read_image_thumbnail_base64, read_video_thumbnail_base64,
-        read_video_hover_preview_base64,
-        read_video_hover_preview_path,
-        read_video_hover_frames_base64,
-        prewarm_video_hover_frames,
-        prewarm_staging_timeline_thumbnails, rename_file,
-        start_import_prewarm_worker,
+        load_staging_timeline, open_in_default_app, prewarm_staging_timeline_cache,
+        prewarm_staging_timeline_thumbnails, prewarm_video_hover_frames, read_image_base64,
+        read_image_thumbnail_base64, read_video_hover_frames_base64,
+        read_video_hover_preview_base64, read_video_hover_preview_path,
+        read_video_thumbnail_base64, rename_file, reveal_in_explorer, start_import_prewarm_worker,
         start_preview_monitor_worker,
-        reveal_in_explorer, open_in_default_app,
     },
     import::{
-        abort_import_job, clear_finished_import_jobs, list_import_jobs, list_staging_tree,
-        list_sd_cards, pause_import_job, resume_import_job, start_import, start_import_job,
+        abort_import_job, clear_finished_import_jobs, list_import_jobs, list_sd_cards,
+        list_staging_tree, pause_import_job, resume_import_job, start_import, start_import_job,
     },
     logs::{clear_log_file, read_log_file},
     naming::{
@@ -25,31 +20,58 @@ use commands::{
         prefill_event_naming_from_archive, save_event_naming_catalog, scan_event_naming_library,
     },
     process::{
-        abort_process_job, clear_finished_process_jobs, list_process_jobs, pause_process_job,
-        check_face_scan_environment,
-        install_face_scan_deps,
-        resume_process_job, run_bw_conversion, run_enhancement, run_focus_detection,
-        run_video_stabilization,
+        abort_process_job, check_face_scan_environment, clear_finished_process_jobs,
+        install_face_scan_deps, list_process_jobs, pause_process_job, resume_process_job,
+        run_bw_conversion, run_enhancement, run_focus_detection, run_video_stabilization,
         start_event_naming_job, start_process_job,
     },
     settings::{load_settings, save_settings},
-    staging_tags::{apply_staging_tags, load_staging_tags, set_file_staging_tags, write_staging_tags_to_metadata},
+    staging_tags::{
+        apply_staging_tags, load_staging_tags, set_file_staging_tags,
+        write_staging_tags_to_metadata,
+    },
     tidy::collect_trash,
     transfer::{start_transfer, verify_checksums},
+    video_studio::{
+        studio_ai_music_direction, studio_ai_review, studio_control_job, studio_create_music_midi,
+        studio_frame, studio_inspect, studio_list_jobs, studio_load_project, studio_open_lmms,
+        studio_save_project, studio_start_render, studio_validate_project,
+        studio_retry_job, init_studio_recovery,
+        studio_start_music,
+        studio_missing_outputs,
+        studio_read_job_log,
+        studio_clear_jobs,
+    },
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            commands::video_studio::init_queue(app.handle());
+            init_studio_recovery(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
-            studio_inspect, studio_frame, studio_save_project, studio_load_project, studio_list_jobs, studio_control_job, studio_start_render, studio_ai_review, studio_validate_project,
+            studio_inspect,
+            studio_frame,
+            studio_save_project,
+            studio_load_project,
+            studio_list_jobs,
+            studio_control_job,
+            studio_start_render,
+            studio_retry_job,
+            studio_start_music,
+            studio_missing_outputs,
+            studio_read_job_log,
+            studio_clear_jobs,
+            studio_ai_review,
+            studio_ai_music_direction,
+            studio_create_music_midi,
+            studio_open_lmms,
+            studio_validate_project,
             // Settings
             load_settings,
             save_settings,

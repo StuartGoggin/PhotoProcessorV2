@@ -4,9 +4,13 @@ import { open, save, confirm } from "@tauri-apps/plugin-dialog";
 import type { Settings } from "../types";
 import StudioJobs from "../components/StudioJobs";
 import StudioAiReview from "../components/StudioAiReview";
+import { clipName, newProject, projectDuration, timecode } from "../types/videoStudio";
+import type { BackgroundMusic, StudioClip, StudioJob, StudioProject, StudioReplay } from "../types/videoStudio";
+import StudioBackgroundMusic from "../components/StudioBackgroundMusic";
+import StudioOutputSettings from "../components/StudioOutputSettings";
+import { STUDIO_CLEARED, resetProjectRenders } from "../utils/studioWorkflow";
+import { applyCompletedRenders, clipJob, clipStatus, editClip, isClipReady, normalizeProject, outputLabel } from "../utils/studioWorkflow";
 import StudioStabilizationFields from "../components/StudioStabilizationFields";
-import { clipName, newProject, normalizeProject, projectDuration, timecode } from "../types/videoStudio";
-import type { StudioClip, StudioProject, StudioReplay } from "../types/videoStudio";
 
 const KEY = "photogogo.videoStudio.project.v1";
 const input = "bg-surface-900 rounded border border-surface-600 px-3 py-2 w-full text-sm";
@@ -15,7 +19,7 @@ async function stagingFolder() {
   if (!settings.staging_dir) throw new Error("Configure a staging folder in Settings first.");
   return settings.staging_dir;
 }
-export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) {
+export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => void; jobs: StudioJob[] }) {
   const [project, setProject] = useState<StudioProject>(newProject);
   const [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false);
@@ -25,6 +29,17 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
   const [frameBusy, setFrameBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const request = useRef(0);
+  const projectEpoch = useRef(0);
+  const currentEpoch = projectEpoch.current;
+  useEffect(() => {
+    const clear = () => {
+      projectEpoch.current++;
+      setProject((prev) => resetProjectRenders(prev));
+      setMessage("Studio renders cleared. Clips will render from scratch; your edits and media are preserved.");
+    };
+    window.addEventListener(STUDIO_CLEARED, clear);
+    return () => window.removeEventListener(STUDIO_CLEARED, clear);
+  }, []);
   useEffect(() => {
     let alive = true;
     void (async () => {
@@ -33,7 +48,7 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
         if (raw) {
           const p = normalizeProject(JSON.parse(raw));
           await invoke("studio_validate_project", { project: p });
-          if (alive) setProject(p);
+          if (alive) setProject(normalizeProject(p));
         }
       } catch {
         if (alive) setError("Autosaved project could not be read. Open a saved snapshot.");
@@ -56,30 +71,61 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
   }, [project, loaded]);
   const clip = project.clips.find((c) => c.id === selected);
   useEffect(() => {
+    if (loaded && !project.clips.some((c) => c.id === selected)) setSelected(project.clips[0]?.id || "");
+  }, [project.clips, loaded, selected]);
+  useEffect(() => {
     request.current++;
     setFrames([]);
   }, [clip?.id, clip?.path]);
   function patch(p: Partial<StudioProject>) {
     setProject((prev) => ({ ...prev, ...p }));
   }
-  function edit(id: string, p: Partial<StudioClip>) {
-    setProject((prev) => ({
-      ...prev,
-      clips: prev.clips.map((c) =>
-        c.id === id ? { ...c, ...p, reviewed: p.reviewed ?? false } : c
-      ),
-    }));
+  function edit(id: string, change: Partial<StudioClip>) {
+    setProject((prev) => ({ ...prev, clips: prev.clips.map((c) => c.id === id ? editClip(c, change) : c) }));
   }
+  useEffect(() => {
+    if (loaded) setProject((prev) => {
+      const updated = applyCompletedRenders(prev, jobs);
+      const music = jobs.find((j) => j.kind === "music" && j.status === "completed" && j.output && j.musicRequestId && j.musicRequestId === prev.music.requestId);
+      if (!music || updated.music.audioPath === music.output) return updated;
+      return { ...updated, music: { ...updated.music, enabled: true, audioPath: music.output!, projectPath: music.musicProjectPath || "", requestId: "" } };
+    });
+  }, [jobs, loaded]);
+  const renderedPaths = JSON.stringify(project.clips.flatMap((c) => c.rendered ? [c.rendered.path] : []));
+  useEffect(() => {
+    if (!loaded) return;
+    let alive = true;
+    const paths: string[] = JSON.parse(renderedPaths);
+    const refresh = async () => {
+      if (!paths.length) return;
+      try {
+        const missing = new Set(await invoke<string[]>("studio_missing_outputs", { paths }));
+        if (!alive) return;
+        setProject((prev) => {
+          let changed = false;
+          const clips = prev.clips.map((c) => {
+            if (!c.rendered || !paths.includes(c.rendered.path)) return c;
+            const available = !missing.has(c.rendered.path);
+            if ((c.rendered.available !== false) === available) return c;
+            changed = true; return { ...c, rendered: { ...c.rendered, available } };
+          });
+          return changed ? { ...prev, clips } : prev;
+        });
+      } catch (e) { if (alive) setError(`Could not check saved render files: ${String(e)}`); }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 30000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [renderedPaths, loaded]);
   function applyDefaults(onlySelected = false) {
     setProject((prev) => ({
       ...prev,
-      clips: prev.clips.map((c) => (onlySelected ? c.id === selected : c.include) ? {
-        ...c,
+        clips: prev.clips.map((c) => (onlySelected ? c.id === selected : c.include) ? editClip(c, {
         stabilization: prev.defaultStabilization,
         stabilizationMethod: prev.defaultStabilizationMethod,
         customStabilization: { ...prev.defaultCustomStabilization },
         reviewed: false,
-      } : c),
+        }) : c),
     }));
     setMessage(`Project stabilisation applied to ${onlySelected ? "the selected clip" : "included clips"}. Review approval has been reset for those clips.`);
   }
@@ -160,9 +206,9 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
     await action(async () => {
       const path = await open({ filters: [{ name: "Studio project", extensions: ["json"] }] });
       if (typeof path === "string") {
-        const p = normalizeProject(await invoke<StudioProject>("studio_load_project", { path }));
-        await invoke("studio_validate_project", { project: p });
-        setProject(p);
+        const p = await invoke<StudioProject>("studio_load_project", { path });
+        projectEpoch.current++;
+        setProject(normalizeProject(p));
         setSelected(p.clips[0]?.id || "");
       }
     });
@@ -180,48 +226,47 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
     [clips[i], clips[j]] = [clips[j], clips[i]];
     patch({ clips });
   }
-  async function render(preview: boolean, r?: StudioReplay, fragmentOnly = false) {
+  async function queueClip(candidate: StudioClip, stagingDir: string) {
+    return invoke<string>("studio_start_render", {
+      project, stagingDir, preview: false, renderKind: "clip", clipId: candidate.id, assembleOnly: false,
+    });
+  }
+  async function renderPending() {
     await action(async () => {
       const stagingDir = await stagingFolder();
-      let p = project,
-        previewStart: number | null = null,
-        previewLength: number | null = null;
-      if (fragmentOnly) {
-        if (!clip || !clip.reviewed) throw new Error("Review and approve this clip first.");
-        p = {
-          ...project,
-          title: "",
-          subtitle: "",
-          titleSeconds: 0,
-          clips: [{ ...clip, include: true, title: "", replays: [] }],
-        };
+      const pending = project.clips.filter((c) => c.include && c.reviewed && !isClipReady(c, project) && !clipJob(c, project, jobs));
+      let queued = 0;
+      try {
+        for (const candidate of pending) { await queueClip(candidate, stagingDir); queued++; }
+      } finally { setMessage(`${queued} clip render(s) queued. Completed work is saved for reuse after restart.`); }
+    });
+  }
+  async function render(preview: boolean, r?: StudioReplay, clipOnly = false) {
+    await action(async () => {
+      const stagingDir = await stagingFolder();
+      if (clipOnly) {
+        if (!clip?.reviewed) throw new Error("Review this clip before rendering.");
+        await queueClip(clip, stagingDir);
+        setMessage(`Rendering ${clip.chapter} at ${outputLabel(project)}. Follow progress in Jobs.`);
+        return;
       }
+      let p = project;
+      let previewStart: number | null = null, previewLength: number | null = null;
       if (preview) {
         if (!clip) throw new Error("Select a clip to preview.");
-        const c = { ...clip, include: true };
+        const c = { ...clip, include: true, replays: [] as StudioReplay[] };
         if (r) {
-          previewStart = r.start;
-          previewLength = Math.min(60, r.end - r.start);
+          previewStart = r.start; previewLength = Math.min(60, r.end - r.start);
           c.replays = [{ ...r, start: 0, end: previewLength, enabled: true }];
-          p = { ...project, title: "", titleSeconds: 0, clips: [c] };
-        } else p = { ...project, clips: [{ ...c, replays: c.replays.filter((r) => r.end <= 12) }] };
-      } else if (
-        !(await confirm(
-          "Render this approved project? A new folder will be created; previous videos will not be overwritten.",
-          { title: "Final render", kind: "info" }
-        ))
-      )
-        return;
-      const id = await invoke<string>("studio_start_render", {
-        project: p,
-        stagingDir,
-        preview,
-        previewStart,
-        previewLength,
+        }
+        p = { ...project, title: "", titleSeconds: 0, clips: [c], music: { ...project.music, enabled: false } };
+      }
+      await invoke<string>("studio_start_render", {
+        project: p, stagingDir, preview, previewStart, previewLength,
+        renderKind: preview ? "preview" : "project", clipId: null, assembleOnly: false,
       });
-      setMessage(
-        `Queued ${preview ? "preview" : "render"} ${id}. You may change pages; keep the app open.`
-      );
+      setMessage(preview ? "720p preview queued; full renders use your output settings."
+        : "Complete video queued. Matching clips will be reused, pending clips rendered, then the video assembled.");
     });
   }
   async function contactSheet() {
@@ -250,14 +295,21 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
   }
   const included = project.clips.filter((c) => c.include),
     approved = included.every((c) => c.reviewed);
+  const readyCount = included.filter((c) => isClipReady(c, project)).length;
+  const pendingCount = included.filter((c) => c.reviewed && !isClipReady(c, project) && !clipJob(c, project, jobs)).length;
+  const activeClipJob = clip ? clipJob(clip, project, jobs) : undefined;
+  const musicReady = !project.music.enabled || !!project.music.audioPath;
+  const finalBusy = jobs.some((j) => j.kind === "project" && ["queued", "running"].includes(j.status) && j.targets?.some((t) => included.some((c) => c.id === t.clipId)));
+  const formatValid = Number.isInteger(project.bitrateMbps) && project.bitrateMbps >= 1 && project.bitrateMbps <= 150;
+  const finalBlocked = !included.length ? "Add clips to begin." : !approved ? "Review the included clips before creating the video." : !project.outputDir ? "Choose an output folder." : !formatValid ? "Set bitrate between 1 and 150 Mbps." : !musicReady ? "Choose a music file or turn background music off." : "";
   if (!loaded) return <p className="p-6 text-gray-400">Loading Video Studio project…</p>;
   return (
-    <div className="p-6 space-y-5 text-gray-200">
+    <div className="p-4 lg:p-6 max-w-[1600px] mx-auto space-y-5 text-gray-200">
       <header className="flex flex-wrap justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">Video Studio</h1>
           <p className="text-sm text-gray-400">
-            Select → review → titles & replays → preview → render
+            Set output → prepare clips → optional music → create video
           </p>
         </div>
         <div className="flex gap-2">
@@ -270,6 +322,7 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
                   await confirm("Start a new project? Save a snapshot first to keep this edit.")
                 ) {
                   setProject(newProject());
+                  projectEpoch.current++;
                   setSelected("");
                 }
               })
@@ -290,7 +343,10 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
           {error || message}
         </p>
       )}
-      <section className="bg-surface-800 rounded-lg p-4 grid md:grid-cols-2 gap-4">
+      <StudioOutputSettings project={project} onChange={patch} onFolder={() => void action(outputFolder)} />
+      <details className="bg-surface-800 rounded-xl p-4">
+        <summary className="cursor-pointer font-semibold">Project details & opening title <span className="text-gray-400 font-normal">· {project.name}</span></summary>
+        <section className="mt-4 grid md:grid-cols-2 gap-4">
         <label>
           Project name
           <input
@@ -350,9 +406,10 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
           </small>
         </div>
       </section>
+      </details>
       <section className="bg-surface-800 rounded-lg p-4 space-y-3">
         <h2 className="font-semibold">Stabilisation defaults & performance</h2>
-        <div className="grid md:grid-cols-3 gap-3">
+        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-3">
           <label>
             Stabiliser
             <select className={input} value={project.defaultStabilizationMethod} onChange={(e) => patch({
@@ -380,6 +437,13 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
               <option value="balanced">Balanced — more room for other apps</option>
             </select>
           </label>
+          <label>
+            Encoder
+            <select aria-label="Encoder" className={input} value={project.encoderPreference} onChange={(e) => patch({ encoderPreference: e.target.value as StudioProject["encoderPreference"] })}>
+              <option value="auto">Automatic — NVIDIA, Intel, then CPU</option>
+              <option value="cpu">CPU — compatibility fallback</option>
+            </select>
+          </label>
         </div>
         <label className="flex items-start gap-2 text-sm">
           <input
@@ -405,7 +469,7 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
         </p>
         <p className="text-xs text-gray-400">
           {project.encoderPreference === "cpu"
-            ? "CPU encoding is selected for this project. Change Encoder under Export to use available hardware."
+            ? "CPU encoding is selected for this project. Change Encoder above to use available hardware."
             : "Hardware encoding is selected automatically: NVIDIA when available, then Intel, then CPU."}{" "}
           Parallel work is bounded by CPU, memory and hardware capacity; utilisation varies with the footage and filters.
         </p>
@@ -418,7 +482,7 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
       <div className="grid xl:grid-cols-[minmax(260px,1fr)_minmax(400px,2fr)] gap-4">
         <section className="bg-surface-800 rounded-lg p-4 space-y-3">
           <div className="flex justify-between">
-            <h2 className="font-semibold">Clips ({included.length} included)</h2>
+            <div><p className="text-xs tracking-widest uppercase text-cyan-300 mb-1">02 / Clips</p><h2 className="font-semibold">Prepare your sequence</h2><p className="text-xs text-gray-400">{included.length} included · {readyCount} ready</p></div>
             <button className="btn-primary" disabled={busy} onClick={() => void add()}>
               Add clips
             </button>
@@ -435,6 +499,11 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
             Full clips are preserved. Untick to exclude; select a row to review. Edits autosave
             locally.
           </p>
+          <button className="btn-primary w-full" disabled={busy || !pendingCount || !project.outputDir || !formatValid} onClick={() => void renderPending()}>
+            Render pending clips ({pendingCount})
+          </button>
+          <p className="text-xs text-gray-400">Only reviewed clips are queued. Matching completed clips are reused.</p>
+          {!project.clips.length && <div className="rounded-lg border border-dashed border-surface-500 p-6 text-center text-sm text-gray-400">Add your source clips, then select one to review its title, stabilisation and replays.</div>}
           <div className="max-h-[650px] overflow-auto space-y-2">
             {project.clips.map((c) => (
               <div
@@ -452,6 +521,10 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
                   <small>
                     {timecode(c.duration)} · {c.reviewed ? "Approved" : "Needs review"} ·{" "}
                     {c.stabilization}{c.stabilization !== "off" ? ` · ${c.stabilizationMethod}` : ""}
+                  </small>
+                  <small className={`block mt-1 ${isClipReady(c, project) ? "text-emerald-300" : "text-amber-200"}`}>
+                    {clipStatus(c, project, jobs)}
+                    {c.rendered && <span className="block text-gray-400">Last render: {c.rendered.width}×{c.rendered.height} · {c.rendered.fps} fps · {c.rendered.bitrateMbps || "—"} Mbps</span>}
                   </small>
                 </button>
               </div>
@@ -475,6 +548,18 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
                 >
                   Play full original
                 </button>
+                {clip.rendered && (
+                  <button
+                    className="btn-secondary"
+                    onClick={() =>
+                      void invoke("open_in_default_app", { path: clip.rendered!.path }).catch((e) =>
+                        setError(String(e))
+                      )
+                    }
+                  >
+                    Play rendered clip
+                  </button>
+                )}
                 <button
                   className="btn-secondary"
                   disabled={frameBusy}
@@ -548,7 +633,7 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
                 </label>
                 <label>
                   Stabiliser for this clip
-                  <select className={input} value={clip.stabilizationMethod} onChange={(e) => edit(clip.id, {
+                  <select aria-label="Stabiliser for this clip" className={input} value={clip.stabilizationMethod} onChange={(e) => edit(clip.id, {
                     stabilizationMethod: e.target.value as StudioClip["stabilizationMethod"],
                     ...(e.target.value === "quality" && clip.stabilization === "custom" ? { stabilization: "balanced" as const } : {}),
                   })}>
@@ -560,6 +645,7 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
                   Stabilisation preset
                   <select
                     className={input}
+                    aria-label="Stabilisation preset"
                     value={clip.stabilization}
                     onChange={(e) =>
                       edit(clip.id, {
@@ -712,15 +798,20 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
               ))}
               <div className="flex flex-wrap gap-3 items-center">
                 <button className="btn-secondary" disabled={busy} onClick={() => void render(true)}>
-                  Render clip preview (first 12s)
+                  Quick preview · 720p / first 12s
                 </button>
                 <button
                   className="btn-secondary"
-                  disabled={busy || !clip.reviewed || !project.outputDir}
+                  disabled={busy || !clip.reviewed || !project.outputDir || !formatValid || !!activeClipJob}
                   onClick={() => void render(false, undefined, true)}
                 >
-                  Export this fragment only (no titles/recaps)
+                  {activeClipJob ? "Clip queued / rendering" : `Render clip · ${project.height}p / ${project.fps} fps / ${project.bitrateMbps} Mbps`}
                 </button>
+                {clip.rendered && (
+                  <span className={`text-xs ${isClipReady(clip, project) ? "text-emerald-300" : "text-amber-200"}`}>
+                    {isClipReady(clip, project) ? "Ready" : "Previous render · outdated"} · {clip.rendered.width}×{clip.rendered.height} · {clip.rendered.fps} fps
+                  </span>
+                )}
                 <label className="flex gap-2">
                   <input
                     type="checkbox"
@@ -730,79 +821,48 @@ export default function VideoStudio({ onOpenJobs }: { onOpenJobs: () => void }) 
                   I reviewed this clip, titles and replay ranges
                 </label>
               </div>
+              {!clip.reviewed && <p className="text-sm text-amber-200">Review this clip and tick the approval box to enable its full render.</p>}
             </>
           )}
         </section>
       </div>
-      <section className="bg-surface-800 rounded p-4 space-y-3">
-        <h2 className="font-semibold">Export</h2>
-        <div className="flex flex-wrap gap-3">
-          <label>
-            Resolution
-            <select
-              className={input}
-              value={project.width}
-              onChange={(e) => {
-                const width = Number(e.target.value);
-                patch({ width, height: width === 3840 ? 2160 : width === 1920 ? 1080 : 720 });
-              }}
-            >
-              <option value={3840}>4K</option>
-              <option value={1920}>1080p</option>
-              <option value={1280}>720p</option>
-            </select>
-          </label>
-          <label>
-            Frame rate
-            <select
-              className={input}
-              value={project.fps}
-              onChange={(e) => patch({ fps: Number(e.target.value) })}
-            >
-              {[25, 30, 50, 60].map((f) => (
-                <option key={f}>{f}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Encoder
-            <select className={input} value={project.encoderPreference} onChange={(e) => patch({ encoderPreference: e.target.value as StudioProject["encoderPreference"] })}>
-              <option value="auto">Automatic hardware</option>
-              <option value="cpu">CPU only</option>
-            </select>
-          </label>
-          <button className="btn-secondary" onClick={() => void action(outputFolder)}>
-            Choose output folder
-          </button>
-          <span className="self-center text-sm break-all">
-            {project.outputDir || "No folder selected"}
-          </span>
+      <details className="rounded-xl bg-surface-800 p-4">
+        <summary className="cursor-pointer font-semibold"><span className="text-xs uppercase tracking-widest text-cyan-300 mr-3">03 / Sound</span>Optional background music <span className="text-gray-400 font-normal">· {project.music.enabled ? project.music.audioPath ? "Ready to mix" : "Audio file needed" : "Off — keep original clip sound"}</span></summary>
+      <StudioBackgroundMusic
+        project={project}
+        jobs={jobs}
+        onChange={(music: Partial<BackgroundMusic>) => {
+          if (projectEpoch.current === currentEpoch) setProject((prev) => ({ ...prev, music: { ...prev.music, ...music } }));
+        }}
+        busy={busy}
+        onError={setError}
+        onMessage={setMessage}
+        getStagingDir={stagingFolder}
+      />
+      </details>
+      <section className="rounded-xl border border-cyan-800/60 bg-gradient-to-br from-surface-800 to-[#0c1930] p-5 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><p className="text-xs uppercase tracking-widest text-cyan-300 mb-1">04 / Complete video</p><h2 className="text-xl font-semibold text-white">Bring it all together</h2></div>
+          <span className="rounded-full bg-surface-900 px-3 py-1 text-sm">{readyCount} / {included.length} clips ready</span>
         </div>
-        <p>
-          Estimated duration: {timecode(projectDuration(project))} ·{" "}
-          {included.filter((c) => c.reviewed).length}/{included.length} included clips approved
-        </p>
-        <p className="text-sm text-gray-400">
-          Each render creates a new folder with video, project snapshot and verification record.
-          Originals are untouched. Rendering needs temporary disk space and may take longer than
-          playback at 4K.
-        </p>
-        <p className="text-sm text-cyan-200">
-          Finished fragments are retained in <code>.photogogo-video-studio-cache</code>, grouped
-          by resolution and frame rate. Unchanged source and edit settings are reused; only changed
-          clips, titles, or recaps are rendered again.
-        </p>
-        <button
-          className="btn-primary"
-          disabled={busy || !included.length || !approved || !project.outputDir}
-          onClick={() => void render(false)}
-        >
-          Approve and render new version
-        </button>
+        <div className="grid sm:grid-cols-3 gap-3 text-sm">
+          <div className="rounded-lg bg-surface-900 p-3"><p className="text-gray-400 text-xs mb-1">OUTPUT</p>{outputLabel(project)}</div>
+          <div className="rounded-lg bg-surface-900 p-3"><p className="text-gray-400 text-xs mb-1">DURATION / ESTIMATED SIZE</p>{timecode(projectDuration(project))} · ~{((projectDuration(project) * (project.bitrateMbps + 0.192)) / 8 / 1000).toFixed(2)} GB</div>
+          <div className="rounded-lg bg-surface-900 p-3"><p className="text-gray-400 text-xs mb-1">SOUND</p>{project.music.enabled ? "Original sound + background music" : "Original clip sound"}</div>
+        </div>
+        <p className="text-sm text-gray-300">The video follows your clip order, with each clip's titles and replays. Matching renders are reused; remaining clips are prepared automatically before assembly.</p>
+        {finalBlocked && <p role="status" className="text-sm text-amber-200">{finalBlocked}</p>}
+        <div className="flex flex-wrap items-center gap-3">
+          <button className="btn-primary" disabled={busy || !!finalBlocked || finalBusy} onClick={() => void render(false)}>
+            {finalBusy ? "Video queued / rendering" : readyCount === included.length && included.length ? "Assemble complete video" : "Render & assemble complete video"}
+          </button>
+          <button className="btn-secondary" onClick={onOpenJobs}>View render queue</button>
+        </div>
+        <p className="text-xs text-gray-400">Projects autosave locally. Render requests and verified clips are saved on disk. After reopening the app, use Resume saved render in Jobs to continue interrupted work. Each export creates a new file.</p>
       </section>
       <StudioJobs />
       <button className="btn-secondary" onClick={onOpenJobs}>
-        Other application jobs
+        All application jobs
       </button>
     </div>
   );
