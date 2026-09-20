@@ -141,8 +141,13 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
   return (
     <div
       onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      aria-pressed={onClick ? isSelected : undefined}
+      aria-label={onClick ? `${title}: ${job.status}. ${isSelected ? "Hide" : "Show"} console` : undefined}
+      onKeyDown={(event) => { if (onClick && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onClick(); } }}
       className={`
-        flex-shrink-0 w-72 rounded-lg border cursor-pointer
+        job-tile min-w-0 w-full rounded-lg border cursor-pointer
         ${colors.bg} ${colors.border}
         p-4 space-y-2 transition-all duration-300
         ${job.status === "running" ? "ring-2 ring-emerald-600 shadow-lg shadow-emerald-600/20" : ""}

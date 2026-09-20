@@ -8,7 +8,7 @@ A desktop photo management workflow app built with [Tauri](https://tauri.app/) (
 |------|-------------|
 | **Import** | Copy photos from SD card to local staging, renamed by EXIF date |
 | **Post Process** | Focus detection, CLAHE enhancement, B&W conversion, MP4 stabilization, plus task-specific cleanup jobs for generated results |
-| **Video Studio** | Reviewed full-clip assemblies, editable titles, slow-motion recaps, per-clip stabilization and background rendering |
+| **Video Studio** | Review/approve, arrange and export full clips with final-assembly opening titles, slow-motion recaps, stabilization and editable YouTube chapter descriptions |
 | **Review** | Browse staging folder, rate (stars) and mark photos for deletion |
 | **Tidy Up** | Move `{trash}`-marked files to a `Trash/` subdirectory |
 | **Transfer** | Copy staging to archive (NAS), generate + verify MD5 checksums |
@@ -63,12 +63,12 @@ Video Studio is a separate page for repeatable training-video projects:
    unrelated footage. Included source clips are retained in full in final renders.
 2. Play originals and generate review frames to check team consistency. Record
    notes and add editable recap ranges, captions, and 25%, 50%, or normal speed.
+   Use the red **Needs review** / green **Approved** button to toggle approval;
+   text and an icon also show the state. **Approve & next** approves the current
+   included clip and moves to the next one needing review.
 3. Edit the opening title, subtitle/event date, clip titles, durations and chapters.
-4. Choose per-clip Gentle/Balanced/Strong two-pass vid.stab stabilisation and framing.
-   Stabilisation happens before titles and recaps. Edge-safe zoom is not a fixed
-   crop cap; maximum-frame mode may show borders. Compare previews before approval.
-     **Render clip** creates a standalone clip with its titles, stabilisation and
-     recaps, using the project's output resolution, frame rate and bitrate.
+   The workflow links **Review clips → Arrange sequence → Finish & export** help
+   move between review, ordering and delivery without losing project edits.
 4. Choose project defaults or per-clip Gentle/Balanced/Strong/Custom stabilisation.
    New projects use **Fast preset (one pass)** with Balanced strength: no separate
    camera-shake analysis pass. The deshake filter still estimates motion while
@@ -95,6 +95,53 @@ Video Studio is a separate page for repeatable training-video projects:
      sound levels. AI analysis requires explicit upload consent and separately
      billed OpenAI API access; the key remains session-only.
 
+### Opening titles and publishing notes
+
+Under **Opening title style**, choose **Separate title card**, **Overlay on first
+video**, or **None**. The opening title is applied during final assembly, so an
+overlay follows whichever included clip is first in the final order; it is not
+baked into clip previews or reusable clip renders. Its duration is capped at the
+first clip's main section, before any replay. Changing the opening title or order
+preserves those reusable renders. Overlaying text changes pixels: final assembly
+must re-encode the first rendered asset (which may also contain its replays),
+while unchanged later assets can still be stream-copied. It does not repeat
+stabilisation. Separate clip titles remain independent of the opening title.
+
+After a full export completes, **YouTube description & chapters** lists finished
+exports. Select one to edit its generated title/subtitle and timestamped segment
+names. Timings come from measured frames and verified chapter metadata in that
+export's final order, including any opening card and enabled replays—not from the
+current editable project or rounded duration estimates. Timestamps use `MM:SS`
+or `HH:MM:SS` for longer videos. **Copy description** copies the edited text;
+**Save alongside video** updates `youtube-description.txt` in that export folder.
+Editing the description never changes the video or its embedded chapter metadata.
+
+The panel warns about fewer than three chapters, chapters shorter than ten seconds,
+timestamps sharing a displayed second, and overlong descriptions. It never alters
+your edit to satisfy publishing requirements. Manually changed timestamp text is
+not automatically revalidated. Older exports without a delivery manifest must be
+assembled/exported again to generate verified descriptions. If you clear job
+history, a description draft already loaded in the current Studio session remains
+editable and copyable, but **Save alongside video** is disabled without its saved
+job. Copy unsaved text before closing the app; it is not a replacement for a saved
+sidecar. No YouTube account, upload or AI service is needed for descriptions.
+
+### Jobs and responsive desktop layout
+
+The single bottom Jobs frame shows **Active** work only: running, queued and paused
+jobs. It scrolls vertically inside its own bounded frame, can be collapsed, and
+collapses automatically when idle. **Needs attention** exposes failures,
+interrupted work and recovery-checkpoint errors; **History** retains finished
+attempts and their logs. Filtering never clears history. Use **Manage jobs** for
+the existing pause/resume/cancel, retry, saved-render recovery and diagnostic tools.
+Panel and desktop navigation sizing support dragging or keyboard arrow keys.
+
+Narrow desktop windows use a collapsible **Menu**, stacked editing controls and
+touch-sized actions; large/4K windows retain the wider workspace. The supported
+minimum desktop window is 360×360. This is a responsive local Windows interface,
+**not remote browser control**: no LAN server, phone connection, VPN tunnel or
+remote-access configuration is included.
+
 Choose the output profile at the top: 720p, 1080p or 4K; 25, 30, 50 or 60 fps;
 and a target video bitrate of 1–150 Mbps (actual bitrate varies with content).
 Quick previews intentionally use 720p/4 Mbps. Clip rows show ready, queued or
@@ -103,7 +150,8 @@ approval/readiness; notes, ordering and inclusion do not invalidate rendered med
 **Render pending clips** queues reviewed missing clips. **Render & assemble complete
 video** prepares missing clips, reuses verified completed clips and stream-copies
 the video into the final assembly, optionally mixing music. Reordering or changing
-music does not require re-encoding unchanged clips.
+music does not require re-encoding unchanged clips, except for applying an enabled
+opening overlay to the first rendered asset as described above.
 
 Projects autosave locally; **Save snapshot** creates a portable JSON edit recipe
 (source media paths remain absolute). Existing snapshots cannot be overwritten.
@@ -178,8 +226,11 @@ and stabilisation. Existing Post Process folder jobs retain their behaviour.
 Soundtrack generation requires a local [LMMS](https://lmms.io/) installation.
 
 Tests: `npm run test:studio` and `cargo test --lib --manifest-path src-tauri/Cargo.toml video_studio`.
-For browser checks, run Vite on port 1431, then `npm run test:studio:browser`
-(uses installed Microsoft Edge and a mocked desktop API; screenshots go to `qa`).
+For browser checks, run `npm run test:studio:browser`. It starts and stops a
+loopback-only Vite fixture on port 1431, uses installed Microsoft Edge with a mocked
+desktop API, and saves screenshots to `test-output/studio-browser`. Set
+`STUDIO_TEST_URL` to use an existing fixture server, or `PHOTOGOGO_PLAYWRIGHT_PATH`
+to an existing Playwright `index.mjs` when the locked package is not available offline.
 Ignored native tests `restart_assembly_smoke`, `lmms_audio_smoke` and `render_smoke`
 exercise real media. Run separately with `--ignored --nocapture --test-threads=1`.
 For native media tests, set `PHOTOGOGO_FFMPEG` to the FFmpeg executable.

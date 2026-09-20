@@ -32,6 +32,25 @@ export function editClip(clip: StudioClip, patch: Partial<StudioClip>): StudioCl
   return { ...clip, ...patch, revision: (clip.revision ?? 0) + (changed ? 1 : 0),
     reviewed: patch.reviewed ?? (changed ? false : clip.reviewed) };
 }
+// Review navigation skips excluded/already-approved clips and wraps only once.
+export function approveAndNext(project: StudioProject, clipId: string): { project: StudioProject; nextClipId: string | null } {
+  const index = project.clips.findIndex((clip) => clip.id === clipId && clip.include);
+  if (index < 0) return { project, nextClipId: null };
+  const clips = project.clips.map((clip, i) => i === index ? editClip(clip, { reviewed: true }) : clip);
+  const order = [...clips.slice(index + 1), ...clips.slice(0, index)];
+  return { project: { ...project, clips }, nextClipId: order.find((clip) => clip.include && !clip.reviewed)?.id ?? null };
+}
+
+// Sequence edits never touch the reusable render or its revision.
+export function moveClip(project: StudioProject, clipId: string, delta: number): StudioProject {
+  const index = project.clips.findIndex((clip) => clip.id === clipId);
+  const destination = index + delta;
+  if (index < 0 || destination < 0 || destination >= project.clips.length) return project;
+  const clips = [...project.clips];
+  const [clip] = clips.splice(index, 1);
+  clips.splice(destination, 0, clip);
+  return { ...project, clips };
+}
 export function applyCompletedRenders(project: StudioProject, jobs: StudioJob[]): StudioProject {
   let changed = false;
   const artifacts = jobs.flatMap((job) => job.artifacts ?? []).sort((a,b) => b.rendered.renderedAt.localeCompare(a.rendered.renderedAt));

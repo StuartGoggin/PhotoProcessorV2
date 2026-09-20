@@ -5,7 +5,7 @@ import { JobsPanel } from "./components";
 import Import from "./pages/Import";
 import StagingExplorer from "./pages/StagingExplorer";
 import VideoStudio from "./pages/VideoStudio";
-import StudioJobs from "./components/StudioJobs";
+import { readPanelSize, type JobsView } from "./utils/jobsView";
 import NameEvents from "./pages/NameEvents";
 import Cleanup from "./pages/Cleanup";
 import Jobs from "./pages/Jobs";
@@ -35,24 +35,20 @@ const APP_SIDEBAR_PREFS_KEY = "photogogo.appSidebar.width.v1";
 
 export default function App() {
   const [page, setPage] = useState<Page>("import");
-  const [sidebarWidth, setSidebarWidth] = useState(208);
+  const [sidebarWidth, setSidebarWidth] = useState(() => readPanelSize(APP_SIDEBAR_PREFS_KEY, 208, 180, 420));
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [jobsView, setJobsView] = useState<JobsView>("active");
+  const [jobsNavigation, setJobsNavigation] = useState(0);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
-  const { importJobs, processJobs, studioJobs, loading } = useJobsMonitor(true, 500);
-
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(APP_SIDEBAR_PREFS_KEY);
-      if (!raw) {
-        return;
-      }
-      const parsed = Number(raw);
-      if (!Number.isNaN(parsed)) {
-        setSidebarWidth(Math.max(180, Math.min(420, parsed)));
-      }
-    } catch {
-    }
-  }, []);
+  const { importJobs, processJobs, studioJobs, loading, error } = useJobsMonitor(true, 500);
+  function openJobs(view: JobsView = "active") {
+    setJobsView(view);
+    setJobsNavigation((value) => value + 1);
+    setPage("jobs");
+    setMenuOpen(false);
+  }
 
   useEffect(() => {
     try {
@@ -69,7 +65,7 @@ export default function App() {
   }, [sidebarWidth]);
 
   useEffect(() => {
-    function onMouseMove(event: MouseEvent) {
+    function onMouseMove(event: PointerEvent) {
       const activeResize = sidebarResizeRef.current;
       if (!activeResize) {
         return;
@@ -83,16 +79,19 @@ export default function App() {
       sidebarResizeRef.current = null;
     }
 
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("pointermove", onMouseMove);
+    window.addEventListener("pointerup", onMouseUp);
+    window.addEventListener("pointercancel", onMouseUp);
     return () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("pointermove", onMouseMove);
+      window.removeEventListener("pointerup", onMouseUp);
+      window.removeEventListener("pointercancel", onMouseUp);
     };
   }, []);
 
-  function onSidebarResizeStart(event: React.MouseEvent<HTMLDivElement>) {
+  function onSidebarResizeStart(event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
     sidebarResizeRef.current = {
       startX: event.clientX,
       startWidth: sidebarWidth,
@@ -105,21 +104,26 @@ export default function App() {
     videostudio: null,
     nameevents: <NameEvents />,
     cleanup: <Cleanup />,
-    jobs: <Jobs />,
-    postprocess: <PostProcess onOpenJobs={() => setPage("jobs")} />,
+    jobs: <Jobs key={jobsNavigation} initialView={jobsView} />,
+    postprocess: <PostProcess onOpenJobs={() => openJobs()} />,
     review: <Review />,
     transfer: <Transfer />,
-    faceidentify: <FaceIdentify onOpenJobs={() => setPage("jobs")} />,
+    faceidentify: <FaceIdentify onOpenJobs={() => openJobs()} />,
     settings: <Settings />,
     logs: <Logs />,
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-surface-900">
+    <div className="app-root flex flex-col overflow-hidden bg-surface-900">
+      <header className="app-mobile-header">
+        <button ref={menuButtonRef} className="btn-secondary" aria-controls="app-navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? "Close menu" : "☰ Menu"}</button>
+        <span className="font-semibold truncate">{NAV_ITEMS.find((item) => item.id === page)?.label}</span>
+        <span className="text-xs text-gray-400">PhotoGoGo</span>
+      </header>
       {/* Main content area (sidebar + page content) */}
-      <div ref={appShellRef} className="app-shell flex flex-1 overflow-hidden">
+      <div ref={appShellRef} className={`app-shell flex flex-1 min-h-0 min-w-0 overflow-hidden ${menuOpen ? "menu-open" : ""}`}>
         {/* Sidebar */}
-        <aside className="app-sidebar bg-surface-800 border-r border-surface-600 flex flex-col">
+        <aside id="app-navigation" className="app-sidebar bg-surface-800 border-r border-surface-600 flex flex-col" onKeyDown={(event) => { if (event.key === "Escape") { setMenuOpen(false); menuButtonRef.current?.focus(); } }}>
           <div className="px-4 py-5 border-b border-surface-600">
             <h1 className="text-lg font-bold text-white tracking-tight">PhotoGoGo</h1>
             <div className="mt-1 text-xs text-gray-400 select-text" aria-label="Application version and build">
@@ -129,11 +133,12 @@ export default function App() {
               </p>
             </div>
           </div>
-          <nav className="flex-1 p-2 space-y-1">
+          <nav className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1" aria-label="Main navigation">
             {NAV_ITEMS.map((item) => (
               <button
                 key={item.id}
-                onClick={() => setPage(item.id)}
+                onClick={() => { setPage(item.id); if (item.id === "jobs") setJobsView("active"); setMenuOpen(false); }}
+                aria-current={page === item.id ? "page" : undefined}
                 className={`nav-item w-full text-left ${page === item.id ? "active" : ""}`}
               >
                 <span className="text-lg leading-none">{item.icon}</span>
@@ -145,22 +150,32 @@ export default function App() {
 
         <div
           className="app-sidebar-resizer"
-          onMouseDown={onSidebarResizeStart}
+          onPointerDown={onSidebarResizeStart}
+          onKeyDown={(event) => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setSidebarWidth((value) => event.key === "Home" ? 180 : event.key === "End" ? 420 : Math.max(180, Math.min(420, value + (event.key === "ArrowRight" ? 16 : -16))));
+          }}
           title="Drag to resize menu"
           role="separator"
           aria-orientation="vertical"
+          aria-label="Resize navigation"
+          aria-valuemin={180}
+          aria-valuemax={420}
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
         />
 
         {/* Page content */}
-        <main className="flex-1 overflow-auto bg-surface-900">
-          <div hidden={page !== "videostudio"}><VideoStudio jobs={studioJobs} onOpenJobs={() => setPage("jobs")} /></div>
+        <main id="app-main" className="app-main flex-1 min-w-0 min-h-0 overflow-auto bg-surface-900">
+          <div hidden={page !== "videostudio"}><VideoStudio jobs={studioJobs} onOpenJobs={() => openJobs()} /></div>
           {pageContent[page]}
         </main>
       </div>
 
       {/* Jobs panel (bottom frame) */}
-      <StudioJobs compact onOpen={() => setPage("videostudio")} />
-      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} loading={loading} />
+      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} loading={loading} error={error} onOpenJobs={openJobs} />
     </div>
   );
 }

@@ -1445,7 +1445,7 @@ export default function NameEvents() {
                                               <button className="btn-secondary px-2 py-1 text-xs" type="button" onClick={() => setActiveComposerPath(null)}>
                                                 Close
                                               </button>
-                                              <span className="min-w-[18rem] flex-1 text-cyan-300 truncate" title={formatInlinePreview(directory, eventType, location, peopleTags, groupTags, generalTags)}>
+                                              <span className="min-w-0 sm:min-w-[18rem] flex-1 text-cyan-300 truncate" title={formatInlinePreview(directory, eventType, location, peopleTags, groupTags, generalTags)}>
                                                 {formatInlinePreview(directory, eventType, location, peopleTags, groupTags, generalTags)}
                                               </span>
                                               {persistingLookup && <span className="text-[11px] text-gray-500">Saving lookup...</span>}

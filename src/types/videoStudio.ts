@@ -97,6 +97,7 @@ export interface StudioProject {
   title: string;
   subtitle: string;
   titleSeconds: number;
+  openingTitleMode: "card" | "overlay" | "none";
   outputDir: string;
   width: number;
   height: number;
@@ -221,6 +222,7 @@ export const newProject = (): StudioProject => ({
   title: "TEAM TRAINING REVIEW",
   subtitle: "",
   titleSeconds: 5,
+  openingTitleMode: "card",
   outputDir: "",
   width: 3840,
   height: 2160,
@@ -240,6 +242,7 @@ export const newProject = (): StudioProject => ({
 // Existing projects retain their original two-pass stabilisation until explicitly changed.
 export const normalizeProject = (project: StudioProject): StudioProject => ({
   ...project,
+  openingTitleMode: project.openingTitleMode ?? "card",
   defaultStabilization: project.defaultStabilization ?? "off",
   defaultStabilizationMethod: project.defaultStabilizationMethod ?? "quality",
   defaultCustomStabilization: project.defaultCustomStabilization ?? defaultCustomStabilization(),
@@ -256,7 +259,7 @@ export const clipName = (path: string) => path.split(/[\\/]/).pop() || path;
 export const timecode = (seconds: number) =>
   `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(2).padStart(5, "0")}`;
 export const projectDuration = (p: StudioProject) =>
-  (p.title ? p.titleSeconds : 0) +
+  (p.title && (p.openingTitleMode ?? "card") === "card" ? p.titleSeconds : 0) +
   p.clips
     .filter((c) => c.include)
     .reduce(

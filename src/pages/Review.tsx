@@ -35,9 +35,9 @@ export default function Review() {
   }); // intentionally no deps — needs latest handler each render
 
   return (
-    <div className="flex h-full">
+    <div className="review-layout flex h-full min-w-0">
       {/* File tree panel */}
-      <div className="w-56 flex-shrink-0 bg-surface-800 border-r border-surface-600 flex flex-col">
+      <div className="review-file-tree w-56 min-h-0 flex-shrink-0 bg-surface-800 border-r border-surface-600 flex flex-col">
         <div className="px-3 py-2 border-b border-surface-600 flex items-center justify-between">
           <span className="text-sm font-medium text-gray-300">Files</span>
           <button
@@ -55,7 +55,7 @@ export default function Review() {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Toolbar */}
-        <div className="flex-shrink-0 bg-surface-800 border-b border-surface-600 px-4 py-2 flex items-center gap-4">
+        <div className="flex-shrink-0 bg-surface-800 border-b border-surface-600 px-4 py-2 flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <button
               className="btn-secondary py-1 px-2 text-xs"
@@ -107,7 +107,7 @@ export default function Review() {
         </div>
 
         {/* 3-panel image display */}
-        <div className="flex-1 flex min-h-0">
+        <div className="review-images flex-1 flex min-h-0">
           {loading ? (
             <div className="flex-1 flex items-center justify-center text-gray-500">Loading...</div>
           ) : (
@@ -126,7 +126,7 @@ export default function Review() {
         </div>
 
         {/* Status bar */}
-        <div className="flex-shrink-0 bg-surface-800 border-t border-surface-600 px-4 py-1.5 flex items-center gap-6 text-xs text-gray-500">
+        <div className="flex-shrink-0 bg-surface-800 border-t border-surface-600 px-4 py-1.5 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-gray-500">
           <span>← → navigate</span>
           <span>+ − zoom</span>
           <span>0 reset zoom</span>

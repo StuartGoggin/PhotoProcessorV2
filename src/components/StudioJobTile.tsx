@@ -23,9 +23,9 @@ export default function StudioJobTile({ job }: { job: StudioJob }) {
     }
   }
   return (
-    <article className="w-72 max-h-full overflow-y-auto flex-shrink-0 rounded border border-cyan-800 bg-surface-800 p-3 space-y-2">
+    <article className="job-tile min-w-0 w-full rounded border border-cyan-800 bg-surface-800 p-3 space-y-2">
       <div className="flex items-start justify-between gap-2">
-        <div>
+        <div className="min-w-0">
           <p className="text-xs uppercase tracking-wide text-cyan-300">Video Studio {job.kind || "render"}</p>
           <h3 className="font-medium text-sm text-white truncate" title={job.name}>{job.name}</h3>
         </div>

@@ -1,172 +1,96 @@
 import { useRef, useEffect, useState } from "react";
 import type { ImportJob, ProcessJob } from "../types";
 import type { StudioJob } from "../types/videoStudio";
-import { sortStudioJobs, isPendingStudioJob } from "../types/videoStudio";
+import { sortStudioJobs } from "../types/videoStudio";
+import { countJobs, isActiveJob, readPanelSize, type JobsView } from "../utils/jobsView";
 import JobTile from "./JobTile";
 import JobConsole from "./JobConsole";
 import StudioJobTile from "./StudioJobTile";
 import ImportSchedulingStatus from "./ImportSchedulingStatus";
-
-type Job = (ImportJob & { jobType: "import" }) | (ProcessJob & { jobType: "process" });
 
 interface JobsPanelProps {
   importJobs: ImportJob[];
   processJobs: ProcessJob[];
   studioJobs?: StudioJob[];
   loading?: boolean;
+  error?: string | null;
+  onOpenJobs?: (view: JobsView) => void;
 }
 
-export default function JobsPanel({ importJobs, processJobs, studioJobs = [], loading = false }: JobsPanelProps) {
+export default function JobsPanel({ importJobs, processJobs, studioJobs = [], loading = false, error, onOpenJobs }: JobsPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [panelHeight, setPanelHeight] = useState<number>(() => {
-    const raw = window.localStorage.getItem("jobsPanelHeight");
-    const parsed = raw ? Number(raw) : NaN;
-    if (Number.isFinite(parsed)) {
-      return Math.min(Math.max(parsed, 180), 560);
-    }
-    return 300;
-  });
+  const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
+  const [panelHeight, setPanelHeight] = useState(() => readPanelSize("jobsPanelHeight", 280, 180, 560));
+  const [collapsed, setCollapsed] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
-
-  // Handle mouse wheel for horizontal scrolling
-  useEffect(() => {
-    const container = scrollRef.current;
-    if (!container) return;
-
-    const handleWheel = (e: WheelEvent) => {
-      // Only intercept if scrolling would happen horizontally
-      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-        return; // Let native horizontal scroll happen
-      }
-      
-      // Convert vertical scroll to horizontal
-      if (container.scrollWidth > container.clientWidth) {
-        e.preventDefault();
-        container.scrollLeft += e.deltaY > 0 ? 50 : -50;
-      }
-    };
-
-    container.addEventListener("wheel", handleWheel, { passive: false });
-    return () => container.removeEventListener("wheel", handleWheel);
-  }, []);
+  const jobs = [
+    ...processJobs.map((job) => ({ job, key: `process-${job.id}` })),
+    ...importJobs.map((job) => ({ job, key: `import-${job.id}` })),
+  ].filter(({ job }) => isActiveJob(job)).sort((a, b) => {
+    const priority = { running: 0, paused: 1, queued: 2 };
+    return (priority[a.job.status as keyof typeof priority] ?? 9) - (priority[b.job.status as keyof typeof priority] ?? 9)
+      || b.job.id.localeCompare(a.job.id);
+  });
+  const activeStudio = sortStudioJobs(studioJobs.filter(isActiveJob));
+  const counts = countJobs([...importJobs, ...processJobs, ...studioJobs]);
+  const expanded = counts.active > 0 && !collapsed;
+  const selectedJob = jobs.find(({ key }) => key === selectedJobKey)?.job;
 
   useEffect(() => {
-    window.localStorage.setItem("jobsPanelHeight", String(panelHeight));
+    try { window.localStorage.setItem("jobsPanelHeight", String(panelHeight)); } catch { /* Optional preference. */ }
     panelRef.current?.style.setProperty("--jobs-panel-height", `${panelHeight}px`);
   }, [panelHeight]);
-
   useEffect(() => {
     if (!isResizing) return;
-
-    const onMouseMove = (event: MouseEvent) => {
-      const desired = window.innerHeight - event.clientY;
-      const clamped = Math.min(Math.max(desired, 180), 560);
-      setPanelHeight(clamped);
-    };
-
-    const onMouseUp = () => setIsResizing(false);
-
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-
+    const move = (event: PointerEvent) => setPanelHeight(Math.min(560, Math.max(180, window.innerHeight - event.clientY)));
+    const stop = () => setIsResizing(false);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
     return () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
     };
   }, [isResizing]);
 
-
-  // Combine and sort jobs: active (running first, then queued) at left, completed at right
-  const jobs: Job[] = [
-    ...processJobs.map((j) => ({ ...j, jobType: "process" as const })),
-    ...importJobs.map((j) => ({ ...j, jobType: "import" as const })),
-  ].sort((a, b) => {
-    const aStatus = a.status;
-    const bStatus = b.status;
-
-    // Active jobs first (running > paused > queued > aborted)
-    const statusOrder = { running: 0, paused: 1, queued: 2, aborted: 3, completed: 4, failed: 5 };
-    const aOrder = (statusOrder[aStatus as keyof typeof statusOrder] ?? 99) as number;
-    const bOrder = (statusOrder[bStatus as keyof typeof statusOrder] ?? 99) as number;
-
-    if (aOrder !== bOrder) return aOrder - bOrder;
-
-    // Within same status, newer first (by ID string comparison - higher alphanumeric = newer)
-    return b.id.localeCompare(a.id);
-  });
-
-  const sortedStudioJobs = sortStudioJobs(studioJobs);
-  const hasJobs = jobs.length + sortedStudioJobs.length > 0;
-  const activeCount = jobs.filter((j) => ["running", "paused", "queued"].includes(j.status)).length + sortedStudioJobs.filter(isPendingStudioJob).length;
-  const selectedJob = selectedJobId
-    ? jobs.find((j) => j.id === selectedJobId)?.jobType === "import"
-      ? importJobs.find((j) => j.id === selectedJobId)
-      : processJobs.find((j) => j.id === selectedJobId)
-    : null;
-
   return (
-    <div ref={panelRef} className="jobs-panel-resizable border-t border-surface-700 bg-surface-900 flex flex-col">
-      <div
+    <section ref={panelRef} aria-label="Background jobs" className={`jobs-panel border-t border-surface-600 bg-surface-900 ${expanded ? "jobs-panel-resizable" : "is-collapsed"}`}>
+      {expanded && <div
         className="jobs-panel-resize-handle"
-        onMouseDown={(event) => {
+        onPointerDown={(event) => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setIsResizing(true); }}
+        onKeyDown={(event) => {
+          if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
           event.preventDefault();
-          setIsResizing(true);
+          event.stopPropagation();
+          setPanelHeight((value) => event.key === "Home" ? 180 : event.key === "End" ? 560 : Math.min(560, Math.max(180, value + (event.key === "ArrowUp" ? 24 : -24))));
         }}
-        title="Drag to resize jobs panel"
-      >
-        <div className="jobs-panel-resize-grip" />
+        role="separator" tabIndex={0} aria-orientation="horizontal" aria-label="Resize jobs panel"
+        aria-valuemin={180} aria-valuemax={560} aria-valuenow={panelHeight}
+        title="Drag, or use arrow keys, to resize jobs panel"
+      ><span className="jobs-panel-resize-grip" /></div>}
+      <div className="jobs-panel-header">
+        <button className="jobs-panel-toggle" onClick={() => setCollapsed(!collapsed)} disabled={!counts.active} aria-expanded={expanded} aria-controls="active-jobs-content">
+          <span aria-hidden="true">{expanded ? "▾" : "▸"}</span> Jobs <span className="text-emerald-300">{counts.active ? `${counts.active} active` : "No active jobs"}</span>
+        </button>
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          {counts.attention > 0 && <button className="jobs-attention-button" onClick={() => onOpenJobs?.("attention")}>⚠ Needs attention ({counts.attention})</button>}
+          <button className="jobs-header-button" onClick={() => onOpenJobs?.("history")}>History ({counts.history})</button>
+          <button className="jobs-header-button" onClick={() => onOpenJobs?.("active")}>Manage jobs</button>
+        </div>
       </div>
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-surface-700 flex-shrink-0">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <h2 className="text-sm font-semibold text-white">
-            Jobs {activeCount > 0 && <span className="text-emerald-400 ml-2">({activeCount} active)</span>}
-          </h2>
-          {loading && <div className="text-xs text-gray-500 animate-pulse">Syncing...</div>}
+      {error && <p role="alert" className="jobs-panel-warning">Job updates unavailable; showing the last known state. {error}</p>}
+      {loading && counts.active === 0 && <p role="status" className="px-3 pb-2 text-xs text-gray-400">Checking jobs…</p>}
+      <div id="active-jobs-content" hidden={!expanded} className="jobs-panel-content">
+        <div className="jobs-panel-scroll" tabIndex={0} role="region" aria-label="Active jobs list">
           <ImportSchedulingStatus jobs={importJobs} compact />
-        </div>
-        <div className="text-xs text-gray-400">
-          Total: {jobs.length + sortedStudioJobs.length} {hasJobs && `• Scroll right to see ${jobs.filter((j) => j.status === "completed").length + sortedStudioJobs.filter((j) => j.status === "completed").length} completed`}
-        </div>
-      </div>
-
-      {/* Main content area with scroll tiles and console */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Scroll container for tiles */}
-        <div className={`flex-1 min-w-0 ${selectedJob ? "w-1/2" : "w-full"} transition-all duration-300 overflow-hidden`}>
-          {hasJobs ? (
-            <div
-              ref={scrollRef}
-              className="jobs-panel-scroll-strip w-full h-full overflow-x-scroll overflow-y-hidden scroll-smooth px-6 py-4 space-x-4 flex items-start"
-            >
-              {sortedStudioJobs.map((job) => <StudioJobTile key={`studio-${job.id}`} job={job} />)}
-              {jobs.map((job) => (
-                <JobTile
-                  key={`${job.jobType}-${job.id}`}
-                  job={job as any}
-                  isSelected={selectedJobId === job.id}
-                  onClick={() => setSelectedJobId(job.id)}
-                />
-              ))}
-              {/* Spacer on right for comfortable scrolling */}
-              <div className="flex-shrink-0 w-4" />
-            </div>
-          ) : (
-            <div className="flex items-center justify-center h-full w-full">
-              <p className="text-gray-400 text-sm">No jobs yet. Start processing to see them here.</p>
-            </div>
-          )}
-        </div>
-
-        {/* Console area */}
-        {selectedJob && (
-          <div className="w-1/2 border-l border-surface-700 transition-all duration-300 flex flex-col">
-            <JobConsole job={selectedJob} onClose={() => setSelectedJobId(null)} />
+          <div className="jobs-panel-grid">
+            {activeStudio.map((job) => <StudioJobTile key={`studio-${job.id}`} job={job} />)}
+            {jobs.map(({ job, key }) => <JobTile key={key} job={job} isSelected={selectedJobKey === key} onClick={() => setSelectedJobKey(selectedJobKey === key ? null : key)} />)}
           </div>
-        )}
+        </div>
+        {selectedJob && <div className="jobs-panel-console"><JobConsole job={selectedJob} onClose={() => setSelectedJobKey(null)} /></div>}
       </div>
-    </div>
+    </section>
   );
 }

@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 mod recovery;
 mod soundtrack;
 mod diagnostics;
+mod delivery;
+pub use delivery::{studio_read_export_description, studio_save_export_description};
 pub use diagnostics::studio_read_job_log;
 pub use recovery::{studio_retry_job, init_studio_recovery, studio_clear_jobs};
 pub use soundtrack::studio_start_music;
@@ -38,6 +40,7 @@ fn off_preset() -> String {
     "off".into()
 }
 fn adaptive_default() -> bool { true }
+fn opening_title_default() -> String { "card".into() }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -172,6 +175,8 @@ pub struct Project {
     pub subtitle: String,
     pub title_seconds: f64,
     pub output_dir: String,
+    #[serde(default = "opening_title_default")]
+    pub opening_title_mode: String,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -442,6 +447,15 @@ fn music_audio_source(path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 fn validate(p: &Project) -> Result<(), String> {
+    // Bound delivery text before any expensive work. This exceeds the complete
+    // legacy snapshot size limit, so existing loadable projects retain labels.
+    let chapter_bytes = p.clips.iter().try_fold(0usize, |total, clip| {
+        clip.replays.iter().try_fold(total.checked_add(clip.chapter.len())?, |sum, replay| sum.checked_add(replay.caption.len()))
+    }).ok_or("Project chapter text is too large")?;
+    if chapter_bytes > 8_000_000 { return Err("Project chapter text exceeds the 8 MB limit".into()); }
+    if !["card", "overlay", "none"].contains(&p.opening_title_mode.as_str()) {
+        return Err("Unknown opening title mode".into());
+    }
     if p.bitrate_mbps != 0 && !(1..=150).contains(&p.bitrate_mbps) {
         return Err("Video bitrate must be between 1 and 150 Mbps".into());
     }
@@ -765,7 +779,7 @@ pub async fn studio_ai_music_direction(
 }
 
 fn project_timeline_seconds(project: &Project) -> f64 {
-    (if project.title.is_empty() {
+    (if project.title.is_empty() || project.opening_title_mode != "card" {
         0.0
     } else {
         project.title_seconds
@@ -1776,7 +1790,7 @@ fn render(
                 .sum::<f64>()
         })
         .sum::<f64>()
-        + p.title_seconds;
+        + if !preview && render_kind != "clip" && p.opening_title_mode == "card" && !p.title.is_empty() { p.title_seconds } else { 0. };
     let bitrate = f64::from(effective_bitrate(&p)) * 1_000_000.;
     let required = (estimate_seconds * (bitrate + 256_000.) / 8. * if assemble_only { 1.3 } else { 3.5 }) as u64 + 512_000_000;
     if fs2::available_space(&output_root).map_err(|e| e.to_string())? < required {
@@ -1837,7 +1851,8 @@ fn render(
         .ok_or("A TrueType font (Arial or DejaVu Sans) is required")?;
     fs::copy(font, work.join("font.ttf")).map_err(|e| e.to_string())?;
     let mut segments: Vec<(PathBuf, String)> = vec![];
-    if p.title_seconds > 0. && !p.title.is_empty() {
+    let final_delivery = !preview && render_kind != "clip";
+    if final_delivery && p.opening_title_mode == "card" && p.title_seconds > 0. && !p.title.is_empty() {
         text_asset(&work, "opening.txt", &wrap_title(&p.title, 28))?;
         text_asset(&work, "subtitle.txt", &wrap_title(&p.subtitle, 44))?;
         let filter = format!(
@@ -1966,38 +1981,29 @@ fn render(
         segments.extend(result.ok_or("Clip worker did not return a result")??);
     }
     }
+    // One measured frame manifest drives embedded chapters and publishing text.
+    // Reusable clip files retain replay boundaries even after a label is edited.
+    let mut manifest = delivery::Manifest::new(p.fps);
     let mut concat = String::new();
-    let mut metadata = String::from(";FFMETADATA1\n");
-    let mut total = 0.;
-    let mut frames = 0_u64;
-    for (file, title) in &segments {
+    let has_card = final_delivery && p.opening_title_mode == "card" && p.title_seconds > 0. && !p.title.is_empty();
+    for (index, (file, title)) in segments.iter_mut().enumerate() {
         let info = inspect(ff, file)?;
-        let v = info["streams"]
-            .as_array()
-            .and_then(|s| s.iter().find(|s| s["codec_type"] == "video"))
-            .ok_or("Missing video")?;
-        let n = v["nb_frames"]
-            .as_str()
-            .and_then(|s| s.parse::<u64>().ok())
-            .ok_or("Cannot verify segment frames")?;
+        let n = delivery::frame_count(&info)?;
         let d = n as f64 / p.fps as f64;
-        frames += n;
+        let local = if assemble_only && !(has_card && index == 0) {
+            delivery::clip_chapters(&info, &p.clips[index - usize::from(has_card)], p.fps, n)?
+        } else { vec![(title.clone(), n)] };
+        if final_delivery && p.opening_title_mode == "overlay" && index == 0 && p.title_seconds > 0. && !p.title.is_empty() {
+            checkpoint(id)?;
+            *file = delivery::opening_overlay(ff, &p, encoder_name, file, &work, id, n, local[0].1)?;
+        }
         concat.push_str(&format!("file '{}'\nduration {d:.8}\n", concat_path(file)));
-        let safe = title
-            .replace('\\', "\\\\")
-            .replace('=', "\\=")
-            .replace(';', "\\;")
-            .replace('#', "\\#")
-            .replace(['\n', '\r'], " ");
-        metadata.push_str(&format!(
-            "[CHAPTER]\nTIMEBASE=1/1000\nSTART={}\nEND={}\ntitle={safe}\n",
-            (total * 1000.) as u64,
-            ((total + d) * 1000.) as u64
-        ));
-        total += d;
+        for (label, count) in local { manifest.append(&label, count)?; }
     }
+    let frames = manifest.frames;
+    let total = manifest.seconds();
     text_asset(&work, "concat.txt", &concat)?;
-    text_asset(&work, "chapters.txt", &metadata)?;
+    text_asset(&work, "chapters.txt", &manifest.ffmetadata())?;
     let partial = folder.join("video.partial.mp4");
     let mut final_args = vec![
         "-f".into(),
@@ -2090,7 +2096,7 @@ fn render(
         .iter()
         .any(|s| s["codec_type"] == "video" && s["width"] == p.width && s["height"] == p.height);
     let audio_ok = streams.iter().any(|s| s["codec_type"] == "audio");
-    let chapters_ok = info["chapters"].as_array().map(|c| c.len()) == Some(segments.len());
+    let chapters_ok = manifest.matches_chapters(&info);
     if actual != Some(frames)
         || (duration(&info)? - total).abs() > 0.1
         || !geometry_ok
@@ -2098,18 +2104,19 @@ fn render(
         || !chapters_ok
         || !cached_output_matches(&info, &p, total)
     {
-        return Err(format!("Final output failed verification: expected {frames} frames, found {actual:?}; expected {total:.6}s, found {:.6}s; expected {} chapters, found {}; geometry valid={geometry_ok}, audio present={audio_ok}", duration(&info)?, segments.len(), info["chapters"].as_array().map(|c| c.len()).unwrap_or(0)));
+        return Err(format!("Final output failed verification: expected {frames} frames, found {actual:?}; expected {total:.6}s, found {:.6}s; expected {} chapters, found {}; chapter timing/titles valid={chapters_ok}, geometry valid={geometry_ok}, audio present={audio_ok}", duration(&info)?, manifest.chapters.len(), info["chapters"].as_array().map(|c| c.len()).unwrap_or(0)));
     }
     let output_name = if preview { "preview.mp4" } else if render_kind == "clip" { "clip-render.mp4" } else { "training-video.mp4" };
     let output = folder.join(output_name);
     fs::rename(&partial, &output).map_err(|e| e.to_string())?;
+    if final_delivery { delivery::write_artifacts(&folder, &p, output_name, &manifest)?; }
     fs::write(
         folder.join("verification.json"),
         serde_json::to_vec_pretty(
             &json!({
                 "frames":frames,
                 "duration":total,
-                "chapters":segments.len(),
+                "chapters":manifest.chapters.len(),
                 "output":output,
                 "backgroundMusic": if background_audio.is_some() { json!({"enabled":true,"musicVolume":p.music.music_volume,"originalVolume":p.music.original_volume}) } else { Value::Null },
                 "fragmentCache": if preview { Value::Null } else { json!(fragment_cache) },
@@ -2121,6 +2128,7 @@ fn render(
     .map_err(|e| e.to_string())?;
     // Only our own newly-created work directory is removed; source clips are outside it.
     fs::remove_dir_all(&work).map_err(|e| e.to_string())?;
+    checkpoint(id)?;
     fs::rename(&folder, &final_folder).map_err(|error| error.to_string())?;
     Ok(final_folder.join(output_name).to_string_lossy().into_owned())
 }
@@ -2597,6 +2605,7 @@ mod tests {
             title: "Blue: 100% review".into(),
             subtitle: "A rider's recap".into(),
             title_seconds: 1.,
+            opening_title_mode: "card".into(),
             output_dir: root.to_string_lossy().into_owned(),
             width: 1280,
             height: 720,
@@ -2669,6 +2678,7 @@ mod tests {
             "defaultCustomStabilization",
             "performance",
             "encoderPreference",
+            "openingTitleMode",
         ] {
             legacy.as_object_mut().unwrap().remove(field);
         }
@@ -2683,6 +2693,7 @@ mod tests {
         let restored: Project = serde_json::from_value(legacy).unwrap();
         assert_eq!(restored.clips[0].stabilization_method, "quality");
         assert_eq!(restored.encoder_preference, "auto");
+        assert_eq!(restored.opening_title_mode, "card");
         assert!(validate(&restored).is_ok());
         p.clips[0].stabilization = "custom".into();
         p.clips[0].custom_stabilization.radius = 64;

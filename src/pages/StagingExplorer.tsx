@@ -3122,7 +3122,7 @@ export default function StagingExplorer() {
 
           {editTagsFilePath && (
             <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60" onClick={(e) => { if (e.target === e.currentTarget) { setEditTagsFilePath(null); setEditTagsText(""); } }}>
-              <div className="w-96 rounded-xl border border-surface-600 bg-surface-900 shadow-xl p-5 space-y-3">
+              <div className="w-full max-w-sm m-3 max-h-[90vh] overflow-y-auto rounded-xl border border-surface-600 bg-surface-900 shadow-xl p-5 space-y-3">
                 <div className="text-sm font-semibold text-white">Edit Tags</div>
                 <div className="text-[11px] text-gray-400 break-all">{editTagsFilePath}</div>
                 <input

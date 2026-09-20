@@ -6,20 +6,12 @@ import StudioJobs from "../components/StudioJobs";
 import ImportSchedulingStatus, { ImportJobSchedulingStatus } from "../components/ImportSchedulingStatus";
 import { formatImportRate } from "../utils/importScheduling";
 import { getProcessAttemptLabel, getProcessResultLabel, getProcessResultToken } from "../utils";
+import { countJobs, JOBS_VIEWS, matchesJobsView, type JobsView } from "../utils/jobsView";
 
 function pct(done: number, total: number): number {
   if (total <= 0) return 0;
   return Math.max(0, Math.min(100, (done / total) * 100));
 }
-
-type ProcessFilter = "all" | "active" | "issues" | "finished";
-
-const PROCESS_FILTERS: Array<{ id: ProcessFilter; label: string }> = [
-  { id: "all", label: "All" },
-  { id: "active", label: "Active" },
-  { id: "issues", label: "Issues" },
-  { id: "finished", label: "Finished" },
-];
 
 const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   focus: "Focus Detection",
@@ -65,20 +57,6 @@ const PROCESS_STATUS_STYLES: Record<ProcessJob["status"], string> = {
   failed: "bg-red-900/50 border-red-600 text-red-200",
 };
 
-function matchesProcessFilter(job: ProcessJob, filter: ProcessFilter): boolean {
-  switch (filter) {
-    case "active":
-      return job.status === "queued" || job.status === "running" || job.status === "paused";
-    case "issues":
-      return job.status === "failed" || job.status === "aborted";
-    case "finished":
-      return job.status === "completed" || job.status === "failed" || job.status === "aborted";
-    case "all":
-    default:
-      return true;
-  }
-}
-
 function toEpoch(value: string): number {
   const time = Date.parse(value);
   return Number.isFinite(time) ? time : 0;
@@ -99,13 +77,14 @@ function summarizeLabels(values: string[]): Array<{ label: string; count: number
     .map(([label, count]) => ({ label, count }));
 }
 
-export default function Jobs() {
+export default function Jobs({ initialView = "active" }: { initialView?: JobsView }) {
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [processJobs, setProcessJobs] = useState<ProcessJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [tail, setTail] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [processFilter, setProcessFilter] = useState<ProcessFilter>("active");
+  const [view, setView] = useState<JobsView>(initialView);
+  useEffect(() => setView(initialView), [initialView]);
   const [expandedProcessLogs, setExpandedProcessLogs] = useState<Record<string, boolean>>({});
 
   async function loadJobs() {
@@ -219,28 +198,8 @@ export default function Jobs() {
     return () => window.clearInterval(timer);
   }, [tail]);
 
-  const processCounts = useMemo(() => {
-    const counts: Record<ProcessFilter, number> = {
-      all: processJobs.length,
-      active: 0,
-      issues: 0,
-      finished: 0,
-    };
-
-    for (const job of processJobs) {
-      if (job.status === "queued" || job.status === "running" || job.status === "paused") {
-        counts.active += 1;
-      }
-      if (job.status === "failed" || job.status === "aborted") {
-        counts.issues += 1;
-      }
-      if (job.status === "completed" || job.status === "failed" || job.status === "aborted") {
-        counts.finished += 1;
-      }
-    }
-
-    return counts;
-  }, [processJobs]);
+  const processCounts = countJobs(processJobs);
+  const filteredImportJobs = importJobs.filter((job) => matchesJobsView(job, view));
 
   const filteredProcessJobs = useMemo(() => {
     return [...processJobs]
@@ -249,11 +208,11 @@ export default function Jobs() {
         if (byCreated !== 0) return byCreated;
         return b.id.localeCompare(a.id);
       })
-      .filter((job) => matchesProcessFilter(job, processFilter));
-  }, [processFilter, processJobs]);
+      .filter((job) => matchesJobsView(job, view));
+  }, [view, processJobs]);
 
   const stabilizeOverview = useMemo(() => {
-    const stabilizeJobs = processJobs.filter((job) => job.task === "stabilize");
+    const stabilizeJobs = filteredProcessJobs.filter((job) => job.task === "stabilize");
     const activeCount = stabilizeJobs.filter((job) =>
       job.status === "queued" || job.status === "running" || job.status === "paused"
     ).length;
@@ -297,7 +256,7 @@ export default function Jobs() {
       bitratePolicies,
       threading,
     };
-  }, [processJobs]);
+  }, [filteredProcessJobs]);
 
   function toggleProcessLogs(jobId: string) {
     setExpandedProcessLogs((prev) => ({
@@ -307,19 +266,21 @@ export default function Jobs() {
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="jobs-page p-6 max-w-7xl mx-auto min-w-0">
       <h2 className="text-2xl font-semibold text-white mb-2">Background Jobs</h2>
       <p className="text-gray-400 text-sm mb-4">
-        Monitor queued/running import and post-process jobs while working on other tabs.
+        Active work stays here. Finished attempts and their logs remain in History; failures and interrupted renders are under Needs attention.
       </p>
+
+      <div className="flex flex-wrap gap-2 mb-4" role="group" aria-label="Filter jobs">
+        {JOBS_VIEWS.map((item) => <button key={item.id} className={`btn-secondary ${view === item.id ? "ring-1 ring-cyan-400 text-white" : ""}`} aria-pressed={view === item.id} onClick={() => setView(item.id)}>{item.label}</button>)}
+      </div>
 
       <div className="card mb-4 flex items-center gap-2 flex-wrap">
         <button className="btn-secondary" onClick={loadJobs} disabled={loading}>
           Refresh
         </button>
-        <button className="btn-secondary" onClick={clearFinished} disabled={loading}>
-          Clear Finished
-        </button>
+        {view === "history" && <button className="btn-secondary" onClick={clearFinished} disabled={loading}>Clear finished import / process history</button>}
         <label className="flex items-center gap-2 text-sm text-gray-300 ml-2">
           <input type="checkbox" className="h-4 w-4" checked={tail} onChange={(e) => setTail(e.target.checked)} />
           Tail (auto-refresh)
@@ -333,26 +294,27 @@ export default function Jobs() {
       )}
 
       <div className="card mb-6">
-        <StudioJobs />
+        <StudioJobs view={view} />
       </div>
 
       {importJobs.length === 0 && processJobs.length === 0 ? (
-        <div className="card text-sm text-gray-400">No jobs yet.</div>
+        <div className="card text-sm text-gray-400">{loading ? "Checking import and post-process jobs…" : "No import or post-process jobs yet."}</div>
       ) : (
         <div className="space-y-6">
           {importJobs.length > 0 && (
             <section className="space-y-3">
               <h3 className="text-sm uppercase tracking-wide text-gray-400">Import Jobs</h3>
               <ImportSchedulingStatus jobs={importJobs} />
-              {importJobs.map((job) => {
+              {filteredImportJobs.length === 0 && <p className="text-sm text-gray-400">No import jobs in this view.</p>}
+              {filteredImportJobs.map((job) => {
             const progress = pct(job.done, job.total);
             const doneLabel = job.total > 0 ? `${job.done}/${job.total}` : `${job.done}`;
 
             return (
               <div key={job.id} className="card space-y-3">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="text-sm text-gray-200 font-medium">{job.id}</div>
-                  <div className="flex items-center gap-2">
+                <div className="job-card-header flex items-center justify-between gap-4">
+                  <div className="text-sm text-gray-200 font-medium break-all">{job.id}</div>
+                  <div className="flex flex-wrap items-center gap-2">
                     <button className="btn-secondary" onClick={() => revealPath(job.logFilePath)}>
                       Reveal Log
                     </button>
@@ -437,23 +399,12 @@ export default function Jobs() {
                   <h3 className="text-sm uppercase tracking-wide text-gray-400">Post-Process Jobs</h3>
                   <p className="text-xs text-gray-500 mt-1">Newest first. Filter by status to focus on active or problem jobs.</p>
                 </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {PROCESS_FILTERS.map((filter) => (
-                    <button
-                      key={filter.id}
-                      className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${processFilter === filter.id ? "border-accent bg-accent/15 text-white" : "border-surface-600 bg-surface-800 text-gray-300 hover:bg-surface-700"}`}
-                      onClick={() => setProcessFilter(filter.id)}
-                    >
-                      {filter.label} <span className="text-gray-400">({processCounts[filter.id]})</span>
-                    </button>
-                  ))}
-                </div>
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                 <div className="rounded-lg border border-surface-600 bg-surface-800 px-3 py-2">
                   <div className="text-xs text-gray-400">Total</div>
-                  <div className="text-lg font-semibold text-white">{processCounts.all}</div>
+                  <div className="text-lg font-semibold text-white">{processJobs.length}</div>
                 </div>
                 <div className="rounded-lg border border-emerald-800/70 bg-emerald-950/25 px-3 py-2">
                   <div className="text-xs text-emerald-300">Active</div>
@@ -461,11 +412,11 @@ export default function Jobs() {
                 </div>
                 <div className="rounded-lg border border-red-800/70 bg-red-950/25 px-3 py-2">
                   <div className="text-xs text-red-300">Issues</div>
-                  <div className="text-lg font-semibold text-red-200">{processCounts.issues}</div>
+                  <div className="text-lg font-semibold text-red-200">{processCounts.attention}</div>
                 </div>
                 <div className="rounded-lg border border-surface-600 bg-surface-800 px-3 py-2">
                   <div className="text-xs text-gray-400">Finished</div>
-                  <div className="text-lg font-semibold text-gray-200">{processCounts.finished}</div>
+                  <div className="text-lg font-semibold text-gray-200">{processCounts.history}</div>
                 </div>
               </div>
 
@@ -558,7 +509,7 @@ export default function Jobs() {
 
                 return (
                   <div key={job.id} className={`card space-y-3 ${job.status === "running" ? "ring-1 ring-emerald-700/40" : ""}`}>
-                    <div className="flex items-start justify-between gap-4">
+                    <div className="job-card-header flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <div className="text-sm text-gray-100 font-medium">{PROCESS_TASK_LABELS[job.task] ?? job.task}</div>
                         {(stabilizationModeLabel || stabilizationStrengthLabel || bitratePolicyLabel) && (

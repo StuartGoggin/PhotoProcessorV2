@@ -3,24 +3,30 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { STUDIO_CLEARED, notifyStudioCleared } from "../utils/studioWorkflow";
 import { invoke } from "@tauri-apps/api/core";
 import type { StudioJob } from "../types/videoStudio";
-import { formatStudioMetric, isPendingStudioJob, liveStudioScheduler, sortStudioJobs } from "../types/videoStudio";
+import { formatStudioMetric, liveStudioScheduler, sortStudioJobs } from "../types/videoStudio";
 import StudioJobDiagnostics from "./StudioJobDiagnostics";
 import StudioSchedulerStatus from "./StudioSchedulerStatus";
+import { countJobs, isActiveJob, JOBS_VIEWS, matchesJobsView, type JobsView } from "../utils/jobsView";
 
 const percent = (value: number) => Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
 export default function StudioJobs({
   compact = false,
   onOpen,
+  view,
 }: {
   compact?: boolean;
   onOpen?: () => void;
+  view?: JobsView;
 }) {
   const [jobs, setJobs] = useState<StudioJob[]>([]);
   const [error, setError] = useState("");
   const [fetchError, setFetchError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [pendingJob, setPendingJob] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [message, setMessage] = useState("");
+  const [localView, setLocalView] = useState<JobsView>("active");
+  const selectedView = view ?? localView;
   const generation = useRef(0);
   useEffect(() => {
     const clear = () => { generation.current++; setJobs([]); };
@@ -55,6 +61,7 @@ export default function StudioJobs({
         if (alive) setFetchError(String(e));
       } finally {
         pending = false;
+        if (alive) setLoading(false);
       }
     };
     void refresh();
@@ -77,7 +84,9 @@ export default function StudioJobs({
     catch (e) { setError(String(e)); }
   }
   const orderedJobs = sortStudioJobs(jobs);
-  const active = orderedJobs.filter(isPendingStudioJob);
+  const active = orderedJobs.filter(isActiveJob);
+  const counts = countJobs(jobs);
+  const visibleJobs = orderedJobs.filter((job) => matchesJobsView(job, selectedView));
   const scheduler = liveStudioScheduler(jobs);
   const maxQueuePosition = Math.max(0, ...jobs.map((j) => j.queuePosition ?? 0));
   if (compact)
@@ -90,9 +99,9 @@ export default function StudioJobs({
       </div>
     ) : null;
   return (
-    <section className="space-y-3">
+    <section className="min-w-0 space-y-3" aria-label="Video Studio jobs">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold">Render history & recovery</h2>
+        <h2 className="text-lg font-semibold">Video Studio jobs</h2>
         <button className="btn-secondary" disabled={clearing} onClick={() => void clearAll()}>
           {clearing ? "Stopping jobs and clearing…" : "Clear all Studio renders"}
         </button>
@@ -102,17 +111,20 @@ export default function StudioJobs({
         Work continues while you change pages. Pause takes effect between steps. After an interruption,
         resume the saved request to reuse verified clips and finish the video.
       </p>
+      {view === undefined && <div className="flex flex-wrap gap-2" role="group" aria-label="Filter Studio jobs">
+        {JOBS_VIEWS.map((item) => <button key={item.id} className={`btn-secondary text-xs ${selectedView === item.id ? "ring-1 ring-cyan-400 text-white" : item.id === "attention" && counts.attention ? "text-amber-200" : ""}`} aria-pressed={selectedView === item.id} onClick={() => setLocalView(item.id)}>{item.label} ({counts[item.id]})</button>)}
+      </div>}
       {(error || fetchError) && (
         <p role="alert" className="text-red-400">
           {error || fetchError}
         </p>
       )}
       <StudioSchedulerStatus jobs={jobs} />
-      {!jobs.length && <p>No renders queued yet. Start with a clip preview to check your preset.</p>}
-      {orderedJobs.map((j) => (
-        <div key={j.id} className="p-3 rounded bg-surface-800 space-y-2">
-          <div className="flex justify-between">
-            <strong>{j.name}</strong>
+      {!visibleJobs.length && <p role="status" className="text-sm text-gray-400">{loading ? "Checking Studio jobs…" : fetchError ? "Could not update Studio jobs. The last known results are shown." : selectedView === "active" ? "No active Studio jobs. Finished attempts are kept in History; interrupted work is under Needs attention." : selectedView === "attention" ? "No Studio jobs need attention." : "No finished Studio attempts yet."}</p>}
+      {visibleJobs.map((j) => (
+        <div key={j.id} className="min-w-0 break-words p-3 rounded bg-surface-800 space-y-2">
+          <div className="flex flex-wrap justify-between gap-2">
+            <strong className="min-w-0 break-all">{j.name}</strong>
             <span>
               {j.status}
               {j.paused ? " · pause requested" : ""}

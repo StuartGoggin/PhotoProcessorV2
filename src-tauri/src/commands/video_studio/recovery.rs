@@ -387,6 +387,92 @@ fn execute(request: RenderRequest, id: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     #[test]
+    fn project_opening_and_sequence_do_not_invalidate_reusable_clip_identity() {
+        let root = std::env::temp_dir().join(format!("studio-identity-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("source.mp4"), b"source identity fixture").unwrap();
+        let mut p = super::super::tests::project(&root);
+        let root_string = root.to_string_lossy();
+        let original = clip_signature(&p, &p.clips[0], &root_string).unwrap();
+        let mut second = p.clips[0].clone(); second.id = "second".into(); second.chapter = "Second".into();
+        p.clips.push(second);
+        p.clips.reverse();
+        p.title = "A different final title".into(); p.subtitle = "Final subtitle".into();
+        p.title_seconds = 15.; p.opening_title_mode = "overlay".into();
+        assert_eq!(clip_signature(&p, &p.clips[1], &root_string).unwrap(), original);
+        assert!((project_timeline_seconds(&p) - 7.2).abs() < 0.00001);
+        p.opening_title_mode = "none".into();
+        assert_eq!(clip_signature(&p, &p.clips[1], &root_string).unwrap(), original);
+        p.clips[1].title = "New per-clip text".into();
+        assert_ne!(clip_signature(&p, &p.clips[1], &root_string).unwrap(), original);
+        p.opening_title_mode = "invalid".into(); assert!(validate(&p).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires FFmpeg; verifies synthetic opening overlay, clean clip reuse, reordering and delivery timings"]
+    fn opening_overlay_delivery_smoke() {
+        let ff = detect_ffmpeg_capabilities().unwrap().binary;
+        let root = std::env::var_os("PHOTOGOGO_STUDIO_TEST_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+            .join(format!("studio-opening-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        for (filename, colour) in [("source.mp4", "black"), ("second.mp4", "blue")] {
+            let generated = command(&ff).args(["-v", "error", "-f", "lavfi", "-i", &format!("color=c={colour}:size=320x180:rate=30"), "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"]).arg(root.join(filename)).output().unwrap();
+            assert!(generated.status.success(), "{}", String::from_utf8_lossy(&generated.stderr));
+        }
+        let mut p = super::super::tests::project(&root);
+        p.fps = 30; p.encoder_preference = "cpu".into(); p.adaptive_scheduling = false;
+        p.opening_title_mode = "overlay".into(); p.title_seconds = 30.;
+        p.title = "Final title 100%: Rider's = #1".into(); p.subtitle = "Opening only".into();
+        p.clips[0].stabilization = "off".into(); p.clips[0].title.clear();
+        p.clips[0].replays[0].start = 0.2; p.clips[0].replays[0].end = 0.6;
+        let mut second = p.clips[0].clone(); second.id = "two".into(); second.chapter = "Second = #video".into(); second.path = root.join("second.mp4").to_string_lossy().into_owned();
+        p.clips.push(second);
+        let id = format!("opening-smoke-{}", std::process::id());
+        jobs().lock().unwrap().insert(id.clone(), StudioJob { id: id.clone(), kind: "project".into(), status: "running".into(), ..StudioJob::default() });
+        let mut request = RenderRequest { project: p.clone(), staging_dir: root.to_string_lossy().into_owned(), preview: false, preview_start: None, preview_length: None, kind: "project".into(), clip_id: None, assemble_only: false };
+        let output = execute(request.clone(), &id).unwrap();
+        let info = inspect(&ff, Path::new(&output)).unwrap();
+        assert_eq!(delivery::frame_count(&info).unwrap(), 168);
+        assert_eq!(info["chapters"].as_array().unwrap().len(), 4);
+        let manifest: Value = serde_json::from_slice(&fs::read(Path::new(&output).parent().unwrap().join("delivery.json")).unwrap()).unwrap();
+        assert_eq!(manifest["manifest"]["chapters"][2]["startFrame"], 84);
+        let description = fs::read_to_string(Path::new(&output).parent().unwrap().join("youtube-description.txt")).unwrap();
+        assert!(description.contains("00:02 Second = #video"));
+        fn bright_pixels(ff: &Path, path: &Path, second: &str) -> usize {
+            let frame = command(ff).args(["-v", "error", "-ss", second, "-i"]).arg(path)
+                .args(["-frames:v", "1", "-vf", "crop=1150:240:20:230", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1"]).output().unwrap();
+            assert!(frame.status.success());
+            frame.stdout.into_iter().filter(|value| *value > 210).count()
+        }
+        let saved = jobs().lock().unwrap()[&id].artifacts.clone();
+        let first_clean = &saved.iter().find(|a| a.clip_id == "one").unwrap().rendered.path;
+        assert_eq!(bright_pixels(&ff, Path::new(first_clean), "0.5"), 0, "Project title leaked into reusable clip");
+        assert!(bright_pixels(&ff, Path::new(&output), "0.5") > 1000, "Opening overlay missing");
+        assert_eq!(bright_pixels(&ff, Path::new(&output), "2.2"), 0, "Opening title must stop before the first replay");
+        assert_eq!(bright_pixels(&ff, Path::new(&output), "3.2"), 0, "Opening title leaked onto second clip");
+        request.project.clips.reverse(); request.project.title = "Changed after reordering".into(); request.assemble_only = true;
+        let reordered = execute(request.clone(), &id).unwrap();
+        let reordered_info = inspect(&ff, Path::new(&reordered)).unwrap();
+        assert_eq!(reordered_info["chapters"][0]["tags"]["title"], "Second = #video");
+        assert_eq!(reordered_info["chapters"][2]["tags"]["title"], p.clips[0].chapter);
+        assert!(bright_pixels(&ff, Path::new(&reordered), "0.5") > 1000);
+        for artifact in &jobs().lock().unwrap()[&id].artifacts {
+            assert_eq!(artifact.rendered.path, saved.iter().find(|old| old.clip_id == artifact.clip_id).unwrap().rendered.path);
+        }
+        request.project.opening_title_mode = "card".into(); request.project.title_seconds = 0.5;
+        let card = execute(request.clone(), &id).unwrap();
+        let card_info = inspect(&ff, Path::new(&card)).unwrap();
+        assert_eq!(delivery::frame_count(&card_info).unwrap(), 183);
+        assert_eq!(card_info["chapters"][0]["tags"]["title"], "Opening title");
+        update(&id, |j| { j.cancelled = true; j.status = "cancelled".into(); });
+        assert!(execute(request, &id).is_err());
+        assert_eq!(jobs().lock().unwrap()[&id].status, "cancelled");
+        jobs().lock().unwrap().remove(&id);
+        println!("Verified opening overlay, untouched reusable clips, sequence edits and frame-based publishing metadata: {}", root.display());
+    }
+
+    #[test]
     fn queue_reordering_preserves_jobs_and_rejects_active_changes() {
         for (id, position) in [("order-first", 1), ("order-second", 2)] {
             jobs().lock().unwrap().insert(id.into(), StudioJob { id: id.into(), status: "queued".into(), queue_position: Some(position), ..StudioJob::default() });
@@ -455,7 +541,7 @@ mod tests {
         assert!(generated.status.success(), "{}", String::from_utf8_lossy(&generated.stderr));
         let clip = Clip { id: "recovery-clip".into(), path: source.to_string_lossy().into_owned(), duration: 1., include: true, chapter: "One".into(), title: "Practice".into(), title_seconds: 0.5,
             stabilization: "off".into(), stabilization_method: quality_method(), custom_stabilization: CustomStabilization::default(), framing: "edgeSafe".into(), reviewed: true, notes: String::new(), replays: vec![Replay { id: "recap".into(), start: 0.2, end: 0.6, speed: 0.5, caption: "Replay".into(), enabled: true }], rendered: None, revision: 0 };
-        let p = Project { version: 1, name: "Recovery test".into(), team: String::new(), title: "Opening".into(), subtitle: String::new(), title_seconds: 0.5,
+        let p = Project { version: 1, name: "Recovery test".into(), team: String::new(), title: "Opening".into(), subtitle: String::new(), title_seconds: 0.5, opening_title_mode: "card".into(),
             output_dir: root.to_string_lossy().into_owned(), width: 1280, height: 720, fps: 30, clips: vec![clip.clone()], music: BackgroundMusic::default(), assemble_rendered_clips: true, bitrate_mbps: 2,
             default_stabilization: off_preset(), default_stabilization_method: quality_method(), default_custom_stabilization: CustomStabilization::default(), performance: max_performance(), encoder_preference: auto_encoder(),
             adaptive_scheduling: true, remaining_clips: None, source_profile: String::new() };
@@ -502,7 +588,7 @@ mod tests {
         let full_info = inspect(&ff, Path::new(&full)).unwrap();
         assert!(cached_output_matches(&full_info, &p, 4.1));
         assert_eq!(full_info["chapters"][1]["tags"]["title"], "One");
-        assert_eq!(full_info["chapters"][2]["tags"]["title"], "Second");
+        assert_eq!(full_info["chapters"][3]["tags"]["title"], "Second");
         assert_eq!(jobs().lock().unwrap()[id].artifacts.len(), 2);
         println!("Verified recovery, clip format, assembly and music outputs: {}", root.display());
     }

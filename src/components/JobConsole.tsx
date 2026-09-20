@@ -159,10 +159,10 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
   })();
 
   return (
-    <div className="flex flex-col h-full gap-3 p-4 overflow-hidden">
+    <div className="job-console flex flex-col min-w-0 min-h-full gap-3 p-3">
       {/* Header */}
       <div className="flex-shrink-0">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
           <div>
             <h3 className="text-sm font-semibold text-white">
               {processJob ? `Task: ${taskLabel}` : "Import Job"}
@@ -210,6 +210,7 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
               onClick={onClose}
               className="text-gray-400 hover:text-gray-200 transition-colors p-1 hover:bg-surface-700 rounded"
               title="Close console"
+              aria-label="Close console"
             >
               ✕
             </button>
@@ -217,7 +218,7 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
         </div>
 
         {/* Quick stats */}
-        <div className="grid grid-cols-4 gap-2 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
           <div className="bg-surface-800 rounded px-2 py-1.5">
             <div className="text-gray-500 mb-0.5">Progress</div>
             <div className="font-semibold text-white">{job.done}/{job.total}</div>

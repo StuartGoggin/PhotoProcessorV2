@@ -41,6 +41,7 @@ use commands::{
         studio_missing_outputs,
         studio_read_job_log,
         studio_clear_jobs,
+        studio_read_export_description, studio_save_export_description,
     },
 };
 
@@ -67,6 +68,8 @@ pub fn run() {
             studio_missing_outputs,
             studio_read_job_log,
             studio_clear_jobs,
+            studio_read_export_description,
+            studio_save_export_description,
             studio_ai_review,
             studio_ai_music_direction,
             studio_create_music_midi,
