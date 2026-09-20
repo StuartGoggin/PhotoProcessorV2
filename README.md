@@ -240,6 +240,20 @@ Video Studio requires FFmpeg and ffprobe, with drawtext for titles, deshake for
 Fast mode, and vid.stab for Quality mode. Post Process retains its two-pass method
 but shares the bounded CPU/RAM resource pool.
 
+Temporary RAM pressure leaves Studio work waiting instead of failing it. The live
+job phase reports available RAM, the worker estimate and Windows headroom, and
+admission resumes automatically when capacity becomes available. Waiting tasks
+hold no FFmpeg process or CPU/memory reservation and remain pausable/cancellable.
+After a minute, the message suggests closing unused applications or letting other
+renders finish; there is no forced start or page-file-based concurrency override.
+Fixed scheduling and legacy stabilization also wait for memory; detailed per-job
+wait messages are shown in Studio. CPU/GPU limits and memory reserves are unchanged.
+
+`npm run test:jobs:browser` checks steady background polling, slow/error recovery,
+RAM-wait controls and manual refresh against the actual UI with mocked desktop
+IPC. It uses a temporary loopback fixture on port 1432 and the same Playwright
+runtime override as the Studio browser tests.
+
 Windows tests: `./scripts/test-video-studio.ps1` reuses the release build cache and
 loads the MSVC environment. UI model tests: `node scripts/test-video-studio-ui.mjs`.
 To include synthetic parallel/cache/quality/audio and cancellation render tests,

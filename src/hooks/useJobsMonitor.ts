@@ -26,40 +26,51 @@ export function useJobsMonitor(enabled = true, interval = 500): JobsMonitorResul
     window.addEventListener(STUDIO_CLEARED, clear);
     return () => window.removeEventListener(STUDIO_CLEARED, clear);
   }, []);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
 
-  async function loadJobs() {
-    const epoch = generation.current;
-    if (!enabled) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const [importData, processData, studioData] = await Promise.all([
-        invoke<ImportJob[]>("list_import_jobs"),
-        invoke<ProcessJob[]>("list_process_jobs"),
-        invoke<StudioJob[]>("studio_list_jobs"),
-      ]);
-      setImportJobs(importData);
-      setProcessJobs(processData);
-      if (epoch === generation.current) setStudioJobs(studioData);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
   useEffect(() => {
-    // Load once on mount
-    void loadJobs();
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
+    let alive = true;
+    let pending = false;
+    // Only the initial fetch needs a loading indicator. Background polling must
+    // retain the last display (including errors) until a new snapshot arrives.
+    setLoading(true);
 
-    // Set up polling
+    async function loadJobs() {
+      if (pending) return;
+      pending = true;
+      const epoch = generation.current;
+      try {
+        const [importData, processData, studioData] = await Promise.all([
+          invoke<ImportJob[]>("list_import_jobs"),
+          invoke<ProcessJob[]>("list_process_jobs"),
+          invoke<StudioJob[]>("studio_list_jobs"),
+        ]);
+        if (!alive) return;
+        setImportJobs(importData);
+        setProcessJobs(processData);
+        if (epoch === generation.current) setStudioJobs(studioData);
+        setError(null);
+      } catch (e) {
+        if (alive) setError(String(e));
+      } finally {
+        pending = false;
+        if (alive) setLoading(false);
+      }
+    }
+    void loadJobs();
     const timer = window.setInterval(() => {
       void loadJobs();
     }, interval);
 
-    return () => window.clearInterval(timer);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
   }, [enabled, interval]);
 
   return { importJobs, processJobs, studioJobs, loading, error };

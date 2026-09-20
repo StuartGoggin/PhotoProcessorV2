@@ -82,14 +82,14 @@ export default function Jobs({ initialView = "active" }: { initialView?: JobsVie
   const [processJobs, setProcessJobs] = useState<ProcessJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [tail, setTail] = useState(true);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [view, setView] = useState<JobsView>(initialView);
   useEffect(() => setView(initialView), [initialView]);
   const [expandedProcessLogs, setExpandedProcessLogs] = useState<Record<string, boolean>>({});
 
-  async function loadJobs() {
-    setLoading(true);
-    setError(null);
+  async function loadJobs(showLoading = true) {
+    // Keep automatic refreshes quiet; initial/manual refreshes still give feedback.
+    if (showLoading) setLoading(true);
     try {
       const [importData, processData] = await Promise.all([
         invoke<ImportJob[]>("list_import_jobs"),
@@ -97,10 +97,11 @@ export default function Jobs({ initialView = "active" }: { initialView?: JobsVie
       ]);
       setImportJobs(importData);
       setProcessJobs(processData);
+      setError(null);
     } catch (e) {
       setError(String(e));
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }
 
@@ -193,7 +194,7 @@ export default function Jobs({ initialView = "active" }: { initialView?: JobsVie
   useEffect(() => {
     if (!tail) return;
     const timer = window.setInterval(() => {
-      void loadJobs();
+      void loadJobs(false);
     }, 1000);
     return () => window.clearInterval(timer);
   }, [tail]);
@@ -277,7 +278,7 @@ export default function Jobs({ initialView = "active" }: { initialView?: JobsVie
       </div>
 
       <div className="card mb-4 flex items-center gap-2 flex-wrap">
-        <button className="btn-secondary" onClick={loadJobs} disabled={loading}>
+        <button className="btn-secondary" onClick={() => void loadJobs()} disabled={loading}>
           Refresh
         </button>
         {view === "history" && <button className="btn-secondary" onClick={clearFinished} disabled={loading}>Clear finished import / process history</button>}

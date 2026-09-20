@@ -1,7 +1,7 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.14",
+  "version": "2.0.15",
   "type": "module",
   "scripts": {
     "dev": "node scripts/start-dev.mjs",
@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test:studio": "node scripts/test-studio.mjs",
     "test:studio:browser": "node scripts/test-studio-browser.mjs",
+    "test:jobs:browser": "node scripts/test-jobs-polling-browser.mjs",
     "tauri": "tauri",
     "release": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1"
   },

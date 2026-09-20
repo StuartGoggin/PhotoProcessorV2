@@ -2960,7 +2960,7 @@ dependencies = [
 
 [[package]]
 name = "photogogo-v2"
-version = "2.0.14"
+version = "2.0.15"
 dependencies = [
  "anyhow",
  "chrono",

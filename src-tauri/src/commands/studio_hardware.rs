@@ -420,6 +420,51 @@ fn reserve_memory(sample: &HardwareSample) -> u64 {
         .unwrap_or(2048 * MIB)
 }
 
+/// Reports memory backpressure without owning processing capacity. Callbacks
+/// may lock job state, so publish/drop must always happen outside the pool lock.
+struct MemoryWaitReporter<F: FnMut(Option<&str>)> {
+    callback: F,
+    started: Option<Instant>,
+}
+impl<F: FnMut(Option<&str>)> MemoryWaitReporter<F> {
+    fn new(callback: F) -> Self {
+        Self {
+            callback,
+            started: None,
+        }
+    }
+    fn note(
+        &mut self,
+        blocked: bool,
+        available: u64,
+        memory: u64,
+        headroom: u64,
+    ) -> Option<String> {
+        if !blocked {
+            self.started = None;
+            return None;
+        }
+        let elapsed = self.started.get_or_insert_with(Instant::now).elapsed();
+        Some(memory_wait_message(available, memory, headroom, elapsed))
+    }
+    fn publish(&mut self, note: Option<&str>) {
+        (self.callback)(note);
+    }
+}
+impl<F: FnMut(Option<&str>)> Drop for MemoryWaitReporter<F> {
+    fn drop(&mut self) {
+        (self.callback)(None);
+    }
+}
+fn memory_wait_message(available: u64, memory: u64, headroom: u64, elapsed: Duration) -> String {
+    let guidance = if elapsed >= Duration::from_secs(60) {
+        "Still waiting: close unused applications or let other renders finish. This job will resume automatically; you can pause or cancel it."
+    } else {
+        "Waiting for available RAM and other workers' reservations to clear; resumes automatically."
+    };
+    format!("Waiting for memory: {} MiB available; approximately {} MiB for this worker + {} MiB Windows headroom required. {guidance}", available / MIB, memory / MIB, headroom / MIB)
+}
+
 fn comparable_rate(usage: &Usage) -> Option<(u64, f64)> {
     if usage.running.is_empty() || usage.running.len() != usage.processes {
         return None;
@@ -620,9 +665,11 @@ pub(super) fn acquire_with_threads(
         requested_threads,
         cancelled,
         available_memory,
+        |_| {},
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn acquire_in(
     resource_pool: &'static (Mutex<Usage>, Condvar),
     width: u32,
@@ -631,7 +678,9 @@ fn acquire_in(
     requested_threads: usize,
     mut cancelled: impl FnMut() -> bool,
     memory_available: impl Fn() -> u64,
+    on_wait: impl FnMut(Option<&str>),
 ) -> Result<ResourcePermit, String> {
+    let mut wait_reporter = MemoryWaitReporter::new(on_wait);
     let memory = memory_per_process(width, height);
     let cores = crate::utils::num_cpus().max(1);
     let cpu_limit = if performance == "max" {
@@ -651,18 +700,10 @@ fn acquire_in(
             .map_err(|_| "Video resource scheduler lock failed".to_string())?;
         if usage.processes == 0 {
             usage.memory_budget = available.saturating_sub(MEMORY_HEADROOM);
-            if memory > usage.memory_budget {
-                return Err(format!(
-                    "Not enough available RAM for {}x{} video: {} MiB available; approximately {} MiB plus {} MiB headroom required. Close other applications and retry.",
-                    width, height, available / MIB, memory / MIB, MEMORY_HEADROOM / MIB
-                ));
-            }
         }
-        if usage.processes < MAX_PROCESSES
-            && usage.threads + threads <= cpu_limit
-            && usage.memory.saturating_add(memory) <= usage.memory_budget
-            && available >= memory.saturating_add(MEMORY_HEADROOM)
-        {
+        let memory_ok = usage.memory.saturating_add(memory) <= usage.memory_budget
+            && available >= memory.saturating_add(MEMORY_HEADROOM);
+        if usage.processes < MAX_PROCESSES && usage.threads + threads <= cpu_limit && memory_ok {
             usage.processes += 1;
             usage.threads += threads;
             usage.memory += memory;
@@ -683,6 +724,12 @@ fn acquire_in(
             }
             return Ok(permit);
         }
+        let note = wait_reporter.note(!memory_ok, available, memory, MEMORY_HEADROOM);
+        drop(usage);
+        wait_reporter.publish(note.as_deref());
+        let usage = lock
+            .lock()
+            .map_err(|_| "Video resource scheduler lock failed")?;
         let _ = wake
             .wait_timeout(usage, Duration::from_millis(200))
             .map_err(|_| "Video resource scheduler wait failed".to_string())?;
@@ -691,6 +738,7 @@ fn acquire_in(
 
 /// Adaptive Video Studio admission shares reservations with legacy processing.
 /// FIFO waiters are bounded by the clip-worker ceiling, never by clip count.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn acquire_studio(
     width: u32,
     height: u32,
@@ -699,12 +747,22 @@ pub(super) fn acquire_studio(
     ready_tasks: impl Fn() -> usize,
     workload: Workload,
     mut cancelled: impl FnMut() -> bool,
+    on_wait: impl FnMut(Option<&str>),
 ) -> Result<ResourcePermit, String> {
     let policy = policy(width, height, performance);
     if !adaptive {
         let threads =
             (policy.workers * policy.threads / policy.workers.min(ready_tasks().max(1))).max(1);
-        let mut permit = acquire_with_threads(width, height, performance, threads, &mut cancelled)?;
+        let mut permit = acquire_in(
+            pool(),
+            width,
+            height,
+            performance,
+            threads,
+            &mut cancelled,
+            available_memory,
+            on_wait,
+        )?;
         let mut usage = pool().0.lock().map_err(|_| "Video scheduler lock failed")?;
         if usage.processes == 1 {
             usage.controller = None;
@@ -736,6 +794,7 @@ pub(super) fn acquire_studio(
         cancelled,
         studio_telemetry::sample,
         crate::utils::num_cpus(),
+        on_wait,
     )
 }
 
@@ -750,7 +809,9 @@ fn acquire_adaptive_in(
     mut cancelled: impl FnMut() -> bool,
     mut monitor: impl FnMut() -> HardwareSample,
     cores: usize,
+    on_wait: impl FnMut(Option<&str>),
 ) -> Result<ResourcePermit, String> {
+    let mut wait_reporter = MemoryWaitReporter::new(on_wait);
     if cancelled() {
         return Err("Cancelled while waiting for video processing capacity".into());
     }
@@ -801,6 +862,9 @@ fn acquire_adaptive_in(
         fn drop(&mut self) {
             if let Ok(mut usage) = self.resource_pool.0.lock() {
                 usage.waiting.retain(|id| *id != self.id);
+                if usage.waiting.is_empty() {
+                    usage.admission_note.clear();
+                }
                 if self.gpu {
                     usage.gpu_waiters = usage.gpu_waiters.saturating_sub(1);
                 }
@@ -829,9 +893,6 @@ fn acquire_adaptive_in(
         advance(&mut usage, &sample);
         if usage.processes == 0 {
             usage.memory_budget = available.saturating_sub(headroom);
-            if memory > usage.memory_budget {
-                return Err(format!("Not enough available RAM: {} MiB available; approximately {} MiB plus {} MiB Windows headroom required", available / MIB, memory / MIB, headroom / MIB));
-            }
         }
         let target = usage
             .controller
@@ -903,18 +964,24 @@ fn acquire_adaptive_in(
             }
             return Ok(permit);
         }
+        let note = wait_reporter.note(!memory_ok, available, memory, headroom);
         if usage.waiting.front() == Some(&id) {
             usage.admission_note = if !memory_ok {
-                "Waiting for RAM headroom"
+                note.clone().unwrap_or_default()
             } else if !gpu_ok {
-                "Waiting for NVIDIA encoder / VRAM headroom"
+                "Waiting for NVIDIA encoder / VRAM headroom".into()
             } else if cpu_busy {
-                "Waiting for CPU headroom"
+                "Waiting for CPU headroom".into()
             } else {
-                ""
-            }
-            .into();
+                String::new()
+            };
         }
+        drop(usage);
+        wait_reporter.publish(note.as_deref());
+        let usage = resource_pool
+            .0
+            .lock()
+            .map_err(|_| "Video scheduler lock failed")?;
         let _ = resource_pool
             .1
             .wait_timeout(usage, Duration::from_millis(200))
@@ -947,6 +1014,72 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_ram_wait_recovers_without_reserving_capacity() {
+        let pool = test_pool();
+        let mut samples = 0;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let result = acquire_adaptive_in(
+            pool,
+            3840,
+            2160,
+            "max",
+            || 1,
+            test_work(),
+            || Instant::now() >= deadline,
+            || {
+                samples += 1;
+                let usage = pool.0.try_lock().expect("sampling outside scheduler lock");
+                assert_eq!((usage.processes, usage.threads, usage.memory), (0, 0, 0));
+                HardwareSample {
+                    available_memory_bytes: Some(if samples < 4 { 2231 * MIB } else { 4096 * MIB }),
+                    total_memory_bytes: Some(16208 * MIB),
+                    ..test_sample()
+                }
+            },
+            12,
+            |_| {},
+        );
+        let permit = result.expect("temporary RAM pressure must wait, not fail the job");
+        assert!(samples >= 4, "must wait for a later memory sample");
+        assert_eq!(pool.0.lock().unwrap().processes, 1);
+        drop(permit);
+        let usage = pool.0.lock().unwrap();
+        assert_eq!((usage.processes, usage.threads, usage.memory), (0, 0, 0));
+        assert!(usage.waiting.is_empty());
+    }
+
+    #[test]
+    fn fixed_ram_wait_recovers_without_reserving_capacity() {
+        let pool = test_pool();
+        let samples = std::cell::Cell::new(0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let result = acquire_in(
+            pool,
+            3840,
+            2160,
+            "max",
+            2,
+            || Instant::now() >= deadline,
+            || {
+                samples.set(samples.get() + 1);
+                let usage = pool.0.try_lock().expect("sampling outside scheduler lock");
+                assert_eq!((usage.processes, usage.threads, usage.memory), (0, 0, 0));
+                if samples.get() < 3 {
+                    512 * MIB
+                } else {
+                    4096 * MIB
+                }
+            },
+            |_| {},
+        );
+        let permit = result.expect("fixed scheduling must also wait for RAM");
+        assert!(samples.get() >= 3);
+        drop(permit);
+        let usage = pool.0.lock().unwrap();
+        assert_eq!((usage.processes, usage.threads, usage.memory), (0, 0, 0));
+    }
+
+    #[test]
     fn adaptive_admission_releases_permits_and_tail_receives_free_threads() {
         let pool = test_pool();
         let permit = acquire_adaptive_in(
@@ -959,6 +1092,7 @@ mod tests {
             || false,
             test_sample,
             12,
+            |_| {},
         )
         .unwrap();
         assert_eq!(permit.threads(), 4);
@@ -977,6 +1111,7 @@ mod tests {
             || false,
             test_sample,
             12,
+            |_| {},
         )
         .unwrap();
         assert_eq!(tail.threads(), 12);
@@ -995,6 +1130,7 @@ mod tests {
             || false,
             test_sample,
             12,
+            |_| {},
         )
         .unwrap();
         let mut checks = 0;
@@ -1011,6 +1147,7 @@ mod tests {
             },
             test_sample,
             12,
+            |_| {},
         )
         .expect("a second one-clip request must share the global budget");
         assert_eq!((first.threads(), second.threads()), (12, 6));
@@ -1041,6 +1178,7 @@ mod tests {
             },
             test_sample,
             12,
+            |_| {},
         );
         assert!(result.unwrap_err().contains("Cancelled"));
         let usage = pool.0.lock().unwrap();
@@ -1062,6 +1200,7 @@ mod tests {
             || false,
             test_sample,
             12,
+            |_| {},
         )
         .unwrap();
         let mut checks = 0;
@@ -1081,6 +1220,7 @@ mod tests {
                 ..test_sample()
             },
             12,
+            |_| {},
         );
         assert!(result.is_err());
         let usage = pool.0.lock().unwrap();
@@ -1091,30 +1231,181 @@ mod tests {
     }
 
     #[test]
-    fn nvenc_unknown_counters_disable_adaptive_overlap_and_low_ram_fails_cleanly() {
+    fn nvenc_unknown_counters_disable_overlap_and_ram_wait_cancels_cleanly() {
         let usage = Usage {
             gpu_waiters: 1,
             ..Usage::default()
         };
         assert!(!monitoring_ready(&usage, &test_sample()));
         let pool = test_pool();
+        let mut checks = 0;
+        let mut notices = Vec::new();
+        let mut work = test_work();
+        work.nvenc = true;
         let result = acquire_adaptive_in(
             pool,
             3840,
             2160,
             "max",
             || 6,
-            test_work(),
-            || false,
+            work,
+            || {
+                checks += 1;
+                checks >= 4
+            },
             || HardwareSample {
                 available_memory_bytes: Some(512 * MIB),
                 ..test_sample()
             },
             12,
+            |note| {
+                let usage = pool
+                    .0
+                    .try_lock()
+                    .expect("wait callback must not hold pool lock");
+                assert_eq!((usage.processes, usage.threads, usage.memory), (0, 0, 0));
+                notices.push(note.map(str::to_owned));
+            },
         );
-        assert!(result.unwrap_err().contains("Not enough available RAM"));
-        assert!(pool.0.lock().unwrap().waiting.is_empty());
-        assert_eq!(pool.0.lock().unwrap().processes, 0);
+        assert!(result.unwrap_err().contains("Cancelled"));
+        assert!(notices
+            .iter()
+            .flatten()
+            .any(|note| note.contains("Waiting for memory: 512 MiB")));
+        assert_eq!(notices.last(), Some(&None));
+        let usage = pool.0.lock().unwrap();
+        assert!(usage.waiting.is_empty());
+        assert!(usage.admission_note.is_empty());
+        assert_eq!((usage.processes, usage.gpu_waiters), (0, 0));
+    }
+
+    #[test]
+    fn fixed_ram_wait_is_cancellable_and_reports_without_locking_capacity() {
+        let pool = test_pool();
+        let mut checks = 0;
+        let mut notices = Vec::new();
+        let result = acquire_in(
+            pool,
+            3840,
+            2160,
+            "max",
+            2,
+            || {
+                checks += 1;
+                checks >= 3
+            },
+            || 512 * MIB,
+            |note| {
+                let usage = pool.0.try_lock().expect("wait callback outside pool mutex");
+                assert_eq!((usage.processes, usage.threads, usage.memory), (0, 0, 0));
+                notices.push(note.map(str::to_owned));
+            },
+        );
+        assert!(result.unwrap_err().contains("Cancelled"));
+        assert!(notices
+            .iter()
+            .flatten()
+            .any(|note| note.contains("Waiting for memory")));
+        assert_eq!(notices.last(), Some(&None));
+    }
+
+    #[test]
+    fn prolonged_ram_wait_explains_recovery_without_lowering_limits() {
+        let short = memory_wait_message(2231 * MIB, 1018 * MIB, 2026 * MIB, Duration::from_secs(1));
+        let long = memory_wait_message(2231 * MIB, 1018 * MIB, 2026 * MIB, Duration::from_secs(60));
+        assert!(short.contains("2231 MiB available"));
+        assert!(long.contains("1018 MiB for this worker + 2026 MiB Windows headroom"));
+        assert!(!short.contains("close unused applications"));
+        assert!(long.contains("close unused applications"));
+        assert!(long.contains("resume automatically"));
+    }
+
+    #[test]
+    fn ram_waiters_preserve_fifo_and_cancelled_head_allows_recovery() {
+        use std::sync::{
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            mpsc, Arc,
+        };
+        for cancel_head in [false, true] {
+            let pool = test_pool();
+            let available = Arc::new(AtomicU64::new(512 * MIB));
+            let cancel = Arc::new(AtomicBool::new(false));
+            let (waiting_tx, waiting_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let mut workers = Vec::new();
+            for index in 0..2 {
+                let available = available.clone();
+                let cancel = cancel.clone();
+                let waiting_tx = waiting_tx.clone();
+                let result_tx = result_tx.clone();
+                workers.push(std::thread::spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let mut announced = false;
+                    let result = acquire_adaptive_in(
+                        pool,
+                        3840,
+                        2160,
+                        "max",
+                        || 2,
+                        test_work(),
+                        || {
+                            Instant::now() >= deadline
+                                || (index == 0 && cancel.load(Ordering::Acquire))
+                        },
+                        || HardwareSample {
+                            available_memory_bytes: Some(available.load(Ordering::Acquire)),
+                            ..test_sample()
+                        },
+                        12,
+                        |note| {
+                            if note.is_some() && !announced {
+                                announced = true;
+                                waiting_tx.send(index).unwrap();
+                            }
+                        },
+                    );
+                    let _ = result_tx.send((index, result));
+                }));
+                assert_eq!(
+                    waiting_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+                    index
+                );
+            }
+            {
+                let usage = pool.0.lock().unwrap();
+                assert_eq!(usage.waiting.len(), 2);
+                assert_eq!((usage.processes, usage.threads, usage.memory), (0, 0, 0));
+            }
+            if cancel_head {
+                cancel.store(true, Ordering::Release);
+                pool.1.notify_all();
+                let (index, result) = result_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                assert_eq!(index, 0);
+                assert!(result.unwrap_err().contains("Cancelled"));
+            }
+            available.store(4096 * MIB, Ordering::Release);
+            pool.1.notify_all();
+            let (index, result) = result_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert_eq!(index, if cancel_head { 1 } else { 0 });
+            let first = result.expect("head must start when RAM recovers");
+            assert_eq!(pool.0.lock().unwrap().processes, 1);
+            assert!(
+                result_rx.try_recv().is_err(),
+                "recovery must not launch a surge of workers"
+            );
+            drop(first);
+            if !cancel_head {
+                let (index, result) = result_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                assert_eq!(index, 1);
+                drop(result.expect("next waiter must start after the first releases capacity"));
+            }
+            for worker in workers {
+                worker.join().unwrap();
+            }
+            let usage = pool.0.lock().unwrap();
+            assert!(usage.waiting.is_empty() && usage.running.is_empty());
+            assert_eq!((usage.processes, usage.threads, usage.memory), (0, 0, 0));
+        }
     }
 
     #[test]
@@ -1248,6 +1539,7 @@ mod tests {
                     was_cancelled
                 },
                 || 16 * 1024 * MIB,
+                |_| {},
             );
             let _ = finished_tx.send(result.map(|_| ()));
         });

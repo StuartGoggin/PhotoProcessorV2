@@ -250,6 +250,10 @@ pub struct StudioJob {
     work_weights: HashMap<String, f64>,
     #[serde(skip)]
     worker_error: Option<String>,
+    // Live admission state is keyed by the same task directory as active work.
+    // It is not persisted: restarting a job must recheck current RAM capacity.
+    #[serde(skip)]
+    memory_waits: HashMap<String, String>,
     #[serde(skip)]
     preparing_total: usize,
     #[serde(skip)]
@@ -341,6 +345,47 @@ fn update(id: &str, f: impl FnOnce(&mut StudioJob)) {
         }
     }
 }
+fn record_memory_wait(job: &mut StudioJob, key: &str, message: Option<&str>) {
+    match message {
+        Some(message) => {
+            let entering = job.memory_waits.insert(key.into(), message.into()).is_none();
+            if entering {
+                job.logs.push(format!("{message} — task {key}"));
+            }
+        }
+        None => {
+            if job.memory_waits.remove(key).is_some() {
+                // The wait can end through admission, pause, or cancellation;
+                // do not claim a worker started until it actually acquires RAM.
+                job.logs.push(format!("Memory wait ended — task {key}"));
+            }
+        }
+    }
+}
+
+fn project_job_activity(job: &mut StudioJob) {
+    let no_active_work = job.active_tasks.is_empty();
+    if job.paused && no_active_work && ["running", "paused"].contains(&job.status.as_str()) {
+        job.status = "paused".into();
+        job.phase = "Paused".into();
+        job.eta_seconds = None;
+    } else if job.status == "running" && no_active_work && !job.memory_waits.is_empty() {
+        // HashMap iteration order must not make the displayed phase flicker
+        // between waiting clips on each poll. Never replace an active sibling.
+        if let Some((_, message)) = job.memory_waits.iter().min_by_key(|(key, _)| *key) {
+            job.phase = message.clone();
+        }
+        job.eta_seconds = None;
+    } else {
+        job.eta_seconds =
+            if job.status == "running" && !job.paused && job.progress > 3. && job.progress < 99. {
+                Some(job.elapsed_seconds * (100. - job.progress) / job.progress)
+            } else {
+                None
+            };
+    }
+}
+
 fn checkpoint(id: &str) -> Result<(), String> {
     loop {
         let job = jobs()
@@ -1069,17 +1114,12 @@ pub fn studio_list_jobs() -> Vec<StudioJob> {
         .unwrap_or_default();
     let scheduler = list.iter().any(|j| j.status == "running").then(studio_hardware::snapshot);
     for job in &mut list {
-        job.scheduler = if job.status == "running" { scheduler.clone() } else { None };
         if let Some(start) = job.started_ms {
             job.elapsed_seconds =
                 (chrono::Utc::now().timestamp_millis() - start).max(0) as f64 / 1000.;
         }
-        job.eta_seconds =
-            if job.status == "running" && !job.paused && job.progress > 3. && job.progress < 99. {
-                Some(job.elapsed_seconds * (100. - job.progress) / job.progress)
-            } else {
-                None
-            };
+        project_job_activity(job);
+        job.scheduler = if job.status == "running" { scheduler.clone() } else { None };
     }
     list.sort_by(|a, b| {
         a.queue_position
@@ -1128,6 +1168,7 @@ fn run(
     span: f64,
 ) -> Result<(), String> {
     let workload = studio_hardware::Workload::from_args(p.width, p.height, &args, &p.source_profile);
+    let key = dir.to_string_lossy().into_owned();
     let permit = loop {
         checkpoint(id)?;
         match studio_hardware::acquire_studio(
@@ -1138,6 +1179,7 @@ fn run(
             || p.remaining_clips.as_ref().map_or(1, |n| n.load(Ordering::Relaxed)).max(1),
             workload.clone(),
             || stopped_or_paused(id),
+            |message| update(id, |job| record_memory_wait(job, &key, message)),
         ) {
             Ok(permit) => break permit,
             Err(error) => {
@@ -1168,7 +1210,6 @@ fn run(
     };
     let last = args.pop().ok_or("FFmpeg output is missing")?;
     args.extend(["-threads".into(), threads.clone(), last]);
-    let key = dir.to_string_lossy().into_owned();
     update(id, |j| {
         j.status = "running".into();
         j.threads_per_worker = permit.threads();
@@ -2803,6 +2844,92 @@ mod tests {
         assert_eq!(u16::from_be_bytes([midi[10], midi[11]]), 5);
         assert!(midi.windows(4).filter(|window| *window == b"MTrk").count() >= 5);
     }
+    #[test]
+    fn memory_wait_snapshot_is_live_only_and_suppresses_idle_eta() {
+        let mut job = StudioJob {
+            status: "running".into(),
+            phase: "Render full clip".into(),
+            progress: 40.,
+            elapsed_seconds: 60.,
+            ..StudioJob::default()
+        };
+        record_memory_wait(&mut job, "clip-b", Some("Waiting for RAM: 2231 MiB available"));
+        record_memory_wait(&mut job, "clip-a", Some("Waiting for RAM: 2232 MiB available"));
+        let mut snapshot = job.clone();
+        project_job_activity(&mut snapshot);
+        assert_eq!(snapshot.status, "running");
+        assert_eq!(snapshot.phase, "Waiting for RAM: 2232 MiB available");
+        assert!(snapshot.eta_seconds.is_none());
+        assert_eq!(job.phase, "Render full clip", "projection must not overwrite saved phase");
+        let persisted = serde_json::to_value(&job).unwrap();
+        assert!(persisted.get("memoryWaits").is_none());
+        let restored: StudioJob = serde_json::from_value(persisted).unwrap();
+        assert!(restored.memory_waits.is_empty());
+    }
+
+    #[test]
+    fn memory_wait_does_not_replace_active_sibling_or_fake_a_pause() {
+        let mut job = StudioJob {
+            status: "running".into(),
+            phase: "Encoding active sibling".into(),
+            progress: 40.,
+            elapsed_seconds: 60.,
+            active_tasks: vec![ActiveTask { key: "active".into(), ..ActiveTask::default() }],
+            ..StudioJob::default()
+        };
+        record_memory_wait(&mut job, "waiting", Some("Waiting for RAM"));
+        project_job_activity(&mut job);
+        assert_eq!(job.phase, "Encoding active sibling");
+        assert_eq!(job.eta_seconds, Some(90.));
+        job.paused = true;
+        project_job_activity(&mut job);
+        assert_eq!(job.status, "running", "active workers have not stopped yet");
+        assert_eq!(job.phase, "Encoding active sibling");
+        assert!(job.eta_seconds.is_none());
+        job.active_tasks.clear();
+        let mut snapshot = job.clone();
+        project_job_activity(&mut snapshot);
+        assert_eq!(snapshot.status, "paused");
+        assert_eq!(snapshot.phase, "Paused");
+        assert_eq!(job.status, "running", "pause presentation must not change persisted lifecycle");
+        job.paused = false;
+        record_memory_wait(&mut job, "waiting", None);
+        project_job_activity(&mut job);
+        assert_eq!(job.phase, "Encoding active sibling");
+        assert_eq!(job.eta_seconds, Some(90.));
+    }
+
+    #[test]
+    fn memory_wait_updates_log_only_transitions_and_cleanup_is_per_task() {
+        let mut job = StudioJob::default();
+        for available in 2000..2200 {
+            record_memory_wait(&mut job, "first", Some(&format!("Waiting for RAM: {available} MiB available")));
+        }
+        assert_eq!(job.logs.len(), 1, "changing RAM samples must not cause checkpoint/log churn");
+        assert_eq!(job.memory_waits["first"], "Waiting for RAM: 2199 MiB available");
+        record_memory_wait(&mut job, "second", Some("Waiting for RAM"));
+        record_memory_wait(&mut job, "first", None);
+        record_memory_wait(&mut job, "first", None);
+        assert_eq!(job.logs.len(), 3, "duplicate cleanup must be silent");
+        assert!(!job.memory_waits.contains_key("first"));
+        assert!(job.memory_waits.contains_key("second"));
+        record_memory_wait(&mut job, "second", None);
+        assert!(job.memory_waits.is_empty());
+        assert_eq!(job.logs.len(), 4);
+        assert!(job.logs.last().unwrap().contains("Memory wait ended"));
+    }
+
+    #[test]
+    fn paused_queued_job_retains_queue_identity_and_reordering() {
+        let mut job = StudioJob { status: "queued".into(), phase: "Queued".into(),
+            paused: true, queue_position: Some(2), ..StudioJob::default() };
+        project_job_activity(&mut job);
+        assert_eq!(job.status, "queued");
+        assert_eq!(job.phase, "Queued");
+        assert_eq!(job.queue_position, Some(2));
+        assert!(job.eta_seconds.is_none());
+    }
+
     #[test]
     fn cancellation_checkpoint_stops_work() {
         let id = "cancel-test";
