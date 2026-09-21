@@ -1,0 +1,209 @@
+diff --git a/bench/bench_transform.c b/bench/bench_transform.c
+index 22f2659..d3c22f5 100644
+--- a/bench/bench_transform.c
++++ b/bench/bench_transform.c
+@@ -18,6 +18,12 @@
+ #include <string.h>
+ #include <time.h>
+ #include <math.h>
++#ifdef _WIN32
++#include <windows.h>
++#endif
++#ifdef USE_OMP
++#include <omp.h>
++#endif
+ 
+ #include "transform.h"
+ #include "transform_internal.h"
+@@ -26,9 +32,16 @@
+ #include "frameinfo.h"
+ 
+ static double now_s(void) {
++#ifdef _WIN32
++  LARGE_INTEGER tick, frequency;
++  QueryPerformanceCounter(&tick);
++  QueryPerformanceFrequency(&frequency);
++  return (double)tick.QuadPart / (double)frequency.QuadPart;
++#else
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC, &ts);
+   return ts.tv_sec + ts.tv_nsec * 1e-9;
++#endif
+ }
+ 
+ static unsigned int rstate = 12345;
+@@ -206,6 +219,113 @@ static void verify(void) {
+   }
+ }
+ 
++/* PhotoGoGo diagnostic only: compare every byte, not just one frame hash.
++   Both contexts keep their own border history across changing source frames. */
++static void require_ok(int result, const char* operation) {
++  if (result != VS_OK) {
++    fprintf(stderr, "row equivalence failed: %s\n", operation);
++    exit(1);
++  }
++}
++
++static void require_equal(const VSFrame* a, const VSFrame* b,
++                          const VSFrameInfo* fi, const char* label) {
++  int p, y;
++  for (p = 0; p < fi->planes; p++) {
++    int w = fi->width >> vsGetPlaneWidthSubS(fi, p);
++    int h = fi->height >> vsGetPlaneHeightSubS(fi, p);
++    for (y = 0; y < h; y++) {
++      if (memcmp(a->data[p] + y * a->linesize[p],
++                 b->data[p] + y * b->linesize[p], w)) {
++        fprintf(stderr, "%s differs: plane=%d row=%d\n", label, p, y);
++        exit(1);
++      }
++    }
++  }
++}
++
++static int row_equivalence(void) {
++#ifndef USE_OMP
++  fprintf(stderr, "row equivalence requires OpenMP\n");
++  return 1;
++#else
++  int size, threads, crop, ownership, frame, comparisons = 0;
++  omp_set_dynamic(0);
++  for (size = 0; size < 2; size++) {
++    for (threads = 6; threads <= 12; threads += 6) {
++      for (crop = 0; crop <= 1; crop++) {
++        /* Separate buffers, in-place buffers, and alternation of the two. */
++        for (ownership = 0; ownership < 3; ownership++) {
++          VSFrameInfo fi;
++          VSFrame input, src[2], dest[2];
++          VSTransformData td[2];
++          VSTransformConfig conf = vsTransformGetDefaultConfig("row-equivalence");
++          int k;
++          conf.crop = crop;
++          conf.interpolType = VS_BiCubic;
++          conf.lensCorrection = VSLensCorrectOff;
++          conf.fov = 0;
++          vsFrameInfoInit(&fi, size ? 3840 : 640, size ? 2160 : 360, PF_YUV420P);
++          vsFrameAllocate(&input, &fi);
++          for (k = 0; k < 2; k++) {
++            vsFrameAllocate(&src[k], &fi);
++            vsFrameAllocate(&dest[k], &fi);
++            require_ok(vsTransformDataInit(&td[k], &conf, &fi, &fi), "init");
++          }
++          for (frame = 0; frame < 8; frame++) {
++            VSTransform t = {0};
++            VSFrame* output[2];
++            int inplace = ownership == 1 || (ownership == 2 && frame % 2);
++            switch (frame) {
++              case 0: break; /* identity */
++              case 1: t.x = 0.5; t.y = 0.5; break;
++              case 2: t = mk_transform(); break;
++              case 3: t.alpha = -0.05; t.zoom = 4; break;
++              case 4: t.x = -400; t.y = -300; break;
++              case 5: t.alpha = 0.7853981633974483; break;
++              case 6: t.zoom = -60; break;
++              case 7: t.x = 11.75; t.y = -9.25; t.alpha = -0.02; t.zoom = 8; break;
++            }
++            fill(&input, &fi);
++            for (k = 0; k < 2; k++) {
++              int observed = 0;
++              omp_set_num_threads(k ? threads : 1);
++#pragma omp parallel
++              {
++#pragma omp single
++                observed = omp_get_num_threads();
++              }
++              if (observed != (k ? threads : 1)) {
++                fprintf(stderr, "unexpected actual thread count %d\n", observed);
++                return 1;
++              }
++              vsFrameCopy(&src[k], &input, &fi);
++              output[k] = inplace ? &src[k] : &dest[k];
++              require_ok(vsTransformPrepare(&td[k], &src[k], output[k]), "prepare");
++              require_ok(vsDoTransform(&td[k], t), "transform");
++              require_ok(vsTransformFinish(&td[k]), "finish");
++              if (!inplace) require_equal(&src[k], &input, &fi, "read-only input");
++            }
++            require_equal(output[0], output[1], &fi, "serial/parallel output");
++            comparisons++;
++          }
++          printf("equivalent %dx%d threads=1/%d crop=%d ownership=%d frames=8\n",
++                 fi.width, fi.height, threads, crop, ownership);
++          for (k = 0; k < 2; k++) {
++            vsTransformDataCleanup(&td[k]);
++            vsFrameFree(&src[k]);
++            vsFrameFree(&dest[k]);
++          }
++          vsFrameFree(&input);
++        }
++      }
++    }
++  }
++  printf("byte_equal_frame_pairs=%d\n", comparisons);
++  return comparisons == 192 ? 0 : 1;
++#endif
++}
++
+ /* The cost of each optional per-pixel stage, relative to the plain affine warp,
+    on the planar path -- the one ffmpeg runs.  k = -0.15 is a realistic action
+    camera barrel; fov = 90 a realistic wide lens.  Both are on the "this
+@@ -255,12 +375,24 @@ int main(int argc, char** argv) {
+   int width = 1920, height = 1080, nframes = 20;
+   VSTransform t = mk_transform();
+   int arg0 = 1;
++  int actual_threads = 1;
++#ifdef USE_OMP
++#pragma omp parallel
++  {
++#pragma omp single
++    actual_threads = omp_get_num_threads();
++  }
++#endif
++  printf("actual_threads=%d\n", actual_threads);
++
++  if (argc >= 2 && strcmp(argv[1], "row-equivalence") == 0)
++    return row_equivalence();
+ 
+   if (argc >= 2 && strcmp(argv[1], "verify") == 0) {
+     verify();
+     return 0;
+   }
+-  if (argc >= 2 && strcmp(argv[1], "matrix") == 0)
++  if (argc >= 2 && (strcmp(argv[1], "matrix") == 0 || strcmp(argv[1], "quality") == 0))
+     arg0 = 2;
+   if (argc >= arg0 + 2) {
+     width  = atoi(argv[arg0]);
+@@ -269,6 +401,12 @@ int main(int argc, char** argv) {
+   if (argc >= arg0 + 3)
+     nframes = atoi(argv[arg0 + 2]);
+ 
++  if (arg0 == 2 && strcmp(argv[1], "quality") == 0) {
++    benchmode m = { VSLensCorrectOff, 0.0, 0.0, VS_BiCubic };
++    bench_t_mode("quality bicubic crop=black", transformPlanar, PF_YUV420P,
++                 width, height, nframes, t, 1, m);
++    return 0;
++  }
+   if (arg0 == 2) {
+     matrix(width, height, nframes);
+     return 0;
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index cae6c3b..e62dfc8 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -146,6 +146,17 @@ if(USE_OMP AND NOT MSVC AND TARGET OpenMP::OpenMP_C)
+ target_link_libraries(tests OpenMP::OpenMP_C)
+ endif()
+ 
++# Isolated PhotoGoGo diagnostic target; production dependency is unchanged.
++get_target_property(ROWBENCH_SOURCES tests SOURCES)
++list(REMOVE_ITEM ROWBENCH_SOURCES tests.c testutils.c testframework.c)
++add_executable(rowbench ../bench/bench_transform.c ${ROWBENCH_SOURCES})
++if(NOT MSVC)
++  target_link_libraries(rowbench m)
++  if(USE_OMP AND TARGET OpenMP::OpenMP_C)
++    target_link_libraries(rowbench OpenMP::OpenMP_C)
++  endif()
++endif()
++
+ # Everything the tests write goes into this directory (TEST_OUTPUT_DIR in
+ # testutils.h, relative to the working directory the tests are run from, which
+ # for the usual in-build run is the build directory).  Have "make clean" take

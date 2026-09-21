@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+project(photogogo_existing_compiler_probe C)
+find_package(OpenMP REQUIRED)
+add_executable(compiler-probe probe.c)
+target_link_libraries(compiler-probe PRIVATE OpenMP::OpenMP_C)
