@@ -8,6 +8,7 @@ mod import_devices;
 #[cfg(test)]
 mod import_integration_tests;
 pub mod logs;
+mod media_tools;
 pub mod naming;
 pub mod process;
 pub mod settings;

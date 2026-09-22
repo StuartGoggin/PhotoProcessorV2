@@ -1,8 +1,10 @@
+#Requires -Version 7.0
 param(
     [string]$FaceBundleSource = "",
     [switch]$SkipFaceBundle,
     [switch]$ForceFaceBundle,
-    [switch]$SkipDependencyInstall
+    [switch]$SkipDependencyInstall,
+    [Parameter(Mandatory)][string]$MediaSourceArchive
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,6 +53,12 @@ if (Test-Path -LiteralPath $cargoBin) {
 }
 
 Import-MsvcBuildEnvironment
+
+# A release must ship the exact media pair exercised by the evidence reports,
+# together with its runtime closure and corresponding-source deliverable.
+& (Join-Path $PSScriptRoot 'verify-media-bundle.ps1') `
+    -BundleDirectory (Join-Path $repoRoot 'src-tauri/tools/ffmpeg') `
+    -SourceArchive $MediaSourceArchive
 
 $cargo = Get-Command cargo.exe -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1

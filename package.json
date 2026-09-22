@@ -1,7 +1,7 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.15",
+  "version": "2.0.16",
   "type": "module",
   "scripts": {
     "dev": "node scripts/start-dev.mjs",
@@ -11,7 +11,7 @@
     "test:studio:browser": "node scripts/test-studio-browser.mjs",
     "test:jobs:browser": "node scripts/test-jobs-polling-browser.mjs",
     "tauri": "tauri",
-    "release": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1"
+    "release": "pwsh -NoProfile -File scripts/build-release.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.10.1",

@@ -289,50 +289,11 @@ fn image_capture_timestamp_ms(path: &std::path::Path) -> Option<i64> {
 }
 
 fn ffprobe_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-
-    if let Some(path) = std::env::var_os("PHOTOGOGO_FFMPEG") {
-        let ffmpeg_path = PathBuf::from(path);
-        if let Some(parent) = ffmpeg_path.parent() {
-            candidates.push(parent.join("ffprobe.exe"));
-            candidates.push(parent.join("ffprobe"));
-        }
-        if let Some(file_name) = ffmpeg_path.file_name().and_then(|value| value.to_str()) {
-            if file_name.eq_ignore_ascii_case("ffmpeg.exe") {
-                candidates.push(ffmpeg_path.with_file_name("ffprobe.exe"));
-            } else if file_name.eq_ignore_ascii_case("ffmpeg") {
-                candidates.push(ffmpeg_path.with_file_name("ffprobe"));
-            }
-        }
-    }
-
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            candidates.push(parent.join("ffprobe.exe"));
-            candidates.push(parent.join("tools").join("ffmpeg").join("bin").join("ffprobe.exe"));
-        }
-    }
-
-    candidates.push(PathBuf::from("ffprobe"));
-    candidates
+    super::media_tools::ffprobe_candidates()
 }
 
 fn ffmpeg_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-
-    if let Some(path) = std::env::var_os("PHOTOGOGO_FFMPEG") {
-        candidates.push(PathBuf::from(path));
-    }
-
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            candidates.push(parent.join("ffmpeg.exe"));
-            candidates.push(parent.join("tools").join("ffmpeg").join("bin").join("ffmpeg.exe"));
-        }
-    }
-
-    candidates.push(PathBuf::from("ffmpeg"));
-    candidates
+    super::media_tools::ffmpeg_candidates()
 }
 
 fn background_media_command(program: &Path) -> Command {

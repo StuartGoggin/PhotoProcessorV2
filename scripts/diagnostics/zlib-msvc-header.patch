@@ -1,0 +1,5 @@
+--- a/zconf.h.cmakein
++++ b/zconf.h.cmakein
+@@ -438 +438 @@
+-#ifdef HAVE_UNISTD_H    /* may be set to #if 1 by ./configure */
++#if defined(HAVE_UNISTD_H) && !defined(_MSC_VER) /* MSVC has no unistd.h */

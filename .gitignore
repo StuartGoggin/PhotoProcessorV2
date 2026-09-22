@@ -24,6 +24,7 @@ Thumbs.db
 
 
 tools/ffmpeg/
+src-tauri/tools/ffmpeg/
 test-output/
 tools/ffmpeg-n71-test/
 *.zip

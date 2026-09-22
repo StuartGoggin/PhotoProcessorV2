@@ -33,11 +33,13 @@ export default defineConfig(async () => ({
   },
   plugins: [react()],
   clearScreen: false,
+  // Native diagnostic/build trees contain HTML that is not an app entry point.
+  optimizeDeps: { entries: ["index.html", "studio-preview.html"] },
   server: {
     port: 1430,
     strictPort: true,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", "**/test-output/**"],
     },
   },
 }));

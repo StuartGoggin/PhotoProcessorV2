@@ -9,7 +9,8 @@ param(
     [string]$FixtureDir = 'test-output/quality-pipeline-20260921T202819652Z',
     [switch]$LegacyGaussian,
     [ValidateRange(1,2)][int]$Repeats = 1,
-    [ValidateRange(60,300)][int]$TotalTimeoutSeconds = 180
+    [ValidateRange(60,300)][int]$TotalTimeoutSeconds = 180,
+    [ValidateRange(512,4096)][int]$MinimumFreeMiB = 1024
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -29,7 +30,7 @@ $motionHash = (Get-FileHash -LiteralPath $motion -Algorithm SHA256).Hash
 $expected = @(Get-Content -LiteralPath (Join-Path $fixture 'serial-quality-1.framemd5') | Where-Object { $_ -notmatch '^#' -and $_.Trim() })
 if ($expected.Count -ne $baseline.frames) { throw 'Baseline checksum count differs.' }
 $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($root))
-if ($drive.AvailableFreeSpace -lt 1GB) { throw 'Keep at least 1 GiB free; no test started.' }
+if ($drive.AvailableFreeSpace -lt ($MinimumFreeMiB * 1MB)) { throw "Keep at least $MinimumFreeMiB MiB free; no test started." }
 $out = Join-Path $root ('test-output\low-disk-ffmpeg-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))
 $null = New-Item -ItemType Directory -Path $out
 Copy-Item -LiteralPath $motion -Destination (Join-Path $out 'motion.trf')
@@ -49,7 +50,7 @@ try {
     foreach ($repeat in 1..$Repeats) {
         $threadCounts = if ($repeat -eq 1) { @(1,6,12) } else { @(12,6,1) }
         foreach ($threads in $threadCounts) {
-            if ($drive.AvailableFreeSpace -lt 1GB -or $clock.Elapsed.TotalSeconds -ge $TotalTimeoutSeconds) { throw 'Disk/time safety limit reached.' }
+            if ($drive.AvailableFreeSpace -lt ($MinimumFreeMiB * 1MB) -or $clock.Elapsed.TotalSeconds -ge $TotalTimeoutSeconds) { throw 'Disk/time safety limit reached.' }
             $name = "threads$threads-repeat$repeat"
             $checksum = Join-Path $out "$name.framemd5"
             $nativeArgs = @('-hide_banner','-nostdin','-n','-loglevel','info','-progress','pipe:1','-nostats',
@@ -75,7 +76,7 @@ try {
                 while (-not $process.WaitForExit(200)) {
                     $process.Refresh()
                     $peak = [math]::Max($peak, $process.WorkingSet64)
-                    if ($watch.Elapsed.TotalSeconds -ge 90 -or $clock.Elapsed.TotalSeconds -ge $TotalTimeoutSeconds -or $drive.AvailableFreeSpace -lt 1GB) {
+                    if ($watch.Elapsed.TotalSeconds -ge 90 -or $clock.Elapsed.TotalSeconds -ge $TotalTimeoutSeconds -or $drive.AvailableFreeSpace -lt ($MinimumFreeMiB * 1MB)) {
                         $process.Kill(); $process.WaitForExit()
                         throw 'Stopped owned candidate process at its disk/time safety limit.'
                     }
@@ -98,6 +99,13 @@ try {
                 if (-not $equal) { throw 'Pixel/timestamp equivalence gate failed. Candidate must not be packaged.' }
             } finally {
                 if ($started -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+                if ($started -and -not (Test-Path -LiteralPath (Join-Path $out "$name.log"))) {
+                    $stderrTask.GetAwaiter().GetResult() | Set-Content -LiteralPath (Join-Path $out "$name.log") -Encoding UTF8
+                    $stdoutTask.GetAwaiter().GetResult() | Set-Content -LiteralPath (Join-Path $out "$name.progress.log") -Encoding UTF8
+                    $results.Add([pscustomobject]@{name=$name;ompThreads=$threads;wallSeconds=$watch.Elapsed.TotalSeconds;
+                        sampledPeakMiB=[math]::Round($peak/1MB,1);frameCount=0;matchesBaselinePixelsAndTimestamps=$false;
+                        aborted=$true;freeEndMiB=[math]::Round($drive.AvailableFreeSpace/1MB,1)})
+                }
                 $process.Dispose()
             }
         }
@@ -112,7 +120,7 @@ try {
     [pscustomobject]@{complete=$complete;failure=$failure;candidate=$binary;
         candidateSha256=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash;
         fixture=$fixture;sourceSha256=$sourceHash;motionSha256=$motionHash;legacyGaussian=[bool]$LegacyGaussian;
-        elapsedSeconds=$clock.Elapsed.TotalSeconds;freeStartGiB=[math]::Round($freeStart/1GB,3);
+        elapsedSeconds=$clock.Elapsed.TotalSeconds;minimumFreeMiB=$MinimumFreeMiB;freeStartGiB=[math]::Round($freeStart/1GB,3);
         freeEndGiB=[math]::Round($drive.AvailableFreeSpace/1GB,3);results=@($results.ToArray());
         limitations=@('Full Quality filter chain only; frame checksums instead of video encoding.',
             'Uses the existing first-pass motion data, not a new detection pass.',

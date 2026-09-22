@@ -1,0 +1,5 @@
+--- a/src/config.h.W32
++++ b/src/config.h.W32
+@@ -607 +607 @@
+-/*#define BATCH_MODE_ONLY_SHELL 1 */
++#define BATCH_MODE_ONLY_SHELL 1

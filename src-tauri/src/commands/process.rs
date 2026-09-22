@@ -1136,21 +1136,7 @@ pub(super) struct FfmpegCapabilities {
 }
 
 fn ffmpeg_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-
-    if let Some(path) = env::var_os("PHOTOGOGO_FFMPEG") {
-        candidates.push(PathBuf::from(path));
-    }
-
-    if let Ok(current_exe) = env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            candidates.push(parent.join("ffmpeg.exe"));
-            candidates.push(parent.join("tools").join("ffmpeg").join("bin").join("ffmpeg.exe"));
-        }
-    }
-
-    candidates.push(PathBuf::from("ffmpeg"));
-    candidates
+    super::media_tools::ffmpeg_candidates()
 }
 
 pub(super) fn command_output(binary: &Path, args: &[&str]) -> Result<std::process::Output, String> {
