@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, confirm } from "@tauri-apps/plugin-dialog";
 import type { BackgroundMusic, MusicDirection, StudioProject, StudioJob } from "../types/videoStudio";
@@ -23,6 +23,8 @@ export default function StudioBackgroundMusic({
   getStagingDir: () => Promise<string>;
 }) {
   const music = project.music;
+  const musicIntent = useRef(0);
+  useEffect(() => () => { musicIntent.current++; }, []);
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gpt-5.4");
   const [analysing, setAnalysing] = useState(false);
@@ -32,6 +34,7 @@ export default function StudioBackgroundMusic({
   const musicJob = jobs.find((j) => j.kind === "music" && j.musicRequestId === music.requestId && ["queued", "running"].includes(j.status));
   const patch = (change: Partial<BackgroundMusic>) => onChange(change);
   const patchDirection = (change: Partial<MusicDirection>) => {
+    musicIntent.current++;
     if (music.direction) patch({ direction: { ...music.direction, ...change }, requestId: "" });
   };
 
@@ -88,13 +91,15 @@ export default function StudioBackgroundMusic({
     if (typeof path === "string") patch({ lmmsPath: path });
   }
   async function generateSoundtrack() {
+    const intent = ++musicIntent.current;
     const requestId = crypto.randomUUID();
     setCreating(true); onError("");
     try {
       await invoke("studio_start_music", { project: { ...project, music: { ...music, requestId } }, stagingDir: await getStagingDir() });
+      if (intent !== musicIntent.current) return;
       patch({ requestId });
       onMessage("Soundtrack queued in Jobs. LMMS will render an editable synth arrangement; the verified audio will be attached here when ready.");
-    } catch (error) { onError(String(error)); }
+    } catch (error) { if (intent === musicIntent.current) onError(String(error)); }
     finally { setCreating(false); }
   }
   async function openLmms() {
@@ -114,7 +119,10 @@ export default function StudioBackgroundMusic({
     const path = await open({
       filters: [{ name: "Rendered music", extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac"] }],
     });
-    if (typeof path === "string") patch({ audioPath: path, enabled: true, requestId: "" });
+    if (typeof path === "string") {
+      musicIntent.current++;
+      patch({ audioPath: path, enabled: true, requestId: "" });
+    }
   }
 
   return (
@@ -122,14 +130,19 @@ export default function StudioBackgroundMusic({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="font-semibold text-lg">Background music</h2>
-          <p className="text-sm text-gray-400">AI direction from your clips, rendered locally with LMMS</p>
+          <p className="text-sm text-gray-400">One soundtrack and mix for the whole project</p>
         </div>
         <label className="inline-flex items-center gap-2 rounded-full bg-surface-900 px-3 py-2 text-sm">
           <input
             type="checkbox"
             aria-label="Include background music in complete video"
             checked={music.enabled}
-            onChange={(event) => patch({ enabled: event.target.checked })}
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              if (!enabled) musicIntent.current++;
+              // Stop automatic attachment, not the already queued soundtrack job.
+              patch({ enabled, ...(!enabled ? { requestId: "" } : {}) });
+            }}
           />
           Include in final render
         </label>
@@ -141,6 +154,27 @@ export default function StudioBackgroundMusic({
         {music.audioPath && <button className="btn-secondary" onClick={() => void invoke("open_in_default_app", { path: music.audioPath }).catch((e) => onError(String(e)))}>Listen to music</button>}
       </div>
 
+      <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+        <label>
+          Rendered music file
+          <input className={field} readOnly value={music.audioPath || "No rendered music selected"} />
+        </label>
+        <button className="btn-secondary self-end" onClick={() => void chooseAudio().catch((e) => onError(String(e)))}>Choose rendered audio</button>
+      </div>
+      {music.audioPath && (
+        <div className="grid gap-4 rounded bg-surface-900 p-3 md:grid-cols-2">
+          <label>
+            Music level <span className="text-cyan-200">{music.musicVolume}%</span>
+            <input className="block w-full accent-cyan-500" type="range" min="0" max="100" value={music.musicVolume} onChange={(event) => patch({ musicVolume: Number(event.target.value) })} />
+          </label>
+          <label>
+            Original clip sound <span className="text-cyan-200">{music.originalVolume}%</span>
+            <input className="block w-full accent-cyan-500" type="range" min="0" max="100" value={music.originalVolume} onChange={(event) => patch({ originalVolume: Number(event.target.value) })} />
+          </label>
+        </div>
+      )}
+      <details className="rounded border border-surface-600 p-3 space-y-3">
+        <summary className="font-semibold">Compose a soundtrack (advanced)</summary>
       <div className="grid gap-2 text-sm md:grid-cols-5" aria-label="Background music workflow">
         {[
           ["1", "Read clips"],
@@ -252,25 +286,8 @@ export default function StudioBackgroundMusic({
       <div className="rounded bg-[#0c1930] p-3 text-sm text-gray-200">
         Generated audio is attached automatically when its job completes. To refine it, open the score in LMMS, export your changes, then select that audio file below.
       </div>
-      <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-        <label>
-          Rendered music file
-          <input className={field} readOnly value={music.audioPath || "No rendered music selected"} />
-        </label>
-        <button className="btn-secondary self-end" onClick={() => void chooseAudio().catch((e) => onError(String(e)))}>Choose rendered audio</button>
-      </div>
-      {music.audioPath && (
-        <div className="grid gap-4 rounded bg-surface-900 p-3 md:grid-cols-2">
-          <label>
-            Music level <span className="text-cyan-200">{music.musicVolume}%</span>
-            <input className="block w-full accent-cyan-500" type="range" min="0" max="100" value={music.musicVolume} onChange={(event) => patch({ musicVolume: Number(event.target.value) })} />
-          </label>
-          <label>
-            Original clip sound <span className="text-cyan-200">{music.originalVolume}%</span>
-            <input className="block w-full accent-cyan-500" type="range" min="0" max="100" value={music.originalVolume} onChange={(event) => patch({ originalVolume: Number(event.target.value) })} />
-          </label>
-        </div>
-      )}
+
+      </details>
     </section>
   );
 }

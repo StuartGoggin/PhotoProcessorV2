@@ -17,7 +17,6 @@ export interface StudioAudioControlsProps {
   project: StudioProject;
   clip?: StudioClip;
   stagingDir: () => Promise<string>;
-  onProjectChange: (patch: Partial<StudioProject>) => void;
   onClipChange: (patch: Partial<StudioClip>) => void;
   disabled?: boolean;
 }
@@ -25,7 +24,7 @@ export interface StudioAudioControlsProps {
 const title = (preset: string) => preset.charAt(0).toUpperCase() + preset.slice(1);
 const field = "block mt-1 w-full bg-surface-900 rounded border border-surface-600 px-3 py-2 text-sm";
 
-export default function StudioAudioControls({ project, clip, stagingDir, onProjectChange, onClipChange, disabled = false }: StudioAudioControlsProps) {
+export default function StudioAudioControls({ project, clip, stagingDir, onClipChange, disabled = false }: StudioAudioControlsProps) {
   const [start, setStart] = useState(0);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [side, setSide] = useState<Side>("original");
@@ -98,17 +97,11 @@ export default function StudioAudioControls({ project, clip, stagingDir, onProje
   }
 
   return <div className="studio-audio-controls space-y-3" aria-label="Camera audio wind reduction">
-    <div className="grid gap-3 sm:grid-cols-2">
-      <label className="text-sm">Wind reduction default
-        <select className={field} disabled={disabled} value={normalizeWindReduction(project.defaultWindReduction)}
-          onChange={(event) => onProjectChange({ defaultWindReduction: event.target.value as StudioWindReductionPreset })}>
-          {windReductionPresets.map((value) => <option key={value} value={value}>{title(value)}</option>)}
-        </select>
-      </label>
+    <div>
       <label className="text-sm">Selected clip wind reduction
         <select className={field} disabled={disabled || !clip} value={clip?.windReduction ?? "inherit"}
           onChange={(event) => onClipChange({ windReduction: event.target.value as StudioClipWindReduction })}>
-          <option value="inherit">Use project default</option>
+          <option value="inherit">Use project default ({title(normalizeWindReduction(project.defaultWindReduction))})</option>
           {windReductionPresets.map((value) => <option key={value} value={value}>{title(value)}</option>)}
         </select>
       </label>
@@ -116,7 +109,8 @@ export default function StudioAudioControls({ project, clip, stagingDir, onProje
     <p className="text-xs text-gray-400">Camera audio only, before background music is mixed. A conservative bass cut and high-frequency hiss reduction—not speech denoising. Natural low and high sounds can also soften. Preview a windy section before choosing a strength. Picture approval and saved video renders are kept.</p>
     <p className="text-xs text-gray-400">Play rendered clip keeps the original camera sound. Use this A/B preview to hear cleanup, then create a new final video to include it.</p>
     {!clip ? <p className="text-sm text-gray-400">Select a clip to compare its camera audio.</p> : <>
-      <p className="text-sm text-gray-300">{clipName(clip.path)} · effective setting: {title(preset)}{preset === "off" ? " — original camera audio" : ""}</p>
+      <p className="text-sm text-cyan-200">{clip.windReduction == null || clip.windReduction === "inherit" ? "Using project" : "Override"}: {title(preset)}{preset === "off" ? " — original camera audio" : ""}</p>
+      <p className="text-xs text-gray-400">Project defaults and music are in Project settings above. This choice changes only {clipName(clip.path)}.</p>
       <div className="flex flex-wrap items-end gap-3">
         <label className="text-sm">Audio preview start · seconds
           <input className={field} type="number" min={0} max={Math.max(0, clip.duration - 0.1)} step="0.1" value={boundedStart} disabled={disabled}

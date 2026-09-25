@@ -30,6 +30,8 @@ try {
   page.on("pageerror", (error) => failures.push(error.message));
   await page.goto(url);
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: /Video Studio/ }).click();
+  const projectSettings = page.locator("#studio-project-settings");
+  await projectSettings.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("tab", { name: "Sound", exact: true }).click();
   await page.evaluate(() => {
     const originalInvoke = window.__TAURI_INTERNALS__.invoke;
@@ -47,9 +49,16 @@ try {
     };
     const original = wav(1000), processed = wav(400);
     window.__audioCalls = [];
+    window.__confirmCalls = [];
     window.__audioDeferred = false;
     window.__pendingAudio = [];
     window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "plugin:dialog|confirm") {
+        window.__confirmCalls.push(args);
+        if (window.__confirmDeferred) return new Promise((resolve) => { window.__resolveConfirm = resolve; });
+      }
+      if (command === "plugin:dialog|open" && window.__addedPaths) return Promise.resolve(window.__addedPaths);
+      if (command === "studio_inspect" && window.__addedPaths) return Promise.resolve(args.paths.map((path) => ({ path, duration: 25 })));
       if (command !== "studio_audio_preview") return originalInvoke(command, args);
       window.__audioCalls.push(args);
       const result = { original, processed: args.preset === "off" ? original : processed, seconds: 1, preset: args.preset };
@@ -63,13 +72,16 @@ try {
   const group = page.getByRole("group", { name: "Audio A/B comparison", exact: true });
   const savedProject = () => page.evaluate(() => JSON.parse(localStorage.getItem("photogogo.videoStudio.project.v1")));
   const initial = await savedProject();
+  assert.equal(await projectSettings.getByRole("combobox", { name: "Wind reduction default", exact: true }).count(), 1, "the default belongs only to the project");
+  assert.equal(await page.locator("#studio-review").getByRole("combobox", { name: "Wind reduction default", exact: true }).count(), 0);
+  assert.equal(await projectSettings.getByRole("combobox", { name: "Selected clip wind reduction", exact: true }).count(), 0);
   assert.equal(await defaults.inputValue(), "off");
   assert.equal(await override.inputValue(), "inherit");
   await defaults.selectOption("light");
   await override.selectOption("off");
-  await page.getByText(/effective setting: Off — original camera audio/).waitFor();
+  await page.getByText(/Override: Off/).waitFor();
   await override.selectOption("inherit");
-  await page.getByText(/effective setting: Light/).waitFor();
+  await page.getByText(/Using project: Light/).waitFor();
   const changed = await savedProject();
   assert.equal(changed.defaultWindReduction, "light");
   assert.equal(changed.clips[0].reviewed, initial.clips[0].reviewed);
@@ -127,8 +139,66 @@ try {
   await page.getByRole("tab", { name: "Picture", exact: true }).click();
   await page.getByRole("tab", { name: "Sound", exact: true }).click();
   assert.equal(await group.count(), 1, "opening another editing tab retains the valid audio comparison");
+
+  // Explicit Off remains an override as project defaults change; excluded clips
+  // still participate in an explicitly confirmed all-clips override reset.
+  await page.locator(".studio-clip-select").first().click();
+  await override.selectOption("off");
+  await defaults.selectOption("strong");
+  await page.getByText(/Override: Off/).waitFor();
+  assert.equal((await savedProject()).clips[0].windReduction, "off");
+  await page.locator(".studio-clip-select").nth(1).click();
+  await page.getByText(/Using project: Strong/).waitFor();
+  await override.selectOption("strong");
+  await page.getByRole("checkbox", { name: "Include Technique practice.mp4", exact: true }).uncheck();
+  await defaults.selectOption("light");
+  await page.getByText(/Override: Strong/).waitFor();
+  const beforeReset = await savedProject();
+  const pictureState = (project) => project.clips.map(({ windReduction, ...picture }) => picture);
+  const reset = projectSettings.getByRole("button", { name: "Reset all clips to project wind default", exact: true });
+  await page.evaluate(() => { window.__confirmResult = false; });
+  await reset.click();
+  await page.waitForFunction(() => window.__confirmCalls.length >= 1);
+  assert.deepEqual(await savedProject(), beforeReset, "cancel preserves overrides and all picture edits");
+  const prompt = (await page.evaluate(() => window.__confirmCalls.at(-1))).message;
+  assert.match(prompt, /\b2\b/, "confirmation states the number of overrides being removed");
+  assert.match(prompt, /Off/, "confirmation makes clear that explicit Off is also reset");
+  await page.evaluate(() => { window.__confirmResult = true; });
+  await reset.click();
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("photogogo.videoStudio.project.v1")).clips.every((clip) => clip.windReduction === "inherit"));
+  const afterReset = await savedProject();
+  assert.deepEqual(pictureState(afterReset), pictureState(beforeReset), "reset keeps picture revisions, approvals, rendered caches, and excluded status");
+  assert.equal(afterReset.defaultWindReduction, "light");
+  await page.getByText(/Using project: Light/).waitFor();
+  assert.equal(await reset.isDisabled(), true, "no-op bulk reset is unavailable after all clips inherit");
+
+  await page.evaluate(() => { window.__addedPaths = ["D:/Videos/new-project-default.mp4"]; });
+  await page.getByRole("button", { name: "Add clips", exact: true }).click();
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("photogogo.videoStudio.project.v1")).clips.length === 4);
+  const added = (await savedProject()).clips.at(-1);
+  assert.equal(added.windReduction, "inherit", "new footage inherits the current project default, not a frozen copy");
+  assert.equal(added.reviewed, false);
+  await page.locator(".studio-clip-select").last().click();
+  await page.getByText(/Using project: Light/).waitFor();
+  await defaults.selectOption("moderate");
+  await page.getByText(/Using project: Moderate/).waitFor();
+  assert.deepEqual(pictureState(await savedProject()).slice(0, 3), pictureState(beforeReset), "adding clips and changing the default still preserve the older picture state");
+  await override.selectOption("off");
+  await page.evaluate(() => { window.__confirmDeferred = true; });
+  await reset.click();
+  await page.waitForFunction(() => typeof window.__resolveConfirm === "function");
+  await page.evaluate(async () => {
+    const { STUDIO_CLEARED } = await import("/src/utils/studioWorkflow.ts");
+    window.dispatchEvent(new Event(STUDIO_CLEARED));
+  });
+  await page.getByText(/Studio renders cleared\. Clips will render from scratch/).waitFor();
+  const replacementState = await savedProject();
+  await page.evaluate(() => { window.__confirmDeferred = false; window.__resolveConfirm(true); });
+  await page.getByRole("alert").filter({ hasText: /changed while confirming\. Nothing was reset/ }).waitFor();
+  assert.deepEqual(await savedProject(), replacementState, "stale reset confirmation must not mutate the replacement project");
+  assert.equal((await savedProject()).clips.at(-1).windReduction, "off");
   assert.deepEqual(failures, []);
-  console.log("PASS: audio defaults/override, preserved picture cache, single-player A/B position, stale preset/start/clip replies, and tab state");
+  console.log("PASS: project/clip audio scopes, live inheritance and explicit Off, bulk reset cancellation/confirmation including excluded clips, preserved picture cache, new clip inheritance, A/B position and stale replies");
 } finally {
   await browser?.close();
   server?.kill();

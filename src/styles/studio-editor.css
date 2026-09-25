@@ -32,10 +32,21 @@
 .studio-workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--studio-gap); align-items: start; }
 .studio-workspace > :where(section, aside) { border: 1px solid #324156; border-radius: 7px; padding: 10px; background: #172133; }
 .studio-panel-heading { font-size: 13px; font-weight: 600; color: #e7eef7; padding: 6px 2px; }
-.studio-project-settings { display: grid; align-items: start; gap: 6px; }
-.studio-project-settings > details { padding: 8px; border: 1px solid #334155; border-radius: 5px; container-type: inline-size; }
-.studio-project-settings summary { font-size: 13px; }
-.studio-project-settings summary span { display: block; font-size: 12px; font-weight: 400; }
+.studio-project-settings { border: 1px solid #334155; border-radius: 7px; padding: 6px 8px; background: #141f30; }
+.studio-project-bar { display: flex; align-items: center; gap: 12px; }
+.studio-project-bar > h2 { flex: 0 0 auto; }
+.studio-project-toggles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; min-width: 0; flex: 1; }
+.studio-project-toggles button { text-align: left; min-width: 0; padding: 5px 9px; border: 1px solid #35475f; border-radius: 5px; background: #172235; }
+.studio-project-toggles button[aria-expanded="true"] { border-color: #67e8f9; background: #173447; }
+.studio-project-toggles button > span { display: block; color: #e7eef7; font-weight: 600; }
+.studio-project-toggles small { display: block; color: #aebed0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.studio-project-panel { padding: 10px 2px 2px; margin-top: 6px; border-top: 1px solid #334155; }
+.studio-project-panel[hidden] { display: none; }
+.studio-project-panel > fieldset { min-width: 0; }
+.studio-project-filter-grid { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+.studio-project-filter { border: 1px solid #35475f; border-radius: 5px; padding: 10px; }
+.studio-project-filter legend { padding: 0 5px; color: #e7eef7; font-weight: 600; }
+.studio-project-filter > * + * { margin-top: 10px; }
 .studio-project-settings :where(.mt-4) { margin-top: 8px; }
 .studio-project-settings :where(.p-5, .p-4) { padding: 8px; }
 .studio-project-settings h2 { font-size: 14px; }
@@ -83,24 +94,17 @@
 .studio-delivery { padding: 12px; }
 .studio-delivery textarea { resize: vertical; line-height: 1.65; }
 .studio-editor [role="alert"] { padding: 8px; background: #371e28; border: 1px solid #a54e65; border-radius: 5px; }
-@container (max-width: 600px) {
-  .studio-project-settings .grid { grid-template-columns: minmax(0, 1fr); }
-  .studio-project-settings .grid > * { grid-column: auto; }
-}
 @media (min-width: 1000px) {
   .studio-workspace { grid-template-columns: minmax(260px, .7fr) minmax(0, 1.5fr); }
-  .studio-project-settings { grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .studio-project-settings > h2 { grid-column: 1 / -1; }
+  .studio-project-filter-grid { grid-template-columns: minmax(260px, .8fr) minmax(0, 1.6fr); }
 }
 @media (min-width: 1360px) {
-  .studio-workspace { grid-template-columns: minmax(260px, .8fr) minmax(340px, 1.8fr) minmax(240px, .75fr); }
-  .studio-project-settings { grid-column: auto; grid-template-columns: minmax(0, 1fr); }
-  .studio-sequence, .studio-project-settings { position: sticky; top: 10px; }
+  .studio-workspace { grid-template-columns: minmax(280px, .8fr) minmax(0, 2.4fr); }
+  .studio-sequence { position: sticky; top: 10px; }
   .studio-sequence-list { max-height: 65vh; }
-  .studio-project-settings { max-height: 80vh; overflow-y: auto; }
 }
 @media (min-width: 2200px) {
-  .studio-workspace { grid-template-columns: minmax(330px, .8fr) minmax(0, 2.2fr) minmax(300px, 1fr); }
+  .studio-workspace { grid-template-columns: minmax(330px, .8fr) minmax(0, 3.2fr); }
   .studio-preview-empty { min-height: 240px; }
   .studio-sequence-list { max-height: 75vh; }
 }
@@ -110,6 +114,8 @@
   .studio-toolbar-actions { gap: 5px; }
   .studio-density { flex: 1 1 100%; }
   .studio-autosave { width: 100%; margin-left: 0; }
+  .studio-project-bar { display: block; }
+  .studio-project-toggles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .studio-sequence-row { grid-template-columns: 32px minmax(0, 1fr) auto; }
   .studio-include-target input { width: 18px; height: 18px; }
   .studio-sequence-list { max-height: 350px; }

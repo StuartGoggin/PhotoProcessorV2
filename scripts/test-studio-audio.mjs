@@ -7,7 +7,7 @@ const workflow = await import(`data:text/javascript;base64,${Buffer.from(bundled
 const audioBundle = await build({ entryPoints: ["src/utils/studioAudio.ts"], bundle: true, write: false, format: "esm", platform: "node" });
 const audio = await import(`data:text/javascript;base64,${Buffer.from(audioBundle.outputFiles[0].text).toString("base64")}`);
 const { normalizeProject, sequenceRecipe, sequenceStatus, sequenceClipCount, editClip, isClipReady } = workflow;
-const { effectiveWindReduction, normalizeWindReduction, previewStartSeconds } = audio;
+const { effectiveWindReduction, normalizeWindReduction, previewStartSeconds, resetWindReductionOverrides } = audio;
 const clip = { id: "one", path: "D:/camera.mp4", duration: 30, include: true, reviewed: true, revision: 4,
   chapter: "Camera", title: "", titleSeconds: 0, stabilization: "off", framing: "edgeSafe", notes: "", replays: [],
   rendered: { path: "D:/render.mp4", signature: "verified", revision: 4, width: 1920, height: 1080, fps: 50, bitrateMbps: 10 } };
@@ -82,4 +82,36 @@ test("audio preview start is finite and bounded within the selected clip", () =>
   assert.equal(previewStartSeconds(99, 30), 29.9);
   assert.equal(previewStartSeconds(99, 0.05), 0);
   assert.equal(previewStartSeconds(5, 0), 0);
+});
+
+test("reset wind overrides includes excluded and explicit Off but preserves all other clip data", () => {
+  const p = { ...original, defaultWindReduction: "moderate", music: { enabled: true, audioPath: "D:/music.wav" }, clips: [
+    { ...original.clips[0], windReduction: "off" },
+    { ...original.clips[0], id: "excluded", include: false, windReduction: "strong", notes: "Keep this" },
+    { ...original.clips[0], id: "inherited", windReduction: "inherit" },
+  ] };
+  const snapshot = JSON.stringify(p), savedRequest = structuredClone(p), before = sequenceRecipe(p);
+  const reset = resetWindReductionOverrides(p);
+  assert.equal(JSON.stringify(p), snapshot, "do not mutate the original project or saved requests");
+  assert.deepEqual(savedRequest, p);
+  assert.equal(reset.music, p.music, "music is unaffected");
+  assert.equal(reset.defaultWindReduction, "moderate");
+  assert.equal(reset.clips[2], p.clips[2], "already inherited clip is unchanged");
+  reset.clips.forEach((c, index) => {
+    assert.equal(c.windReduction, "inherit");
+    assert.equal(c.rendered, p.clips[index].rendered);
+    assert.deepEqual({ ...c, windReduction: p.clips[index].windReduction }, p.clips[index]);
+  });
+  assert.equal(sequenceStatus({ sequence: before }, reset), "outdated");
+});
+
+test("reset only stales an export if included effective audio changes", () => {
+  const p = { ...original, defaultWindReduction: "off", clips: [
+    { ...original.clips[0], windReduction: "off" },
+    { ...original.clips[0], id: "excluded", include: false, windReduction: "strong" },
+  ] };
+  assert.deepEqual(sequenceRecipe(resetWindReductionOverrides(p)), sequenceRecipe(p));
+  assert.equal(resetWindReductionOverrides(original), original, "no overrides is a no-op");
+  const empty = { ...original, clips: [] };
+  assert.equal(resetWindReductionOverrides(empty), empty);
 });

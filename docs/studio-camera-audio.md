@@ -3,6 +3,51 @@
 Implemented for the 2.0.18 test release. See `release-2.0.18-validation.md`
 for packaging scope and acceptance boundaries; delivery is recorded separately.
 
+## Project/clip settings layout — 2.0.19 test release
+
+Project settings sit above the clip workspace in four compact disclosures:
+**Project**, **Filters**, **Music**, and **Output**. Only one opens at a time;
+closing it retains its controls' state. These settings remain available with
+no clip selected or before any clips are added. Music selection and the overall
+mix belong to this project area only; optional composing tools are collapsed.
+
+Project **Filters** sets the live wind default. Clip **Sound** chooses **Use
+project default** or an explicit override and shows **Using project: Light** or
+**Override: Strong**, for example. Default changes preserve overrides, including
+Off, and new clips inherit. **Reset all clips to project wind default** confirms
+the affected overrides, including excluded clips and explicit Off, before
+changing only that filter. It keeps picture review, revisions and cached video.
+Only changes to included effective sound settings make a final export outdated.
+
+Stabilisation retains its existing explicit workflow: defaults are copied to
+new clips; applying them to existing included/selected clips is confirmed and
+resets their review approval. Actual picture changes invalidate those renders.
+This UI revision does not convert stabilisation to live inheritance, alter the
+native pipeline/schema, or change already queued job requests.
+
+Reset/apply confirmations reject a changed project or changed relevant settings.
+A delayed soundtrack-queue acknowledgement cannot replace a later manual music
+selection or turn music back on after explicit Off. The queued job itself is not
+cancelled. No installer, commit or Slack delivery is implied by this UI checkpoint.
+
+### Project-settings UI validation — 25 September 2026
+
+- Frontend regression suite: **65 passed**. TypeScript and the production Vite
+  bundle passed. No dependencies or native processing code changed.
+- Edge browser regressions passed for the main editor, camera audio and the
+  **31 → 51 clip** workflow, with mocks limited to native boundaries.
+- Covered project/default/override scope, reset/apply confirmation and cancellation,
+  stale confirmations after render clearing, and late soundtrack responses after
+  manual selection or explicit Off. Picture approval and reusable video remain
+  protected during audio-only changes.
+- The updated top-settings layout shows **12 complete rows** at 1920×1080 and
+  passes 360px–4K overflow checks. Expanded Filters with clip Sound, project Music
+  with advanced composition collapsed, and the empty project were visually checked.
+- Current visual evidence: `test-output/studio-browser/studio-project-filters-and-clip-sound.png`,
+  `studio-project-music.png`, `studio-compact-1920x1080-24-clips.png` and
+  `studio-empty-project-360.png` in the same directory. These screenshots supersede
+  the earlier layout screenshots referenced in the 2.0.18 checkpoint below.
+
 ## Listening workflow
 
 Select a clip, open **Sound**, and start with **Light**. The project default is

@@ -5,15 +5,15 @@ import type { Settings } from "../types";
 import StudioJobs from "../components/StudioJobs";
 import StudioAiReview from "../components/StudioAiReview";
 import { clipName, newProject, projectDuration, timecode } from "../types/videoStudio";
-import type { BackgroundMusic, StudioClip, StudioJob, StudioProject, StudioReplay } from "../types/videoStudio";
-import StudioBackgroundMusic from "../components/StudioBackgroundMusic";
-import StudioOutputSettings from "../components/StudioOutputSettings";
+import type { StudioClip, StudioJob, StudioProject, StudioReplay } from "../types/videoStudio";
 import { STUDIO_CLEARED, resetProjectRenders } from "../utils/studioWorkflow";
 import { sequenceStatus, sequenceClipCount } from "../utils/studioWorkflow";
 import { applyCompletedRenders, approveAndNext, clipJob, clipStatus, editClip, isClipReady, moveClip, normalizeProject, outputLabel } from "../utils/studioWorkflow";
 import StudioStabilizationFields from "../components/StudioStabilizationFields";
 import StudioApprovalButton from "../components/StudioApprovalButton";
 import StudioAudioControls from "../components/studio/StudioAudioControls";
+import StudioProjectSettings from "../components/studio/StudioProjectSettings";
+import { effectiveWindReduction, resetWindReductionOverrides } from "../utils/studioAudio";
 import StudioExportDescription from "../components/StudioExportDescription";
 import "../styles/studio-editor.css";
 
@@ -26,6 +26,8 @@ async function stagingFolder() {
 }
 export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => void; jobs: StudioJob[] }) {
   const [project, setProject] = useState<StudioProject>(newProject);
+  const projectRef = useRef(project);
+  projectRef.current = project;
   const [selected, setSelected] = useState("");
   const [search, setSearch] = useState("");
   const [clipFilter, setClipFilter] = useState("all");
@@ -133,17 +135,44 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
     const timer = window.setInterval(() => void refresh(), 30000);
     return () => { alive = false; window.clearInterval(timer); };
   }, [renderedPaths, loaded]);
-  function applyDefaults(onlySelected = false) {
-    setProject((prev) => ({
-      ...prev,
-        clips: prev.clips.map((c) => (onlySelected ? c.id === selected : c.include) ? editClip(c, {
-        stabilization: prev.defaultStabilization,
-        stabilizationMethod: prev.defaultStabilizationMethod,
-        customStabilization: { ...prev.defaultCustomStabilization },
-        reviewed: false,
+  async function applyDefaults(onlySelected = false) {
+    await action(async () => {
+      const epoch = projectEpoch.current;
+      const initial = projectRef.current;
+      const target = (p: StudioProject) => p.clips.filter((c) => onlySelected ? c.id === selected : c.include);
+      const scope = (p: StudioProject) => JSON.stringify([
+        p.defaultStabilization, p.defaultStabilizationMethod, p.defaultCustomStabilization,
+        target(p).map((c) => [c.id, c.stabilization, c.stabilizationMethod, c.customStabilization]),
+      ]);
+      const confirmedScope = scope(initial);
+      const count = target(initial).length;
+      if (!count || !await confirm(`Apply project stabilisation to ${count} ${onlySelected ? "selected" : "included"} clip(s)? This replaces their individual stabilisation choices and resets review approval. Changed picture settings require re-rendering. Wind reduction, music, existing files and saved jobs are not changed.`, { title: "Apply stabilisation defaults", kind: "warning" })) return;
+      if (epoch !== projectEpoch.current || scope(projectRef.current) !== confirmedScope) throw new Error("The project or stabilisation settings changed while confirming. Nothing was applied; please check and try again.");
+      const ids = new Set(target(initial).map((c) => c.id));
+      setProject((prev) => ({
+        ...prev,
+        clips: prev.clips.map((c) => ids.has(c.id) ? editClip(c, {
+          stabilization: initial.defaultStabilization,
+          stabilizationMethod: initial.defaultStabilizationMethod,
+          customStabilization: { ...initial.defaultCustomStabilization },
+          reviewed: false,
         }) : c),
-    }));
-    setMessage(`Project stabilisation applied to ${onlySelected ? "the selected clip" : "included clips"}. Review approval has been reset for those clips.`);
+      }));
+      setMessage(`Project stabilisation applied to ${count} clip(s). Review approval has been reset for those clips; wind settings and saved jobs are unchanged.`);
+    });
+  }
+  async function resetWindDefaults() {
+    await action(async () => {
+      const epoch = projectEpoch.current;
+      const initial = projectRef.current;
+      const overrides = initial.clips.filter((c) => c.windReduction != null && c.windReduction !== "inherit");
+      const scope = (p: StudioProject) => JSON.stringify([p.defaultWindReduction, p.clips.map((c) => [c.id, c.include, c.windReduction ?? "inherit"])]);
+      const confirmedScope = scope(initial);
+      if (!overrides.length || !await confirm(`Reset all ${initial.clips.length} clips to the project wind default (${initial.defaultWindReduction ?? "off"})? This replaces ${overrides.length} individual override(s), including ${overrides.filter((c) => c.windReduction === "off").length} explicit Off setting(s) and ${overrides.filter((c) => !c.include).length} excluded clip override(s). Picture approval and cached video are kept. Existing exports and saved jobs are not changed; create a new final video to hear the result.`, { title: "Reset wind overrides", kind: "warning" })) return;
+      if (epoch !== projectEpoch.current || scope(projectRef.current) !== confirmedScope) throw new Error("The project or wind settings changed while confirming. Nothing was reset; please check and try again.");
+      setProject((prev) => resetWindReductionOverrides(prev));
+      setMessage(`All ${initial.clips.length} clips now follow the project wind default. Picture approval and cached video are kept; create a new final video to apply any changed sound.`);
+    });
   }
   function replay(id: string, p: Partial<StudioReplay>) {
     if (clip)
@@ -341,6 +370,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
   const pendingCount = included.filter((c) => c.reviewed && !isClipReady(c, project) && !clipJob(c, project, jobs)).length;
   const activeClipJob = clip ? clipJob(clip, project, jobs) : undefined;
   const musicReady = !project.music.enabled || !!project.music.audioPath;
+  const windClipCount = included.filter((c) => effectiveWindReduction(project, c) !== "off").length;
   const activeFinals = jobs.filter((j) => ["project", "assembly"].includes(j.kind || "") && ["queued", "running", "paused"].includes(j.status));
   const finalBusy = activeFinals.some((j) => sequenceStatus(j, project) === "current");
   const olderActiveFinal = activeFinals.find((j) => sequenceStatus(j, project) !== "current" && j.targets?.some((t) => included.some((c) => c.id === t.clipId)));
@@ -392,6 +422,14 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
           {error || message}
         </p>
       )}
+      <StudioProjectSettings key={currentEpoch} project={project} selectedClip={clip} jobs={jobs} busy={busy}
+        onChange={patch}
+        onMusicChange={(music) => { if (projectEpoch.current === currentEpoch) setProject((prev) => ({ ...prev, music: { ...prev.music, ...music } })); }}
+        onApplyStabilization={(onlySelected) => void applyDefaults(onlySelected)}
+        onResetWind={() => void resetWindDefaults()} onOutputFolder={() => void action(outputFolder)}
+        onError={(text) => { if (projectEpoch.current === currentEpoch) setError(text); }}
+        onMessage={(text) => { if (projectEpoch.current === currentEpoch) setMessage(text); }}
+        getStagingDir={stagingFolder} />
       <div className="studio-workspace">
         <section id="studio-sequence" className="studio-sequence bg-surface-800 rounded-xl p-4 space-y-3" aria-labelledby="studio-sequence-heading">
           <div className="flex flex-wrap justify-between gap-2">
@@ -734,21 +772,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
 
               </div>
               <div id="studio-panel-sound" className="studio-property-panel" role="tabpanel" aria-labelledby="studio-tab-sound" hidden={editorTab !== "sound"}>
-              <StudioAudioControls project={project} clip={clip} stagingDir={stagingFolder} onProjectChange={patch} onClipChange={(change) => edit(clip.id, change)} disabled={busy} />
-      <details className="rounded-xl bg-surface-800 p-4">
-        <summary className="cursor-pointer font-semibold"><span className="text-xs uppercase tracking-widest text-cyan-300 mr-3">03 / Sound</span>Optional background music <span className="text-gray-400 font-normal">· {project.music.enabled ? project.music.audioPath ? "Ready to mix" : "Audio file needed" : "Off — no background music"}</span></summary>
-      <StudioBackgroundMusic
-        project={project}
-        jobs={jobs}
-        onChange={(music: Partial<BackgroundMusic>) => {
-          if (projectEpoch.current === currentEpoch) setProject((prev) => ({ ...prev, music: { ...prev.music, ...music } }));
-        }}
-        busy={busy}
-        onError={setError}
-        onMessage={setMessage}
-        getStagingDir={stagingFolder}
-      />
-      </details>
+              <StudioAudioControls project={project} clip={clip} stagingDir={stagingFolder} onClipChange={(change) => edit(clip.id, change)} disabled={busy} />
 
               </div>
               <div className="flex flex-wrap gap-3 items-center">
@@ -772,159 +796,6 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
             </>
           )}
         </section>
-      <aside className="studio-project-settings" aria-label="Project settings"><h2 className="studio-panel-heading">Project settings</h2>
-      <details className="bg-surface-800 rounded-xl p-4">
-        <summary className="cursor-pointer font-semibold">Output settings <span className="text-gray-400 font-normal">· {outputLabel(project)}</span></summary>
-        <div className="mt-4"><StudioOutputSettings project={project} onChange={patch} onFolder={() => void action(outputFolder)} /></div>
-      </details>
-      <details className="bg-surface-800 rounded-xl p-4">
-        <summary className="cursor-pointer font-semibold">Project details & opening title <span className="text-gray-400 font-normal">· {project.name}</span></summary>
-        <section className="mt-4 grid md:grid-cols-2 gap-4">
-        <label>
-          Project name
-          <input
-            className={input}
-            maxLength={200}
-            value={project.name}
-            onChange={(e) => patch({ name: e.target.value })}
-          />
-        </label>
-        <label>
-          Opening title style
-          <select className={input} value={project.openingTitleMode} onChange={(e) => patch({ openingTitleMode: e.target.value as StudioProject["openingTitleMode"] })}>
-            <option value="card">Separate title card</option>
-            <option value="overlay">Overlay on first video</option>
-            <option value="none">None</option>
-          </select>
-        </label>
-        <label>
-          Team description
-          <input
-            className={input}
-            value={project.team}
-            onChange={(e) => patch({ team: e.target.value })}
-            placeholder="Navy/white jerseys; yellow helmet covers in afternoon"
-          />
-        </label>
-        <label>
-          Opening title
-          <input
-            className={input}
-            maxLength={70}
-            value={project.title}
-            onChange={(e) => patch({ title: e.target.value })}
-          />
-        </label>
-        <label>
-          Subtitle / event date
-          <input
-            className={input}
-            maxLength={110}
-            value={project.subtitle}
-            onChange={(e) => patch({ subtitle: e.target.value })}
-          />
-        </label>
-        <label>
-          Opening title duration · seconds (0 = hidden)
-          <input
-            className={input}
-            type="number"
-            min="0"
-            max="30"
-            step="0.5"
-            value={project.titleSeconds}
-            onChange={(e) => patch({ titleSeconds: Number(e.target.value) })}
-          />
-        </label>
-        <div
-          className="rounded p-4 bg-[#0c1930] text-white self-center"
-          aria-label="Opening title layout preview"
-        >
-          <p className="text-xl break-words">{project.openingTitleMode === "none" || !project.titleSeconds ? "Title hidden" : project.title || "Title hidden"}</p>
-          {project.openingTitleMode !== "none" && !!project.title && !!project.titleSeconds && <p className="text-sm mt-3 break-words">{project.subtitle}</p>}
-          <small className="text-gray-400">
-            Layout sketch only · opening titles are applied at final assembly, not in clip previews.
-          </small>
-        </div>
-        <p className="md:col-span-2 text-sm text-cyan-200">{project.openingTitleMode === "overlay"
-          ? `Overlay follows the first included clip (${included[0]?.chapter || "add a clip to begin"}). Reordering or editing this opening title preserves your reusable clip renders. The overlay ends within that first clip.`
-          : project.openingTitleMode === "card" ? "A separate title card precedes your sequence at final assembly. Changing this title preserves reusable clip renders."
-          : "No opening title is added. Individual clip titles are unchanged."}</p>
-      </section>
-      </details>
-      <details className="bg-surface-800 rounded-lg p-4 space-y-3">
-        <summary className="cursor-pointer font-semibold">Stabilisation defaults & performance <span className="text-gray-400 font-normal">· {project.defaultStabilization} / {project.defaultStabilizationMethod}</span></summary>
-        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-3">
-          <label>
-            Stabiliser
-            <select className={input} value={project.defaultStabilizationMethod} onChange={(e) => patch({
-              defaultStabilizationMethod: e.target.value as StudioProject["defaultStabilizationMethod"],
-              ...(e.target.value === "quality" && project.defaultStabilization === "custom" ? { defaultStabilization: "balanced" as const } : {}),
-            })}>
-              <option value="fast">Fast — one pass</option>
-              <option value="quality">Quality — two passes</option>
-            </select>
-          </label>
-          <label>
-            Default preset
-            <select className={input} value={project.defaultStabilization} onChange={(e) => patch({ defaultStabilization: e.target.value as StudioProject["defaultStabilization"] })}>
-              <option value="off">Off</option>
-              <option value="gentle">Gentle — tracking pans</option>
-              <option value="balanced">Balanced</option>
-              <option value="strong">Strong</option>
-              {project.defaultStabilizationMethod === "fast" && <option value="custom">Custom</option>}
-            </select>
-          </label>
-          <label>
-            Hardware use
-            <select className={input} value={project.performance} onChange={(e) => patch({ performance: e.target.value as StudioProject["performance"] })}>
-              <option value="max">Maximum throughput</option>
-              <option value="balanced">Balanced — more room for other apps</option>
-            </select>
-          </label>
-          <label>
-            Encoder
-            <select aria-label="Encoder" className={input} value={project.encoderPreference} onChange={(e) => patch({ encoderPreference: e.target.value as StudioProject["encoderPreference"] })}>
-              <option value="auto">Automatic — NVIDIA, Intel, then CPU</option>
-              <option value="cpu">CPU — compatibility fallback</option>
-            </select>
-          </label>
-        </div>
-        <label className="flex items-start gap-2 text-sm">
-          <input
-            className="mt-1"
-            type="checkbox"
-            checked={project.adaptiveScheduling}
-            onChange={(e) => patch({ adaptiveScheduling: e.target.checked })}
-            aria-describedby="studio-adaptive-help"
-          />
-          <span>
-            Adaptive scheduling
-            <span id="studio-adaptive-help" className="block text-xs text-gray-400">
-              Adjusts future task launches and thread allocations using measured load and available memory.
-              Preserves video quality and lets active steps finish. Off uses fixed safety limits.
-              This setting applies to new previews and renders; already queued work keeps its settings.
-            </span>
-          </span>
-        </label>
-        {project.defaultStabilization === "custom" && <StudioStabilizationFields value={project.defaultCustomStabilization} onChange={(defaultCustomStabilization) => patch({ defaultCustomStabilization })} />}
-        <p className="text-sm text-gray-400">
-          Fast stabilisation estimates movement while rendering, with no separate shake-analysis pass.
-          Quality uses two passes and takes longer. Defaults apply to newly added clips; existing clips keep their settings until you apply them below.
-        </p>
-        <p className="text-xs text-gray-400">
-          {project.encoderPreference === "cpu"
-            ? "CPU encoding is selected for this project. Change Encoder above to use available hardware."
-            : "Hardware encoding is selected automatically: NVIDIA when available, then Intel, then CPU."}{" "}
-          Parallel work is bounded by CPU, memory and hardware capacity; utilisation varies with the footage and filters.
-        </p>
-        <div className="flex flex-wrap gap-2 items-center">
-          <button className="btn-secondary" disabled={!included.length || busy} onClick={() => applyDefaults()}>Apply to {included.length} included clip(s)</button>
-          <button className="btn-secondary" disabled={!clip || busy} onClick={() => applyDefaults(true)}>Apply to selected clip</button>
-          <span className="text-xs text-amber-200">Applying defaults resets the affected clips’ review approval.</span>
-        </div>
-      </details>
-      </aside>
       </div>
       <details className="studio-export-panel" open={finishOpen} onToggle={(event) => setFinishOpen(event.currentTarget.open)}><summary className="studio-panel-heading">Finish & export · {included.length} clips · {readyCount} ready</summary>
       <section id="studio-finish" className="studio-finish rounded-xl border border-cyan-800/60 bg-gradient-to-br from-surface-800 to-[#0c1930] p-5 space-y-4">
@@ -935,7 +806,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
         <div className="grid sm:grid-cols-3 gap-3 text-sm">
           <div className="rounded-lg bg-surface-900 p-3"><p className="text-gray-400 text-xs mb-1">OUTPUT</p>{outputLabel(project)}</div>
           <div className="rounded-lg bg-surface-900 p-3"><p className="text-gray-400 text-xs mb-1">DURATION / ESTIMATED SIZE</p>{timecode(projectDuration(project))} · ~{((projectDuration(project) * (project.bitrateMbps + 0.192)) / 8 / 1000).toFixed(2)} GB</div>
-          <div className="rounded-lg bg-surface-900 p-3"><p className="text-gray-400 text-xs mb-1">SOUND</p>{project.music.enabled ? "Original sound + background music" : "Original clip sound"}</div>
+          <div className="rounded-lg bg-surface-900 p-3"><p className="text-gray-400 text-xs mb-1">SOUND</p>{windClipCount ? `Wind cleanup on ${windClipCount} clip(s)` : "Original camera sound"}{project.music.enabled ? " + background music" : " · no music"}</div>
         </div>
         <p className="text-sm text-gray-300">The video follows your clip order, with each clip's titles and replays. Matching renders are reused; remaining clips are prepared automatically before assembly.</p>
         <p className="text-sm text-cyan-200">Current sequence: {included.length} included · {reviewedCount} approved · {readyCount} reusable renders · {included.length - readyCount} to prepare. New exports need their own disk space; the previous video is kept.</p>
