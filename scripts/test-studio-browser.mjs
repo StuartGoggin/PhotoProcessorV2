@@ -87,7 +87,7 @@ try {
   await review.getByRole("button", { name: "Approve & next", exact: true }).click();
   await review.getByRole("heading", { name: "Final run", exact: true }).waitFor();
   await review.getByRole("button", { name: "Needs review: Final run", exact: true }).click();
-  await page.getByRole("button", { name: "Render & assemble complete video", exact: true }).click();
+  await page.getByRole("button", { name: "Create updated final video — 3 clips", exact: true }).click();
   await page.waitForFunction(() => window.__lastStudioRequest?.renderKind === "project");
   assert.equal((await page.evaluate(() => window.__lastStudioRequest)).project.openingTitleMode, "overlay");
 

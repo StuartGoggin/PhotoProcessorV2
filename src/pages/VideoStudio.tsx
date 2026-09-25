@@ -9,6 +9,7 @@ import type { BackgroundMusic, StudioClip, StudioJob, StudioProject, StudioRepla
 import StudioBackgroundMusic from "../components/StudioBackgroundMusic";
 import StudioOutputSettings from "../components/StudioOutputSettings";
 import { STUDIO_CLEARED, resetProjectRenders } from "../utils/studioWorkflow";
+import { sequenceStatus, sequenceClipCount } from "../utils/studioWorkflow";
 import { applyCompletedRenders, approveAndNext, clipJob, clipStatus, editClip, isClipReady, moveClip, normalizeProject, outputLabel } from "../utils/studioWorkflow";
 import StudioStabilizationFields from "../components/StudioStabilizationFields";
 import StudioApprovalButton from "../components/StudioApprovalButton";
@@ -161,6 +162,8 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
         stagingDir,
         paths: Array.isArray(paths) ? paths : [paths],
       });
+      const priorPaths = new Set(project.clips.map((c) => c.path.toLowerCase()));
+      const addedPaths = new Set(info.map((c) => c.path.toLowerCase()).filter((path) => !priorPaths.has(path)));
       setProject((prev) => {
         const known = new Set(prev.clips.map((c) => c.path.toLowerCase()));
         const added = info
@@ -191,6 +194,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
           outputDir: prev.outputDir || stagingDir,
         };
       });
+      setMessage(`${addedPaths.size} new clip(s) added. Existing clip renders are preserved; earlier exports and saved jobs have not been updated. Review the new clips, then create an updated final video from the current sequence.`);
     });
   }
   async function saveProject() {
@@ -285,7 +289,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
         renderKind: preview ? "preview" : "project", clipId: null, assembleOnly: false,
       });
       setMessage(preview ? "720p preview queued; full renders use your output settings."
-        : "Complete video queued. Matching clips will be reused, pending clips rendered, then the video assembled.");
+        : `Final video queued with ${p.clips.filter((c) => c.include).length} included clips. This saved request will not change if you edit the project. Matching clips will be reused, pending clips rendered, then the video assembled.`);
     });
   }
   async function contactSheet() {
@@ -319,7 +323,9 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
   const pendingCount = included.filter((c) => c.reviewed && !isClipReady(c, project) && !clipJob(c, project, jobs)).length;
   const activeClipJob = clip ? clipJob(clip, project, jobs) : undefined;
   const musicReady = !project.music.enabled || !!project.music.audioPath;
-  const finalBusy = jobs.some((j) => ["project", "assembly"].includes(j.kind || "") && ["queued", "running", "paused"].includes(j.status) && j.targets?.some((t) => included.some((c) => c.id === t.clipId)));
+  const activeFinals = jobs.filter((j) => ["project", "assembly"].includes(j.kind || "") && ["queued", "running", "paused"].includes(j.status));
+  const finalBusy = activeFinals.some((j) => sequenceStatus(j, project) === "current");
+  const olderActiveFinal = activeFinals.find((j) => sequenceStatus(j, project) !== "current" && j.targets?.some((t) => included.some((c) => c.id === t.clipId)));
   const formatValid = Number.isInteger(project.bitrateMbps) && project.bitrateMbps >= 1 && project.bitrateMbps <= 150;
   const finalBlocked = !included.length ? "Add clips to begin." : !approved ? "Review the included clips before creating the video." : !project.outputDir ? "Choose an output folder." : !formatValid ? "Set bitrate between 1 and 150 Mbps." : !musicReady ? "Choose a music file or turn background music off." : "";
   if (!loaded) return <p className="p-6 text-gray-400">Loading Video Studio project…</p>;
@@ -889,17 +895,19 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
           <div className="rounded-lg bg-surface-900 p-3"><p className="text-gray-400 text-xs mb-1">SOUND</p>{project.music.enabled ? "Original sound + background music" : "Original clip sound"}</div>
         </div>
         <p className="text-sm text-gray-300">The video follows your clip order, with each clip's titles and replays. Matching renders are reused; remaining clips are prepared automatically before assembly.</p>
+        <p className="text-sm text-cyan-200">Current sequence: {included.length} included · {reviewedCount} approved · {readyCount} reusable renders · {included.length - readyCount} to prepare. New exports need their own disk space; the previous video is kept.</p>
+        {olderActiveFinal && <p role="status" className="text-sm text-amber-200">A saved {sequenceClipCount(olderActiveFinal) ?? "unknown"}-clip render is still active and will not pick up these edits. You can queue the current sequence separately; existing work will not be cancelled.</p>}
         <p className="text-sm text-cyan-200">Opening title: {project.openingTitleMode === "none" || !project.title || !project.titleSeconds ? "None" : project.openingTitleMode === "overlay" ? `Overlay on ${included[0]?.chapter || "the first included clip"} at final assembly` : "Separate title card"}. Chapter timings are generated from the finished export.</p>
         {finalBlocked && <p role="status" className="text-sm text-amber-200">{finalBlocked}</p>}
         <div className="flex flex-wrap items-center gap-3">
           <button className="btn-primary" disabled={busy || !!finalBlocked || finalBusy} onClick={() => void render(false)}>
-            {finalBusy ? "Video queued / rendering" : readyCount === included.length && included.length ? "Assemble complete video" : "Render & assemble complete video"}
+            {finalBusy ? `Current ${included.length}-clip video queued / rendering` : `Create updated final video — ${included.length} clips`}
           </button>
           <button className="btn-secondary" onClick={onOpenJobs}>View render queue</button>
         </div>
-        <p className="text-xs text-gray-400">Projects autosave locally. Render requests and verified clips are saved on disk. After reopening the app, use Resume saved render in Jobs to continue interrupted work. Each export creates a new file.</p>
+        <p className="text-xs text-gray-400">This button always uses the current sequence. Resume saved render in Jobs continues that job's original clip list, not later additions. Projects autosave locally. Each export creates a new file; no cache clearing is needed.</p>
       </section>
-      <StudioExportDescription jobs={jobs} />
+      <StudioExportDescription jobs={jobs} project={project} />
       <StudioJobs />
       <button className="btn-secondary" onClick={onOpenJobs}>
         All application jobs

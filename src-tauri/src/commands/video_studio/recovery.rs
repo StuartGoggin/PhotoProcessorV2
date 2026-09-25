@@ -186,6 +186,7 @@ pub(super) fn enqueue(request: RenderRequest) -> Result<String, String> {
         width: if request.preview { 1280 } else { p.width }, height: if request.preview { 720 } else { p.height },
         fps: p.fps, bitrate_mbps: effective_bitrate(p), duration: project_timeline_seconds(p),
         targets: if request.kind == "music" { vec![] } else { p.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision }).collect() },
+        sequence: if !request.preview && matches!(request.kind.as_str(), "project" | "assembly") { Some(sequence::recipe(p)) } else { None },
         music_request_id: if request.kind == "music" { p.music.request_id.clone() } else { String::new() },
         ..StudioJob::default()
     };
@@ -379,6 +380,8 @@ fn execute(request: RenderRequest, id: &str) -> Result<String, String> {
     p.clips = results.into_inner().map_err(|e| e.to_string())?.into_iter()
         .map(|result| result.ok_or("Clip worker did not return a result")?).collect::<Result<Vec<_>, String>>()?;
     if request.kind == "clip" { return Ok(p.clips[0].rendered.as_ref().unwrap().path.clone()); }
+    sequence::verify_prepared(&request.project, &p)?;
+    update(id, |job| { job.logs.push(format!("Saved sequence verified: {} prepared clips in requested order", p.clips.len())); });
     update(id, |job| { job.progress_base = 85.; job.progress_scale = 0.15; job.work_progress.clear(); job.work_weights.clear(); });
     render(p, request.staging_dir, false, None, None, "assembly", true, id)
 }
@@ -437,6 +440,10 @@ mod tests {
         assert_eq!(info["chapters"].as_array().unwrap().len(), 4);
         let manifest: Value = serde_json::from_slice(&fs::read(Path::new(&output).parent().unwrap().join("delivery.json")).unwrap()).unwrap();
         assert_eq!(manifest["manifest"]["chapters"][2]["startFrame"], 84);
+        assert_eq!(manifest["sequence"], sequence::recipe(&request.project));
+        assert_eq!(manifest["sequenceVerification"]["planned"][0]["clipId"], "one");
+        assert_eq!(manifest["sequenceVerification"]["assembled"][1]["clipId"], "two");
+        assert_eq!(manifest["sequenceVerification"]["assembled"].as_array().unwrap().len(), 2);
         let description = fs::read_to_string(Path::new(&output).parent().unwrap().join("youtube-description.txt")).unwrap();
         assert!(description.contains("00:02 Second = #video"));
         fn bright_pixels(ff: &Path, path: &Path, second: &str) -> usize {
@@ -454,6 +461,9 @@ mod tests {
         request.project.clips.reverse(); request.project.title = "Changed after reordering".into(); request.assemble_only = true;
         let reordered = execute(request.clone(), &id).unwrap();
         let reordered_info = inspect(&ff, Path::new(&reordered)).unwrap();
+        let reordered_manifest: Value = serde_json::from_slice(&fs::read(Path::new(&reordered).parent().unwrap().join("delivery.json")).unwrap()).unwrap();
+        assert_eq!(reordered_manifest["sequenceVerification"]["planned"][0]["clipId"], "two");
+        assert_eq!(reordered_manifest["sequenceVerification"]["assembled"][0]["clipId"], "two");
         assert_eq!(reordered_info["chapters"][0]["tags"]["title"], "Second = #video");
         assert_eq!(reordered_info["chapters"][2]["tags"]["title"], p.clips[0].chapter);
         assert!(bright_pixels(&ff, Path::new(&reordered), "0.5") > 1000);

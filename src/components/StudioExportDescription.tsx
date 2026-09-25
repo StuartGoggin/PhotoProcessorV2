@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { StudioJob } from "../types/videoStudio";
+import type { StudioJob, StudioProject } from "../types/videoStudio";
 import { clipName } from "../types/videoStudio";
+import { sequenceClipCount, sequenceStatus } from "../utils/studioWorkflow";
 
 interface ExportDescription {
   text: string;
@@ -11,7 +12,7 @@ interface ExportDescription {
 }
 interface Draft extends ExportDescription { savedText: string }
 
-export default function StudioExportDescription({ jobs }: { jobs: StudioJob[] }) {
+export default function StudioExportDescription({ jobs, project }: { jobs: StudioJob[]; project?: StudioProject }) {
   const exports = jobs.filter((job) => job.status === "completed" && job.output && ["project", "assembly"].includes(job.kind || ""))
     .sort((a, b) => (b.finishedAt || b.createdAt || b.id).localeCompare(a.finishedAt || a.createdAt || a.id));
   const [selected, setSelected] = useState("");
@@ -21,10 +22,16 @@ export default function StudioExportDescription({ jobs }: { jobs: StudioJob[] })
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const firstExport = exports[0]?.id || "";
+  const related = project ? exports.filter((job) => job.targets?.some((t) => project.clips.some((c) => c.id === t.clipId && c.path === t.sourcePath))) : exports;
+  // An older snapshot may finish last. Prefer a match, not completion time alone.
+  const latest = (project && related.find((job) => sequenceStatus(job, project) === "current")) || related[0];
+  const firstExport = latest?.id || exports[0]?.id || "";
   useEffect(() => { if (!selected && firstExport) setSelected(firstExport); }, [selected, firstExport]);
   const draft = drafts[selected];
   const selectedExport = exports.find((job) => job.id === selected);
+  const freshness = selectedExport && project ? sequenceStatus(selectedExport, project) : "unknown";
+  const countLabel = (job: StudioJob) => sequenceClipCount(job) == null ? "clip count unknown" : `${sequenceClipCount(job)} clips`;
+  const statusLabel = (job: StudioJob) => !project ? "" : sequenceStatus(job, project) === "current" ? "Matches current edit" : sequenceStatus(job, project) === "outdated" ? "Different from current edit" : "Older export · match unverified";
   useEffect(() => {
     if (!selected || draft) { setLoading(false); return; }
     let alive = true;
@@ -61,9 +68,19 @@ export default function StudioExportDescription({ jobs }: { jobs: StudioJob[] })
         <select className="block mt-1 w-full bg-surface-900 rounded border border-surface-600 px-3 py-2" value={selected} disabled={working}
           onChange={(e) => { setSelected(e.target.value); setError(""); setNotice(""); }}>
           {selected && !selectedExport && <option value={selected}>Previous export · no longer in history</option>}
-          {exports.map((job) => <option value={job.id} key={job.id}>{job.name} · {clipName(job.output!)} · {job.finishedAt || job.createdAt || job.id}</option>)}
+          {exports.map((job) => <option value={job.id} key={job.id}>{job.name} · {countLabel(job)} · {statusLabel(job)} · {clipName(job.output!)} · {job.finishedAt || job.createdAt || job.id}</option>)}
         </select>
       </label>
+      {selectedExport && project && <p role="status" aria-label="Export sequence status" className={`text-sm ${freshness === "current" ? "text-emerald-300" : "text-amber-200"}`}>
+        Selected export: {countLabel(selectedExport)}. {freshness === "current" ? "Matches the current edit recipe." : freshness === "outdated" ? `This export differs from your current ${project.clips.filter((c) => c.include).length}-clip sequence. Create an updated final video to include your changes.` : "This older export has no complete sequence record; its match to the current edit is unverified."} Earlier videos are never changed by project edits.
+      </p>}
+      {latest && latest.id !== selected && <div className="space-y-2">
+        <p className="text-sm text-cyan-200">{project && sequenceStatus(latest, project) === "current" ? "Latest export matching your current edit" : "Latest saved export; a match to the current edit is not confirmed"}: {countLabel(latest)}. Your description draft will be kept.</p>
+        <button className="btn-secondary" disabled={working} onClick={() => {
+          setSelected(latest.id); setError(""); setNotice("");
+          void invoke("open_in_default_app", { path: latest.output }).catch((e) => setError(`Could not open the latest video: ${String(e)}`));
+        }}>Open latest export</button>
+      </div>}
       <p className="text-xs text-gray-400 break-all">{selectedExport?.output || "This export is no longer in job history. Your draft is retained until you leave Studio."}</p>
       {loading && <p role="status">Loading saved description…</p>}
       {draft && <>

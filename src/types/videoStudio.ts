@@ -137,6 +137,8 @@ export interface StudioSchedulerSnapshot {
   reason: string;
 }
 export interface StudioJob {
+  // Immutable edit recipe captured by native enqueue; absent on legacy jobs.
+  sequence?: unknown;
   id: string;
   name: string;
   status: string;

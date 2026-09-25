@@ -9,6 +9,7 @@ mod recovery;
 mod soundtrack;
 mod diagnostics;
 mod delivery;
+mod sequence;
 pub use delivery::{studio_read_export_description, studio_save_export_description};
 pub use diagnostics::studio_read_job_log;
 pub use recovery::{studio_retry_job, init_studio_recovery, studio_clear_jobs};
@@ -270,6 +271,9 @@ pub struct StudioJob {
     pub artifacts: Vec<ClipArtifact>,
     #[serde(default)]
     pub targets: Vec<ClipTarget>,
+    // Older jobs have no recipe: they must remain unknown, never assumed current.
+    #[serde(default)]
+    pub sequence: Option<Value>,
     #[serde(default)]
     pub music_request_id: String,
     #[serde(default)]
@@ -2027,6 +2031,9 @@ fn render(
     let mut manifest = delivery::Manifest::new(p.fps);
     let mut concat = String::new();
     let has_card = final_delivery && p.opening_title_mode == "card" && p.title_seconds > 0. && !p.title.is_empty();
+    let sequence_verification = if final_delivery && assemble_only {
+        Some(sequence::verify_assembly(&p, &segments, has_card)?)
+    } else { None };
     for (index, (file, title)) in segments.iter_mut().enumerate() {
         let info = inspect(ff, file)?;
         let n = delivery::frame_count(&info)?;
@@ -2150,7 +2157,7 @@ fn render(
     let output_name = if preview { "preview.mp4" } else if render_kind == "clip" { "clip-render.mp4" } else { "training-video.mp4" };
     let output = folder.join(output_name);
     fs::rename(&partial, &output).map_err(|e| e.to_string())?;
-    if final_delivery { delivery::write_artifacts(&folder, &p, output_name, &manifest)?; }
+    if final_delivery { delivery::write_artifacts(&folder, &p, output_name, &manifest, sequence_verification.as_ref())?; }
     fs::write(
         folder.join("verification.json"),
         serde_json::to_vec_pretty(

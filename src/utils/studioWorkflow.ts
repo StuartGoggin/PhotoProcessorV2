@@ -16,6 +16,37 @@ export function notifyStudioCleared() {
 export const suggestedBitrate = (width: number) => width === 3840 ? 32 : width === 1920 ? 10 : 4;
 export const outputLabel = (p: Pick<StudioProject, "width" | "height" | "fps" | "bitrateMbps">) =>
   `${p.width}×${p.height} · ${p.fps} fps · ${p.bitrateMbps} Mbps`;
+
+// Shared v1 value contract with native video_studio/sequence.rs. Compare recipes,
+// not cache/progress state or just counts. This is not a source-file hash check.
+export function sequenceRecipe(p: StudioProject): unknown[] {
+  return [1, [p.name, p.title, p.subtitle, p.titleSeconds, p.openingTitleMode || "card"],
+    [p.width, p.height, p.fps, p.bitrateMbps || suggestedBitrate(p.width)],
+    p.music.enabled ? [p.music.audioPath, p.music.musicVolume, p.music.originalVolume] : null,
+    p.clips.filter((c) => c.include).map((c) => [c.id, c.path, c.revision ?? 0, c.duration, c.chapter,
+      c.title, c.titleSeconds, c.stabilization, c.stabilizationMethod || "quality",
+      [c.customStabilization.radius, c.customStabilization.blockSize, c.customStabilization.contrast], c.framing,
+      c.replays.filter((r) => r.enabled).map((r) => [r.id, r.start, r.end, r.speed, r.caption])])];
+}
+export type SequenceStatus = "current" | "outdated" | "unknown";
+export function sequenceStatus(job: Pick<StudioJob, "sequence" | "targets">, p: StudioProject): SequenceStatus {
+  if (Array.isArray(job.sequence) && job.sequence.length === 5 && job.sequence[0] === 1) {
+    return JSON.stringify(job.sequence) === JSON.stringify(sequenceRecipe(p)) ? "current" : "outdated";
+  }
+  // Legacy targets can prove a mismatch, but cannot establish a matching recipe.
+  if (job.targets?.length) {
+    const clips = p.clips.filter((c) => c.include);
+    if (clips.length !== job.targets.length || clips.some((c, i) => {
+      const t = job.targets![i];
+      return c.id !== t.clipId || c.path !== t.sourcePath || (c.revision ?? 0) !== t.revision;
+    })) return "outdated";
+  }
+  return "unknown";
+}
+export function sequenceClipCount(job: Pick<StudioJob, "sequence" | "targets">): number | null {
+  if (Array.isArray(job.sequence) && job.sequence[0] === 1 && Array.isArray(job.sequence[4])) return job.sequence[4].length;
+  return job.targets?.length ? job.targets.length : null;
+}
 export const normalizeProject = (p: StudioProject): StudioProject => ({
   ...normalizeHardware(p), bitrateMbps: p.bitrateMbps || suggestedBitrate(p.width),
   music: { ...newBackgroundMusic(), ...p.music },

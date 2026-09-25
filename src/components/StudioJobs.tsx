@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { STUDIO_CLEARED, notifyStudioCleared } from "../utils/studioWorkflow";
+import { STUDIO_CLEARED, notifyStudioCleared, sequenceClipCount } from "../utils/studioWorkflow";
 import { invoke } from "@tauri-apps/api/core";
 import type { StudioJob } from "../types/videoStudio";
 import { formatStudioMetric, liveStudioScheduler, sortStudioJobs } from "../types/videoStudio";
@@ -109,7 +109,7 @@ export default function StudioJobs({
       {message && <p role="status" className="text-sm text-cyan-200">{message}</p>}
       <p className="text-sm text-gray-400">
         Work continues while you change pages. Pause takes effect between steps. After an interruption,
-        resume the saved request to reuse verified clips and finish the video.
+        resume the saved request to reuse verified clips and finish that original sequence. Later additions are not included; use Create updated final video in Studio for the current edit.
       </p>
       {view === undefined && <div className="flex flex-wrap gap-2" role="group" aria-label="Filter Studio jobs">
         {JOBS_VIEWS.map((item) => <button key={item.id} className={`btn-secondary text-xs ${selectedView === item.id ? "ring-1 ring-cyan-400 text-white" : item.id === "attention" && counts.attention ? "text-amber-200" : ""}`} aria-pressed={selectedView === item.id} onClick={() => setLocalView(item.id)}>{item.label} ({counts[item.id]})</button>)}
@@ -140,6 +140,7 @@ export default function StudioJobs({
             <progress className="w-full" max={100} value={percent(task.progress)} aria-label={`${task.phase} progress`} />
           </div>)}</div>}
           <p className="text-xs text-gray-400">{j.kind} · {j.width}×{j.height} · {j.fps} fps · {j.bitrateMbps ?? "—"} Mbps · {j.artifacts?.length ?? 0} clips saved</p>
+          {["project", "assembly"].includes(j.kind || "") && <p className="text-xs text-cyan-200">Saved sequence: {sequenceClipCount(j) ?? "unknown"} clips. This request does not change when clips are added in Studio.</p>}
           <progress
             className="w-full"
             max="100"
@@ -149,7 +150,7 @@ export default function StudioJobs({
           <fieldset disabled={clearing || pendingJob !== null} className="flex flex-wrap gap-2">
             {j.status === "queued" && <><button className="btn-secondary" disabled={j.queuePosition == null || j.queuePosition <= 1} onClick={() => void control(j.id, "up")}>Move earlier</button><button className="btn-secondary" disabled={j.queuePosition == null || j.queuePosition >= maxQueuePosition} onClick={() => void control(j.id, "down")}>Move later</button></>}
             {["interrupted", "failed", "cancelled"].includes(j.status) && j.kind !== "music" && <button className="btn-secondary" onClick={() => void control(j.id, "retryCpu")}>Retry with CPU</button>}
-            {["interrupted", "failed", "cancelled"].includes(j.status) && <button className="btn-primary" onClick={() => void retry(j.id)}>Resume saved render</button>}
+            {["interrupted", "failed", "cancelled"].includes(j.status) && <button className="btn-primary" onClick={() => void retry(j.id)}>{["project", "assembly"].includes(j.kind || "") ? `Resume saved ${sequenceClipCount(j) ?? "unknown"}-clip render` : "Resume saved render"}</button>}
             {["running", "queued", "paused"].includes(j.status) && (
               <>
                 <button

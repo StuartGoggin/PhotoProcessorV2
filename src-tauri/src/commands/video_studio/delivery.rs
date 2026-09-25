@@ -154,9 +154,13 @@ pub(super) fn opening_overlay(ff: &Path, p: &Project, encoder_name: &str, input:
 struct SavedDelivery {
     output_name: String,
     manifest: Manifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sequence: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sequence_verification: Option<sequence::Verification>,
 }
 
-pub(super) fn write_artifacts(folder: &Path, p: &Project, output_name: &str, manifest: &Manifest) -> Result<(), String> {
+pub(super) fn write_artifacts(folder: &Path, p: &Project, output_name: &str, manifest: &Manifest, sequence_verification: Option<&sequence::Verification>) -> Result<(), String> {
     manifest.validate()?;
     let heading = if p.title.trim().is_empty() { label(&p.name) } else { label(&p.title) };
     let subtitle = if p.subtitle.trim().is_empty() { String::new() } else { format!("\n{}", label(&p.subtitle)) };
@@ -164,7 +168,10 @@ pub(super) fn write_artifacts(folder: &Path, p: &Project, output_name: &str, man
     // Artifacts are part of the unpublished .partial folder. Any write failure
     // fails the job before the one final directory rename announces completion.
     fs::write(folder.join(DESCRIPTION), text.as_bytes()).map_err(|e| format!("Could not save YouTube description: {e}"))?;
-    fs::write(folder.join(MANIFEST), serde_json::to_vec_pretty(&SavedDelivery { output_name: output_name.into(), manifest: manifest.clone() }).map_err(|e| e.to_string())?)
+    fs::write(folder.join(MANIFEST), serde_json::to_vec_pretty(&SavedDelivery {
+        output_name: output_name.into(), manifest: manifest.clone(),
+        sequence: Some(sequence::recipe(p)), sequence_verification: sequence_verification.cloned(),
+    }).map_err(|e| e.to_string())?)
         .map_err(|e| format!("Could not save delivery metadata: {e}"))
 }
 
@@ -332,7 +339,7 @@ mod tests {
         update(&id, |j| j.status = "cancelled".into()); assert!(read_description(&id).is_err());
         update(&id, |j| j.status = "completed".into());
         assert!(read_description(&id).err().unwrap().contains("export it again"));
-        write_artifacts(&root, &p, "training-video.mp4", &manifest).unwrap();
+        write_artifacts(&root, &p, "training-video.mp4", &manifest, None).unwrap();
         let before = fs::read(root.join(MANIFEST)).unwrap();
         assert_eq!(read_description(&id).unwrap().chapters[0].start_seconds, 0.);
         save_description(&id, "My edit\n00:00 First\n").unwrap();
