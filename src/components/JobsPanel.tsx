@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 import type { ImportJob, ProcessJob } from "../types";
 import type { StudioJob } from "../types/videoStudio";
-import { sortStudioJobs } from "../types/videoStudio";
+import { liveStudioScheduler, sortStudioJobs } from "../types/videoStudio";
 import { countJobs, isActiveJob, readPanelSize, type JobsView } from "../utils/jobsView";
 import JobTile from "./JobTile";
 import JobConsole from "./JobConsole";
@@ -15,13 +15,21 @@ interface JobsPanelProps {
   loading?: boolean;
   error?: string | null;
   onOpenJobs?: (view: JobsView) => void;
+  preferCollapsed?: boolean;
 }
 
-export default function JobsPanel({ importJobs, processJobs, studioJobs = [], loading = false, error, onOpenJobs }: JobsPanelProps) {
+export default function JobsPanel({ importJobs, processJobs, studioJobs = [], loading = false, error, onOpenJobs, preferCollapsed = false }: JobsPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
   const [panelHeight, setPanelHeight] = useState(() => readPanelSize("jobsPanelHeight", 280, 180, 560));
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapseChoice, setCollapseChoice] = useState<boolean | null>(() => {
+    try { const saved = localStorage.getItem("jobsPanelCollapsed"); return saved === "true" ? true : saved === "false" ? false : null; } catch { return null; }
+  });
+  const collapsed = collapseChoice ?? preferCollapsed;
+  function setCollapsed(value: boolean) {
+    setCollapseChoice(value);
+    try { localStorage.setItem("jobsPanelCollapsed", String(value)); } catch { /* Optional display preference. */ }
+  }
   const [isResizing, setIsResizing] = useState(false);
   const jobs = [
     ...processJobs.map((job) => ({ job, key: `process-${job.id}` })),
@@ -34,6 +42,11 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs = [], lo
   const activeStudio = sortStudioJobs(studioJobs.filter(isActiveJob));
   const counts = countJobs([...importJobs, ...processJobs, ...studioJobs]);
   const expanded = counts.active > 0 && !collapsed;
+  const isMemoryWait = (value: unknown): value is string => typeof value === "string" && /^Waiting for (?:available )?(?:RAM|memory)\b/i.test(value);
+  const memoryWaiting = activeStudio.filter((job) => job.status === "running" && !job.paused && isMemoryWait(job.phase));
+  const schedulerReason = liveStudioScheduler(activeStudio.filter((job) => !job.paused))?.reason;
+  const memorySummary = memoryWaiting.length ? `${memoryWaiting.length} Studio job${memoryWaiting.length === 1 ? "" : "s"} waiting for RAM · ${memoryWaiting[0].phase}`
+    : isMemoryWait(schedulerReason) ? `Shared render capacity · ${schedulerReason}` : "";
   const selectedJob = jobs.find(({ key }) => key === selectedJobKey)?.job;
 
   useEffect(() => {
@@ -80,6 +93,7 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs = [], lo
         </div>
       </div>
       {error && <p role="alert" className="jobs-panel-warning">Job updates unavailable; showing the last known state. {error}</p>}
+      {!expanded && memorySummary && <p role="status" aria-label="Memory wait" title={memorySummary} className="px-3 pb-2 text-xs text-amber-200 truncate">{memorySummary}</p>}
       {loading && counts.active === 0 && <p role="status" className="px-3 pb-2 text-xs text-gray-400">Checking jobs…</p>}
       <div id="active-jobs-content" hidden={!expanded} className="jobs-panel-content">
         <div className="jobs-panel-scroll" tabIndex={0} role="region" aria-label="Active jobs list">

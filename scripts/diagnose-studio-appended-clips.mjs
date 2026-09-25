@@ -45,6 +45,7 @@ try {
   }, { before });
   await page.goto(url);
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: /Video Studio/ }).click();
+  await page.locator("summary").filter({ hasText: /^Finish & export/ }).click();
   await page.getByRole("button", { name: `Create updated final video — ${before} clips`, exact: true }).click();
   await page.waitForFunction(() => window.__lastStudioRequest?.renderKind === "project");
   assert.equal((await page.evaluate(() => window.__lastStudioRequest)).project.clips.length, before);

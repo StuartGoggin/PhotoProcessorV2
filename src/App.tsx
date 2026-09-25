@@ -175,7 +175,7 @@ export default function App() {
       </div>
 
       {/* Jobs panel (bottom frame) */}
-      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} loading={loading} error={error} onOpenJobs={openJobs} />
+      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} loading={loading} error={error} onOpenJobs={openJobs} preferCollapsed={page === "videostudio"} />
     </div>
   );
 }

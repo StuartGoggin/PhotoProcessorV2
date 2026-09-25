@@ -8,6 +8,8 @@ export interface StudioReplay {
 }
 export type StudioStabilizationPreset = "off" | "gentle" | "balanced" | "strong" | "custom";
 export type StudioStabilizationMethod = "fast" | "quality";
+export type StudioWindReductionPreset = "off" | "light" | "moderate" | "strong";
+export type StudioClipWindReduction = "inherit" | StudioWindReductionPreset;
 export interface StudioCustomStabilization {
   radius: number;
   blockSize: number;
@@ -35,6 +37,8 @@ export interface StudioClip {
   replays: StudioReplay[];
   rendered?: StudioClipRender | null;
   revision?: number;
+  // Camera-audio processing is applied at final assembly, not picture rendering.
+  windReduction?: StudioClipWindReduction;
 }
 export interface StudioClipRender {
   path: string;
@@ -110,6 +114,7 @@ export interface StudioProject {
   encoderPreference: "auto" | "cpu";
   clips: StudioClip[];
   music: BackgroundMusic;
+  defaultWindReduction?: StudioWindReductionPreset;
   assembleRenderedClips?: boolean;
   bitrateMbps: number;
 }
@@ -237,6 +242,7 @@ export const newProject = (): StudioProject => ({
   encoderPreference: "auto",
   clips: [],
   music: newBackgroundMusic(),
+  defaultWindReduction: "off",
   assembleRenderedClips: true,
   bitrateMbps: 32,
 });
@@ -251,10 +257,12 @@ export const normalizeProject = (project: StudioProject): StudioProject => ({
   performance: project.performance ?? "max",
   adaptiveScheduling: project.adaptiveScheduling ?? true,
   encoderPreference: project.encoderPreference ?? "auto",
+  defaultWindReduction: project.defaultWindReduction ?? "off",
   clips: project.clips.map((clip) => ({
     ...clip,
     stabilizationMethod: clip.stabilizationMethod ?? "quality",
     customStabilization: clip.customStabilization ?? defaultCustomStabilization(),
+    windReduction: clip.windReduction ?? "inherit",
   })),
 });
 export const clipName = (path: string) => path.split(/[\\/]/).pop() || path;

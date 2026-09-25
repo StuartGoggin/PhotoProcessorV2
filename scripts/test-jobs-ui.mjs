@@ -97,6 +97,35 @@ test("poll errors are visible even in an empty dock and diagnostic text is escap
   assert.match(markup, /last known state/);
   assert.match(markup, /&lt;device lost&gt;/);
 });
+
+test("collapsed Studio dock keeps live RAM waits outside hidden job tiles", () => {
+  const waiting = { ...studioJob("running"), phase: "Waiting for memory: 2231 MiB available <render>" };
+  const markup = render(JobsPanel, { importJobs: [], processJobs: [], studioJobs: [waiting], preferCollapsed: true });
+  assert.match(markup, /aria-expanded="false"/);
+  assert.match(markup, /aria-label="Memory wait"/);
+  assert.match(markup, /1 Studio job waiting for RAM/);
+  assert.match(markup, /2231 MiB available &lt;render&gt;/);
+  assert.ok(markup.indexOf('aria-label="Memory wait"') < markup.indexOf('id="active-jobs-content"'), "warning remains outside collapsed content");
+});
+
+test("collapsed RAM summary never revives terminal or paused telemetry", () => {
+  const scheduler = { adaptive: true, targetWorkers: 2, activeWorkers: 0, reservedThreads: 0, reason: "Waiting for memory: 2231 MiB available" };
+  for (const status of ["completed", "failed", "interrupted", "paused", "queued"]) {
+    const markup = render(JobsPanel, { importJobs: [], processJobs: [], studioJobs: [{ ...studioJob(status), phase: "Waiting for RAM", scheduler }], preferCollapsed: true });
+    assert.doesNotMatch(markup, /aria-label="Memory wait"/, status);
+  }
+  const markup = render(JobsPanel, { importJobs: [], processJobs: [], studioJobs: [{ ...studioJob("running"), scheduler }], preferCollapsed: true });
+  assert.match(markup, /Shared render capacity/);
+  assert.match(markup, /aria-label="Memory wait"/);
+});
+
+test("explicit jobs display choice wins over the Studio slim default", () => {
+  globalThis.localStorage = { getItem: () => "false" };
+  try {
+    const markup = render(JobsPanel, { importJobs: [importJob("running")], processJobs: [], preferCollapsed: true });
+    assert.match(markup, /aria-expanded="true"/);
+  } finally { delete globalThis.localStorage; }
+});
 test("dock and tile provide keyboard accessible scrolling sizing and selection", () => {
   const markup = render(JobsPanel, { importJobs: [importJob("running")], processJobs: [] });
   assert.match(markup, /role="separator" tabindex="0"/);

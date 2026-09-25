@@ -10,6 +10,8 @@ mod soundtrack;
 mod diagnostics;
 mod delivery;
 mod sequence;
+mod audio;
+pub use audio::studio_audio_preview;
 pub use delivery::{studio_read_export_description, studio_save_export_description};
 pub use diagnostics::studio_read_job_log;
 pub use recovery::{studio_retry_job, init_studio_recovery, studio_clear_jobs};
@@ -93,6 +95,8 @@ pub struct Clip {
     pub rendered: Option<ClipRender>,
     #[serde(default)]
     pub revision: u32,
+    #[serde(default = "audio::inherit")]
+    pub wind_reduction: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -184,6 +188,8 @@ pub struct Project {
     pub clips: Vec<Clip>,
     #[serde(default)]
     pub music: BackgroundMusic,
+    #[serde(default = "off_preset")]
+    pub default_wind_reduction: String,
     #[serde(default)]
     pub assemble_rendered_clips: bool,
     #[serde(default)]
@@ -496,6 +502,7 @@ fn music_audio_source(path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 fn validate(p: &Project) -> Result<(), String> {
+    audio::validate(p)?;
     // Bound delivery text before any expensive work. This exceeds the complete
     // legacy snapshot size limit, so existing loadable projects retain labels.
     let chapter_bytes = p.clips.iter().try_fold(0usize, |total, clip| {
@@ -2034,10 +2041,19 @@ fn render(
     let sequence_verification = if final_delivery && assemble_only {
         Some(sequence::verify_assembly(&p, &segments, has_card)?)
     } else { None };
+    let wind_recipe = if final_delivery { audio::recipe(&p) } else { None };
+    let audio_presets = audio::segment_presets(&p, assemble_only, has_card);
+    if wind_recipe.is_some() && audio_presets.len() != segments.len() {
+        return Err("Camera audio intervals do not match the rendered sequence".into());
+    }
+    let mut audio_windows = vec![];
     for (index, (file, title)) in segments.iter_mut().enumerate() {
         let info = inspect(ff, file)?;
         let n = delivery::frame_count(&info)?;
         let d = n as f64 / p.fps as f64;
+        if wind_recipe.is_some() {
+            audio_windows.push((audio_presets[index].clone(), manifest.frames, manifest.frames.checked_add(n).ok_or("Audio timeline overflow")?));
+        }
         let local = if assemble_only && !(has_card && index == 0) {
             delivery::clip_chapters(&info, &p.clips[index - usize::from(has_card)], p.fps, n)?
         } else { vec![(title.clone(), n)] };
@@ -2088,7 +2104,15 @@ fn render(
         "-video_track_timescale".into(),
         "90000".into(),
     ]);
-    if background_audio.is_some() {
+    if wind_recipe.is_some() {
+        let camera = audio::camera_chain(p.fps, &audio_windows)?;
+        let mix = background_audio.as_ref().map(|_| (p.music.music_volume, p.music.original_volume));
+        // A bounded script avoids Windows' command-line length limit for 500
+        // per-clip overrides; the filename and every filter token are ours.
+        text_asset(&work, "camera-audio.txt", &audio::assembly_graph(&camera, mix, total))?;
+        final_args.extend(["-filter_complex_script".into(), "camera-audio.txt".into(), "-map".into(), "[mix]".into()]);
+        update(id, |job| job.logs.push("Camera wind reduction v1 applied before music; stabilised video streams copied unchanged (except any requested opening overlay)".into()));
+    } else if background_audio.is_some() {
         let music = f64::from(p.music.music_volume) / 100.0;
         let original = f64::from(p.music.original_volume) / 100.0;
         let fade_start = (total - 2.0).max(0.0);
@@ -2167,6 +2191,7 @@ fn render(
                 "chapters":manifest.chapters.len(),
                 "output":output,
                 "backgroundMusic": if background_audio.is_some() { json!({"enabled":true,"musicVolume":p.music.music_volume,"originalVolume":p.music.original_volume}) } else { Value::Null },
+                "cameraAudio": wind_recipe,
                 "fragmentCache": if preview { Value::Null } else { json!(fragment_cache) },
                 "fragments": segments.iter().map(|(path, title)| json!({"path":path,"chapter":title})).collect::<Vec<_>>(),
             }),
@@ -2659,6 +2684,7 @@ mod tests {
             height: 720,
             fps: 25,
             music: BackgroundMusic::default(),
+            default_wind_reduction: off_preset(),
             assemble_rendered_clips: false,
             bitrate_mbps: 4,
             default_stabilization: "off".into(),
@@ -2693,6 +2719,7 @@ mod tests {
                 }],
                 rendered: None,
                 revision: 0,
+                wind_reduction: audio::inherit(),
             }],
         }
     }

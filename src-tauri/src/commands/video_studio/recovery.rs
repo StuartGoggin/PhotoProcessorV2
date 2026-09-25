@@ -406,6 +406,9 @@ mod tests {
         assert!((project_timeline_seconds(&p) - 7.2).abs() < 0.00001);
         p.opening_title_mode = "none".into();
         assert_eq!(clip_signature(&p, &p.clips[1], &root_string).unwrap(), original);
+        p.default_wind_reduction = "moderate".into();
+        p.clips[1].wind_reduction = "strong".into();
+        assert_eq!(clip_signature(&p, &p.clips[1], &root_string).unwrap(), original, "Audio edits must not invalidate stabilised pictures");
         p.clips[1].title = "New per-clip text".into();
         assert_ne!(clip_signature(&p, &p.clips[1], &root_string).unwrap(), original);
         p.opening_title_mode = "invalid".into(); assert!(validate(&p).is_err());
@@ -550,11 +553,11 @@ mod tests {
         let generated = command(&ff).args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p"]).arg(&source).output().unwrap();
         assert!(generated.status.success(), "{}", String::from_utf8_lossy(&generated.stderr));
         let clip = Clip { id: "recovery-clip".into(), path: source.to_string_lossy().into_owned(), duration: 1., include: true, chapter: "One".into(), title: "Practice".into(), title_seconds: 0.5,
-            stabilization: "off".into(), stabilization_method: quality_method(), custom_stabilization: CustomStabilization::default(), framing: "edgeSafe".into(), reviewed: true, notes: String::new(), replays: vec![Replay { id: "recap".into(), start: 0.2, end: 0.6, speed: 0.5, caption: "Replay".into(), enabled: true }], rendered: None, revision: 0 };
+            stabilization: "off".into(), stabilization_method: quality_method(), custom_stabilization: CustomStabilization::default(), framing: "edgeSafe".into(), reviewed: true, notes: String::new(), replays: vec![Replay { id: "recap".into(), start: 0.2, end: 0.6, speed: 0.5, caption: "Replay".into(), enabled: true }], rendered: None, revision: 0, wind_reduction: audio::inherit() };
         let p = Project { version: 1, name: "Recovery test".into(), team: String::new(), title: "Opening".into(), subtitle: String::new(), title_seconds: 0.5, opening_title_mode: "card".into(),
             output_dir: root.to_string_lossy().into_owned(), width: 1280, height: 720, fps: 30, clips: vec![clip.clone()], music: BackgroundMusic::default(), assemble_rendered_clips: true, bitrate_mbps: 2,
             default_stabilization: off_preset(), default_stabilization_method: quality_method(), default_custom_stabilization: CustomStabilization::default(), performance: max_performance(), encoder_preference: auto_encoder(),
-            adaptive_scheduling: true, remaining_clips: None, source_profile: String::new() };
+            adaptive_scheduling: true, remaining_clips: None, source_profile: String::new(), default_wind_reduction: off_preset() };
         let request = RenderRequest { project: p.clone(), staging_dir: root.to_string_lossy().into_owned(), preview: false, preview_start: None, preview_length: None, kind: "clip".into(), clip_id: Some(clip.id.clone()), assemble_only: false };
         let id = "recovery-test";
         requests().lock().unwrap().insert(id.into(), request.clone());
@@ -583,6 +586,20 @@ mod tests {
         assert!(verify_clip(&ff, &changed, &clip, rendered, &request.staging_dir).is_err());
         let mut edited = clip.clone(); edited.title = "Different title".into();
         assert!(verify_clip(&ff, &p, &edited, rendered, &request.staging_dir).is_err());
+        // Audio-only final export reuses the exact verified clip, including its
+        // replay, and records a new recipe without mutating the old request.
+        assembly.project.default_wind_reduction = "moderate".into();
+        assert_eq!(sequence::recipe(&request.project)[0], 1);
+        let wind = execute(assembly.clone(), id).unwrap();
+        let wind_info = inspect(&ff, Path::new(&wind)).unwrap();
+        assert!(cached_output_matches(&wind_info, &p, 2.3));
+        assert_eq!(delivery::frame_count(&wind_info), delivery::frame_count(&info));
+        assert_eq!(wind_info["chapters"], info["chapters"]);
+        assert_eq!(jobs().lock().unwrap()[id].artifacts.last().unwrap().rendered.path, first);
+        let receipt: Value = serde_json::from_slice(&fs::read(Path::new(&wind).parent().unwrap().join("delivery.json")).unwrap()).unwrap();
+        assert_eq!(receipt["sequence"][0], 2);
+        assert_eq!(receipt["sequence"][5], json!([1, [["recovery-clip", "moderate"]]]));
+        assert_eq!(receipt["sequenceVerification"]["assembled"][0]["renderedPath"], first);
         // Exercise final music mux without re-encoding clip video.
         let audio = root.join("music.wav");
         let tone = command(&ff).args(["-v", "error", "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000", "-t", "1"]).arg(&audio).output().unwrap();

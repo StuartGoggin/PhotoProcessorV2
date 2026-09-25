@@ -37,6 +37,26 @@ try {
   const review = page.locator("#studio-review");
   const panel = page.getByRole("region", { name: "Background jobs", exact: true });
   const active = panel.getByRole("region", { name: "Active jobs list", exact: true });
+  assert.equal(await panel.getByRole("button", { name: /^.*Jobs .*active/ }).getAttribute("aria-expanded"), "false", "Studio defaults to a slim jobs frame");
+  await page.screenshot({ path: `${output}/studio-compact-default.png` });
+  const compactRowHeight = await page.locator(".studio-sequence-row").first().evaluate((node) => node.getBoundingClientRect().height);
+  assert.ok(compactRowHeight < 80, `compact clip row is dense, not a card (${compactRowHeight}px)`);
+  await page.getByRole("combobox", { name: "Studio density", exact: true }).selectOption("comfortable");
+  assert.equal(await page.evaluate(() => localStorage.getItem("photogogo.studio.density")), "comfortable");
+  const comfortableHeight = await page.locator(".studio-sequence-row").first().evaluate((node) => node.getBoundingClientRect().height);
+  assert.ok(comfortableHeight > compactRowHeight, `Comfortable row ${comfortableHeight}px should exceed Compact ${compactRowHeight}px`);
+  await page.getByRole("combobox", { name: "Studio density", exact: true }).selectOption("compact");
+  await page.getByRole("searchbox", { name: "Search clips", exact: true }).fill("warm");
+  assert.equal(await page.locator(".studio-sequence-row").count(), 1);
+  await page.getByRole("searchbox", { name: "Search clips", exact: true }).fill("");
+  await page.getByRole("combobox", { name: "Filter clips", exact: true }).selectOption("review");
+  assert.equal(await page.locator(".studio-sequence-row").count(), 1);
+  await page.getByRole("combobox", { name: "Filter clips", exact: true }).selectOption("render");
+  assert.equal(await page.locator(".studio-sequence-row").count(), 2);
+  await page.getByRole("combobox", { name: "Filter clips", exact: true }).selectOption("excluded");
+  assert.equal(await page.locator(".studio-sequence-row").count(), 0);
+  await page.getByRole("combobox", { name: "Filter clips", exact: true }).selectOption("all");
+  await panel.getByRole("button", { name: /^.*Jobs .*active/ }).click();
   await active.getByText("Diagnostic fixture", { exact: true }).waitFor();
   assert.equal(await active.getByText("Finished export fixture", { exact: true }).count(), 0);
   assert.equal(await active.getByText("Failed export fixture", { exact: true }).count(), 0);
@@ -64,6 +84,7 @@ try {
   let request = await page.evaluate(() => window.__lastStudioRequest);
   assert.equal(request.assembleOnly, false);
   assert.equal(request.project.width, 3840); assert.equal(request.project.fps, 50); assert.equal(request.project.bitrateMbps, 32);
+  await page.getByRole("tab", { name: "Titles", exact: true }).click();
   await page.getByLabel("Clip title (blank = hidden)").fill("Edited warm-up");
   assert.equal(await review.getByRole("button", { name: /Render clip ·/ }).isDisabled(), true);
   await review.getByText("Previous render · outdated", { exact: false }).waitFor();
@@ -87,6 +108,7 @@ try {
   await review.getByRole("button", { name: "Approve & next", exact: true }).click();
   await review.getByRole("heading", { name: "Final run", exact: true }).waitFor();
   await review.getByRole("button", { name: "Needs review: Final run", exact: true }).click();
+  await page.locator("summary").filter({ hasText: /^Finish & export/ }).click();
   await page.getByRole("button", { name: "Create updated final video — 3 clips", exact: true }).click();
   await page.waitForFunction(() => window.__lastStudioRequest?.renderKind === "project");
   assert.equal((await page.evaluate(() => window.__lastStudioRequest)).project.openingTitleMode, "overlay");
@@ -127,6 +149,11 @@ try {
     assert.ok(layout.mainScroll <= layout.mainWidth + 1, `main overflow at ${width}: ${JSON.stringify(layout)}`);
     assert.ok(layout.mainHeight >= height * 0.3, `editor must remain usable at ${width}x${height}`);
     if (width === 3840) assert.ok(await page.locator(".studio-workspace").evaluate((node) => node.clientWidth) > 2500, "Studio uses a 4K workspace");
+    if (width === 390) {
+      await page.getByRole("combobox", { name: "Studio density", exact: true }).selectOption("comfortable");
+      assert.ok(await review.getByRole("button", { name: "Approve & next", exact: true }).evaluate((node) => node.getBoundingClientRect().height) >= 44, "Comfortable narrow-screen controls stay touch-sized");
+      await page.getByRole("combobox", { name: "Studio density", exact: true }).selectOption("compact");
+    }
   }
   // Expanded advanced sections must also fit a narrow desktop window.
   await page.setViewportSize({ width: 360, height: 800 });
@@ -139,9 +166,13 @@ try {
   await page.getByText("Finished export fixture", { exact: true }).waitFor();
   await page.getByText("Failed export fixture", { exact: true }).waitFor();
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: /Video Studio/ }).click();
+  await details(/^Finish & export/).click();
   assert.match(await description.inputValue(), /^My edited description/, "navigation preserves the Studio draft");
+  assert.equal(await panel.getByRole("button", { name: /^.*Jobs .*active/ }).getAttribute("aria-expanded"), "true", "returning to Studio preserves explicit jobs expansion");
 
+  await page.getByRole("tab", { name: "Sound", exact: true }).click();
   await details(/Optional background music/).click();
+  await details(/^Studio jobs & recovery/).click();
   await page.getByText("Creative brief", { exact: false }).waitFor();
   await details(/Optional background music/).click();
   await page.evaluate(() => { window.__confirmResult = false; });
@@ -158,6 +189,7 @@ try {
   assert.ok(project.clips.every((clip) => !clip.rendered)); assert.equal(project.clips.length, 3);
   await details(/^Stabilisation defaults & performance/).click();
   await page.getByLabel("Encoder", { exact: true }).selectOption("cpu");
+  await page.getByRole("tab", { name: "Picture", exact: true }).click();
   await page.getByLabel("Stabiliser for this clip", { exact: true }).selectOption("fast");
   await page.getByLabel("Stabilisation preset", { exact: true }).selectOption("custom");
   await page.getByLabel("Block size (pixels)", { exact: true }).fill("16");
@@ -172,6 +204,29 @@ try {
   await page.evaluate(() => { window.__importJobs = []; });
   await panel.getByText("No active jobs", { exact: true }).waitFor();
   assert.equal(await active.isVisible(), false, "empty job frame collapses automatically");
+  // Load a larger snapshot through the production project-opening flow, then count
+  // complete, actually visible rows inside both the scroll frame and viewport.
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.evaluate(() => {
+    const project = JSON.parse(localStorage.getItem("photogogo.videoStudio.project.v1"));
+    project.clips = Array.from({ length: 24 }, (_, index) => ({ ...project.clips[0], id: `dense-${index}`, chapter: `Camera segment ${String(index + 1).padStart(2, "0")}`, path: `D:/Videos/20260925_${String(index).padStart(6, "0")}.mp4` }));
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => command === "studio_load_project" ? project : command === "plugin:dialog|open" ? "D:/fixture/project.json" : invoke(command, args);
+  });
+  await page.getByRole("button", { name: "Open project", exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".studio-sequence-row").length === 24);
+  await page.locator("main").evaluate((node) => node.scrollTo(0, 0));
+  const visibleRowCount = await page.locator(".studio-sequence-list").evaluate((list) => {
+    const bounds = list.getBoundingClientRect(), main = document.querySelector("main").getBoundingClientRect();
+    return [...list.querySelectorAll(".studio-sequence-row")].filter((node) => {
+      const box = node.getBoundingClientRect();
+      return box.top >= Math.max(bounds.top, main.top) && box.bottom <= Math.min(bounds.bottom, main.bottom);
+    }).length;
+  });
+  await page.screenshot({ path: `${output}/studio-compact-1920x1080-24-clips.png` });
+  assert.ok(visibleRowCount >= 12, `1920×1080 Compact shows at least 12 complete rows, found ${visibleRowCount}`);
+  assert.match(await page.locator(".studio-clip-select").first().getAttribute("title"), /20260925_000000.mp4/);
+  console.log(`Compact1920: ${visibleRowCount} complete clip rows visible.`);
   assert.deepEqual(failures, []);
   console.log("PASS: approval flow, cache preservation, assembly dispatch, description editing/errors, active/history jobs, 360px–4K layouts and scheduling controls.");
 } finally { await browser?.close(); server?.kill(); }

@@ -1,4 +1,5 @@
 import { normalizeProject as normalizeHardware, newBackgroundMusic, type StudioClip, type StudioJob, type StudioProject } from "../types/videoStudio";
+import { effectiveWindReduction } from "./studioAudio";
 
 export const STUDIO_CLEARED = "studio-renders-cleared";
 export function resetProjectRenders(project: StudioProject): StudioProject {
@@ -17,20 +18,28 @@ export const suggestedBitrate = (width: number) => width === 3840 ? 32 : width =
 export const outputLabel = (p: Pick<StudioProject, "width" | "height" | "fps" | "bitrateMbps">) =>
   `${p.width}×${p.height} · ${p.fps} fps · ${p.bitrateMbps} Mbps`;
 
-// Shared v1 value contract with native video_studio/sequence.rs. Compare recipes,
+// Shared v1/v2 value contract with native video_studio/sequence.rs. Compare recipes,
 // not cache/progress state or just counts. This is not a source-file hash check.
 export function sequenceRecipe(p: StudioProject): unknown[] {
-  return [1, [p.name, p.title, p.subtitle, p.titleSeconds, p.openingTitleMode || "card"],
+  const recipe: unknown[] = [1, [p.name, p.title, p.subtitle, p.titleSeconds, p.openingTitleMode || "card"],
     [p.width, p.height, p.fps, p.bitrateMbps || suggestedBitrate(p.width)],
     p.music.enabled ? [p.music.audioPath, p.music.musicVolume, p.music.originalVolume] : null,
     p.clips.filter((c) => c.include).map((c) => [c.id, c.path, c.revision ?? 0, c.duration, c.chapter,
       c.title, c.titleSeconds, c.stabilization, c.stabilizationMethod || "quality",
       [c.customStabilization.radius, c.customStabilization.blockSize, c.customStabilization.contrast], c.framing,
       c.replays.filter((r) => r.enabled).map((r) => [r.id, r.start, r.end, r.speed, r.caption])])];
+  const audio = p.clips.filter((c) => c.include).map((c) => [c.id, effectiveWindReduction(p, c)]);
+  // All-off must retain the exact existing recipe so 2.0.17 exports stay current.
+  if (audio.some(([, preset]) => preset !== "off")) {
+    recipe[0] = 2;
+    recipe.push([1, audio]);
+  }
+  return recipe;
 }
 export type SequenceStatus = "current" | "outdated" | "unknown";
 export function sequenceStatus(job: Pick<StudioJob, "sequence" | "targets">, p: StudioProject): SequenceStatus {
-  if (Array.isArray(job.sequence) && job.sequence.length === 5 && job.sequence[0] === 1) {
+  if (Array.isArray(job.sequence) && ((job.sequence.length === 5 && job.sequence[0] === 1)
+      || (job.sequence.length === 6 && job.sequence[0] === 2))) {
     return JSON.stringify(job.sequence) === JSON.stringify(sequenceRecipe(p)) ? "current" : "outdated";
   }
   // Legacy targets can prove a mismatch, but cannot establish a matching recipe.
@@ -44,7 +53,7 @@ export function sequenceStatus(job: Pick<StudioJob, "sequence" | "targets">, p: 
   return "unknown";
 }
 export function sequenceClipCount(job: Pick<StudioJob, "sequence" | "targets">): number | null {
-  if (Array.isArray(job.sequence) && job.sequence[0] === 1 && Array.isArray(job.sequence[4])) return job.sequence[4].length;
+  if (Array.isArray(job.sequence) && [1, 2].includes(job.sequence[0]) && Array.isArray(job.sequence[4])) return job.sequence[4].length;
   return job.targets?.length ? job.targets.length : null;
 }
 export const normalizeProject = (p: StudioProject): StudioProject => ({

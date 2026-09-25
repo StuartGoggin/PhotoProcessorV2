@@ -4,7 +4,7 @@ use super::*;
 // Keep this versioned array contract aligned with studioWorkflow.sequenceRecipe.
 // It intentionally excludes cache paths, review notes and scheduling state.
 pub(super) fn recipe(p: &Project) -> Value {
-    json!([
+    let mut result = json!([
         1,
         [p.name, p.title, p.subtitle, p.title_seconds, p.opening_title_mode],
         [p.width, p.height, p.fps, effective_bitrate(p)],
@@ -16,7 +16,12 @@ pub(super) fn recipe(p: &Project) -> Value {
             c.framing,
             c.replays.iter().filter(|r| r.enabled).map(|r| json!([r.id, r.start, r.end, r.speed, r.caption])).collect::<Vec<_>>()
         ])).collect::<Vec<_>>()
-    ])
+    ]);
+    if let Some(audio) = audio::recipe(p) {
+        result[0] = json!(2);
+        result.as_array_mut().unwrap().push(audio);
+    }
+    result
 }
 
 pub(super) fn verify_prepared(planned: &Project, prepared: &Project) -> Result<(), String> {
