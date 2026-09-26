@@ -15,6 +15,32 @@ const clip = { id: "one", path: "D:/one.mp4", duration: 20, include: true, revie
 const project = workflow.normalizeProject({ version: 1, name: "Test", title: "", subtitle: "", titleSeconds: 0,
   openingTitleMode: "none", width: 1920, height: 1080, fps: 25, bitrateMbps: 10, clips: [clip] });
 
+test("optional title lines preserve legacy identity when blank and stale only the affected picture", () => {
+  const p = { ...project, title: "Opening", titleSeconds: 5, openingTitleMode: "card", clips: [{ ...clip, title: "Round one" }] };
+  const previous = workflow.sequenceRecipe(p);
+  const blank = { ...p, titleHeading: "", clips: [{ ...p.clips[0], titleHeading: "", titleSubtitle: "" }] };
+  assert.deepEqual(workflow.sequenceRecipe(blank), previous);
+  assert.equal(workflow.isClipReady(blank.clips[0], blank), true);
+  const openingEdit = { ...p, titleHeading: "Championship" };
+  assert.equal(workflow.sequenceStatus({ sequence: previous }, openingEdit), "outdated");
+  assert.equal(workflow.isClipReady(openingEdit.clips[0], openingEdit), true);
+  const hidden = { ...p, title: "   ", titleHeading: "Invisible event", clips: [{ ...p.clips[0], title: "   ", titleHeading: "Invisible round", titleSubtitle: "Invisible subtitle" }] };
+  assert.equal(graphics.graphicsRecipe(hidden), null, "optional lines never make a whitespace-only main title visible");
+  assert.equal(graphics.titleStyleKey(hidden, hidden.clips[0]), "");
+  assert.equal(graphics.chapterPlan(hidden)[0].start, 0, "hidden opening adds no chapter time");
+  for (const field of ["titleHeading", "titleSubtitle"]) {
+    const changed = workflow.editClip(p.clips[0], { [field]: "Final round" });
+    assert.equal(changed.reviewed, false);
+    assert.equal(changed.revision, 8);
+    assert.equal(changed.rendered, clip.rendered, "keep previous artifact available, never delete it");
+    assert.equal(workflow.isClipReady(changed, p), false);
+    const externalEdit = { ...p, clips: [{ ...p.clips[0], [field]: "Final round" }] };
+    assert.equal(workflow.isClipReady(externalEdit.clips[0], externalEdit), false, "saved-file edits cannot bypass content identity");
+    assert.equal(workflow.sequenceStatus({ sequence: previous }, externalEdit), "outdated");
+    assert.equal(workflow.sequenceStatus({ sequence: workflow.sequenceRecipe(externalEdit) }, externalEdit), "current");
+  }
+});
+
 test("scorecard details and inherited project timing never invalidate stabilised pictures", () => {
   const card = { ...graphics.newScorecard(), result: "72 points · 1st place" };
   const edited = workflow.editClip(project.clips[0], { scorecard: card });

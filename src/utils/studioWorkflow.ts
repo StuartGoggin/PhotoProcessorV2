@@ -76,8 +76,10 @@ export function isClipReady(clip: StudioClip, p: StudioProject): boolean {
     && (r.titleStyleKey ?? "") === titleStyleKey(p, clip);
 }
 export function editClip(clip: StudioClip, patch: Partial<StudioClip>): StudioClip {
-  const changed = ["path", "duration", "title", "titleSeconds", "stabilization", "stabilizationMethod", "customStabilization", "framing", "replays"]
-    .some((key) => key in patch && JSON.stringify(patch[key as keyof StudioClip]) !== JSON.stringify(clip[key as keyof StudioClip]));
+  const value = (source: Partial<StudioClip>, key: keyof StudioClip) =>
+    key === "titleHeading" || key === "titleSubtitle" ? source[key] ?? "" : source[key];
+  const changed = ["path", "duration", "title", "titleHeading", "titleSubtitle", "titleSeconds", "stabilization", "stabilizationMethod", "customStabilization", "framing", "replays"]
+    .some((key) => key in patch && JSON.stringify(value(patch, key as keyof StudioClip)) !== JSON.stringify(value(clip, key as keyof StudioClip)));
   return { ...clip, ...patch, revision: (clip.revision ?? 0) + (changed ? 1 : 0),
     reviewed: patch.reviewed ?? (changed ? false : clip.reviewed) };
 }

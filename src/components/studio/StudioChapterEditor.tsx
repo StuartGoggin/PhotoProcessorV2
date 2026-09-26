@@ -9,7 +9,7 @@ const marker = (seconds: number) => {
 export default function StudioChapterEditor({ project, onName, onSelect, onMove, disabled = false }: {
   project: StudioProject;
   onName: (clipId: string, name: string) => void;
-  onSelect: (clipId: string) => void;
+  onSelect: (clipId: string, tab: "titles" | "scorecard") => void;
   onMove: (clipId: string, delta: number) => void;
   disabled?: boolean;
 }) {
@@ -21,14 +21,14 @@ export default function StudioChapterEditor({ project, onName, onSelect, onMove,
   }
   return <details className="studio-chapter-editor" open>
     <summary className="studio-panel-heading">Chapters & finishing <span>{chapters.length} included · estimated timing</span></summary>
-    <p className="studio-graphics-help">Edit the source chapter names here. Order follows the current sequence; excluded clips are omitted. This does not rewrite descriptions belonging to finished exports. Exact markers are generated after assembly.</p>
+    <p className="studio-graphics-help">Edit chapter names here, or use the row buttons to open a clip's Titles or Scorecard editor. Order follows the current sequence; excluded clips are omitted. Exact markers are generated after assembly; finished export descriptions are kept.</p>
     {!chapters.length ? <p className="studio-graphics-help">Add an included clip to plan chapters and scorecards.</p>
       : <ol className="studio-chapter-list" aria-label="Ordered chapters" tabIndex={0}>
         {chapters.map((chapter, index) => <li key={chapter.clipId} className="studio-chapter-row">
           <div className="studio-chapter-time"><span>{String(index + 1).padStart(2, "0")}</span><time>≈{marker(chapter.start)}</time></div>
           <div className="studio-chapter-name"><label><span className="sr-only">Chapter {index + 1} name</span><input disabled={disabled} value={chapter.title} placeholder="Chapter name" onChange={(event) => onName(chapter.clipId, event.target.value)} /></label>
             <small>{chapter.cardStart == null ? "No scorecard" : `${chapter.extraSeconds ? "Standalone card" : "Score overlay"} ≈${marker(chapter.cardStart)}–${marker(chapter.cardEnd!)}${chapter.extraSeconds ? ` · adds ${chapter.extraSeconds}s` : ""}`} · segment ends ≈{marker(chapter.end)}</small></div>
-          <div className="studio-chapter-actions"><button type="button" className="btn-secondary" disabled={disabled || index === 0} aria-label={`Move chapter ${index + 1} up`} title="Move chapter up" onClick={() => move(index, -1)}>↑</button><button type="button" className="btn-secondary" disabled={disabled || index === chapters.length - 1} aria-label={`Move chapter ${index + 1} down`} title="Move chapter down" onClick={() => move(index, 1)}>↓</button><button type="button" className="btn-secondary" disabled={disabled} aria-label={`Edit chapter ${index + 1} scorecard`} onClick={() => onSelect(chapter.clipId)}>Scorecard</button></div>
+          <div className="studio-chapter-actions"><button type="button" className="btn-secondary" disabled={disabled || index === 0} aria-label={`Move chapter ${index + 1} up`} title="Move chapter up" onClick={() => move(index, -1)}>↑</button><button type="button" className="btn-secondary" disabled={disabled || index === chapters.length - 1} aria-label={`Move chapter ${index + 1} down`} title="Move chapter down" onClick={() => move(index, 1)}>↓</button><button type="button" className="btn-secondary" disabled={disabled} aria-label={`Edit chapter ${index + 1} title`} onClick={() => onSelect(chapter.clipId, "titles")}>Titles</button><button type="button" className="btn-secondary" disabled={disabled} aria-label={`Edit chapter ${index + 1} scorecard`} onClick={() => onSelect(chapter.clipId, "scorecard")}>Scorecard</button></div>
         </li>)}
       </ol>}
   </details>;

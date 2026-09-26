@@ -13,6 +13,8 @@ import StudioStabilizationFields from "../components/StudioStabilizationFields";
 import StudioApprovalButton from "../components/StudioApprovalButton";
 import StudioAudioControls from "../components/studio/StudioAudioControls";
 import StudioProjectSettings from "../components/studio/StudioProjectSettings";
+import type { ProjectSettingsSection } from "../components/studio/StudioProjectSettings";
+import StudioOpeningTitle, { openingTitleSummary } from "../components/studio/StudioOpeningTitle";
 import { StudioClipScorecard } from "../components/studio/StudioGraphicsControls";
 import StudioGraphicsPreview from "../components/studio/StudioGraphicsPreview";
 import StudioChapterEditor from "../components/studio/StudioChapterEditor";
@@ -39,6 +41,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
     try { return localStorage.getItem("photogogo.studio.density") === "comfortable" ? "comfortable" : "compact"; } catch { return "compact"; }
   });
   const [finishOpen, setFinishOpen] = useState(false);
+  const [projectSection, setProjectSection] = useState<ProjectSettingsSection | null>(null);
   useEffect(() => { try { localStorage.setItem("photogogo.studio.density", density); } catch { /* Optional display preference. */ } }, [density]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -50,6 +53,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
   const request = useRef(0);
   const projectEpoch = useRef(0);
   const currentEpoch = projectEpoch.current;
+  useEffect(() => { setProjectSection(null); }, [currentEpoch]);
   useEffect(() => {
     const clear = () => {
       projectEpoch.current++;
@@ -273,12 +277,18 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
     if (!clip) return;
     setProject((previous) => moveClip(previous, clip.id, delta));
   }
-  function focusReview() {
+  function focusHeading(id: string) {
     window.requestAnimationFrame(() => {
-      const heading = document.getElementById("studio-review-heading");
+      const heading = document.getElementById(id);
       heading?.focus({ preventScroll: true });
       heading?.scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     });
+  }
+  function focusReview() { focusHeading("studio-review-heading"); }
+  function openTitles() { focusHeading("studio-opening-heading"); }
+  function openGraphicsDefaults() {
+    setProjectSection("graphics");
+    focusHeading("studio-project-toggle-graphics");
   }
   function selectClip(id: string) {
     setSelected(id);
@@ -420,6 +430,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
       <nav className="studio-workflow" aria-label="Video editing workflow">
         <a href="#studio-sequence">Sequence <span>{included.length}</span></a>
         <a href="#studio-review">Review <span>{reviewedCount}/{included.length}</span></a>
+        <a href="#studio-titles" onClick={(event) => { event.preventDefault(); openTitles(); }}>Titles & graphics</a>
         <a href="#studio-finish" onClick={() => setFinishOpen(true)}>Finish & export <span>{project.height}p</span></a>
         <span className="studio-autosave">{autosaveOk ? "Autosaved locally" : "Autosave unavailable — save a snapshot"} · {readyCount} reusable renders</span>
       </nav>
@@ -435,9 +446,9 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
         onResetWind={() => void resetWindDefaults()} onOutputFolder={() => void action(outputFolder)}
         onError={(text) => { if (projectEpoch.current === currentEpoch) setError(text); }}
         onMessage={(text) => { if (projectEpoch.current === currentEpoch) setMessage(text); }}
-        getStagingDir={stagingFolder} />
+        getStagingDir={stagingFolder} expanded={projectSection} onSectionChange={setProjectSection} onOpenTitles={openTitles} />
       <div className="studio-workspace">
-        <section id="studio-sequence" className="studio-sequence bg-surface-800 rounded-xl p-4 space-y-3" aria-labelledby="studio-sequence-heading">
+        <section id="studio-sequence" className="studio-sequence bg-surface-800 rounded-xl p-4" aria-labelledby="studio-sequence-heading">
           <div className="flex flex-wrap justify-between gap-2">
             <div><h2 id="studio-sequence-heading" className="font-semibold">Sequence</h2><p className="text-xs text-gray-400">{included.length} included · {readyCount} ready</p></div>
             <button className="btn-primary" disabled={busy} onClick={() => void add()}>
@@ -448,7 +459,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
             <input type="search" aria-label="Search clips" placeholder="Search clips…" value={search} onChange={(event) => setSearch(event.target.value)} />
             <select aria-label="Filter clips" value={clipFilter} onChange={(event) => setClipFilter(event.target.value)}><option value="all">All clips</option><option value="review">Needs review</option><option value="render">Needs rendering</option><option value="excluded">Excluded</option><option value="included">Included</option><option value="ready">Ready</option></select>
           </div>
-          <button
+          <div className="studio-sequence-actions"><button
             className="btn-secondary studio-sort"
             onClick={() =>
               patch({ clips: [...project.clips].sort((a, b) => a.path.localeCompare(b.path)) })
@@ -456,11 +467,14 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
           >
             Sort by filename
           </button>
-          <p className="text-xs text-gray-400">Untick to exclude; originals are kept. {visibleClips.length}/{project.clips.length} shown.</p>
-          <button className="btn-primary w-full" disabled={busy || !pendingCount || !project.outputDir || !formatValid} onClick={() => void renderPending()}>
+          <button className="btn-primary" disabled={busy || !pendingCount || !project.outputDir || !formatValid} onClick={() => void renderPending()}>
             Render pending clips ({pendingCount})
-          </button>
+          </button></div>
+          <p className="text-xs text-gray-400">Untick to exclude; originals are kept. {visibleClips.length}/{project.clips.length} shown.</p>
 
+          <button type="button" className="studio-opening-entry" aria-label="Edit opening title" aria-describedby="studio-opening-entry-summary" aria-controls="studio-opening-heading" onClick={openTitles}>
+            <span>Opening title <small>Project introduction</small></span><small id="studio-opening-entry-summary">{openingTitleSummary(project)}</small>
+          </button>
           {!project.clips.length && <div className="rounded-lg border border-dashed border-surface-500 p-6 text-center text-sm text-gray-400">Add your source clips, then select one to review its title, stabilisation and replays.</div>}
           {!!project.clips.length && !visibleClips.length && <p className="text-gray-400">No matching clips. <button className="underline" onClick={() => { setSearch(""); setClipFilter("all"); }}>Clear filters</button></p>}
           <div className="studio-sequence-list" role="region" aria-label="Clip sequence" tabIndex={0}>
@@ -644,6 +658,8 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                     onChange={(e) => edit(clip.id, { title: e.target.value })}
                   />
                 </label>
+                <label>Heading (optional)<input className={input} maxLength={60} value={clip.titleHeading ?? ""} onChange={(event) => edit(clip.id, { titleHeading: event.target.value })} /></label>
+                <label>Subtitle (optional)<input className={input} maxLength={110} value={clip.titleSubtitle ?? ""} onChange={(event) => edit(clip.id, { titleSubtitle: event.target.value })} /></label>
                 <label>
                   Clip title seconds
                   <input
@@ -657,6 +673,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                 </label>
 </div>
               <button type="button" className="btn-secondary" disabled={!clip.chapter.trim()} onClick={() => edit(clip.id, { title: clip.chapter.slice(0, 100) })}>Use chapter name as title</button>
+              <p className="studio-graphics-help">Heading and subtitle are optional; blank lines are hidden. The main clip title is required. Text edits refresh the titled fragment while retaining an unchanged verified stabilised base.</p>
               <StudioGraphicsPreview key={`${currentEpoch}:${clip.id}:title`} project={project} clip={clip} target="clipTitle" getStagingDir={stagingFolder} disabled={busy} />
               </div>
               <div id="studio-panel-scorecard" className="studio-property-panel" role="tabpanel" aria-labelledby="studio-tab-scorecard" hidden={editorTab !== "scorecard"}>
@@ -808,13 +825,17 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
           )}
         </section>
       </div>
-      <StudioChapterEditor project={project} disabled={busy} onName={(id, chapter) => edit(id, { chapter })}
+      <section id="studio-titles" className="studio-titles-step" aria-labelledby="studio-titles-heading">
+        <div className="studio-titles-heading"><p>03 / Titles & graphics</p><h2 id="studio-titles-heading">Give your story its finishing touches</h2><span>Opening title first, then clip titles, chapters and scorecards. Come back any time before export.</span></div>
+        <StudioOpeningTitle key={currentEpoch} project={project} disabled={busy} onChange={patch} onOpenDefaults={openGraphicsDefaults} getStagingDir={stagingFolder} />
+        <StudioChapterEditor project={project} disabled={busy} onName={(id, chapter) => edit(id, { chapter })}
         onMove={(id, delta) => setProject((previous) => moveClip(previous, id, delta))}
-        onSelect={(id) => { setSelected(id); setEditorTab("scorecard"); focusReview(); }} />
+        onSelect={(id, tab) => { setSelected(id); setEditorTab(tab); focusReview(); }} />
+      </section>
       <details className="studio-export-panel" open={finishOpen} onToggle={(event) => setFinishOpen(event.currentTarget.open)}><summary className="studio-panel-heading">Finish & export · {included.length} clips · {readyCount} ready</summary>
       <section id="studio-finish" className="studio-finish rounded-xl border border-cyan-800/60 bg-gradient-to-br from-surface-800 to-[#0c1930] p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><p className="text-xs uppercase tracking-widest text-cyan-300 mb-1">03 / Finish & export</p><h2 className="text-xl font-semibold text-white">Bring it all together</h2></div>
+          <div><p className="text-xs uppercase tracking-widest text-cyan-300 mb-1">04 / Finish & export</p><h2 className="text-xl font-semibold text-white">Bring it all together</h2></div>
           <span className="rounded-full bg-surface-900 px-3 py-1 text-sm">{readyCount} / {included.length} clips ready</span>
         </div>
         <div className="grid sm:grid-cols-3 gap-3 text-sm">
@@ -826,7 +847,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
         {!!included.filter((candidate) => candidate.scorecard?.enabled).length && <p className="text-sm text-amber-100">Scorecards are composited onto matching stabilised cached clips at final export. They do not repeat stabilisation or reset picture approval. Standalone cards add time after replays, with silent camera audio and continuing project music.</p>}
         <p className="text-sm text-cyan-200">Current sequence: {included.length} included · {reviewedCount} approved · {readyCount} reusable renders · {included.length - readyCount} to prepare. New exports need their own disk space; the previous video is kept.</p>
         {olderActiveFinal && <p role="status" className="text-sm text-amber-200">A saved {sequenceClipCount(olderActiveFinal) ?? "unknown"}-clip render is still active and will not pick up these edits. You can queue the current sequence separately; existing work will not be cancelled.</p>}
-        <p className="text-sm text-cyan-200">Opening title: {project.openingTitleMode === "none" || !project.title || !project.titleSeconds ? "None" : project.openingTitleMode === "overlay" ? `Overlay on ${included[0]?.chapter || "the first included clip"} at final assembly` : "Separate title card"}. Chapter timings are generated from the finished export.</p>
+        <p className="text-sm text-cyan-200">Opening title: {project.openingTitleMode === "none" || !project.title.trim() || !project.titleSeconds ? "None" : project.openingTitleMode === "overlay" ? `Overlay on ${included[0]?.chapter || "the first included clip"} at final assembly` : "Separate title card"}. Chapter timings are generated from the finished export.</p>
         {finalBlocked && <p role="status" className="text-sm text-amber-200">{finalBlocked}</p>}
         <div className="flex flex-wrap items-center gap-3">
           <button className="btn-primary" disabled={busy || !!finalBlocked || finalBusy} onClick={() => void render(false)}>

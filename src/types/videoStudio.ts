@@ -55,6 +55,8 @@ export interface StudioClip {
   include: boolean;
   chapter: string;
   title: string;
+  titleHeading?: string;
+  titleSubtitle?: string;
   titleSeconds: number;
   stabilization: StudioStabilizationPreset;
   stabilizationMethod: StudioStabilizationMethod;
@@ -130,6 +132,7 @@ export interface StudioProject {
   name: string;
   team: string;
   title: string;
+  titleHeading?: string;
   subtitle: string;
   titleSeconds: number;
   openingTitleMode: "card" | "overlay" | "none";
@@ -307,7 +310,7 @@ const scorecardExtraDuration = (p: StudioProject, c: StudioClip) => {
   return Math.round(seconds * p.fps) / p.fps;
 };
 export const projectDuration = (p: StudioProject) =>
-  (p.title && (p.openingTitleMode ?? "card") === "card" ? p.titleSeconds : 0) +
+  (p.title.trim() && (p.openingTitleMode ?? "card") === "card" ? p.titleSeconds : 0) +
   p.clips
     .filter((c) => c.include)
     .reduce(

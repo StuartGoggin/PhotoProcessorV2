@@ -28,8 +28,8 @@ export default function StudioGraphicsPreview({ project, clip, target, getStagin
   useEffect(() => { version.current++; setPreview(null); setError(""); }, [key]);
   const current = preview?.key === key ? preview : null;
   const title = target === "scorecard" ? card.result : target === "opening" ? project.title : clip?.title ?? "";
-  const heading = target === "scorecard" ? card.heading : target === "opening" ? "OPENING TITLE" : "CLIP TITLE";
-  const subtitle = target === "scorecard" ? card.subtitle : target === "opening" ? project.subtitle : "";
+  const heading = target === "scorecard" ? card.heading : target === "opening" ? project.titleHeading ?? "" : clip?.titleHeading ?? "";
+  const subtitle = target === "scorecard" ? card.subtitle : target === "opening" ? project.subtitle : clip?.titleSubtitle ?? "";
   const absent = target === "scorecard" ? !clip?.scorecard?.enabled : target === "opening"
     ? project.openingTitleMode === "none" || !project.titleSeconds || !project.title.trim()
     : !clip?.title.trim() || !clip.titleSeconds;
@@ -63,7 +63,7 @@ export default function StudioGraphicsPreview({ project, clip, target, getStagin
       : <div className={`studio-graphics-stage palette-${graphics.theme.palette} position-${graphics.theme.position} template-${target === "scorecard" ? card.template : "line"}`} style={style}>
         <span className="studio-graphics-stage-label">LAYOUT SKETCH</span>
         {absent ? <p className="studio-graphics-hidden">{target === "scorecard" ? "Enable this scorecard to compose it" : "Title hidden"}</p>
-          : <div className="studio-graphics-card"><span className="studio-graphics-eyebrow">{heading}</span>
+          : <div className="studio-graphics-card">{heading.trim() && <span className="studio-graphics-eyebrow">{heading}</span>}
             {title && <strong>{title}</strong>}
             {target === "scorecard" && card.template === "table" && <table><thead><tr>{card.columns.map((column, index) => <th key={index}>{column}</th>)}</tr></thead><tbody>{card.rows.map((row, index) => <tr key={index}>{card.columns.map((_, col) => <td key={col}>{row[col] ?? ""}</td>)}</tr>)}</tbody></table>}
             {subtitle && <span className="studio-graphics-subtitle">{subtitle}</span>}
@@ -72,7 +72,7 @@ export default function StudioGraphicsPreview({ project, clip, target, getStagin
     <div className="studio-graphics-preview-actions"><button type="button" className="btn-secondary" disabled={disabled || busy || absent} onClick={() => void renderPreview()}>{busy ? "Rendering preview…" : "Rendered preview"}</button>
       {current && <button type="button" className="btn-secondary" onClick={() => setPreview(null)}>Show layout sketch</button>}
       <small>One frame only · never starts a video render</small></div>
-    {target !== "scorecard" && !graphics.styledTitles && <p className="studio-graphics-help">Legacy title style is kept. The sketch illustrates the shared style; enable styled titles in Project → Graphics to use it. Rendered preview shows the actual current style.</p>}
+    {target !== "scorecard" && !graphics.styledTitles && <p className="studio-graphics-help">Legacy title style is kept. The sketch illustrates the shared style; enable styled titles in Project settings → Graphics to use it. Rendered preview shows the actual current style.</p>}
     {error && <p role="alert">Could not render preview: {error}</p>}
   </section>;
 }

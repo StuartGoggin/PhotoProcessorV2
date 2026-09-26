@@ -551,7 +551,7 @@ mod tests {
         assert!(bright_pixels(&ff, Path::new(&output), "0.5") > 1000, "Opening overlay missing");
         assert_eq!(bright_pixels(&ff, Path::new(&output), "2.2"), 0, "Opening title must stop before the first replay");
         assert_eq!(bright_pixels(&ff, Path::new(&output), "3.2"), 0, "Opening title leaked onto second clip");
-        request.project.clips.reverse(); request.project.title = "Changed after reordering".into(); request.assemble_only = true;
+        request.project.clips.reverse(); request.project.title = "Changed after reordering".into(); request.project.title_heading = "CHAMPIONSHIP".into(); request.assemble_only = true;
         let reordered = execute(request.clone(), &id).unwrap();
         let reordered_info = inspect(&ff, Path::new(&reordered)).unwrap();
         let reordered_manifest: Value = serde_json::from_slice(&fs::read(Path::new(&reordered).parent().unwrap().join("delivery.json")).unwrap()).unwrap();
@@ -576,6 +576,25 @@ mod tests {
         assert_eq!(delivery::frame_count(&inspect(&ff,Path::new(&styled_overlay)).unwrap()).unwrap(),168);
         for artifact in &jobs().lock().unwrap()[&id].artifacts {
             assert_eq!(artifact.rendered.checksum,saved.iter().find(|old|old.clip_id==artifact.clip_id).unwrap().rendered.checksum);
+        }
+        // Clip text changes refresh its titled fragment, never its stabilised base.
+        request.assemble_only = false; request.project.opening_title_mode = "none".into();
+        request.project.clips[0].title = "ROUND ONE".into();
+        request.project.clips[0].title_heading = "RIDER CLASSIFICATION".into(); request.project.clips[0].title_subtitle = "72 points".into();
+        let titled = execute(request.clone(), &id).unwrap();
+        let previous_clip = jobs().lock().unwrap()[&id].artifacts.iter().find(|a| a.clip_id == "two").unwrap().rendered.clone();
+        update(&id, |j| j.logs.clear());
+        request.project.clips[0].title_heading = "UPDATED CLASSIFICATION".into(); request.project.clips[0].title_subtitle = "73 points".into();
+        let retitled = execute(request.clone(), &id).unwrap();
+        let edited_job = jobs().lock().unwrap()[&id].clone();
+        let updated_clip = &edited_job.artifacts.iter().find(|a|a.clip_id=="two").unwrap().rendered;
+        assert_ne!(updated_clip.checksum, previous_clip.checksum,"new lines must change the delivered clip pixels");
+        assert!(edited_job.logs.iter().any(|line|line.contains("Reused base fragment")),"title-line edit must reuse base");
+        assert!(!edited_job.logs.iter().any(|line|line.contains("Analyse") || line.contains("Stabilising")));
+        assert_eq!(delivery::frame_count(&inspect(&ff,Path::new(&retitled)).unwrap()).unwrap(),168);
+        let updated_manifest: Value = serde_json::from_slice(&fs::read(Path::new(&retitled).parent().unwrap().join("delivery.json")).unwrap()).unwrap();
+        if let Ok(folder) = std::env::var("PHOTOGOGO_STUDIO_TEST_DIR") {
+            fs::write(Path::new(&folder).join("heading-contract.json"), serde_json::to_vec_pretty(&json!({"project":request.project,"sequence":updated_manifest["sequence"],"titleStyleKey":updated_clip.title_style_key,"firstOutput":titled,"updatedOutput":retitled})).unwrap()).unwrap();
         }
         update(&id, |j| { j.cancelled = true; j.status = "cancelled".into(); });
         assert!(execute(request, &id).is_err());
@@ -651,9 +670,9 @@ mod tests {
         let source = root.join("source.mp4");
         let generated = command(&ff).args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p"]).arg(&source).output().unwrap();
         assert!(generated.status.success(), "{}", String::from_utf8_lossy(&generated.stderr));
-        let clip = Clip { id: "recovery-clip".into(), path: source.to_string_lossy().into_owned(), duration: 1., include: true, chapter: "One".into(), title: "Practice".into(), title_seconds: 0.5,
+        let clip = Clip { id: "recovery-clip".into(), path: source.to_string_lossy().into_owned(), duration: 1., include: true, chapter: "One".into(), title: "Practice".into(), title_heading: String::new(), title_subtitle: String::new(), title_seconds: 0.5,
             stabilization: "off".into(), stabilization_method: quality_method(), custom_stabilization: CustomStabilization::default(), framing: "edgeSafe".into(), reviewed: true, notes: String::new(), replays: vec![Replay { id: "recap".into(), start: 0.2, end: 0.6, speed: 0.5, caption: "Replay".into(), enabled: true }], rendered: None, revision: 0, wind_reduction: audio::inherit(), scorecard: None };
-        let p = Project { version: 1, name: "Recovery test".into(), team: String::new(), title: "Opening".into(), subtitle: String::new(), title_seconds: 0.5, opening_title_mode: "card".into(),
+        let p = Project { version: 1, name: "Recovery test".into(), team: String::new(), title: "Opening".into(), title_heading: String::new(), subtitle: String::new(), title_seconds: 0.5, opening_title_mode: "card".into(),
             output_dir: root.to_string_lossy().into_owned(), width: 1280, height: 720, fps: 30, clips: vec![clip.clone()], music: BackgroundMusic::default(), assemble_rendered_clips: true, bitrate_mbps: 2,
             default_stabilization: off_preset(), default_stabilization_method: quality_method(), default_custom_stabilization: CustomStabilization::default(), performance: max_performance(), encoder_preference: auto_encoder(),
             adaptive_scheduling: true, remaining_clips: None, source_profile: String::new(), default_wind_reduction: off_preset(), graphics: None };

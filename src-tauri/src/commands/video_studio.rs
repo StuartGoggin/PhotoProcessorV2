@@ -83,6 +83,10 @@ pub struct Clip {
     pub include: bool,
     pub chapter: String,
     pub title: String,
+    #[serde(default)]
+    pub title_heading: String,
+    #[serde(default)]
+    pub title_subtitle: String,
     pub title_seconds: f64,
     pub stabilization: String,
     #[serde(default = "quality_method")]
@@ -183,6 +187,8 @@ pub struct Project {
     pub name: String,
     pub team: String,
     pub title: String,
+    #[serde(default)]
+    pub title_heading: String,
     pub subtitle: String,
     pub title_seconds: f64,
     pub output_dir: String,
@@ -848,7 +854,7 @@ pub async fn studio_ai_music_direction(
 }
 
 fn project_timeline_seconds(project: &Project) -> f64 {
-    (if project.title.is_empty() || project.opening_title_mode != "card" {
+    (if project.title.trim().is_empty() || project.opening_title_mode != "card" {
         0.0
     } else {
         project.title_seconds
@@ -1855,7 +1861,7 @@ fn render(
                 .sum::<f64>()
         })
         .sum::<f64>()
-        + if !preview && render_kind != "clip" && p.opening_title_mode == "card" && !p.title.is_empty() { p.title_seconds } else { 0. };
+        + if !preview && render_kind != "clip" && p.opening_title_mode == "card" && !p.title.trim().is_empty() { p.title_seconds } else { 0. };
     let bitrate = f64::from(effective_bitrate(&p)) * 1_000_000.;
     let required = (estimate_seconds * (bitrate + 256_000.) / 8. * if assemble_only && graphics::recipe(&p).is_none() { 1.3 } else { 3.5 }) as u64 + 512_000_000;
     if fs2::available_space(&output_root).map_err(|e| e.to_string())? < required {
@@ -1917,16 +1923,8 @@ fn render(
     fs::copy(font, work.join("font.ttf")).map_err(|e| e.to_string())?;
     let mut segments: Vec<(PathBuf, String)> = vec![];
     let final_delivery = !preview && render_kind != "clip";
-    if final_delivery && p.opening_title_mode == "card" && p.title_seconds > 0. && !p.title.is_empty() {
-        text_asset(&work, "opening.txt", &wrap_title(&p.title, 28))?;
-        text_asset(&work, "subtitle.txt", &wrap_title(&p.subtitle, 44))?;
-        let filter = if p.graphics.as_ref().is_some_and(|g| g.styled_titles) {
-            graphics::title_filter(&p,&work,&p.title,&p.subtitle,"opening",None)?
-        } else { format!(
-            "{},{}",
-            drawtext("opening.txt", p.width / 32, "h*0.5-text_h-30", None),
-            drawtext("subtitle.txt", p.width / 48, "h*0.5+30", None)
-        ) };
+    if final_delivery && p.opening_title_mode == "card" && p.title_seconds > 0. && !p.title.trim().is_empty() {
+        let filter = graphics::title_filter(&p, &work, None, "opening", None)?;
         let mut args = vec![
             "-f".into(),
             "lavfi".into(),
@@ -2052,7 +2050,7 @@ fn render(
     // Reusable clip files retain replay boundaries even after a label is edited.
     let mut manifest = delivery::Manifest::new(p.fps);
     let mut concat = String::new();
-    let has_card = final_delivery && p.opening_title_mode == "card" && p.title_seconds > 0. && !p.title.is_empty();
+    let has_card = final_delivery && p.opening_title_mode == "card" && p.title_seconds > 0. && !p.title.trim().is_empty();
     let sequence_verification = if final_delivery && assemble_only {
         Some(sequence::verify_assembly(&p, &segments, has_card)?)
     } else { None };
@@ -2073,7 +2071,7 @@ fn render(
         let local = if assemble_only && !(has_card && index == 0) {
             delivery::clip_chapters(&info, &p.clips[index - usize::from(has_card)], p.fps, n)?
         } else { vec![(title.clone(), n)] };
-        if final_delivery && p.opening_title_mode == "overlay" && index == 0 && p.title_seconds > 0. && !p.title.is_empty() {
+        if final_delivery && p.opening_title_mode == "overlay" && index == 0 && p.title_seconds > 0. && !p.title.trim().is_empty() {
             checkpoint(id)?;
             *file = delivery::opening_overlay(ff, &p, encoder_name, file, &work, id, n, local[0].1)?;
         }
@@ -2413,9 +2411,7 @@ fn render_clip(
             base_cache.clone()
         }
     };
-    if !c.title.is_empty() && c.title_seconds > 0. {
-        let file = format!("title_{i}.txt");
-        text_asset(&work, &file, &wrap_title(&c.title, 44))?;
+    if !c.title.trim().is_empty() && c.title_seconds > 0. {
         let mut title_parts = vec![
             "title".into(),
             base_key.clone(),
@@ -2436,8 +2432,7 @@ fn render_clip(
                 "-i".into(),
                 clean.to_string_lossy().into_owned(),
                 "-vf".into(),
-                if style.is_empty() { drawtext(&file, p.width / 48, "h-text_h-40", Some(c.title_seconds)) }
-                else { graphics::title_filter(&p,&work,&c.title,"","clip-title",Some((0,(c.title_seconds*p.fps as f64).ceil() as u64)))? },
+                graphics::title_filter(&p, &work, Some(c), "clip-title", Some((0,(c.title_seconds*p.fps as f64).ceil() as u64)))?,
                 "-t".into(),
                 seconds.to_string(),
             ];
@@ -2717,6 +2712,7 @@ mod tests {
             name: "Smoke test".into(),
             team: "Blue".into(),
             title: "Blue: 100% review".into(),
+            title_heading: String::new(),
             subtitle: "A rider's recap".into(),
             title_seconds: 1.,
             opening_title_mode: "card".into(),
@@ -2744,6 +2740,7 @@ mod tests {
                 include: true,
                 chapter: "Clip = 1; #review".into(),
                 title: "Full clip title".into(),
+                title_heading: String::new(), title_subtitle: String::new(),
                 title_seconds: 1.,
                 stabilization: "gentle".into(),
                 stabilization_method: "fast".into(),

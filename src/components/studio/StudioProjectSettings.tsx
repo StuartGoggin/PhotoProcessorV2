@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { BackgroundMusic, StudioClip, StudioJob, StudioProject } from "../../types/videoStudio";
 import { outputLabel } from "../../utils/studioWorkflow";
 import { normalizeWindReduction, windReductionPresets } from "../../utils/studioAudio";
@@ -6,16 +5,15 @@ import StudioBackgroundMusic from "../StudioBackgroundMusic";
 import StudioOutputSettings from "../StudioOutputSettings";
 import StudioStabilizationFields from "../StudioStabilizationFields";
 import { StudioProjectGraphics } from "./StudioGraphicsControls";
-import StudioGraphicsPreview from "./StudioGraphicsPreview";
 
 const input = "bg-surface-900 rounded border border-surface-600 px-3 py-2 w-full text-sm";
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 const sections = ["project", "filters", "graphics", "music", "output"] as const;
-type Section = typeof sections[number];
+export type ProjectSettingsSection = typeof sections[number];
 
 export default function StudioProjectSettings({
   project, selectedClip, jobs, busy, onChange, onMusicChange, onApplyStabilization,
-  onResetWind, onOutputFolder, onError, onMessage, getStagingDir,
+  onResetWind, onOutputFolder, onError, onMessage, getStagingDir, expanded, onSectionChange, onOpenTitles,
 }: {
   project: StudioProject;
   selectedClip?: StudioClip;
@@ -29,11 +27,13 @@ export default function StudioProjectSettings({
   onError: (message: string) => void;
   onMessage: (message: string) => void;
   getStagingDir: () => Promise<string>;
+  expanded: ProjectSettingsSection | null;
+  onSectionChange: (section: ProjectSettingsSection | null) => void;
+  onOpenTitles: () => void;
 }) {
-  const [expanded, setExpanded] = useState<Section | null>(null);
   const included = project.clips.filter((clip) => clip.include);
   const overrides = project.clips.filter((clip) => clip.windReduction != null && clip.windReduction !== "inherit");
-  const summaries: Record<Section, string> = {
+  const summaries: Record<ProjectSettingsSection, string> = {
     project: project.name,
     filters: `Wind: ${title(normalizeWindReduction(project.defaultWindReduction))} · ${overrides.length} override(s)`,
     graphics: `${project.clips.filter((clip) => clip.scorecard?.enabled).length} scorecard(s) · ${project.graphics?.styledTitles ? "Styled titles" : "Legacy titles"}`,
@@ -47,13 +47,13 @@ export default function StudioProjectSettings({
         {sections.map((section) => <button key={section} type="button" id={`studio-project-toggle-${section}`}
           aria-label={title(section)} aria-expanded={expanded === section} aria-controls={`studio-project-panel-${section}`}
           aria-describedby={`studio-project-summary-${section}`}
-          onClick={() => setExpanded((previous) => previous === section ? null : section)}>
+          onClick={() => onSectionChange(expanded === section ? null : section)}>
           <span>{title(section)}</span><small id={`studio-project-summary-${section}`} title={summaries[section]}>{summaries[section]}</small>
         </button>)}
       </div>
     </div>
     <div id="studio-project-panel-project" className="studio-project-panel" role="region" aria-labelledby="studio-project-toggle-project" hidden={expanded !== "project"}>
-      <h3 className="studio-panel-heading">Project details & opening title</h3>
+      <h3 className="studio-panel-heading">Project details</h3>
       <fieldset disabled={busy}>
         <section className="mt-4 grid md:grid-cols-2 gap-4">
         <label>
@@ -66,14 +66,6 @@ export default function StudioProjectSettings({
           />
         </label>
         <label>
-          Opening title style
-          <select className={input} value={project.openingTitleMode} onChange={(e) => onChange({ openingTitleMode: e.target.value as StudioProject["openingTitleMode"] })}>
-            <option value="card">Separate title card</option>
-            <option value="overlay">Overlay on first video</option>
-            <option value="none">None</option>
-          </select>
-        </label>
-        <label>
           Team description
           <input
             className={input}
@@ -82,46 +74,13 @@ export default function StudioProjectSettings({
             placeholder="Navy/white jerseys; yellow helmet covers in afternoon"
           />
         </label>
-        <label>
-          Opening title
-          <input
-            className={input}
-            maxLength={70}
-            value={project.title}
-            onChange={(e) => onChange({ title: e.target.value })}
-          />
-        </label>
-        <label>
-          Subtitle / event date
-          <input
-            className={input}
-            maxLength={110}
-            value={project.subtitle}
-            onChange={(e) => onChange({ subtitle: e.target.value })}
-          />
-        </label>
-        <label>
-          Opening title duration · seconds (0 = hidden)
-          <input
-            className={input}
-            type="number"
-            min="0"
-            max="30"
-            step="0.5"
-            value={project.titleSeconds}
-            onChange={(e) => onChange({ titleSeconds: Number(e.target.value) })}
-          />
-        </label>
-        <StudioGraphicsPreview project={project} target="opening" getStagingDir={getStagingDir} disabled={busy} />
-        <p className="md:col-span-2 text-sm text-cyan-200">{project.openingTitleMode === "overlay"
-          ? `Overlay follows the first included clip (${included[0]?.chapter || "add a clip to begin"}). Reordering or editing this opening title preserves your reusable clip renders. The overlay ends within that first clip.`
-          : project.openingTitleMode === "card" ? "A separate title card precedes your sequence at final assembly. Changing this title preserves reusable clip renders."
-          : "No opening title is added. Individual clip titles are unchanged."}</p>
       </section>
       </fieldset>
+      <button type="button" className="btn-secondary mt-4" onClick={onOpenTitles}>Edit opening title in Titles & graphics</button>
     </div>
     <div id="studio-project-panel-graphics" className="studio-project-panel" role="region" aria-labelledby="studio-project-toggle-graphics" hidden={expanded !== "graphics"}>
-      <StudioProjectGraphics project={project} getStagingDir={getStagingDir} disabled={busy} onChange={onChange} />
+      <StudioProjectGraphics project={project} disabled={busy} onChange={onChange} />
+      <button type="button" className="btn-secondary mt-4" onClick={onOpenTitles}>Preview opening title in Titles & graphics</button>
     </div>
     <div id="studio-project-panel-filters" className="studio-project-panel" role="region" aria-labelledby="studio-project-toggle-filters" hidden={expanded !== "filters"}>
       <div className="studio-project-filter-grid">

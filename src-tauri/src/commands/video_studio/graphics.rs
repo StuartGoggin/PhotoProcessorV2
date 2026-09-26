@@ -33,6 +33,9 @@ fn valid_timing(t: &str, seconds: f64, start: f64) -> bool {
 }
 fn bounded_text(s: &str, max: usize) -> bool { s.chars().count() <= max && !s.chars().any(char::is_control) }
 pub(super) fn validate(p: &Project) -> Result<(), String> {
+    if !bounded_text(&p.title_heading, 60) || p.clips.iter().any(|c| !bounded_text(&c.title_heading, 60) || !bounded_text(&c.title_subtitle, 110)) {
+        return Err("Title headings must be at most 60 characters and clip subtitles at most 110, without control characters".into());
+    }
     let g = settings(p); let t = &g.theme;
     if g.version != 1 || !["segoe", "georgia", "trebuchet"].contains(&t.font.as_str())
         || !["midnight", "ivory", "slate"].contains(&t.palette.as_str())
@@ -62,7 +65,12 @@ pub(super) fn validate(p: &Project) -> Result<(), String> {
 }
 pub(super) fn title_style_key(p: &Project, c: &Clip) -> String {
     let g = settings(p); let t = g.theme;
-    if !g.styled_titles || c.title.trim().is_empty() || c.title_seconds <= 0. { return String::new(); }
+    if c.title.trim().is_empty() || c.title_seconds <= 0. { return String::new(); }
+    let heading = c.title_heading.trim(); let subtitle = c.title_subtitle.trim();
+    if !heading.is_empty() || !subtitle.is_empty() {
+        return json!([2, if g.styled_titles { json!([t.font,t.palette,t.accent.to_uppercase(),t.position,t.opacity]) } else { Value::Null }, heading, subtitle]).to_string();
+    }
+    if !g.styled_titles { return String::new(); }
     json!([1,t.font,t.palette,t.accent.to_uppercase(),t.position,t.opacity]).to_string()
 }
 pub(super) fn recipe(p: &Project) -> Option<Value> {
@@ -75,8 +83,16 @@ pub(super) fn recipe(p: &Project) -> Option<Value> {
     })).collect();
     let titles = g.styled_titles && (p.clips.iter().any(|c| c.include && !c.title.trim().is_empty())
         || (p.opening_title_mode != "none" && (!p.title.trim().is_empty() || !p.subtitle.trim().is_empty())));
-    if cards.is_empty() && !titles { None } else {
-        Some(json!([1,[t.font,t.palette,t.accent.to_uppercase(),t.position,t.opacity],g.styled_titles,cards]))
+    let opening_heading = if p.opening_title_mode != "none" && !p.title.trim().is_empty() && p.title_seconds > 0. { p.title_heading.trim() } else { "" };
+    let title_lines: Vec<_> = p.clips.iter().filter(|c| c.include && !c.title.trim().is_empty() && c.title_seconds > 0.)
+        .filter(|c| !c.title_heading.trim().is_empty() || !c.title_subtitle.trim().is_empty())
+        .map(|c| json!([c.id,c.title_heading.trim(),c.title_subtitle.trim()])).collect();
+    if cards.is_empty() && !titles && opening_heading.is_empty() && title_lines.is_empty() { None } else {
+        let mut value = json!([1,[t.font,t.palette,t.accent.to_uppercase(),t.position,t.opacity],g.styled_titles,cards]);
+        if !opening_heading.is_empty() || !title_lines.is_empty() {
+            value[0] = json!(2); value.as_array_mut().unwrap().push(json!([opening_heading,title_lines]));
+        }
+        Some(value)
     }
 }
 
@@ -137,6 +153,9 @@ fn wrap(text: &str, columns: usize) -> String {
     wrap_title(&clean, columns)
 }
 pub(super) fn filter(p: &Project, work: &Path, card: &Scorecard, prefix: &str, frames: Option<(u64,u64)>) -> Result<String,String> {
+    filter_with_title_spacing(p, work, card, prefix, frames, false)
+}
+fn filter_with_title_spacing(p: &Project, work: &Path, card: &Scorecard, prefix: &str, frames: Option<(u64,u64)>, optional_title_lines: bool) -> Result<String,String> {
     let g = settings(p); fonts(work, &g.theme)?;
     let (panel, ink, muted, stripe) = match g.theme.palette.as_str() {
         "ivory" => ("0xF5F1E8","0x142033","0x46515F","0x142033@0.07"),
@@ -147,7 +166,7 @@ pub(super) fn filter(p: &Project, work: &Path, card: &Scorecard, prefix: &str, f
     let enable = frames.map(|(a,b)| format!(":enable='gte(n,{a})*lt(n,{b})'" )).unwrap_or_default();
     let mut d = Drawing { work, prefix, filters: vec![], scale: p.width as f64 / 1920., offset_x: 0., enable, index: 0 };
     let heading = wrap(&card.heading, 60);
-    let result = wrap(&card.result, if card.template == "result" { 32 } else { 46 });
+    let result = wrap(&card.result, if card.template == "result" { if optional_title_lines { 30 } else { 32 } } else { 46 });
     let subtitle = wrap(&card.subtitle, 64);
     let mut top = if heading.is_empty() { 32. } else { 72. };
     let table_result = if card.template == "table" && !result.is_empty() { result.lines().count() as f64 * 40. + 16. } else { 0. };
@@ -157,8 +176,11 @@ pub(super) fn filter(p: &Project, work: &Path, card: &Scorecard, prefix: &str, f
     let header_columns = ((column_width-24.)/20.).floor() as usize;
     let row_heights: Vec<f64> = card.rows.iter().map(|r| r.iter().map(|v| wrap(v,cell_columns).lines().count()).max().unwrap_or(1) as f64*28.+16.).map(|h|h.max(72.)).collect();
     let header_height = (card.columns.iter().map(|v|wrap(v,header_columns).lines().count()).max().unwrap_or(1) as f64*26.+18.).max(66.);
+    // The new v2 optional-title layout reserves font line advance as well as
+    // glyph height. Keep historical v1 title and scorecard geometry unchanged.
+    let result_lines = result.lines().count().max(1);
     let body = if card.template == "table" { header_height + row_heights.iter().sum::<f64>() }
-        else { result.lines().count().max(1) as f64 * if card.template == "line" { 42. } else { 58. } };
+        else { result_lines as f64 * if card.template == "line" { 42. } else if optional_title_lines && result_lines > 1 { 80. } else { 58. } };
     let foot = if subtitle.is_empty() { 28. } else { subtitle.lines().count() as f64 * 30. + 36. };
     let height = top + body + foot;
     // Dense tables shrink as a whole only when needed; no rows or characters
@@ -192,9 +214,40 @@ pub(super) fn filter(p: &Project, work: &Path, card: &Scorecard, prefix: &str, f
     d.text(&subtitle, 132., y+top+body+12., 24., muted, false)?;
     Ok(d.filters.join(","))
 }
-pub(super) fn title_filter(p: &Project, work: &Path, title: &str, subtitle: &str, prefix: &str, frames: Option<(u64,u64)>) -> Result<String,String> {
-    filter(p, work, &Scorecard { enabled: true, template: "result".into(), heading: String::new(), result: title.into(),
-        subtitle: subtitle.into(), columns: vec![], rows: vec![], timing: "clipStart".into(),seconds: 6.,start: 0. }, prefix, frames)
+// Preview and every export path share content, literal text handling and layout.
+// None selects the project opening title; Some selects a clip's three lines.
+pub(super) fn title_filter(p: &Project, work: &Path, clip: Option<&Clip>, prefix: &str, frames: Option<(u64,u64)>) -> Result<String,String> {
+    let (title, heading, subtitle) = clip.map(|c| (c.title.as_str(), c.title_heading.trim(), c.title_subtitle.trim()))
+        .unwrap_or((&p.title, p.title_heading.trim(), &p.subtitle));
+    if settings(p).styled_titles {
+        return filter_with_title_spacing(p, work, &Scorecard { enabled: true, template: "result".into(), heading: heading.into(), result: title.into(),
+            subtitle: subtitle.into(), columns: vec![], rows: vec![], timing: "clipStart".into(),seconds: 6.,start: 0. }, prefix, frames,
+            !heading.is_empty() || (clip.is_some() && !subtitle.is_empty()));
+    }
+    if !work.join("font.ttf").exists() { fs::copy("C:/Windows/Fonts/arial.ttf", work.join("font.ttf")).map_err(|e| e.to_string())?; }
+    let opening = clip.is_none();
+    let main = wrap_title(title, if opening { 28 } else { 44 });
+    let sub = wrap_title(subtitle, 44); let upper = wrap_title(heading, 60);
+    let main_file = format!("{prefix}-main.txt"); let sub_file = format!("{prefix}-subtitle.txt");
+    text_asset(work, &main_file, &main)?; text_asset(work, &sub_file, &sub)?;
+    let duration = frames.map(|(_,end)| end as f64 / p.fps as f64);
+    // Blank new fields retain the historical legacy drawing geometry exactly.
+    if heading.is_empty() && (opening || subtitle.is_empty()) {
+        return Ok(if opening { format!("{},{}", drawtext(&main_file,p.width/32,"h*0.5-text_h-30",duration),drawtext(&sub_file,p.width/48,"h*0.5+30",duration)) }
+            else { drawtext(&main_file,p.width/48,"h-text_h-40",duration) });
+    }
+    let heading_file = format!("{prefix}-heading.txt"); text_asset(work, &heading_file, &upper)?;
+    let gap = p.width as f64 / 80.;
+    let lines = [(&upper, &heading_file, p.width/64), (&main, &main_file, if opening {p.width/32} else {p.width/48}), (&sub, &sub_file, p.width/48)];
+    let visible: Vec<_> = lines.iter().filter(|(text,_,_)| !text.is_empty()).collect();
+    let height = visible.iter().map(|(text,_,size)| text.lines().count() as f64 * *size as f64 * 1.3).sum::<f64>() + gap * visible.len().saturating_sub(1) as f64;
+    let mut y = if opening { (p.height as f64-height)/2. } else { p.height as f64-height-40. };
+    let mut filters = vec![];
+    for (text,file,size) in visible {
+        filters.push(drawtext(file,*size,&format!("{y:.2}"),duration));
+        y += text.lines().count() as f64 * *size as f64 * 1.3 + gap;
+    }
+    Ok(filters.join(","))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -238,7 +291,7 @@ pub async fn studio_graphics_preview(staging_dir: String, project: Project, clip
         let c = if target == "opening" { p.clips.iter().find(|c| c.include) }
             else { p.clips.iter().find(|c| Some(&c.id) == clip_id.as_ref()) };
         let standalone = if target == "opening" {
-            if p.opening_title_mode == "none" || p.title.is_empty() || p.title_seconds <= 0. { return Err("The opening title is hidden".into()); }
+            if p.opening_title_mode == "none" || p.title.trim().is_empty() || p.title_seconds <= 0. { return Err("The opening title is hidden".into()); }
             p.opening_title_mode == "card"
         } else {
             let c = c.ok_or("Choose a clip for this preview")?;
@@ -246,7 +299,7 @@ pub async fn studio_graphics_preview(staging_dir: String, project: Project, clip
                 let s = c.scorecard.as_ref().filter(|s| s.enabled).ok_or("Enable this scorecard first")?;
                 timing(&settings(p), s).0 == "separateCard"
             } else {
-                if c.title.is_empty() || c.title_seconds <= 0. { return Err("The clip title is hidden".into()); }
+                if c.title.trim().is_empty() || c.title_seconds <= 0. { return Err("The clip title is hidden".into()); }
                 false
             }
         };
@@ -290,17 +343,7 @@ pub async fn studio_graphics_preview(staging_dir: String, project: Project, clip
         let graphic = if target == "scorecard" {
             filter(p,&work,c.and_then(|c| c.scorecard.as_ref()).ok_or("Missing scorecard")?,"preview",None)?
         } else {
-            let (title, subtitle) = if target == "opening" { (p.title.as_str(), p.subtitle.as_str()) }
-                else { (c.ok_or("Missing clip")?.title.as_str(), "") };
-            if settings(p).styled_titles { title_filter(p,&work,title,subtitle,"preview",None)? }
-            else {
-                fs::copy("C:/Windows/Fonts/arial.ttf",work.join("font.ttf")).map_err(|e|e.to_string())?;
-                text_asset(&work,"preview-title.txt",&wrap_title(title,if target == "opening" { 28 } else { 44 }))?;
-                if target == "opening" {
-                    text_asset(&work,"preview-subtitle.txt",&wrap_title(subtitle,44))?;
-                    format!("{},{}",drawtext("preview-title.txt",p.width/32,"h*0.5-text_h-30",None),drawtext("preview-subtitle.txt",p.width/48,"h*0.5+30",None))
-                } else { drawtext("preview-title.txt",p.width/48,"h-text_h-40",None) }
-            }
+            title_filter(p, &work, if target == "opening" { None } else { Some(c.ok_or("Missing clip")?) }, "preview", None)?
         };
         let filters = format!("scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,{graphic}",p.width,p.height,p.width,p.height);
         args.extend(["-vf".into(),filters,"-frames:v".into(),"1".into(),"-an".into(),"-c:v".into(),"png".into(),"-threads".into(),"1".into(),"-f".into(),"image2pipe".into(),"pipe:1".into()]);
@@ -325,6 +368,86 @@ mod tests {
             if count >= 8 { count -= 8; out.push((bits >> count) as u8); }
         }
         out
+    }
+    #[tokio::test]
+    #[ignore = "bounded native heading preview"]
+    async fn studio_optional_heading_preview() {
+        let p = super::super::tests::project(Path::new("."));
+        let root = std::env::var_os("PHOTOGOGO_STUDIO_TEST_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+            .join(format!("heading-preview-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.mp4"); let ff = detect_ffmpeg_capabilities().unwrap().binary;
+        let generated = command(&ff).args(["-v","error","-f","lavfi","-i","color=c=0x0B1322:s=320x180:r=25","-t","2","-c:v","libx264"]).arg(&source).output().unwrap();
+        assert!(generated.status.success());
+        for target in ["opening", "clipTitle"] {
+            let mut hidden = p.clone(); hidden.title = "   ".into(); hidden.title_heading = "Must stay hidden".into();
+            hidden.clips[0].title = "   ".into(); hidden.clips[0].title_heading = "Must stay hidden".into();
+            let error = studio_graphics_preview(".".into(), hidden, Some("one".into()), target.into()).await.err().unwrap();
+            assert!(error.contains("title is hidden"), "Whitespace main text should hide {target}: {error}");
+        }
+        for styled in [false, true] {
+            let mut value = serde_json::to_value(&p).unwrap();
+            value["graphics"] = serde_json::to_value(Settings { styled_titles: styled, ..Settings::default() }).unwrap();
+            let original: Project = serde_json::from_value(value.clone()).unwrap();
+            let blank = studio_graphics_preview(".".into(), original, None, "opening".into()).await.unwrap();
+            value["titleHeading"] = json!("SYDNEY: rider's 100% %{literal} \\ final");
+            let edited: Project = serde_json::from_value(value).unwrap();
+            let heading = studio_graphics_preview(".".into(), edited, None, "opening".into()).await.unwrap();
+            assert!(blank.data_url != heading.data_url, "custom heading must change native pixels, styled={styled}");
+            if let Ok(folder) = std::env::var("PHOTOGOGO_GRAPHICS_PREVIEW_DIR") {
+                fs::write(Path::new(&folder).join(format!("heading-styled-{styled}.png")), png_bytes(&heading.data_url)).unwrap();
+            }
+            let mut clip_project = p.clone(); clip_project.graphics = Some(Settings { styled_titles: styled, ..Settings::default() });
+            clip_project.clips[0].path = source.to_string_lossy().into_owned();
+            let original_clip = studio_graphics_preview(root.to_string_lossy().into_owned(), clip_project.clone(), Some("one".into()), "clipTitle".into()).await.unwrap();
+            clip_project.clips[0].title_heading = "CHAMPIONSHIP ROUND ONE".into();
+            clip_project.clips[0].title_subtitle = "72 points · First place".into();
+            let edited_clip = studio_graphics_preview(root.to_string_lossy().into_owned(), clip_project.clone(), Some("one".into()), "clipTitle".into()).await.unwrap();
+            assert!(original_clip.data_url != edited_clip.data_url);
+            if let Ok(folder) = std::env::var("PHOTOGOGO_GRAPHICS_PREVIEW_DIR") {
+                fs::write(Path::new(&folder).join(format!("clip-heading-styled-{styled}.png")), png_bytes(&edited_clip.data_url)).unwrap();
+                clip_project.clips[0].title = "W".repeat(100); clip_project.clips[0].title_heading = "W".repeat(60); clip_project.clips[0].title_subtitle = "W".repeat(110);
+                let wrapped = studio_graphics_preview(root.to_string_lossy().into_owned(), clip_project.clone(), Some("one".into()), "clipTitle".into()).await.unwrap();
+                fs::write(Path::new(&folder).join(format!("clip-wrapped-styled-{styled}.png")), png_bytes(&wrapped.data_url)).unwrap();
+                if styled {
+                    for font in ["segoe","georgia","trebuchet"] {
+                        clip_project.graphics.as_mut().unwrap().theme.font = font.into();
+                        let frame = studio_graphics_preview(root.to_string_lossy().into_owned(), clip_project.clone(), Some("one".into()), "clipTitle".into()).await.unwrap();
+                        let pixels = image::load_from_memory(&png_bytes(&frame.data_url)).unwrap().to_rgb8();
+                        let main_bottom = pixels.enumerate_pixels().filter(|(_,_,p)|p[0]>235 && p[1]>235 && p[2]>235).map(|(_,y,_)|y).max().unwrap();
+                        let main_right = pixels.enumerate_pixels().filter(|(_,_,p)|p[0]>235 && p[1]>235 && p[2]>235).map(|(x,_,_)|x).max().unwrap();
+                        let subtitle_top = pixels.enumerate_pixels().filter(|(_,_,p)| (170..=205).contains(&p[0]) && (180..=215).contains(&p[1]) && (195..=235).contains(&p[2]) && p[2]>p[1]+8 && p[1]>p[0]+6).map(|(_,y,_)|y).min().unwrap();
+                        assert!(subtitle_top > main_bottom + 3,"{font} subtitle overlaps wrapped title: {main_bottom} / {subtitle_top}");
+                        assert!(main_right < pixels.width()*94/100,"{font} title escapes panel safe area");
+                        fs::write(Path::new(&folder).join(format!("clip-wrapped-{font}.png")), png_bytes(&frame.data_url)).unwrap();
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn studio_optional_title_saved_project_contract() {
+        let root = std::env::temp_dir().join(format!("studio-title-fields-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        let p = super::super::tests::project(&root);
+        let mut legacy = serde_json::to_value(&p).unwrap();
+        legacy.as_object_mut().unwrap().remove("titleHeading");
+        legacy["clips"][0].as_object_mut().unwrap().remove("titleHeading");
+        legacy["clips"][0].as_object_mut().unwrap().remove("titleSubtitle");
+        let path = root.join("legacy.json"); fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = studio_load_project(path.to_string_lossy().into_owned()).unwrap();
+        assert!(loaded.title_heading.is_empty() && loaded.clips[0].title_heading.is_empty() && loaded.clips[0].title_subtitle.is_empty());
+        let mut edited = loaded; edited.title_heading = "Event".into();
+        edited.clips[0].title_heading = "Round one".into(); edited.clips[0].title_subtitle = "72 points".into();
+        let saved = root.join("edited.json"); studio_save_project(saved.to_string_lossy().into_owned(), edited.clone()).unwrap();
+        let roundtrip = studio_load_project(saved.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(roundtrip.title_heading,"Event"); assert_eq!(roundtrip.clips[0].title_heading,"Round one"); assert_eq!(roundtrip.clips[0].title_subtitle,"72 points");
+        for (index, field, bad) in [(0,"titleHeading","x".repeat(61)),(1,"titleHeading","bad\nline".into()),(2,"titleSubtitle","x".repeat(111))] {
+            let mut invalid = serde_json::to_value(&edited).unwrap(); invalid["clips"][0][field] = json!(bad);
+            let rejected = root.join(format!("invalid-{index}.json"));
+            assert!(studio_save_project(rejected.to_string_lossy().into_owned(), serde_json::from_value(invalid).unwrap()).is_err());
+            assert!(!rejected.exists(),"invalid text must not create a saved project");
+        }
     }
     #[tokio::test]
     #[ignore = "bounded native one-frame compositor preview"]

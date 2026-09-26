@@ -175,17 +175,17 @@ try {
 
   // Opening titles and order are final-assembly edits, not clip invalidations.
   const details = (name) => page.locator("summary").filter({ hasText: name });
-  await projectSection(/^Project\b/).click();
+  await page.getByRole("navigation", { name: "Video editing workflow" }).getByRole("link", { name: "Titles & graphics", exact: true }).click();
   assert.equal(await page.getByRole("combobox", { name: /^Opening title style/ }).inputValue(), "card");
   await page.getByRole("combobox", { name: /^Opening title style/ }).selectOption("overlay");
-  await page.getByLabel("Opening title", { exact: true }).fill("Training highlights");
+  await page.getByRole("textbox", { name: "Opening title", exact: true }).fill("Training highlights");
   await review.getByRole("button", { name: "Move down", exact: true }).click();
   await page.waitForFunction(() => JSON.parse(localStorage.getItem("photogogo.videoStudio.project.v1")).clips[1].id === "preview-0");
   let project = await page.evaluate(() => JSON.parse(localStorage.getItem("photogogo.videoStudio.project.v1")));
   assert.equal(project.clips[1].revision, 0);
   assert.equal(project.clips[1].rendered.path, "D:/out/first.mp4");
   await review.getByRole("button", { name: "Move up", exact: true }).click();
-  await projectSection(/^Project\b/).click();
+  await page.getByRole("navigation", { name: "Video editing workflow" }).getByRole("link", { name: /^Review/ }).click();
   await review.getByRole("button", { name: /Render clip ·/ }).click();
   await page.waitForFunction(() => window.__lastStudioRequest?.renderKind === "clip");
   let request = await page.evaluate(() => window.__lastStudioRequest);
@@ -381,7 +381,8 @@ try {
   await projectSection("Filters").click();
   assert.equal(await projectSettings.getByRole("combobox", { name: "Wind reduction default", exact: true }).isEnabled(), true);
   await projectSection("Project").click();
-  assert.equal(await projectSettings.getByLabel("Opening title", { exact: true }).isEnabled(), true);
+  assert.equal(await projectSettings.getByLabel("Project name", { exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("region", { name: "Opening title", exact: true }).getByRole("textbox", { name: "Opening title", exact: true }).isEnabled(), true);
   await projectSection("Output").click();
   assert.equal(await projectSettings.getByLabel("Resolution", { exact: true }).isEnabled(), true);
   await projectSection("Music").click();

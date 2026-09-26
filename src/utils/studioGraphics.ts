@@ -8,8 +8,11 @@ export const newScorecard = (): StudioScorecard => ({ enabled: true, template: "
   timing: "inherit", seconds: 6, start: 0 });
 
 export function titleStyleKey(p: StudioProject, c: StudioClip): string {
-  if (!p.graphics?.styledTitles || !c.title.trim() || c.titleSeconds <= 0) return "";
-  const t = p.graphics.theme;
+  if (!c.title.trim() || c.titleSeconds <= 0) return "";
+  const g = p.graphics ?? graphicsDefaults(), t = g.theme;
+  const heading = c.titleHeading?.trim() ?? "", subtitle = c.titleSubtitle?.trim() ?? "";
+  if (heading || subtitle) return JSON.stringify([2, g.styledTitles ? [t.font, t.palette, t.accent.toUpperCase(), t.position, t.opacity] : null, heading, subtitle]);
+  if (!g.styledTitles) return "";
   return JSON.stringify([1, t.font, t.palette, t.accent.toUpperCase(), t.position, t.opacity]);
 }
 
@@ -30,19 +33,25 @@ export function scoreWindow(p: StudioProject, c: StudioClip, main = c.duration,
 export function graphicsRecipe(p: StudioProject): unknown[] | null {
   const g = p.graphics ?? graphicsDefaults();
   const cards = p.clips.filter(c => c.include && c.scorecard?.enabled);
-  if (!cards.length && !(g.styledTitles && (p.clips.some(c => c.include && c.title.trim())
+  const openingHeading = p.openingTitleMode !== "none" && p.title.trim() && p.titleSeconds > 0 ? p.titleHeading?.trim() ?? "" : "";
+  const titleLines = p.clips.filter(c => c.include && c.title.trim() && c.titleSeconds > 0 && (c.titleHeading?.trim() || c.titleSubtitle?.trim()))
+    .map(c => [c.id, c.titleHeading?.trim() ?? "", c.titleSubtitle?.trim() ?? ""]);
+  if (!openingHeading && !titleLines.length && !cards.length && !(g.styledTitles && (p.clips.some(c => c.include && c.title.trim())
       || (p.openingTitleMode !== "none" && (p.title.trim() || p.subtitle.trim()))))) return null;
   const t = g.theme;
-  return [1, [t.font, t.palette, t.accent.toUpperCase(), t.position, t.opacity], g.styledTitles,
+  const recipe: unknown[] = [1, [t.font, t.palette, t.accent.toUpperCase(), t.position, t.opacity], g.styledTitles,
     cards.map(c => { const s = c.scorecard!; return [c.id, s.template, s.heading, s.result, s.subtitle,
       s.template === "table" ? s.columns : [], s.template === "table" ? s.rows : [],
       s.timing === "inherit" ? g.scorecardTiming : s.timing,
       s.timing === "inherit" ? g.scorecardSeconds : s.seconds,
       s.timing === "inherit" ? g.scorecardStart : s.start]; })];
+  // Keep every legacy recipe byte-identical until optional title lines are used.
+  if (openingHeading || titleLines.length) { recipe[0] = 2; recipe.push([openingHeading, titleLines]); }
+  return recipe;
 }
 
 export function chapterPlan(p: StudioProject) {
-  let offset = p.title && p.openingTitleMode === "card" ? p.titleSeconds : 0;
+  let offset = p.title.trim() && p.openingTitleMode === "card" ? p.titleSeconds : 0;
   return p.clips.filter(c => c.include).map(c => {
     const length = c.duration + c.replays.filter(r => r.enabled).reduce((n, r) => n + (r.end - r.start) / r.speed, 0);
     const card = scoreWindow(p, c, c.duration, length), start = offset;

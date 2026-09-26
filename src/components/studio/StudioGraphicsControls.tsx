@@ -7,7 +7,7 @@ const timings: [StudioScoreTiming, string][] = [["clipEnd", "End of main clip"],
 const bounded = (value: string, min: number, max: number) => Math.max(min, Math.min(max, Number(value) || min));
 interface Common { project: StudioProject; getStagingDir: () => Promise<string>; disabled?: boolean }
 
-export function StudioProjectGraphics({ project, getStagingDir, disabled = false, onChange }: Common & { onChange: (patch: Partial<StudioProject>) => void }) {
+export function StudioProjectGraphics({ project, disabled = false, onChange }: Omit<Common, "getStagingDir"> & { onChange: (patch: Partial<StudioProject>) => void }) {
   const graphics = project.graphics ?? graphicsDefaults();
   const patch = (change: Partial<StudioGraphicsSettings>) => onChange({ graphics: { ...graphics, ...change } });
   const theme = (change: Partial<StudioGraphicsSettings["theme"]>) => patch({ theme: { ...graphics.theme, ...change } });
@@ -31,7 +31,6 @@ export function StudioProjectGraphics({ project, getStagingDir, disabled = false
       </div>
       <p className="studio-graphics-help">Only scorecards set to Use project default follow these timing changes. A standalone card adds time after all replays: camera audio is silent; project music continues.</p>
     </fieldset>
-    <StudioGraphicsPreview project={project} target="opening" getStagingDir={getStagingDir} disabled={disabled} />
   </div>;
 }
 
