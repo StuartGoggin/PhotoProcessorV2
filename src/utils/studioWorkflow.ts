@@ -1,5 +1,6 @@
 import { normalizeProject as normalizeHardware, newBackgroundMusic, type StudioClip, type StudioJob, type StudioProject } from "../types/videoStudio";
 import { effectiveWindReduction } from "./studioAudio";
+import { graphicsRecipe, titleStyleKey } from "./studioGraphics";
 
 export const STUDIO_CLEARED = "studio-renders-cleared";
 export function resetProjectRenders(project: StudioProject): StudioProject {
@@ -34,12 +35,19 @@ export function sequenceRecipe(p: StudioProject): unknown[] {
     recipe[0] = 2;
     recipe.push([1, audio]);
   }
+  const graphics = graphicsRecipe(p);
+  if (graphics) {
+    recipe[0] = 3;
+    if (recipe.length === 5) recipe.push(null);
+    recipe.push(graphics);
+  }
   return recipe;
 }
 export type SequenceStatus = "current" | "outdated" | "unknown";
 export function sequenceStatus(job: Pick<StudioJob, "sequence" | "targets">, p: StudioProject): SequenceStatus {
   if (Array.isArray(job.sequence) && ((job.sequence.length === 5 && job.sequence[0] === 1)
-      || (job.sequence.length === 6 && job.sequence[0] === 2))) {
+      || (job.sequence.length === 6 && job.sequence[0] === 2)
+      || (job.sequence.length === 7 && job.sequence[0] === 3))) {
     return JSON.stringify(job.sequence) === JSON.stringify(sequenceRecipe(p)) ? "current" : "outdated";
   }
   // Legacy targets can prove a mismatch, but cannot establish a matching recipe.
@@ -53,7 +61,7 @@ export function sequenceStatus(job: Pick<StudioJob, "sequence" | "targets">, p: 
   return "unknown";
 }
 export function sequenceClipCount(job: Pick<StudioJob, "sequence" | "targets">): number | null {
-  if (Array.isArray(job.sequence) && [1, 2].includes(job.sequence[0]) && Array.isArray(job.sequence[4])) return job.sequence[4].length;
+  if (Array.isArray(job.sequence) && [1, 2, 3].includes(job.sequence[0]) && Array.isArray(job.sequence[4])) return job.sequence[4].length;
   return job.targets?.length ? job.targets.length : null;
 }
 export const normalizeProject = (p: StudioProject): StudioProject => ({
@@ -64,7 +72,8 @@ export const normalizeProject = (p: StudioProject): StudioProject => ({
 export function isClipReady(clip: StudioClip, p: StudioProject): boolean {
   const r = clip.rendered;
   return !!r?.signature && r.available !== false && r.revision === (clip.revision ?? 0) && r.width === p.width
-    && r.height === p.height && r.fps === p.fps && r.bitrateMbps === p.bitrateMbps;
+    && r.height === p.height && r.fps === p.fps && r.bitrateMbps === p.bitrateMbps
+    && (r.titleStyleKey ?? "") === titleStyleKey(p, clip);
 }
 export function editClip(clip: StudioClip, patch: Partial<StudioClip>): StudioClip {
   const changed = ["path", "duration", "title", "titleSeconds", "stabilization", "stabilizationMethod", "customStabilization", "framing", "replays"]
@@ -105,14 +114,25 @@ export function applyCompletedRenders(project: StudioProject, jobs: StudioJob[])
 }
 export function clipJob(clip: StudioClip, project: StudioProject, jobs: StudioJob[]): StudioJob | undefined {
   return jobs.find((job) => job.kind !== "preview" && ["queued", "running", "paused"].includes(job.status)
+    && jobTitleStyleMatches(job, clip, project)
     && job.width === project.width && job.height === project.height && job.fps === project.fps && job.bitrateMbps === project.bitrateMbps
     && job.targets?.some((target) => target.clipId === clip.id && target.sourcePath === clip.path && target.revision === (clip.revision ?? 0)));
+}
+function jobTitleStyleMatches(job: StudioJob, clip: StudioClip, project: StudioProject): boolean {
+  const target = job.targets?.find((candidate) => candidate.clipId === clip.id && candidate.sourcePath === clip.path && candidate.revision === (clip.revision ?? 0));
+  if (target?.titleStyleKey !== undefined) return target.titleStyleKey === titleStyleKey(project, clip);
+  if (!clip.title.trim() || clip.titleSeconds <= 0) return true;
+  const recipe = job.sequence;
+  const graphics = Array.isArray(recipe) && recipe[0] === 3 && Array.isArray(recipe[6]) ? recipe[6] : null;
+  const key = graphics?.[2] === true && Array.isArray(graphics[1]) ? JSON.stringify([1, ...graphics[1]]) : "";
+  return key === titleStyleKey(project, clip);
 }
 export function clipStatus(clip: StudioClip, project: StudioProject, jobs: StudioJob[]): string {
   const active = clipJob(clip, project, jobs);
   if (active) return `${active.paused ? "Pause requested" : active.status === "queued" ? "Queued" : "Rendering"} · ${Math.round(active.progress)}%`;
   if (isClipReady(clip, project)) return "Ready to assemble";
   const stopped = jobs.find((job) => job.kind !== "preview" && ["failed", "interrupted", "cancelled"].includes(job.status)
+    && jobTitleStyleMatches(job, clip, project)
     && job.width === project.width && job.height === project.height && job.fps === project.fps && job.bitrateMbps === project.bitrateMbps
     && job.targets?.some((target) => target.clipId === clip.id && target.sourcePath === clip.path && target.revision === (clip.revision ?? 0)));
   if (stopped) return `${stopped.status === "interrupted" ? "Interrupted" : stopped.status === "failed" ? "Render failed" : "Cancelled"} · resume in Jobs`;

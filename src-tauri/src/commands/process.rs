@@ -1168,7 +1168,11 @@ fn studio_inspection_output_budget_does_not_silently_truncate_json() {
 }
 
 pub(super) fn command_output_limited(binary: &Path, args: &[&str], stdout_limit: usize, timeout: Duration) -> Result<std::process::Output, String> {
+    command_output_limited_in(binary, args, stdout_limit, timeout, None)
+}
+pub(super) fn command_output_limited_in(binary: &Path, args: &[&str], stdout_limit: usize, timeout: Duration, directory: Option<&Path>) -> Result<std::process::Output, String> {
     let mut command = Command::new(binary);
+    if let Some(directory) = directory { command.current_dir(directory); }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

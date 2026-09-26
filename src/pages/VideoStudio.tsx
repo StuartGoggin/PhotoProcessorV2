@@ -13,6 +13,9 @@ import StudioStabilizationFields from "../components/StudioStabilizationFields";
 import StudioApprovalButton from "../components/StudioApprovalButton";
 import StudioAudioControls from "../components/studio/StudioAudioControls";
 import StudioProjectSettings from "../components/studio/StudioProjectSettings";
+import { StudioClipScorecard } from "../components/studio/StudioGraphicsControls";
+import StudioGraphicsPreview from "../components/studio/StudioGraphicsPreview";
+import StudioChapterEditor from "../components/studio/StudioChapterEditor";
 import { effectiveWindReduction, resetWindReductionOverrides } from "../utils/studioAudio";
 import StudioExportDescription from "../components/StudioExportDescription";
 import "../styles/studio-editor.css";
@@ -327,12 +330,15 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
         }
         p = { ...project, title: "", titleSeconds: 0, clips: [c], music: { ...project.music, enabled: false } };
       }
+      const finalClips = p.clips.filter((candidate) => candidate.include);
+      const finishingOnly = !preview && finalClips.length > 0 && finalClips.every((candidate) => isClipReady(candidate, p));
       await invoke<string>("studio_start_render", {
         project: p, stagingDir, preview, previewStart, previewLength,
-        renderKind: preview ? "preview" : "project", clipId: null, assembleOnly: false,
+        renderKind: preview ? "preview" : finishingOnly ? "assembly" : "project", clipId: null, assembleOnly: finishingOnly,
       });
       setMessage(preview ? "720p preview queued; full renders use your output settings."
-        : `Final video queued with ${p.clips.filter((c) => c.include).length} included clips. This saved request will not change if you edit the project. Matching clips will be reused, pending clips rendered, then the video assembled.`);
+        : finishingOnly ? `Finishing-only export queued for ${finalClips.length} clips. Only verified cached renders will be composited; if cache or source verification fails, this export stops instead of repeating stabilisation. This saved request will not change if you edit the project.`
+        : `Final video queued with ${finalClips.length} included clips. This saved request will not change if you edit the project. Matching clips will be reused, pending clips rendered, then the video assembled.`);
     });
   }
   async function contactSheet() {
@@ -364,7 +370,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
   const visibleClips = project.clips.map((candidate, index) => ({ candidate, index })).filter(({ candidate }) =>
     (!search.trim() || `${candidate.chapter} ${clipName(candidate.path)}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()))
     && (clipFilter === "all" || clipFilter === "included" && candidate.include || clipFilter === "excluded" && !candidate.include || clipFilter === "review" && candidate.include && !candidate.reviewed || clipFilter === "render" && candidate.include && !isClipReady(candidate, project) || clipFilter === "ready" && isClipReady(candidate, project)));
-  const editorTabs = ["picture", "titles", "replays", "notes", "sound"];
+  const editorTabs = ["picture", "titles", "scorecard", "replays", "notes", "sound"];
   const readyCount = included.filter((c) => isClipReady(c, project)).length;
   const reviewedCount = included.filter((c) => c.reviewed).length;
   const pendingCount = included.filter((c) => c.reviewed && !isClipReady(c, project) && !clipJob(c, project, jobs)).length;
@@ -650,6 +656,11 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                   />
                 </label>
 </div>
+              <button type="button" className="btn-secondary" disabled={!clip.chapter.trim()} onClick={() => edit(clip.id, { title: clip.chapter.slice(0, 100) })}>Use chapter name as title</button>
+              <StudioGraphicsPreview key={`${currentEpoch}:${clip.id}:title`} project={project} clip={clip} target="clipTitle" getStagingDir={stagingFolder} disabled={busy} />
+              </div>
+              <div id="studio-panel-scorecard" className="studio-property-panel" role="tabpanel" aria-labelledby="studio-tab-scorecard" hidden={editorTab !== "scorecard"}>
+                <StudioClipScorecard key={`${currentEpoch}:${clip.id}:scorecard`} project={project} clip={clip} onChange={(change) => edit(clip.id, change)} getStagingDir={stagingFolder} disabled={busy} />
               </div>
               <div id="studio-panel-replays" className="studio-property-panel" role="tabpanel" aria-labelledby="studio-tab-replays" hidden={editorTab !== "replays"}>
               <div className="flex justify-between">
@@ -797,6 +808,9 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
           )}
         </section>
       </div>
+      <StudioChapterEditor project={project} disabled={busy} onName={(id, chapter) => edit(id, { chapter })}
+        onMove={(id, delta) => setProject((previous) => moveClip(previous, id, delta))}
+        onSelect={(id) => { setSelected(id); setEditorTab("scorecard"); focusReview(); }} />
       <details className="studio-export-panel" open={finishOpen} onToggle={(event) => setFinishOpen(event.currentTarget.open)}><summary className="studio-panel-heading">Finish & export · {included.length} clips · {readyCount} ready</summary>
       <section id="studio-finish" className="studio-finish rounded-xl border border-cyan-800/60 bg-gradient-to-br from-surface-800 to-[#0c1930] p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -809,6 +823,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
           <div className="rounded-lg bg-surface-900 p-3"><p className="text-gray-400 text-xs mb-1">SOUND</p>{windClipCount ? `Wind cleanup on ${windClipCount} clip(s)` : "Original camera sound"}{project.music.enabled ? " + background music" : " · no music"}</div>
         </div>
         <p className="text-sm text-gray-300">The video follows your clip order, with each clip's titles and replays. Matching renders are reused; remaining clips are prepared automatically before assembly.</p>
+        {!!included.filter((candidate) => candidate.scorecard?.enabled).length && <p className="text-sm text-amber-100">Scorecards are composited onto matching stabilised cached clips at final export. They do not repeat stabilisation or reset picture approval. Standalone cards add time after replays, with silent camera audio and continuing project music.</p>}
         <p className="text-sm text-cyan-200">Current sequence: {included.length} included · {reviewedCount} approved · {readyCount} reusable renders · {included.length - readyCount} to prepare. New exports need their own disk space; the previous video is kept.</p>
         {olderActiveFinal && <p role="status" className="text-sm text-amber-200">A saved {sequenceClipCount(olderActiveFinal) ?? "unknown"}-clip render is still active and will not pick up these edits. You can queue the current sequence separately; existing work will not be cancelled.</p>}
         <p className="text-sm text-cyan-200">Opening title: {project.openingTitleMode === "none" || !project.title || !project.titleSeconds ? "None" : project.openingTitleMode === "overlay" ? `Overlay on ${included[0]?.chapter || "the first included clip"} at final assembly` : "Separate title card"}. Chapter timings are generated from the finished export.</p>

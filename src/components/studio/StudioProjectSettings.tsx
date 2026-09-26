@@ -5,10 +5,12 @@ import { normalizeWindReduction, windReductionPresets } from "../../utils/studio
 import StudioBackgroundMusic from "../StudioBackgroundMusic";
 import StudioOutputSettings from "../StudioOutputSettings";
 import StudioStabilizationFields from "../StudioStabilizationFields";
+import { StudioProjectGraphics } from "./StudioGraphicsControls";
+import StudioGraphicsPreview from "./StudioGraphicsPreview";
 
 const input = "bg-surface-900 rounded border border-surface-600 px-3 py-2 w-full text-sm";
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
-const sections = ["project", "filters", "music", "output"] as const;
+const sections = ["project", "filters", "graphics", "music", "output"] as const;
 type Section = typeof sections[number];
 
 export default function StudioProjectSettings({
@@ -34,6 +36,7 @@ export default function StudioProjectSettings({
   const summaries: Record<Section, string> = {
     project: project.name,
     filters: `Wind: ${title(normalizeWindReduction(project.defaultWindReduction))} · ${overrides.length} override(s)`,
+    graphics: `${project.clips.filter((clip) => clip.scorecard?.enabled).length} scorecard(s) · ${project.graphics?.styledTitles ? "Styled titles" : "Legacy titles"}`,
     music: project.music.enabled ? project.music.audioPath ? "Ready to mix" : "Audio file needed" : "Off",
     output: outputLabel(project),
   };
@@ -109,22 +112,16 @@ export default function StudioProjectSettings({
             onChange={(e) => onChange({ titleSeconds: Number(e.target.value) })}
           />
         </label>
-        <div
-          className="rounded p-4 bg-[#0c1930] text-white self-center"
-          aria-label="Opening title layout preview"
-        >
-          <p className="text-xl break-words">{project.openingTitleMode === "none" || !project.titleSeconds ? "Title hidden" : project.title || "Title hidden"}</p>
-          {project.openingTitleMode !== "none" && !!project.title && !!project.titleSeconds && <p className="text-sm mt-3 break-words">{project.subtitle}</p>}
-          <small className="text-gray-400">
-            Layout sketch only · opening titles are applied at final assembly, not in clip previews.
-          </small>
-        </div>
+        <StudioGraphicsPreview project={project} target="opening" getStagingDir={getStagingDir} disabled={busy} />
         <p className="md:col-span-2 text-sm text-cyan-200">{project.openingTitleMode === "overlay"
           ? `Overlay follows the first included clip (${included[0]?.chapter || "add a clip to begin"}). Reordering or editing this opening title preserves your reusable clip renders. The overlay ends within that first clip.`
           : project.openingTitleMode === "card" ? "A separate title card precedes your sequence at final assembly. Changing this title preserves reusable clip renders."
           : "No opening title is added. Individual clip titles are unchanged."}</p>
       </section>
       </fieldset>
+    </div>
+    <div id="studio-project-panel-graphics" className="studio-project-panel" role="region" aria-labelledby="studio-project-toggle-graphics" hidden={expanded !== "graphics"}>
+      <StudioProjectGraphics project={project} getStagingDir={getStagingDir} disabled={busy} onChange={onChange} />
     </div>
     <div id="studio-project-panel-filters" className="studio-project-panel" role="region" aria-labelledby="studio-project-toggle-filters" hidden={expanded !== "filters"}>
       <div className="studio-project-filter-grid">

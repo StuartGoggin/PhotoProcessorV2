@@ -21,6 +21,12 @@ pub(super) fn recipe(p: &Project) -> Value {
         result[0] = json!(2);
         result.as_array_mut().unwrap().push(audio);
     }
+    if let Some(graphics) = graphics::recipe(p) {
+        result[0] = json!(3);
+        let parts = result.as_array_mut().unwrap();
+        if parts.len() == 5 { parts.push(Value::Null); }
+        parts.push(graphics);
+    }
     result
 }
 
@@ -57,7 +63,7 @@ pub(super) fn verify_assembly(p: &Project, segments: &[(PathBuf, String)], has_c
     if included.is_empty() || segments.len() != included.len() + offset {
         return Err("Assembly clip count does not match this saved render request; no final video was published".into());
     }
-    let planned = included.iter().map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision }).collect();
+    let planned = included.iter().map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(p,c) }).collect();
     let mut assembled = Vec::with_capacity(included.len());
     for (clip, (actual_path, _)) in included.into_iter().zip(&segments[offset..]) {
         let rendered = clip.rendered.as_ref().ok_or("Assembly clip has no verified render")?;
@@ -87,6 +93,7 @@ mod tests {
                 fps: p.fps, duration: clip.duration, rendered_at: "fixture".into(),
                 bitrate_mbps: p.bitrate_mbps, revision: clip.revision,
                 signature: "verified elsewhere".into(), checksum: "verified elsewhere".into(),
+                title_style_key: String::new(),
             });
         }
         p

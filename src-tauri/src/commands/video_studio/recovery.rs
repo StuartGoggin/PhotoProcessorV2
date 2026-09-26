@@ -84,7 +84,7 @@ fn migrate_legacy_queue(path: &Path) -> Result<(), String> {
         request.kind = if request.preview { "preview" } else { "project" }.into();
         job.kind = request.kind.clone(); job.width = request.project.width; job.height = request.project.height;
         job.fps = request.project.fps; job.bitrate_mbps = effective_bitrate(&request.project);
-        job.targets = request.project.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision }).collect();
+        job.targets = request.project.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(&request.project,c) }).collect();
         recover_status(&mut job);
         requests().lock().map_err(|e| e.to_string())?.insert(job.id.clone(), request);
         persist(&job)?;
@@ -185,7 +185,7 @@ pub(super) fn enqueue(request: RenderRequest) -> Result<String, String> {
         kind: request.kind.clone(), clip_id: request.clip_id.clone(),
         width: if request.preview { 1280 } else { p.width }, height: if request.preview { 720 } else { p.height },
         fps: p.fps, bitrate_mbps: effective_bitrate(p), duration: project_timeline_seconds(p),
-        targets: if request.kind == "music" { vec![] } else { p.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision }).collect() },
+        targets: if request.kind == "music" { vec![] } else { p.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(p,c) }).collect() },
         sequence: if !request.preview && matches!(request.kind.as_str(), "project" | "assembly") { Some(sequence::recipe(p)) } else { None },
         music_request_id: if request.kind == "music" { p.music.request_id.clone() } else { String::new() },
         ..StudioJob::default()
@@ -298,8 +298,11 @@ fn clear_jobs() -> Result<ClearResult, String> {
 // Revision is a UI hint. Content and source hashes are the authority for reuse.
 fn clip_signature(p: &Project, clip: &Clip, root: &str) -> Result<String, String> {
     let path = source(Path::new(root), &clip.path)?;
-    Ok(signature(&[source_signature(&path)?, format_key(p), clip.title.clone(), clip.title_seconds.to_string(),
-        clip.stabilization.clone(), clip.stabilization_method.clone(), serde_json::to_string(&clip.custom_stabilization).map_err(|e| e.to_string())?, clip.framing.clone(), serde_json::to_string(&clip.replays).map_err(|e| e.to_string())?]))
+    let mut parts = vec![source_signature(&path)?, format_key(p), clip.title.clone(), clip.title_seconds.to_string(),
+        clip.stabilization.clone(), clip.stabilization_method.clone(), serde_json::to_string(&clip.custom_stabilization).map_err(|e| e.to_string())?, clip.framing.clone(), serde_json::to_string(&clip.replays).map_err(|e| e.to_string())?];
+    let style = graphics::title_style_key(p, clip);
+    if !style.is_empty() { parts.extend(["styled-title-v1".into(), style]); }
+    Ok(signature(&parts))
 }
 pub(super) fn verify_clip(ff: &Path, p: &Project, clip: &Clip, rendered: &ClipRender, root: &str) -> Result<(), String> {
     if rendered.signature.is_empty() || rendered.signature != clip_signature(p, clip, root)?
@@ -336,6 +339,7 @@ fn prepare_clip(format: &Project, mut clip: Clip, request: &RenderRequest, id: &
             duration: duration(&inspect(ff, Path::new(&path))?)?, path,
             width: format.width, height: format.height, fps: format.fps, bitrate_mbps: effective_bitrate(format),
             revision: clip.revision, signature: key, rendered_at: chrono::Utc::now().to_rfc3339(),
+            title_style_key: graphics::title_style_key(format, &clip),
         }
     };
     rendered.revision = clip.revision;
@@ -390,6 +394,89 @@ fn execute(request: RenderRequest, id: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "bounded synthetic graphics export and verified cache reuse"]
+    fn scorecard_delivery_smoke() {
+        let ff = detect_ffmpeg_capabilities().unwrap().binary;
+        let root = std::env::var_os("PHOTOGOGO_STUDIO_TEST_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+            .join(format!("studio-graphics-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        let generated = command(&ff).args(["-v","error","-f","lavfi","-i","color=c=0x23445A:size=320x180:rate=25",
+            "-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","2","-c:v","libx264","-bf","0","-c:a","aac"])
+            .arg(root.join("source.mp4")).output().unwrap();
+        assert!(generated.status.success(), "{}", String::from_utf8_lossy(&generated.stderr));
+        let mut p = super::super::tests::project(&root);
+        p.title.clear(); p.opening_title_mode = "none".into(); p.encoder_preference = "cpu".into(); p.adaptive_scheduling = false;
+        p.default_wind_reduction = "light".into();
+        p.clips[0].stabilization = "off".into(); p.clips[0].title.clear();
+        p.clips[0].replays[0].start = 0.2; p.clips[0].replays[0].end = 0.6;
+        let mut replay = p.clips[0].replays[0].clone(); replay.id = "r2".into(); replay.caption = "Second replay".into();
+        p.clips[0].replays.push(replay);
+        p.clips[0].scorecard = Some(serde_json::from_value(json!({"enabled":true,"template":"result","heading":"ROUND ONE",
+            "result":"72 points · 1st place","subtitle":"Rider's 100% effort: #1","columns":["Place"],"rows":[["1"]],"timing":"clipEnd","seconds":1.,"start":0.})).unwrap());
+        let mut next = p.clips[0].clone(); next.id = "two".into(); next.chapter = "Round two".into(); next.replays.clear();
+        next.scorecard.as_mut().unwrap().timing = "separateCard".into(); p.clips.push(next);
+        let id = format!("scorecard-smoke-{}", std::process::id());
+        jobs().lock().unwrap().insert(id.clone(), StudioJob { id: id.clone(), kind: "project".into(), status: "running".into(), ..StudioJob::default() });
+        let mut request = RenderRequest { project: p.clone(), staging_dir: root.to_string_lossy().into_owned(), preview: false,
+            preview_start: None, preview_length: None, kind: "project".into(), clip_id: None, assemble_only: false };
+        let output = execute(request.clone(), &id).unwrap();
+        let info = inspect(&ff, Path::new(&output)).unwrap();
+        assert_eq!(delivery::frame_count(&info).unwrap(), 165);
+        assert_eq!(info["chapters"].as_array().unwrap().len(), 5);
+        assert_eq!(info["chapters"][3]["tags"]["title"], "Round two");
+        assert_eq!(info["chapters"][4]["tags"]["title"], "Results — Round two");
+        let frame = |path: &str, time: &str| {
+            let out = command(&ff).args(["-v","error","-ss",time,"-i",path,"-frames:v","1","-pix_fmt","gray","-f","rawvideo","pipe:1"]).output().unwrap();
+            assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr)); out.stdout
+        };
+        // Scorecards occupy the lower half; replay captions intentionally live
+        // at the top and must not be mistaken for a leaked result overlay.
+        let bright = |time: &str| frame(&output,time).into_iter().skip(1280*360).filter(|v| *v > 210).count();
+        assert_eq!(bright("0.96"),0,"Card appeared a frame early");
+        assert!(bright("1.00")>500,"Card missing at first enabled frame");
+        assert!(bright("1.96")>500,"Card missing at final main frame");
+        assert_eq!(bright("2.00"),0,"Card leaked into replay");
+        assert_eq!(bright("3.60"),0,"Card leaked into following clip");
+        assert_eq!(bright("5.56"),0,"Standalone card started early");
+        assert!(bright("5.60")>500,"Standalone card missing");
+        assert!(bright("6.56")>500,"Final card frame missing");
+        let silence = command(&ff).args(["-v","error","-ss","5.9","-i",&output,"-t","0.4","-vn","-ac","1","-ar","48000","-c:a","pcm_s16le","-f","s16le","pipe:1"]).output().unwrap();
+        assert!(silence.status.success());
+        assert!(silence.stdout.chunks_exact(2).all(|b|i16::from_le_bytes([b[0],b[1]]).unsigned_abs()<100),"Camera audio spilled into standalone card");
+        let saved = jobs().lock().unwrap()[&id].artifacts.clone();
+        request.project.clips[0].scorecard.as_mut().unwrap().result = "73 points · 1st place".into();
+        request.assemble_only = true;
+        let updated = execute(request.clone(), &id).unwrap();
+        assert_ne!(output, updated);
+        assert_ne!(frame(&output,"1.5"),frame(&updated,"1.5"),"Edited score did not change delivered pixels");
+        assert_eq!(delivery::frame_count(&inspect(&ff, Path::new(&updated)).unwrap()).unwrap(), 165);
+        for artifact in &jobs().lock().unwrap()[&id].artifacts {
+            let before = saved.iter().find(|a| a.clip_id == artifact.clip_id).unwrap();
+            assert_eq!(artifact.rendered.path, before.rendered.path, "Score edit invalidated reusable pictures");
+            assert_eq!(artifact.rendered.checksum, before.rendered.checksum);
+            assert_eq!(compute_md5(Path::new(&before.rendered.path)).unwrap(), before.rendered.checksum);
+        }
+        let music = root.join("music.wav");
+        let converted = command(&ff).args(["-v","error","-i"]).arg(root.join("source.mp4"))
+            .args(["-vn","-c:a","pcm_s16le"]).arg(&music).output().unwrap();
+        assert!(converted.status.success());
+        request.project.music.enabled = true; request.project.music.audio_path = music.to_string_lossy().into_owned();
+        request.project.music.music_volume = 100; request.project.music.original_volume = 0;
+        let with_music = execute(request.clone(), &id).unwrap();
+        let music_card = command(&ff).args(["-v","error","-ss","5.9","-i",&with_music,"-t","0.4","-vn","-ac","1","-ar","48000","-c:a","pcm_s16le","-f","s16le","pipe:1"]).output().unwrap();
+        assert!(music_card.status.success());
+        assert!(music_card.stdout.chunks_exact(2).any(|b|i16::from_le_bytes([b[0],b[1]]).unsigned_abs()>300),"Project music stopped during standalone card");
+        assert_eq!(delivery::frame_count(&inspect(&ff,Path::new(&with_music)).unwrap()).unwrap(),165);
+        // An explicitly finishing-only request must never prepare new pictures
+        // if its verified candidates are unavailable.
+        jobs().lock().unwrap().get_mut(&id).unwrap().artifacts.clear();
+        let error = execute(request, &id).unwrap_err();
+        assert!(error.contains("needs rendering"),"Unexpected missing-cache error: {error}");
+        assert!(jobs().lock().unwrap()[&id].artifacts.is_empty(),"Finishing-only export rendered new clips");
+        for artifact in &saved { assert_eq!(compute_md5(Path::new(&artifact.rendered.path)).unwrap(),artifact.rendered.checksum); }
+        println!("GRAPHICS_FIXTURE={}\nGRAPHICS_EXPORT={updated}", root.display());
+    }
+    #[test]
     fn project_opening_and_sequence_do_not_invalidate_reusable_clip_identity() {
         let root = std::env::temp_dir().join(format!("studio-identity-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
         fs::create_dir(&root).unwrap();
@@ -409,6 +496,9 @@ mod tests {
         p.default_wind_reduction = "moderate".into();
         p.clips[1].wind_reduction = "strong".into();
         assert_eq!(clip_signature(&p, &p.clips[1], &root_string).unwrap(), original, "Audio edits must not invalidate stabilised pictures");
+        p.graphics = Some(graphics::Settings { styled_titles: true, ..graphics::Settings::default() });
+        assert_ne!(clip_signature(&p, &p.clips[1], &root_string).unwrap(), original, "Styled title must refresh the titled fragment, not silently reuse old typography");
+        p.graphics = None;
         p.clips[1].title = "New per-clip text".into();
         assert_ne!(clip_signature(&p, &p.clips[1], &root_string).unwrap(), original);
         p.opening_title_mode = "invalid".into(); assert!(validate(&p).is_err());
@@ -478,6 +568,15 @@ mod tests {
         let card_info = inspect(&ff, Path::new(&card)).unwrap();
         assert_eq!(delivery::frame_count(&card_info).unwrap(), 183);
         assert_eq!(card_info["chapters"][0]["tags"]["title"], "Opening title");
+        request.project.graphics = Some(graphics::Settings { styled_titles: true, ..graphics::Settings::default() });
+        let styled_card = execute(request.clone(), &id).unwrap();
+        assert_eq!(delivery::frame_count(&inspect(&ff,Path::new(&styled_card)).unwrap()).unwrap(),183);
+        request.project.opening_title_mode = "overlay".into();
+        let styled_overlay = execute(request.clone(), &id).unwrap();
+        assert_eq!(delivery::frame_count(&inspect(&ff,Path::new(&styled_overlay)).unwrap()).unwrap(),168);
+        for artifact in &jobs().lock().unwrap()[&id].artifacts {
+            assert_eq!(artifact.rendered.checksum,saved.iter().find(|old|old.clip_id==artifact.clip_id).unwrap().rendered.checksum);
+        }
         update(&id, |j| { j.cancelled = true; j.status = "cancelled".into(); });
         assert!(execute(request, &id).is_err());
         assert_eq!(jobs().lock().unwrap()[&id].status, "cancelled");
@@ -553,11 +652,11 @@ mod tests {
         let generated = command(&ff).args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p"]).arg(&source).output().unwrap();
         assert!(generated.status.success(), "{}", String::from_utf8_lossy(&generated.stderr));
         let clip = Clip { id: "recovery-clip".into(), path: source.to_string_lossy().into_owned(), duration: 1., include: true, chapter: "One".into(), title: "Practice".into(), title_seconds: 0.5,
-            stabilization: "off".into(), stabilization_method: quality_method(), custom_stabilization: CustomStabilization::default(), framing: "edgeSafe".into(), reviewed: true, notes: String::new(), replays: vec![Replay { id: "recap".into(), start: 0.2, end: 0.6, speed: 0.5, caption: "Replay".into(), enabled: true }], rendered: None, revision: 0, wind_reduction: audio::inherit() };
+            stabilization: "off".into(), stabilization_method: quality_method(), custom_stabilization: CustomStabilization::default(), framing: "edgeSafe".into(), reviewed: true, notes: String::new(), replays: vec![Replay { id: "recap".into(), start: 0.2, end: 0.6, speed: 0.5, caption: "Replay".into(), enabled: true }], rendered: None, revision: 0, wind_reduction: audio::inherit(), scorecard: None };
         let p = Project { version: 1, name: "Recovery test".into(), team: String::new(), title: "Opening".into(), subtitle: String::new(), title_seconds: 0.5, opening_title_mode: "card".into(),
             output_dir: root.to_string_lossy().into_owned(), width: 1280, height: 720, fps: 30, clips: vec![clip.clone()], music: BackgroundMusic::default(), assemble_rendered_clips: true, bitrate_mbps: 2,
             default_stabilization: off_preset(), default_stabilization_method: quality_method(), default_custom_stabilization: CustomStabilization::default(), performance: max_performance(), encoder_preference: auto_encoder(),
-            adaptive_scheduling: true, remaining_clips: None, source_profile: String::new(), default_wind_reduction: off_preset() };
+            adaptive_scheduling: true, remaining_clips: None, source_profile: String::new(), default_wind_reduction: off_preset(), graphics: None };
         let request = RenderRequest { project: p.clone(), staging_dir: root.to_string_lossy().into_owned(), preview: false, preview_start: None, preview_length: None, kind: "clip".into(), clip_id: Some(clip.id.clone()), assemble_only: false };
         let id = "recovery-test";
         requests().lock().unwrap().insert(id.into(), request.clone());

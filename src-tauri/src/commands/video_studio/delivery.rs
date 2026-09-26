@@ -8,7 +8,7 @@ const MANIFEST: &str = "delivery.json";
 const MAX_TEXT_BYTES: u64 = 20_000;
 // Existing saved projects may hold 500 clips with 100 replays apiece. Do not
 // introduce a smaller late-render limit than the project model already allows.
-const MAX_CHAPTERS: usize = 50_501;
+const MAX_CHAPTERS: usize = 51_001;
 const MAX_SIDECAR_BYTES: u64 = 32_000_000;
 static DESCRIPTION_WRITE: Mutex<()> = Mutex::new(());
 
@@ -134,7 +134,9 @@ pub(super) fn opening_overlay(ff: &Path, p: &Project, encoder_name: &str, input:
     let visible_seconds = p.title_seconds.min(first_chapter_frames as f64 / f64::from(p.fps));
     text_asset(work, "opening-overlay.txt", &wrap_title(&p.title, 28))?;
     text_asset(work, "opening-subtitle.txt", &wrap_title(&p.subtitle, 44))?;
-    let filter = format!("{},{}", drawtext("opening-overlay.txt", p.width / 32, "h*0.5-text_h-30", Some(visible_seconds)), drawtext("opening-subtitle.txt", p.width / 48, "h*0.5+30", Some(visible_seconds)));
+    let filter = if p.graphics.as_ref().is_some_and(|g| g.styled_titles) {
+        graphics::title_filter(p,work,&p.title,&p.subtitle,"opening-overlay",Some((0,(visible_seconds*p.fps as f64).ceil() as u64)))?
+    } else { format!("{},{}", drawtext("opening-overlay.txt", p.width / 32, "h*0.5-text_h-30", Some(visible_seconds)), drawtext("opening-subtitle.txt", p.width / 48, "h*0.5+30", Some(visible_seconds))) };
     let output = work.join("opening-overlay.mp4");
     let mut args = vec!["-i".into(), input.to_string_lossy().into_owned(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0".into(), "-map_chapters".into(), "-1".into(), "-vf".into(), filter];
     args.extend(encoder(p, encoder_name));

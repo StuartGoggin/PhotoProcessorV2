@@ -10,6 +10,34 @@ export type StudioStabilizationPreset = "off" | "gentle" | "balanced" | "strong"
 export type StudioStabilizationMethod = "fast" | "quality";
 export type StudioWindReductionPreset = "off" | "light" | "moderate" | "strong";
 export type StudioClipWindReduction = "inherit" | StudioWindReductionPreset;
+export type StudioScoreTiming = "clipEnd" | "afterReplays" | "separateCard" | "clipStart" | "custom";
+export interface StudioGraphicsTheme {
+  font: "segoe" | "georgia" | "trebuchet";
+  palette: "midnight" | "ivory" | "slate";
+  accent: string;
+  position: "bottom" | "top";
+  opacity: number;
+}
+export interface StudioGraphicsSettings {
+  version: 1;
+  theme: StudioGraphicsTheme;
+  styledTitles: boolean;
+  scorecardTiming: StudioScoreTiming;
+  scorecardSeconds: number;
+  scorecardStart: number;
+}
+export interface StudioScorecard {
+  enabled: boolean;
+  template: "line" | "result" | "table";
+  heading: string;
+  result: string;
+  subtitle: string;
+  columns: string[];
+  rows: string[][];
+  timing: "inherit" | StudioScoreTiming;
+  seconds: number;
+  start: number;
+}
 export interface StudioCustomStabilization {
   radius: number;
   blockSize: number;
@@ -39,6 +67,8 @@ export interface StudioClip {
   revision?: number;
   // Camera-audio processing is applied at final assembly, not picture rendering.
   windReduction?: StudioClipWindReduction;
+  // Finishing-only: never changes the reusable stabilised picture.
+  scorecard?: StudioScorecard;
 }
 export interface StudioClipRender {
   path: string;
@@ -51,6 +81,7 @@ export interface StudioClipRender {
   revision: number;
   signature: string;
   available?: boolean;
+  titleStyleKey?: string;
 }
 export interface MusicSection {
   name: string;
@@ -115,6 +146,7 @@ export interface StudioProject {
   clips: StudioClip[];
   music: BackgroundMusic;
   defaultWindReduction?: StudioWindReductionPreset;
+  graphics?: StudioGraphicsSettings;
   assembleRenderedClips?: boolean;
   bitrateMbps: number;
 }
@@ -161,7 +193,7 @@ export interface StudioJob {
   fps?: number;
   duration?: number;
   bitrateMbps?: number;
-  targets?: { clipId: string; sourcePath: string; revision: number }[];
+  targets?: { clipId: string; sourcePath: string; revision: number; titleStyleKey?: string }[];
   artifacts?: { clipId: string; sourcePath: string; rendered: StudioClipRender }[];
   musicRequestId?: string;
   musicProjectPath?: string | null;
@@ -268,6 +300,12 @@ export const normalizeProject = (project: StudioProject): StudioProject => ({
 export const clipName = (path: string) => path.split(/[\\/]/).pop() || path;
 export const timecode = (seconds: number) =>
   `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(2).padStart(5, "0")}`;
+const scorecardExtraDuration = (p: StudioProject, c: StudioClip) => {
+  const s = c.scorecard;
+  if (!s?.enabled || (s.timing === "inherit" ? p.graphics?.scorecardTiming : s.timing) !== "separateCard") return 0;
+  const seconds = s.timing === "inherit" ? (p.graphics?.scorecardSeconds ?? 6) : s.seconds;
+  return Math.round(seconds * p.fps) / p.fps;
+};
 export const projectDuration = (p: StudioProject) =>
   (p.title && (p.openingTitleMode ?? "card") === "card" ? p.titleSeconds : 0) +
   p.clips
@@ -275,7 +313,7 @@ export const projectDuration = (p: StudioProject) =>
     .reduce(
       (n, c) =>
         n +
-        c.duration +
+        c.duration + scorecardExtraDuration(p, c) +
         c.replays.filter((r) => r.enabled).reduce((s, r) => s + (r.end - r.start) / r.speed, 0),
       0
     );

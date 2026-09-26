@@ -47,7 +47,9 @@ try {
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: /Video Studio/ }).click();
   await page.locator("summary").filter({ hasText: /^Finish & export/ }).click();
   await page.getByRole("button", { name: `Create updated final video — ${before} clips`, exact: true }).click();
-  await page.waitForFunction(() => window.__lastStudioRequest?.renderKind === "project");
+  await page.waitForFunction(() => !!window.__lastStudioRequest);
+  assert.equal((await page.evaluate(() => window.__lastStudioRequest)).renderKind, "assembly", "all-ready initial export uses strict assembly admission");
+  assert.equal((await page.evaluate(() => window.__lastStudioRequest)).assembleOnly, true);
   assert.equal((await page.evaluate(() => window.__lastStudioRequest)).project.clips.length, before);
   await page.evaluate(async ({ before, added }) => {
     const { sequenceRecipe } = await import("/src/utils/studioWorkflow.ts");
@@ -82,6 +84,8 @@ try {
   await page.getByRole("button", { name: `Create updated final video — ${before + added} clips`, exact: true }).click();
   await page.waitForFunction((n) => window.__lastStudioRequest?.project.clips.length === n, before + added);
   const request = await page.evaluate(() => window.__lastStudioRequest);
+  assert.equal(request.renderKind, "project", "appended pending clips require the complete render-and-assemble path");
+  assert.equal(request.assembleOnly, false);
   assert.equal(request.project.clips.filter((c) => c.include).length, before + added);
   assert.ok(request.project.clips.slice(0, before).every((c, index) => c.rendered?.path === `D:/out/original-${index}.mp4`), "Existing rendered clips remain reusable");
   assert.equal((await page.evaluate(() => window.__firstAssembly)).project.clips.length, before, "Saved earlier request is unchanged");

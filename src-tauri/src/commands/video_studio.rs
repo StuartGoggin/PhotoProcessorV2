@@ -11,6 +11,8 @@ mod diagnostics;
 mod delivery;
 mod sequence;
 mod audio;
+mod graphics;
+pub use graphics::studio_graphics_preview;
 pub use audio::studio_audio_preview;
 pub use delivery::{studio_read_export_description, studio_save_export_description};
 pub use diagnostics::studio_read_job_log;
@@ -97,6 +99,8 @@ pub struct Clip {
     pub revision: u32,
     #[serde(default = "audio::inherit")]
     pub wind_reduction: String,
+    #[serde(default)]
+    pub scorecard: Option<graphics::Scorecard>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +119,8 @@ pub struct ClipRender {
     pub signature: String,
     #[serde(default)]
     pub checksum: String,
+    #[serde(default)]
+    pub title_style_key: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -190,6 +196,8 @@ pub struct Project {
     pub music: BackgroundMusic,
     #[serde(default = "off_preset")]
     pub default_wind_reduction: String,
+    #[serde(default)]
+    pub graphics: Option<graphics::Settings>,
     #[serde(default)]
     pub assemble_rendered_clips: bool,
     #[serde(default)]
@@ -313,7 +321,11 @@ pub struct StudioJob {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ClipTarget { pub clip_id: String, pub source_path: String, pub revision: u32 }
+pub struct ClipTarget {
+    pub clip_id: String, pub source_path: String, pub revision: u32,
+    #[serde(default)]
+    pub title_style_key: String,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipArtifact {
@@ -503,6 +515,7 @@ fn music_audio_source(path: &str) -> Result<PathBuf, String> {
 }
 fn validate(p: &Project) -> Result<(), String> {
     audio::validate(p)?;
+    graphics::validate(p)?;
     // Bound delivery text before any expensive work. This exceeds the complete
     // legacy snapshot size limit, so existing loadable projects retain labels.
     let chapter_bytes = p.clips.iter().try_fold(0usize, |total, clip| {
@@ -844,7 +857,7 @@ fn project_timeline_seconds(project: &Project) -> f64 {
         .iter()
         .filter(|clip| clip.include)
         .map(|clip| {
-            clip.duration
+            clip.duration + graphics::extra_seconds(project, clip)
                 + clip
                     .replays
                     .iter()
@@ -1834,7 +1847,7 @@ fn render(
             } else {
                 c.duration
             };
-            full + c
+            full + (if !preview && render_kind != "clip" { graphics::extra_seconds(&p, c) } else { 0. }) + c
                 .replays
                 .iter()
                 .filter(|r| r.enabled)
@@ -1844,7 +1857,7 @@ fn render(
         .sum::<f64>()
         + if !preview && render_kind != "clip" && p.opening_title_mode == "card" && !p.title.is_empty() { p.title_seconds } else { 0. };
     let bitrate = f64::from(effective_bitrate(&p)) * 1_000_000.;
-    let required = (estimate_seconds * (bitrate + 256_000.) / 8. * if assemble_only { 1.3 } else { 3.5 }) as u64 + 512_000_000;
+    let required = (estimate_seconds * (bitrate + 256_000.) / 8. * if assemble_only && graphics::recipe(&p).is_none() { 1.3 } else { 3.5 }) as u64 + 512_000_000;
     if fs2::available_space(&output_root).map_err(|e| e.to_string())? < required {
         return Err(format!("Not enough output-disk space. Allow approximately {:.1} GB for video and temporary files.",required as f64/1e9));
     }
@@ -1907,11 +1920,13 @@ fn render(
     if final_delivery && p.opening_title_mode == "card" && p.title_seconds > 0. && !p.title.is_empty() {
         text_asset(&work, "opening.txt", &wrap_title(&p.title, 28))?;
         text_asset(&work, "subtitle.txt", &wrap_title(&p.subtitle, 44))?;
-        let filter = format!(
+        let filter = if p.graphics.as_ref().is_some_and(|g| g.styled_titles) {
+            graphics::title_filter(&p,&work,&p.title,&p.subtitle,"opening",None)?
+        } else { format!(
             "{},{}",
             drawtext("opening.txt", p.width / 32, "h*0.5-text_h-30", None),
             drawtext("subtitle.txt", p.width / 48, "h*0.5+30", None)
-        );
+        ) };
         let mut args = vec![
             "-f".into(),
             "lavfi".into(),
@@ -2047,6 +2062,7 @@ fn render(
         return Err("Camera audio intervals do not match the rendered sequence".into());
     }
     let mut audio_windows = vec![];
+    let mut graphics_records = vec![];
     for (index, (file, title)) in segments.iter_mut().enumerate() {
         let info = inspect(ff, file)?;
         let n = delivery::frame_count(&info)?;
@@ -2061,8 +2077,28 @@ fn render(
             checkpoint(id)?;
             *file = delivery::opening_overlay(ff, &p, encoder_name, file, &work, id, n, local[0].1)?;
         }
+        let score = if final_delivery && assemble_only && !(has_card && index == 0) {
+            let clip = &p.clips[index - usize::from(has_card)];
+            graphics::window(&p, clip, local[0].1, n)?.map(|window| (clip, window))
+        } else { None };
+        if let Some((clip, window)) = score.filter(|(_, w)| w.extra_frames == 0) {
+            let original = clip.rendered.as_ref().expect("verified clip");
+            *file = graphics::composite(ff, &p, clip, encoder_name, file, &work, id, index, n, window)?;
+            graphics_records.push(json!({"clipId":clip.id,"kind":"overlay","original":original.path,
+                "originalChecksum":original.checksum,"startFrame":manifest.frames+window.start,"endFrame":manifest.frames+window.end,
+                "compositedChecksum":compute_md5(file).map_err(|e|e.to_string())?,"compositedFrames":n}));
+        }
         concat.push_str(&format!("file '{}'\nduration {d:.8}\n", concat_path(file)));
         for (label, count) in local { manifest.append(&label, count)?; }
+        if let Some((clip, window)) = score.filter(|(_, w)| w.extra_frames > 0) {
+            let card = graphics::composite(ff, &p, clip, encoder_name, file, &work, id, index, n, window)?;
+            let end = manifest.frames.checked_add(window.extra_frames).ok_or("Scorecard timeline overflow")?;
+            graphics_records.push(json!({"clipId":clip.id,"kind":"standalone","startFrame":manifest.frames,"endFrame":end,
+                "compositedChecksum":compute_md5(&card).map_err(|e|e.to_string())?,"compositedFrames":window.extra_frames}));
+            if wind_recipe.is_some() { audio_windows.push(("off".into(), manifest.frames, end)); }
+            concat.push_str(&format!("file '{}'\nduration {:.8}\n", concat_path(&card), window.extra_frames as f64 / p.fps as f64));
+            manifest.append(&format!("Results — {}", clip.chapter), window.extra_frames)?;
+        }
     }
     let frames = manifest.frames;
     let total = manifest.seconds();
@@ -2111,7 +2147,7 @@ fn render(
         // per-clip overrides; the filename and every filter token are ours.
         text_asset(&work, "camera-audio.txt", &audio::assembly_graph(&camera, mix, total))?;
         final_args.extend(["-filter_complex_script".into(), "camera-audio.txt".into(), "-map".into(), "[mix]".into()]);
-        update(id, |job| job.logs.push("Camera wind reduction v1 applied before music; stabilised video streams copied unchanged (except any requested opening overlay)".into()));
+        update(id, |job| job.logs.push("Camera wind reduction v1 applied before music; stabilised footage retained, with only requested finishing graphics composited".into()));
     } else if background_audio.is_some() {
         let music = f64::from(p.music.music_volume) / 100.0;
         let original = f64::from(p.music.original_volume) / 100.0;
@@ -2192,6 +2228,7 @@ fn render(
                 "output":output,
                 "backgroundMusic": if background_audio.is_some() { json!({"enabled":true,"musicVolume":p.music.music_volume,"originalVolume":p.music.original_volume}) } else { Value::Null },
                 "cameraAudio": wind_recipe,
+                "graphics": {"recipe":graphics::recipe(&p),"segments":graphics_records},
                 "fragmentCache": if preview { Value::Null } else { json!(fragment_cache) },
                 "fragments": segments.iter().map(|(path, title)| json!({"path":path,"chapter":title})).collect::<Vec<_>>(),
             }),
@@ -2379,12 +2416,15 @@ fn render_clip(
     if !c.title.is_empty() && c.title_seconds > 0. {
         let file = format!("title_{i}.txt");
         text_asset(&work, &file, &wrap_title(&c.title, 44))?;
-        let title_key = signature(&[
+        let mut title_parts = vec![
             "title".into(),
             base_key.clone(),
             c.title.clone(),
             c.title_seconds.to_string(),
-        ]);
+        ];
+        let style = graphics::title_style_key(&p, c);
+        if !style.is_empty() { title_parts.extend(["styled-title-v1".into(), style.clone()]); }
+        let title_key = signature(&title_parts);
         let title_cache = fragment_cache.join(cache_name("title", c, &p, &title_key));
         let titled = if !preview && cached_video_is_valid(ff, &title_cache, &p, seconds, &title_key)
         {
@@ -2396,7 +2436,8 @@ fn render_clip(
                 "-i".into(),
                 clean.to_string_lossy().into_owned(),
                 "-vf".into(),
-                drawtext(&file, p.width / 48, "h-text_h-40", Some(c.title_seconds)),
+                if style.is_empty() { drawtext(&file, p.width / 48, "h-text_h-40", Some(c.title_seconds)) }
+                else { graphics::title_filter(&p,&work,&c.title,"","clip-title",Some((0,(c.title_seconds*p.fps as f64).ceil() as u64)))? },
                 "-t".into(),
                 seconds.to_string(),
             ];
@@ -2685,6 +2726,7 @@ mod tests {
             fps: 25,
             music: BackgroundMusic::default(),
             default_wind_reduction: off_preset(),
+            graphics: None,
             assemble_rendered_clips: false,
             bitrate_mbps: 4,
             default_stabilization: "off".into(),
@@ -2720,8 +2762,35 @@ mod tests {
                 rendered: None,
                 revision: 0,
                 wind_reduction: audio::inherit(),
+                scorecard: None,
             }],
         }
+    }
+    #[test]
+    fn finishing_only_command_uses_the_native_assembly_mode() {
+        let absent = std::env::temp_dir().join(format!("studio-admission-{}",chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        let p = project(&absent);
+        // Use the public command, stopping at its output-folder guard before
+        // any work can be queued. A valid pair must reach that guard.
+        for (kind, assembly, expected) in [
+            ("assembly",true,"Choose an existing output folder"),
+            ("project",false,"Choose an existing output folder"),
+            ("project",true,"Invalid Video Studio render mode"),
+            ("assembly",false,"Invalid Video Studio render mode"),
+        ] {
+            assert_eq!(studio_start_render(p.clone(),".".into(),false,None,None,Some(kind.into()),None,Some(assembly)).unwrap_err(),expected);
+        }
+    }
+    #[test]
+    fn legacy_clip_target_and_new_style_identity_round_trip() {
+        let mut target: ClipTarget = serde_json::from_value(json!({"clipId":"one","sourcePath":"source.mp4","revision":1})).unwrap();
+        assert!(target.title_style_key.is_empty());
+        let mut p = project(Path::new("."));
+        p.graphics = Some(graphics::Settings { styled_titles:true, ..graphics::Settings::default() });
+        target.title_style_key = graphics::title_style_key(&p,&p.clips[0]);
+        let raw = serde_json::to_value(&target).unwrap();
+        assert!(!raw["titleStyleKey"].as_str().unwrap().is_empty());
+        assert_eq!(serde_json::from_value::<ClipTarget>(raw).unwrap().title_style_key,target.title_style_key);
     }
     #[test]
     fn nested_clip_renders_preserve_the_parent_countdown() {
@@ -2742,6 +2811,19 @@ mod tests {
         assert!(recovered.remaining_clips.is_none());
         assert!(recovered.source_profile.is_empty());
         assert!(recovered.adaptive_scheduling);
+    }
+    #[test]
+    fn saved_scorecard_edits_affect_only_the_final_recipe() {
+        let old = project(Path::new("."));
+        let mut data = serde_json::to_value(&old).unwrap();
+        data["clips"][0]["scorecard"] = json!({"enabled":true,"template":"line","heading":"RESULT",
+          "result":"72 points","subtitle":"","columns":["Place"],"rows":[["1"]],"timing":"inherit","seconds":6.,"start":0.});
+        let edited: Project = serde_json::from_value(data.clone()).unwrap();
+        assert_eq!(sequence::recipe(&edited)[0], 3);
+        assert_eq!(edited.clips[0].revision, old.clips[0].revision);
+        assert!(edited.clips[0].reviewed);
+        data["clips"][0]["scorecard"]["template"] = json!("line,drawtext=secret");
+        assert!(validate(&serde_json::from_value(data).unwrap()).is_err());
     }
     #[test]
     fn old_projects_keep_quality_and_custom_presets_are_bounded() {
