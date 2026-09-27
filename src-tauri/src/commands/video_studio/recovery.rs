@@ -84,7 +84,7 @@ fn migrate_legacy_queue(path: &Path) -> Result<(), String> {
         request.kind = if request.preview { "preview" } else { "project" }.into();
         job.kind = request.kind.clone(); job.width = request.project.width; job.height = request.project.height;
         job.fps = request.project.fps; job.bitrate_mbps = effective_bitrate(&request.project);
-        job.targets = request.project.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(&request.project,c) }).collect();
+        job.targets = request.project.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(&request.project,c), prevent_rotation: stabilization::prevent_rotation(&request.project,c) }).collect();
         recover_status(&mut job);
         requests().lock().map_err(|e| e.to_string())?.insert(job.id.clone(), request);
         persist(&job)?;
@@ -185,7 +185,7 @@ pub(super) fn enqueue(request: RenderRequest) -> Result<String, String> {
         kind: request.kind.clone(), clip_id: request.clip_id.clone(),
         width: if request.preview { 1280 } else { p.width }, height: if request.preview { 720 } else { p.height },
         fps: p.fps, bitrate_mbps: effective_bitrate(p), duration: project_timeline_seconds(p),
-        targets: if request.kind == "music" { vec![] } else { p.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(p,c) }).collect() },
+        targets: if request.kind == "music" { vec![] } else { p.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(p,c), prevent_rotation: stabilization::prevent_rotation(p,c) }).collect() },
         sequence: if !request.preview && matches!(request.kind.as_str(), "project" | "assembly") { Some(sequence::recipe(p)) } else { None },
         music_request_id: if request.kind == "music" { p.music.request_id.clone() } else { String::new() },
         ..StudioJob::default()
@@ -302,6 +302,7 @@ fn clip_signature(p: &Project, clip: &Clip, root: &str) -> Result<String, String
         clip.stabilization.clone(), clip.stabilization_method.clone(), serde_json::to_string(&clip.custom_stabilization).map_err(|e| e.to_string())?, clip.framing.clone(), serde_json::to_string(&clip.replays).map_err(|e| e.to_string())?];
     let style = graphics::title_style_key(p, clip);
     if !style.is_empty() { parts.extend(["styled-title-v1".into(), style]); }
+    stabilization::append_cache_policy(&mut parts, p, clip);
     Ok(signature(&parts))
 }
 pub(super) fn verify_clip(ff: &Path, p: &Project, clip: &Clip, rendered: &ClipRender, root: &str) -> Result<(), String> {
@@ -340,6 +341,7 @@ fn prepare_clip(format: &Project, mut clip: Clip, request: &RenderRequest, id: &
             width: format.width, height: format.height, fps: format.fps, bitrate_mbps: effective_bitrate(format),
             revision: clip.revision, signature: key, rendered_at: chrono::Utc::now().to_rfc3339(),
             title_style_key: graphics::title_style_key(format, &clip),
+            prevent_rotation: stabilization::prevent_rotation(format, &clip),
         }
     };
     rendered.revision = clip.revision;
@@ -503,6 +505,55 @@ mod tests {
         assert_ne!(clip_signature(&p, &p.clips[1], &root_string).unwrap(), original);
         p.opening_title_mode = "invalid".into(); assert!(validate(&p).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "bounded two-clip Quality render and cache verification; requires FFmpeg"]
+    fn rotation_policy_render_cache_smoke() {
+        let ff = detect_ffmpeg_capabilities().unwrap().binary;
+        let root = std::env::temp_dir().join(format!("studio-rotation-cache-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source.mp4");
+        let generated = command(&ff).args(["-v", "error", "-nostdin", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25", "-t", "0.8", "-c:v", "libx264", "-threads", "1"])
+            .arg(&source).output().unwrap();
+        assert!(generated.status.success(), "{}", String::from_utf8_lossy(&generated.stderr));
+        let mut p = super::super::tests::project(&root);
+        p.title.clear(); p.title_seconds = 0.; p.encoder_preference = "cpu".into();
+        p.performance = "balanced".into(); p.adaptive_scheduling = false;
+        p.clips[0].duration = 0.8; p.clips[0].title.clear(); p.clips[0].title_seconds = 0.;
+        p.clips[0].stabilization_method = "quality".into(); p.clips[0].replays.clear();
+        let mut second = p.clips[0].clone(); second.id = "two".into(); second.prevent_rotation = Some(false);
+        p.clips.push(second);
+        let id = "rotation-policy-render-cache";
+        jobs().lock().unwrap().insert(id.into(), StudioJob { id: id.into(), status: "running".into(), preparing_total: 4, ..StudioJob::default() });
+        let mut request = RenderRequest { project: p.clone(), staging_dir: root.to_string_lossy().into_owned(), preview: false,
+            preview_start: None, preview_length: None, kind: "project".into(), clip_id: None, assemble_only: false };
+        let mut prepared = Vec::new();
+        for clip in &p.clips { prepared.push(prepare_clip(&p, clip.clone(), &request, id, &ff).unwrap()); }
+        p.clips = prepared;
+        let old = p.clips[0].rendered.clone().unwrap();
+        let retained = p.clips[1].rendered.clone().unwrap();
+        let old_signature = clip_signature(&p, &p.clips[0], &request.staging_dir).unwrap();
+        p.default_prevent_rotation = true;
+        assert_ne!(clip_signature(&p, &p.clips[0], &request.staging_dir).unwrap(), old_signature);
+        assert_eq!(clip_signature(&p, &p.clips[1], &request.staging_dir).unwrap(), old_signature, "explicit Off keeps the legacy content key");
+        assert!(verify_clip(&ff, &p, &p.clips[0], &old, &request.staging_dir).is_err(), "old picture cannot silently pass assembly");
+        // Finishing-only must fail closed instead of re-stabilising unexpectedly.
+        request.assemble_only = true;
+        assert!(prepare_clip(&p, p.clips[0].clone(), &request, id, &ff).is_err());
+        request.assemble_only = false;
+        let updated = prepare_clip(&p, p.clips[0].clone(), &request, id, &ff).unwrap();
+        let new_render = updated.rendered.as_ref().unwrap();
+        assert!(new_render.prevent_rotation);
+        assert_ne!(new_render.path, old.path);
+        verify_clip(&ff, &p, &updated, new_render, &request.staging_dir).unwrap();
+        let unchanged = prepare_clip(&p, p.clips[1].clone(), &request, id, &ff).unwrap();
+        assert_eq!(unchanged.rendered.as_ref().unwrap().path, retained.path);
+        assert_eq!(compute_md5(Path::new(&old.path)).unwrap(), old.checksum, "old playable output is preserved");
+        assert_eq!(compute_md5(Path::new(&retained.path)).unwrap(), retained.checksum);
+        let job = jobs().lock().unwrap()[id].clone();
+        assert!(job.logs.iter().any(|line| line.contains("maxangle=0")), "real two-pass command must receive the clamp");
+        println!("PASS: native two-pass render, effective cache invalidation, assembly rejection and unaffected clip reuse. Outputs: {}", root.display());
     }
 
     #[test]
@@ -671,10 +722,10 @@ mod tests {
         let generated = command(&ff).args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p"]).arg(&source).output().unwrap();
         assert!(generated.status.success(), "{}", String::from_utf8_lossy(&generated.stderr));
         let clip = Clip { id: "recovery-clip".into(), path: source.to_string_lossy().into_owned(), duration: 1., include: true, chapter: "One".into(), title: "Practice".into(), title_heading: String::new(), title_subtitle: String::new(), title_seconds: 0.5,
-            stabilization: "off".into(), stabilization_method: quality_method(), custom_stabilization: CustomStabilization::default(), framing: "edgeSafe".into(), reviewed: true, notes: String::new(), replays: vec![Replay { id: "recap".into(), start: 0.2, end: 0.6, speed: 0.5, caption: "Replay".into(), enabled: true }], rendered: None, revision: 0, wind_reduction: audio::inherit(), scorecard: None };
+            stabilization: "off".into(), stabilization_method: quality_method(), custom_stabilization: CustomStabilization::default(), prevent_rotation: None, framing: "edgeSafe".into(), reviewed: true, notes: String::new(), replays: vec![Replay { id: "recap".into(), start: 0.2, end: 0.6, speed: 0.5, caption: "Replay".into(), enabled: true }], rendered: None, revision: 0, wind_reduction: audio::inherit(), scorecard: None };
         let p = Project { version: 1, name: "Recovery test".into(), team: String::new(), title: "Opening".into(), title_heading: String::new(), subtitle: String::new(), title_seconds: 0.5, opening_title_mode: "card".into(),
             output_dir: root.to_string_lossy().into_owned(), width: 1280, height: 720, fps: 30, clips: vec![clip.clone()], music: BackgroundMusic::default(), assemble_rendered_clips: true, bitrate_mbps: 2,
-            default_stabilization: off_preset(), default_stabilization_method: quality_method(), default_custom_stabilization: CustomStabilization::default(), performance: max_performance(), encoder_preference: auto_encoder(),
+            default_stabilization: off_preset(), default_stabilization_method: quality_method(), default_custom_stabilization: CustomStabilization::default(), default_prevent_rotation: false, performance: max_performance(), encoder_preference: auto_encoder(),
             adaptive_scheduling: true, remaining_clips: None, source_profile: String::new(), default_wind_reduction: off_preset(), graphics: None };
         let request = RenderRequest { project: p.clone(), staging_dir: root.to_string_lossy().into_owned(), preview: false, preview_start: None, preview_length: None, kind: "clip".into(), clip_id: Some(clip.id.clone()), assemble_only: false };
         let id = "recovery-test";

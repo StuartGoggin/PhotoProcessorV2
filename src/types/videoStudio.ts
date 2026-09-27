@@ -61,6 +61,8 @@ export interface StudioClip {
   stabilization: StudioStabilizationPreset;
   stabilizationMethod: StudioStabilizationMethod;
   customStabilization: StudioCustomStabilization;
+  // null/missing follows the project; applies only to enabled Quality stabilisation.
+  preventRotation?: boolean | null;
   framing: "edgeSafe" | "maxFrame" | "aggressiveCrop";
   reviewed: boolean;
   notes: string;
@@ -84,6 +86,7 @@ export interface StudioClipRender {
   signature: string;
   available?: boolean;
   titleStyleKey?: string;
+  preventRotation?: boolean;
 }
 export interface MusicSection {
   name: string;
@@ -143,6 +146,7 @@ export interface StudioProject {
   defaultStabilization: StudioStabilizationPreset;
   defaultStabilizationMethod: StudioStabilizationMethod;
   defaultCustomStabilization: StudioCustomStabilization;
+  defaultPreventRotation?: boolean;
   performance: "max" | "balanced";
   adaptiveScheduling: boolean;
   encoderPreference: "auto" | "cpu";
@@ -196,7 +200,7 @@ export interface StudioJob {
   fps?: number;
   duration?: number;
   bitrateMbps?: number;
-  targets?: { clipId: string; sourcePath: string; revision: number; titleStyleKey?: string }[];
+  targets?: { clipId: string; sourcePath: string; revision: number; titleStyleKey?: string; preventRotation?: boolean }[];
   artifacts?: { clipId: string; sourcePath: string; rendered: StudioClipRender }[];
   musicRequestId?: string;
   musicProjectPath?: string | null;
@@ -272,6 +276,7 @@ export const newProject = (): StudioProject => ({
   defaultStabilization: "balanced",
   defaultStabilizationMethod: "fast",
   defaultCustomStabilization: defaultCustomStabilization(),
+  defaultPreventRotation: false,
   performance: "max",
   adaptiveScheduling: true,
   encoderPreference: "auto",
@@ -289,6 +294,7 @@ export const normalizeProject = (project: StudioProject): StudioProject => ({
   defaultStabilization: project.defaultStabilization ?? "off",
   defaultStabilizationMethod: project.defaultStabilizationMethod ?? "quality",
   defaultCustomStabilization: project.defaultCustomStabilization ?? defaultCustomStabilization(),
+  defaultPreventRotation: project.defaultPreventRotation ?? false,
   performance: project.performance ?? "max",
   adaptiveScheduling: project.adaptiveScheduling ?? true,
   encoderPreference: project.encoderPreference ?? "auto",
@@ -297,6 +303,7 @@ export const normalizeProject = (project: StudioProject): StudioProject => ({
     ...clip,
     stabilizationMethod: clip.stabilizationMethod ?? "quality",
     customStabilization: clip.customStabilization ?? defaultCustomStabilization(),
+    preventRotation: clip.preventRotation ?? null,
     windReduction: clip.windReduction ?? "inherit",
   })),
 });

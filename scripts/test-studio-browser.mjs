@@ -31,7 +31,9 @@ try {
   page.setDefaultTimeout(10000);
   const failures = [];
   page.on("pageerror", (error) => failures.push(error.message));
-  await page.goto(url);
+  // Cold Vite startup can exceed the control timeout; assert readiness through
+  // the controls below rather than waiting for every preview media resource.
+  await page.goto(url, { timeout: 45000, waitUntil: "domcontentloaded" });
   await page.evaluate(() => {
     window.__confirmCalls = [];
     const originalInvoke = window.__TAURI_INTERNALS__.invoke;

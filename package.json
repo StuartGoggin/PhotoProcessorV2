@@ -1,7 +1,7 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.21",
+  "version": "2.0.22",
   "type": "module",
   "scripts": {
     "dev": "node scripts/start-dev.mjs",
@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "test:studio": "node scripts/test-studio.mjs",
     "test:studio:browser": "node scripts/test-studio-browser.mjs",
+    "test:studio:rotation": "node scripts/test-studio-rotation.mjs",
+    "test:studio:rotation:browser": "node scripts/test-studio-rotation-browser.mjs",
     "test:jobs:browser": "node scripts/test-jobs-polling-browser.mjs",
     "tauri": "tauri",
     "release": "pwsh -NoProfile -File scripts/build-release.ps1"

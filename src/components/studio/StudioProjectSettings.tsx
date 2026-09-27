@@ -137,6 +137,17 @@ export default function StudioProjectSettings({
           </label>
         </div>
         <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-1" checked={project.defaultPreventRotation ?? false}
+            aria-label="Prevent added rotation · project default" aria-describedby="studio-project-rotation-help"
+            onChange={(event) => onChange({ defaultPreventRotation: event.target.checked })} />
+          <span>Prevent added rotation · project default</span>
+        </label>
+        <p id="studio-project-rotation-help" className="text-xs text-gray-400">
+          For roll-locked tripod footage in Quality mode. Following clips, including existing clips, use this setting immediately;
+          individual On/Off overrides are kept. Only clips whose effective setting changes need review and re-rendering from the originals.
+          Fast mode and stabilisation Off are unaffected. Saved jobs and exported files are unchanged.
+        </p>
+        <label className="flex items-start gap-2 text-sm">
           <input
             className="mt-1"
             type="checkbox"
@@ -156,7 +167,7 @@ export default function StudioProjectSettings({
         {project.defaultStabilization === "custom" && <StudioStabilizationFields value={project.defaultCustomStabilization} onChange={(defaultCustomStabilization) => onChange({ defaultCustomStabilization })} />}
         <p className="text-sm text-gray-400">
           Fast stabilisation estimates movement while rendering, with no separate shake-analysis pass.
-          Quality uses two passes and takes longer. Defaults apply to newly added clips; existing clips keep their settings until you apply them below.
+          Quality uses two passes and takes longer. The stabiliser and preset defaults apply to newly added clips; existing clips keep those settings until you apply them below.
         </p>
         <p className="text-xs text-gray-400">
           {project.encoderPreference === "cpu"
@@ -167,7 +178,7 @@ export default function StudioProjectSettings({
         <div className="flex flex-wrap gap-2 items-center">
           <button className="btn-secondary" disabled={!included.length || busy} onClick={() => onApplyStabilization(false)}>Apply to {included.length} included clip(s)</button>
           <button className="btn-secondary" disabled={!selectedClip || busy} onClick={() => onApplyStabilization(true)}>Apply to selected clip</button>
-          <span className="text-xs text-amber-200">Applying defaults resets the affected clips’ review approval.</span>
+          <span className="text-xs text-amber-200">Applying defaults resets review approval and returns rotation overrides to the project default.</span>
         </div>
 
         </fieldset>

@@ -27,6 +27,13 @@ pub(super) fn recipe(p: &Project) -> Value {
         if parts.len() == 5 { parts.push(Value::Null); }
         parts.push(graphics);
     }
+    if p.clips.iter().any(|c| c.include && stabilization::prevent_rotation(p, c)) {
+        result[0] = json!(4);
+        let parts = result.as_array_mut().unwrap();
+        while parts.len() < 7 { parts.push(Value::Null); }
+        parts.push(json!([1, p.clips.iter().filter(|c| c.include)
+            .map(|c| json!([c.id, stabilization::prevent_rotation(p, c)])).collect::<Vec<_>>() ]));
+    }
     result
 }
 
@@ -63,7 +70,7 @@ pub(super) fn verify_assembly(p: &Project, segments: &[(PathBuf, String)], has_c
     if included.is_empty() || segments.len() != included.len() + offset {
         return Err("Assembly clip count does not match this saved render request; no final video was published".into());
     }
-    let planned = included.iter().map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(p,c) }).collect();
+    let planned = included.iter().map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(p,c), prevent_rotation: stabilization::prevent_rotation(p,c) }).collect();
     let mut assembled = Vec::with_capacity(included.len());
     for (clip, (actual_path, _)) in included.into_iter().zip(&segments[offset..]) {
         let rendered = clip.rendered.as_ref().ok_or("Assembly clip has no verified render")?;
@@ -82,6 +89,26 @@ pub(super) fn verify_assembly(p: &Project, segments: &[(PathBuf, String)], has_c
 mod tests {
     use super::*;
 
+    #[test]
+    fn rotation_recipe_matches_frontend_contract_without_changing_legacy() {
+        let mut p = project();
+        for clip in &mut p.clips { clip.stabilization_method = "quality".into(); }
+        let old = recipe(&p);
+        p.default_prevent_rotation = true;
+        let next = recipe(&p);
+        assert_eq!(next[0], 4);
+        for index in 1..5 { assert_eq!(next[index], old[index]); }
+        assert_eq!(next[5], Value::Null);
+        assert_eq!(next[6], Value::Null);
+        assert_eq!(next[7], json!([1, [["one",true],["two",true]]]));
+        p.clips[0].prevent_rotation = Some(false);
+        p.clips[1].prevent_rotation = Some(false);
+        assert_eq!(recipe(&p), old);
+        let mut excluded = p.clips[0].clone(); excluded.include = false; excluded.prevent_rotation = Some(true);
+        p.clips.push(excluded);
+        assert_eq!(recipe(&p), old);
+    }
+
     fn project() -> Project {
         let mut p = super::super::tests::project(Path::new("sequence-fixture"));
         let mut second = p.clips[0].clone();
@@ -94,6 +121,7 @@ mod tests {
                 bitrate_mbps: p.bitrate_mbps, revision: clip.revision,
                 signature: "verified elsewhere".into(), checksum: "verified elsewhere".into(),
                 title_style_key: String::new(),
+                prevent_rotation: false,
             });
         }
         p

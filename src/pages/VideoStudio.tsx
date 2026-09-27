@@ -8,7 +8,7 @@ import { clipName, newProject, projectDuration, timecode } from "../types/videoS
 import type { StudioClip, StudioJob, StudioProject, StudioReplay } from "../types/videoStudio";
 import { STUDIO_CLEARED, resetProjectRenders } from "../utils/studioWorkflow";
 import { sequenceStatus, sequenceClipCount } from "../utils/studioWorkflow";
-import { applyCompletedRenders, approveAndNext, clipJob, clipStatus, editClip, isClipReady, moveClip, normalizeProject, outputLabel } from "../utils/studioWorkflow";
+import { applyCompletedRenders, approveAndNext, clipJob, clipStatus, editClip, editProject, isClipReady, moveClip, normalizeProject, outputLabel } from "../utils/studioWorkflow";
 import StudioStabilizationFields from "../components/StudioStabilizationFields";
 import StudioApprovalButton from "../components/StudioApprovalButton";
 import StudioAudioControls from "../components/studio/StudioAudioControls";
@@ -103,10 +103,10 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
     setFrames([]);
   }, [clip?.id, clip?.path]);
   function patch(p: Partial<StudioProject>) {
-    setProject((prev) => ({ ...prev, ...p }));
+    setProject((prev) => editProject(prev, p));
   }
   function edit(id: string, change: Partial<StudioClip>) {
-    setProject((prev) => ({ ...prev, clips: prev.clips.map((c) => c.id === id ? editClip(c, change) : c) }));
+    setProject((prev) => ({ ...prev, clips: prev.clips.map((c) => c.id === id ? editClip(c, change, prev) : c) }));
   }
   useEffect(() => {
     if (loaded) setProject((prev) => {
@@ -148,8 +148,8 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
       const initial = projectRef.current;
       const target = (p: StudioProject) => p.clips.filter((c) => onlySelected ? c.id === selected : c.include);
       const scope = (p: StudioProject) => JSON.stringify([
-        p.defaultStabilization, p.defaultStabilizationMethod, p.defaultCustomStabilization,
-        target(p).map((c) => [c.id, c.stabilization, c.stabilizationMethod, c.customStabilization]),
+        p.defaultStabilization, p.defaultStabilizationMethod, p.defaultCustomStabilization, p.defaultPreventRotation,
+        target(p).map((c) => [c.id, c.stabilization, c.stabilizationMethod, c.customStabilization, c.preventRotation]),
       ]);
       const confirmedScope = scope(initial);
       const count = target(initial).length;
@@ -162,8 +162,9 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
           stabilization: initial.defaultStabilization,
           stabilizationMethod: initial.defaultStabilizationMethod,
           customStabilization: { ...initial.defaultCustomStabilization },
+          preventRotation: null,
           reviewed: false,
-        }) : c),
+        }, prev) : c),
       }));
       setMessage(`Project stabilisation applied to ${count} clip(s). Review approval has been reset for those clips; wind settings and saved jobs are unchanged.`);
     });
@@ -231,6 +232,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
             stabilization: prev.defaultStabilization,
             stabilizationMethod: prev.defaultStabilizationMethod,
             customStabilization: { ...prev.defaultCustomStabilization },
+            preventRotation: null,
             framing: "edgeSafe" as const,
             reviewed: false,
             windReduction: "inherit" as const,
@@ -631,6 +633,21 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                 </label>
               </div>
               {clip.stabilization === "custom" && <StudioStabilizationFields key={clip.id} value={clip.customStabilization} onChange={(customStabilization) => edit(clip.id, { customStabilization })} />}
+              <label className="block mt-3 text-sm">
+                Prevent added rotation · this clip
+                <select className={input} aria-describedby="studio-clip-rotation-help"
+                  disabled={clip.stabilizationMethod !== "quality" || clip.stabilization === "off"}
+                  value={clip.preventRotation == null ? "inherit" : clip.preventRotation ? "on" : "off"}
+                  onChange={(event) => edit(clip.id, { preventRotation: event.target.value === "inherit" ? null : event.target.value === "on" })}>
+                  <option value="inherit">Use project default ({project.defaultPreventRotation ? "On" : "Off"})</option>
+                  <option value="on">On — no added rotation</option>
+                  <option value="off">Off — allow rotation correction</option>
+                </select>
+              </label>
+              <p id="studio-clip-rotation-help" className="text-xs text-gray-400">
+                Quality mode only. Keeps the source’s roll while retaining horizontal and vertical smoothing; it does not lock pan or tilt.
+                {clip.stabilizationMethod !== "quality" || clip.stabilization === "off" ? " Inactive with the current stabilisation settings." : " Changing the effective choice requires a new preview and render from the original."}
+              </p>
               <p className="text-xs text-gray-400">
                 {clip.stabilizationMethod === "fast"
                   ? "Fast mode corrects movement in one pass and mirrors moving edges. Fixed crop reduces edge artifacts but cannot guarantee they disappear, and can cut off subjects. Preview pans and rider framing before approving."

@@ -12,6 +12,7 @@ mod delivery;
 mod sequence;
 mod audio;
 mod graphics;
+mod stabilization;
 pub use graphics::studio_graphics_preview;
 pub use audio::studio_audio_preview;
 pub use delivery::{studio_read_export_description, studio_save_export_description};
@@ -93,6 +94,8 @@ pub struct Clip {
     pub stabilization_method: String,
     #[serde(default)]
     pub custom_stabilization: CustomStabilization,
+    #[serde(default)]
+    pub prevent_rotation: Option<bool>,
     pub framing: String,
     pub reviewed: bool,
     pub notes: String,
@@ -125,6 +128,8 @@ pub struct ClipRender {
     pub checksum: String,
     #[serde(default)]
     pub title_style_key: String,
+    #[serde(default)]
+    pub prevent_rotation: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -214,6 +219,8 @@ pub struct Project {
     pub default_stabilization_method: String,
     #[serde(default)]
     pub default_custom_stabilization: CustomStabilization,
+    #[serde(default)]
+    pub default_prevent_rotation: bool,
     #[serde(default = "max_performance")]
     pub performance: String,
     #[serde(default = "auto_encoder")]
@@ -331,6 +338,8 @@ pub struct ClipTarget {
     pub clip_id: String, pub source_path: String, pub revision: u32,
     #[serde(default)]
     pub title_style_key: String,
+    #[serde(default)]
+    pub prevent_rotation: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2306,16 +2315,7 @@ fn render_clip(
     } else {
         source_signature(Path::new(&c.path))?
     };
-    let base_key = signature(&[
-        "base".into(),
-        source_key.clone(),
-        format_key(&p),
-        c.stabilization.clone(),
-        c.stabilization_method.clone(),
-        serde_json::to_string(&c.custom_stabilization).map_err(|e| e.to_string())?,
-        c.framing.clone(),
-        encoder_name.to_string(),
-    ]);
+    let base_key = stabilization::base_key(p, c, &source_key, encoder_name)?;
     let base_cache = fragment_cache.join(cache_name("base", c, &p, &base_key));
     let reuse_base = if preview {
         false
@@ -2332,12 +2332,7 @@ fn render_clip(
         };
         let trf = format!("motion_{i}.trf");
         run(ff,&resource_project,vec!["-ss".into(),offset.to_string(),"-i".into(),c.path.clone(),"-t".into(),seconds.to_string(),"-vf".into(),format!("vidstabdetect=stepsize={step}:shakiness={shake}:accuracy={accuracy}:mincontrast=0.25:result={trf}"),"-an".into(),"-f".into(),"null".into(),"-".into()],&work,id,&format!("{}: analyse shake",c.chapter),seconds,base,span*0.25)?;
-        let (zoom, optzoom, speed) = match c.framing.as_str() {
-            "maxFrame" => (0, 0, 0.0),
-            "aggressiveCrop" => (8, 2, 0.4),
-            _ => (4, 2, 0.25),
-        };
-        filter = format!("vidstabtransform=input={trf}:smoothing={smooth}:zoom={zoom}:optzoom={optzoom}:zoomspeed={speed}:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0,{filter}");
+        filter = stabilization::quality_filter(p, c, &trf, smooth, &filter);
     }
     if !reuse_base && c.stabilization != "off" && c.stabilization_method == "fast" {
         filter = format!("{},{}", fast_filter(c), filter);
@@ -2728,6 +2723,7 @@ mod tests {
             default_stabilization: "off".into(),
             default_stabilization_method: "quality".into(),
             default_custom_stabilization: CustomStabilization::default(),
+            default_prevent_rotation: false,
             performance: "max".into(),
             encoder_preference: "auto".into(),
             adaptive_scheduling: true,
@@ -2745,6 +2741,7 @@ mod tests {
                 stabilization: "gentle".into(),
                 stabilization_method: "fast".into(),
                 custom_stabilization: CustomStabilization::default(),
+                prevent_rotation: None,
                 framing: "edgeSafe".into(),
                 reviewed: true,
                 notes: "".into(),

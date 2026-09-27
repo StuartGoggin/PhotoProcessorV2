@@ -120,8 +120,8 @@ test("saved custom values and explicit CPU selection survive normalization", () 
   const current = { ...newProject(), encoderPreference: "cpu", defaultStabilization: "custom", defaultCustomStabilization: { radius: 64, blockSize: 16, contrast: 200 }, clips: [{ id: "fast", stabilization: "custom", stabilizationMethod: "fast", customStabilization: { radius: 32, blockSize: 12, contrast: 80 } }] };
   assert.deepEqual(normalizeProject(current), {
     ...current,
-    clips: current.clips.map((clip) => ({ ...clip, windReduction: "inherit" })),
-  }, "migration adds the inherited audio default without changing custom stabilisation or CPU settings");
+    clips: current.clips.map((clip) => ({ ...clip, windReduction: "inherit", preventRotation: null })),
+  }, "migration adds inherited audio and rotation defaults without changing custom stabilisation or CPU settings");
   const invalid = { ...current, defaultStabilizationMethod: "unknown" };
   assert.equal(normalizeProject(invalid).defaultStabilizationMethod, "unknown", "invalid values must reach backend validation instead of being silently rewritten");
 });
