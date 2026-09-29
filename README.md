@@ -9,10 +9,62 @@ A desktop photo management workflow app built with [Tauri](https://tauri.app/) (
 | **Import** | Copy photos from SD card to local staging, renamed by EXIF date |
 | **Post Process** | Focus detection, CLAHE enhancement, B&W conversion, MP4 stabilization, plus task-specific cleanup jobs for generated results |
 | **Video Studio** | Review/approve, arrange and export full clips with final-assembly opening titles, slow-motion recaps, stabilization and editable YouTube chapter descriptions |
+| **Video snapshots** | Browse original camera clips in both directions, select exact frames and save full-resolution photographs with optional adjustments |
 | **Review** | Browse staging folder, rate (stars) and mark photos for deletion |
 | **Tidy Up** | Move `{trash}`-marked files to a `Trash/` subdirectory |
 | **Transfer** | Copy staging to archive (NAS), generate + verify MD5 checksums |
 | **Settings** | Configure source, staging, and archive directory paths |
+
+## Video snapshots
+
+Video snapshots is separate from Video Studio: it reads original camera clips,
+does not stabilise or render a project, and never changes the source videos.
+There is no face analysis, matching, model download or cloud upload in this workflow.
+
+1. Open **Video snapshots** and add one or more local videos. You can add more
+   later. Each clip needs a timestamp index before exact navigation is available;
+   indexing is cancellable and some formats require a longer scan. Initial loading
+   also reads the whole file to verify its identity. On Windows, loaded originals
+   are held read-only against edits/deletion; remove a clip from this session before
+   renaming or editing it in another application.
+2. Use the timeline or mouse wheel to find an area, then step individual frames.
+   Left/Right moves one frame; Shift+Left/Right moves ten. J and L shuttle backwards
+   and forwards; K or Space stops. Text fields keep their normal keyboard behaviour.
+   Fast shuttling deliberately skips frames. Slow down to inspect every frame.
+3. Add chosen frames to the photo tray. A pending preview cannot be captured as
+   if it were the newly selected frame. Small cached previews are only for browsing;
+   export decodes the selected original frame at full resolution.
+4. Confirm each clip's actual shooting start and timezone. Camera metadata is a
+   suggestion, not a guarantee; file-copy dates are not substituted. A photograph's
+   capture time is that confirmed start plus its actual source-frame timestamp,
+   including variable frame rates. Enter a person's name manually if useful.
+5. Optionally crop or adjust brightness, contrast and sharpening. Export retains
+   an unenhanced JPEG master and writes a separate improved JPEG when adjustments
+   are used. An unenhanced JPEG is not a lossless/raw camera photograph.
+6. Choose an output folder. Photos use the import-compatible date structure,
+   for example `2026/09/20/20260920_143512_340_Jane_Smith.jpg`. Both JPEG versions
+   retain the capture time and timezone in EXIF. A local `.snapshot.json` records
+   the source frame and settings; it can contain the source path, so review it
+   before sharing. Collisions receive a new name rather than replacing a file.
+7. Save a snapshot session to retain clips, positions and photo choices. Each save
+   creates a new session file; existing sessions are never overwritten. Reopening
+   rechecks/reindexes originals. Changed source identities invalidate old selections.
+   Session files contain paths/settings, not copies of videos or previews.
+
+Limits are deliberately bounded for large footage collections: 64 clips and 200
+selected photos per session, with a configurable in-memory browsing cache.
+Original files must remain accessible. Explicitly tagged HDR/PQ/HLG is not silently
+converted to SDR; prepare an SDR copy first. Untagged camera-log footage also needs
+the appropriate colour treatment before judging exported colours.
+
+An interrupted export may leave an unenhanced/improved photo and a
+`.snapshot.partial.json` recovery receipt. Only the final `.snapshot.json` marks
+a completed export. Existing photos are retained; retry creates a fresh name.
+
+Validation: `npm run test:snapshots` and `npm run test:snapshots:browser`.
+Native timestamp, extraction and publication tests live in
+`src-tauri/src/commands/video_snapshots/`; media integration tests are opt-in and
+use synthetic footage only. Browser checks use mocked IPC, not real media.
 
 ## Windows background previews
 

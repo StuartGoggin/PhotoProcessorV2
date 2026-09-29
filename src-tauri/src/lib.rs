@@ -2,6 +2,8 @@ mod commands;
 mod utils;
 
 use commands::{
+    video_snapshots::{snapshot_open, snapshot_frames, snapshot_photo_preview,
+        snapshot_export, snapshot_cancel, snapshot_forget, snapshot_save_session, snapshot_load_session},
     files::{
         load_staging_timeline, open_in_default_app, prewarm_staging_timeline_cache,
         prewarm_staging_timeline_thumbnails, prewarm_video_hover_frames, read_image_base64,
@@ -57,6 +59,14 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            snapshot_open,
+            snapshot_frames,
+            snapshot_photo_preview,
+            snapshot_export,
+            snapshot_cancel,
+            snapshot_forget,
+            snapshot_save_session,
+            snapshot_load_session,
             studio_inspect,
             studio_frame,
             studio_audio_preview,

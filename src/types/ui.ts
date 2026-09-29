@@ -4,6 +4,7 @@ export type Page =
   | "import"
   | "stagingexplorer"
   | "videostudio"
+  | "videosnapshots"
   | "nameevents"
   | "cleanup"
   | "jobs"

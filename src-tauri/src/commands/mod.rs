@@ -16,6 +16,7 @@ pub mod staging_tags;
 pub mod tidy;
 pub mod transfer;
 pub mod video_studio;
+pub mod video_snapshots;
 mod studio_hardware;
 mod studio_adaptive;
 mod studio_telemetry;

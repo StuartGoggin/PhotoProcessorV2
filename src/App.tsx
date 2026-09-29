@@ -5,6 +5,7 @@ import { JobsPanel } from "./components";
 import Import from "./pages/Import";
 import StagingExplorer from "./pages/StagingExplorer";
 import VideoStudio from "./pages/VideoStudio";
+import VideoSnapshots from "./pages/VideoSnapshots";
 import { readPanelSize, type JobsView } from "./utils/jobsView";
 import NameEvents from "./pages/NameEvents";
 import Cleanup from "./pages/Cleanup";
@@ -20,6 +21,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "import",      label: "Import",       icon: "📥" },
   { id: "stagingexplorer", label: "Video Timeline", icon: "🎬" },
   { id: "videostudio", label: "Video Studio", icon: "🎞️" },
+  { id: "videosnapshots", label: "Video snapshots", icon: "📸" },
   { id: "nameevents",  label: "Name Events",  icon: "🏷️" },
   { id: "postprocess", label: "Post Process",  icon: "⚙️" },
   { id: "review",      label: "Review",        icon: "🖼️" },
@@ -102,6 +104,7 @@ export default function App() {
     import: <Import />,
     stagingexplorer: <StagingExplorer />,
     videostudio: null,
+    videosnapshots: null,
     nameevents: <NameEvents />,
     cleanup: <Cleanup />,
     jobs: <Jobs key={jobsNavigation} initialView={jobsView} />,
@@ -170,12 +173,13 @@ export default function App() {
         {/* Page content */}
         <main id="app-main" className="app-main flex-1 min-w-0 min-h-0 overflow-auto bg-surface-900">
           <div hidden={page !== "videostudio"}><VideoStudio jobs={studioJobs} active={page === "videostudio"} onOpenJobs={() => openJobs()} /></div>
+          <div hidden={page !== "videosnapshots"}><VideoSnapshots active={page === "videosnapshots"} /></div>
           {pageContent[page]}
         </main>
       </div>
 
       {/* Jobs panel (bottom frame) */}
-      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} loading={loading} error={error} onOpenJobs={openJobs} preferCollapsed={page === "videostudio"} />
+      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} loading={loading} error={error} onOpenJobs={openJobs} preferCollapsed={page === "videostudio" || page === "videosnapshots"} />
     </div>
   );
 }
