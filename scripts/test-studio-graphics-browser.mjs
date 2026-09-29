@@ -149,8 +149,8 @@ try {
   await chapters.getByRole("button", { name: "Move chapter 2 up", exact: true }).click();
   await chapters.getByRole("button", { name: "Edit chapter 2 title", exact: true }).click();
   await page.waitForFunction(() => document.activeElement?.id === "studio-review-heading");
-  assert.equal(await page.getByRole("tab", { name: "Titles", exact: true }).getAttribute("aria-selected"), "true");
-  assert.equal(await page.getByRole("textbox", { name: "Segment / chapter name", exact: true }).inputValue(), (await saved()).clips[1].chapter);
+  assert.equal(await page.getByRole("tab", { name: "Clip title", exact: true }).getAttribute("aria-selected"), "true");
+  assert.equal(await page.getByRole("textbox", { name: "Clip name / YouTube chapter", exact: true }).inputValue(), (await saved()).clips[1].chapter);
   await chapters.getByRole("button", { name: "Edit chapter 1 scorecard", exact: true }).click();
   assert.equal(await page.getByRole("tab", { name: "Scorecard", exact: true }).getAttribute("aria-selected"), "true");
   await score.getByRole("combobox", { name: "Scorecard timing", exact: true }).selectOption("custom");
@@ -210,8 +210,8 @@ try {
   await page.setViewportSize({ width: 1920, height: 1080 });
   await score.screenshot({ path: `${output}/scorecard-detail.png` });
   await chapters.screenshot({ path: `${output}/chapters.png` });
-  await page.getByRole("tab", { name: "Titles", exact: true }).click();
-  await page.getByRole("button", { name: "Use chapter name as title", exact: true }).click();
+  await page.getByRole("tab", { name: "Clip title", exact: true }).click();
+  await page.getByRole("button", { name: "Copy chapter name into title", exact: true }).click();
   assert.equal((await saved()).clips[0].title, "Opening match");
   assert.equal((await saved()).clips[0].reviewed, false, "the existing picture-review rule still applies to a changed clip title");
   const titles = page.locator("#studio-panel-titles");
@@ -231,7 +231,7 @@ try {
   assert.equal(await titles.locator(".studio-graphics-eyebrow").count(), 0);
   assert.equal(await titles.getByRole("img").count(), 0, "clearing optional text clears stale native preview");
   await clipSubtitle.fill("");
-  await page.getByRole("tab", { name: "Titles", exact: true }).focus();
+  await page.getByRole("tab", { name: "Clip title", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
   assert.equal(await page.getByRole("tab", { name: "Scorecard", exact: true }).getAttribute("aria-selected"), "true", "new scorecard tab participates in keyboard navigation");
   // Open an otherwise identical project with native-cache metadata at the IPC

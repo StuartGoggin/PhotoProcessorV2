@@ -19,6 +19,8 @@ pub struct Settings {
     pub timeline_preview_width: u32,
     pub timeline_preview_height: u32,
     pub timeline_preview_fps: u32,
+    pub studio_review_frames_mode: String,
+    pub studio_review_frames_count: u32,
 }
 
 impl Default for Settings {
@@ -36,6 +38,8 @@ impl Default for Settings {
             timeline_preview_width: 420,
             timeline_preview_height: 240,
             timeline_preview_fps: 8,
+            studio_review_frames_mode: "all".into(),
+            studio_review_frames_count: 8,
         }
     }
 }
@@ -61,6 +65,10 @@ pub fn load_settings(app: AppHandle) -> Result<Settings, String> {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
+    if !["all", "selected", "manual"].contains(&settings.studio_review_frames_mode.as_str())
+        || ![4, 8, 12].contains(&settings.studio_review_frames_count) {
+        return Err("Choose a valid Studio review frame mode and 4, 8 or 12 frames".into());
+    }
     let path = settings_path(&app);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;

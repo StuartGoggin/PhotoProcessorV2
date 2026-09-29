@@ -1,7 +1,7 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.22",
+  "version": "2.0.23",
   "type": "module",
   "scripts": {
     "dev": "node scripts/start-dev.mjs",
@@ -9,6 +9,12 @@
     "preview": "vite preview",
     "test:studio": "node scripts/test-studio.mjs",
     "test:studio:browser": "node scripts/test-studio-browser.mjs",
+    "test:studio:preview:browser": "node scripts/test-studio-inline-preview-browser.mjs",
+    "test:studio:reliability:browser": "node scripts/test-studio-reliability-browser.mjs",
+    "test:studio:reliability": "pwsh -NoProfile -File scripts/test-studio-reliability.ps1",
+    "test:studio:review": "node scripts/test-studio-review-frames.mjs",
+    "test:studio:review:browser": "node scripts/test-studio-review-browser.mjs",
+    "test:studio:review:native": "pwsh -NoProfile -File scripts/test-studio-review-frames.ps1",
     "test:studio:rotation": "node scripts/test-studio-rotation.mjs",
     "test:studio:rotation:browser": "node scripts/test-studio-rotation-browser.mjs",
     "test:jobs:browser": "node scripts/test-jobs-polling-browser.mjs",

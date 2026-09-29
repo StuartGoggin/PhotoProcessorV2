@@ -140,6 +140,7 @@ pub(super) fn run_process(binary: &Path, args: &[String], dir: &Path, id: &str,
         thread::sleep(Duration::from_millis(200));
     };
     update(id, |job| { job.process_ids.retain(|entry| *entry != pid); job.process_id = job.process_ids.last().copied(); job.heartbeat_at = chrono::Utc::now().to_rfc3339(); job.phase = format!("{phase}: process exited; checking result"); });
+    update(id, |job| job.logs.push(format!("Stage timing — {phase}: {:.2}s; {}", started.elapsed().as_secs_f64(), if result.is_ok() { "succeeded" } else { "failed" })));
     result.map_err(|error| format!("{phase}: {error}\n{}\nDetailed log: {log_path}", tail(&stderr_path, 8192).unwrap_or_default()))
 }
 

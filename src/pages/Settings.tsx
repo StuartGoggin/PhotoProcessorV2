@@ -50,6 +50,8 @@ export default function SettingsPage() {
     timeline_preview_width: 420,
     timeline_preview_height: 240,
     timeline_preview_fps: 8,
+    studio_review_frames_mode: "all",
+    studio_review_frames_count: 8,
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +72,8 @@ export default function SettingsPage() {
           timeline_preview_width: loaded.timeline_preview_width ?? 420,
           timeline_preview_height: loaded.timeline_preview_height ?? 240,
           timeline_preview_fps: loaded.timeline_preview_fps ?? 8,
+          studio_review_frames_mode: loaded.studio_review_frames_mode ?? "all",
+          studio_review_frames_count: loaded.studio_review_frames_count ?? 8,
         })
       )
       .catch((e) => setError(String(e)));
@@ -90,10 +94,12 @@ export default function SettingsPage() {
 
   async function save() {
     setError(null);
-    await invoke("save_settings", { settings });
-
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    try {
+      await invoke("save_settings", { settings });
+      window.dispatchEvent(new Event("photogogo-settings-saved"));
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) { setError(`Settings were not saved: ${String(e)}`); }
   }
 
   return (
@@ -107,6 +113,22 @@ export default function SettingsPage() {
       )}
 
       <div className="space-y-6">
+        <div className="card space-y-3">
+          <h3 className="text-sm font-medium text-white">Video Studio review frames</h3>
+          <label className="block text-sm text-gray-300">Prepare review frames
+            <select aria-label="Prepare review frames" className="input-field mt-1" value={settings.studio_review_frames_mode} onChange={(e) => setSettings(s => ({ ...s, studio_review_frames_mode: e.target.value as Settings["studio_review_frames_mode"] }))}>
+              <option value="all">All project clips when Studio is idle</option>
+              <option value="selected">Selected clip only</option>
+              <option value="manual">Manual only</option>
+            </select>
+          </label>
+          <label className="block text-sm text-gray-300">Frames per clip
+            <select aria-label="Frames per clip" className="input-field mt-1" value={settings.studio_review_frames_count} onChange={(e) => setSettings(s => ({ ...s, studio_review_frames_count: Number(e.target.value) }))}>
+              {[4, 8, 12].map(n => <option key={n} value={n}>{n} frames</option>)}
+            </select>
+          </label>
+          <p className="text-xs text-gray-400">Prepares the selected clip first while Video Studio is open. One frame at a time; pauses for Studio renders. Local thumbnails are cached (up to 128 MiB), never uploaded, and never approve a clip for you. Save to apply.</p>
+        </div>
         {FIELDS.map(({ key, label, help }) => (
           <div key={key} className="card">
             <label className="block text-sm font-medium text-gray-300 mb-1">{label}</label>

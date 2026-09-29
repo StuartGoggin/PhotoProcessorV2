@@ -4,6 +4,9 @@
   --studio-focus: #67e8f9; --studio-control: 34px; --studio-gap: 10px;
 }
 .studio-editor.density-comfortable { --studio-control: 42px; --studio-gap: 16px; font-size: 14px; }
+.studio-relink { border: 1px solid #334155; border-radius: 7px; padding: 8px 10px; }
+.studio-relink input { background: #0f172a; border: 1px solid #475569; border-radius: 5px; color: #e2e8f0; }
+.studio-relink .flex > button { flex-shrink: 0; white-space: nowrap; }
 .studio-editor > * + * { margin-top: var(--studio-gap); }
 .studio-editor :where(section, details, aside, label, fieldset, .grid, .flex) { min-width: 0; }
 .studio-editor :where(button, input:not([type="checkbox"]), select, summary, .studio-workflow a) { min-height: var(--studio-control); }

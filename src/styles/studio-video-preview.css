@@ -1,0 +1,12 @@
+.studio-video-preview { min-width: 0; overflow: hidden; border: 1px solid #334155; border-radius: 6px; background: #0b1422; padding: 10px; }
+.studio-video-preview-heading, .studio-video-preview-position { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.studio-video-preview-heading strong { font-size: 13px; color: #e2e8f0; }
+.studio-video-preview-heading span, .studio-video-preview-help { color: #a9bacd; font-size: 11px; }
+.studio-video-preview-status { margin: 6px 0; color: #cbd5e1; font-size: 12px; overflow-wrap: anywhere; }
+.studio-video-preview video { display: block; width: 100%; max-height: 420px; aspect-ratio: 16 / 9; background: #020617; border-radius: 4px; }
+.studio-video-preview-position { margin-top: 8px; font-size: 12px; color: #cbd5e1; }
+.studio-video-preview-position output { font-variant-numeric: tabular-nums; color: #e2e8f0; }
+.studio-video-preview-help { margin: 8px 0 0; line-height: 1.5; }
+.studio-video-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.studio-video-preview-error { color: #fca5a5; overflow-wrap: anywhere; font-size: 12px; margin-top: 8px; }
+.studio-video-preview button { min-height: 30px; max-width: 100%; font-size: 12px; }

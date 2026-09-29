@@ -1,6 +1,6 @@
-import type { StudioClip, StudioGraphicsSettings, StudioProject, StudioScorecard, StudioScoreTiming } from "../../types/videoStudio";
-import { graphicsDefaults, newScorecard, scoreWindow } from "../../utils/studioGraphics";
-import { timecode } from "../../types/videoStudio";
+import type { StudioClip, StudioGraphicsSettings, StudioProject, StudioScorecard, StudioScorecardTemplate, StudioScoreTiming } from "../../types/videoStudio";
+import { applyScorecardTemplate, graphicsDefaults, newScorecard, scorecardTemplateDefaults, scoreWindow } from "../../utils/studioGraphics";
+import { scorecardReady, timecode } from "../../types/videoStudio";
 import StudioGraphicsPreview from "./StudioGraphicsPreview";
 
 const timings: [StudioScoreTiming, string][] = [["clipEnd", "End of main clip"], ["afterReplays", "End of clip + replays"], ["separateCard", "Standalone card after replays"], ["clipStart", "Start of clip"], ["custom", "Custom time in main clip"]];
@@ -11,7 +11,37 @@ export function StudioProjectGraphics({ project, disabled = false, onChange }: O
   const graphics = project.graphics ?? graphicsDefaults();
   const patch = (change: Partial<StudioGraphicsSettings>) => onChange({ graphics: { ...graphics, ...change } });
   const theme = (change: Partial<StudioGraphicsSettings["theme"]>) => patch({ theme: { ...graphics.theme, ...change } });
+  const template = graphics.scorecardTemplate ?? scorecardTemplateDefaults();
+  const unconfigured = project.clips.filter((clip) => clip.scorecard == null).length;
+  const templatePatch = (change: Partial<StudioScorecardTemplate>) => {
+    const updated = { ...graphics, scorecardTemplate: { ...template, ...change } };
+    // Enabling seeds existing unconfigured clips once. Later edits change only
+    // starting defaults for future clips, never a previously configured card.
+    const clips = change.enabled === true && !template.enabled
+      ? applyScorecardTemplate({ ...project, graphics: updated }).clips : project.clips;
+    onChange({ graphics: updated, clips });
+  };
   return <div className="studio-graphics-project">
+    <fieldset disabled={disabled} className="studio-graphics-fields">
+      <legend>Default scorecard template</legend>
+      <label className="studio-graphics-check"><input aria-label="Use project scorecard template" type="checkbox" checked={template.enabled} onChange={(e) => templatePatch({ enabled: e.target.checked })} />Prepare scorecards from this project template</label>
+      <p className="studio-graphics-help">Starting defaults for new clips and clips without a scorecard. Enter each clip’s actual results in Scores. Existing cards—including cards switched off—are never overwritten.</p>
+      <div className="studio-graphics-field-grid">
+        <label>Default card layout<select aria-label="Default card layout" value={template.template} onChange={(e) => templatePatch({ template: e.target.value as StudioScorecardTemplate["template"] })}><option value="line">Lower-third line</option><option value="result">Result card</option><option value="table">Score table</option></select></label>
+        <label>Default card heading<input aria-label="Default card heading" maxLength={60} value={template.heading} onChange={(e) => templatePatch({ heading: e.target.value })} /></label>
+        <label>Default card subtitle<input aria-label="Default card subtitle" maxLength={120} value={template.subtitle} placeholder="Optional shared event description" onChange={(e) => templatePatch({ subtitle: e.target.value })} /></label>
+      </div>
+      {template.template === "table" && <div className="studio-score-table-editor">
+        <div className="studio-graphics-field-grid">
+          <label>Default table columns<input aria-label="Default table columns" type="number" min={1} max={5} value={template.columns.length} onChange={(e) => templatePatch({ columns: Array.from({ length: Math.trunc(bounded(e.target.value, 1, 5)) }, (_, i) => template.columns[i] ?? `Column ${i + 1}`) })} /></label>
+          <label>Initially blank rows<input aria-label="Initially blank rows" type="number" min={1} max={8} value={template.blankRows} onChange={(e) => templatePatch({ blankRows: Math.trunc(bounded(e.target.value, 1, 8)) })} /></label>
+          {template.columns.map((column, index) => <label key={index}>Default column {index + 1}<input aria-label={`Default column ${index + 1}`} maxLength={24} value={column} onChange={(e) => templatePatch({ columns: template.columns.map((value, at) => at === index ? e.target.value : value) })} /></label>)}
+        </div>
+        <p className="studio-graphics-help">Rows start completely blank. Names, places and scores are entered separately for each clip.</p>
+      </div>}
+      <button type="button" className="btn-secondary" disabled={!template.enabled || !unconfigured} onClick={() => onChange({ clips: applyScorecardTemplate(project).clips })}>Apply to unconfigured clips ({unconfigured})</button>
+      <p className="studio-graphics-help">Configure these defaults before enabling. Editing them later does not rewrite existing cards. Disabling this template stops new cards being prepared; existing cards remain unchanged. Blank prepared cards say Needs results and are omitted from export until filled in.</p>
+    </fieldset>
     <fieldset disabled={disabled} className="studio-graphics-fields">
       <legend>Shared graphics style</legend>
       <p className="studio-graphics-help">One visual style for scorecards and optional styled titles. Existing titles keep their legacy appearance until you opt in.</p>
@@ -39,6 +69,7 @@ export function StudioClipScorecard({ project, clip, getStagingDir, disabled = f
   const graphics = project.graphics ?? graphicsDefaults();
   const patch = (change: Partial<StudioScorecard>) => onChange({ scorecard: { ...score, ...change } });
   const timing = score.timing === "inherit" ? graphics.scorecardTiming : score.timing;
+  const needsResults = score.enabled && !scorecardReady(score);
   const window = scoreWindow(project, clip);
   const overlaps = score.enabled && timing !== "separateCard" && window.end > window.start ? [
     clip.title.trim() && clip.titleSeconds > 0 && window.start < clip.titleSeconds ? "the clip title" : "",
@@ -47,6 +78,7 @@ export function StudioClipScorecard({ project, clip, getStagingDir, disabled = f
   ].filter(Boolean) : [];
   return <div className="studio-scorecard-editor">
     <div className="studio-scorecard-topline"><label className="studio-graphics-check"><input aria-label="Include scorecard" type="checkbox" disabled={disabled} checked={score.enabled} onChange={(e) => patch({ enabled: e.target.checked })} />Include scorecard</label><span>FINISHING · picture render kept</span></div>
+    {needsResults && <p role="status" className="studio-graphics-help"><strong>Needs results.</strong> This card was prepared from your project template. {score.template === "table" ? "Enter at least one table value" : "Enter a scorecard result"} to include it in the finished video. The common heading alone is not exported.</p>}
     <div className="studio-scorecard-layout">
       <fieldset className="studio-graphics-fields" disabled={disabled || !score.enabled}>
         <legend>Scorecard content</legend>
@@ -65,8 +97,8 @@ export function StudioClipScorecard({ project, clip, getStagingDir, disabled = f
         <label>Scorecard timing<select aria-label="Scorecard timing" value={score.timing} onChange={(e) => patch({ timing: e.target.value as StudioScorecard["timing"] })}><option value="inherit">Use project default</option>{timings.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         {score.timing === "inherit" ? <p className="studio-graphics-help">Using project: {timings.find(([value]) => value === timing)?.[1]} · {graphics.scorecardSeconds}s</p>
           : <div className="studio-graphics-field-grid"><label>Scorecard duration · seconds<input aria-label="Scorecard duration · seconds" type="number" min={1} max={30} step={0.5} value={score.seconds} onChange={(e) => patch({ seconds: bounded(e.target.value, 1, 30) })} /></label>{timing === "custom" && <label>Scorecard start · seconds<input aria-label="Scorecard start · seconds" type="number" min={0} max={clip.duration} step={0.5} value={score.start} onChange={(e) => patch({ start: bounded(e.target.value, 0, clip.duration) })} /></label>}</div>}
-        <p className="studio-graphics-help">{score.enabled ? `Estimated card window ${timecode(window.start)}–${timecode(window.end)} in this segment${window.extraSeconds ? ` · adds ${window.extraSeconds}s` : " · no added duration"}.` : "No scorecard in this segment."} Final timings use measured exported frames.</p>
-        {score.enabled && window.end <= window.start && <p role="alert">This scorecard has no visible time in this clip. Choose an earlier custom start, change the inherited timing, or use a standalone card.</p>}
+        <p className="studio-graphics-help">{needsResults ? "Needs results · omitted from export; no added duration." : score.enabled ? `Estimated card window ${timecode(window.start)}–${timecode(window.end)} in this segment${window.extraSeconds ? ` · adds ${window.extraSeconds}s` : " · no added duration"}.` : "No scorecard in this segment."} Final timings use measured exported frames.</p>
+        {score.enabled && !needsResults && window.end <= window.start && <p role="alert">This scorecard has no visible time in this clip. Choose an earlier custom start, change the inherited timing, or use a standalone card.</p>}
         {!!overlaps.length && <p role="alert">Scorecards are composited last. This window overlaps {overlaps.join(" and ")}, so the text can overlap. Choose later timing or a standalone card to keep both readable. Your timings and cached video have not been changed.</p>}
       </fieldset>
       <StudioGraphicsPreview project={project} clip={clip} target="scorecard" getStagingDir={getStagingDir} disabled={disabled || window.end <= window.start} />

@@ -20,6 +20,11 @@ import StudioGraphicsPreview from "../components/studio/StudioGraphicsPreview";
 import StudioChapterEditor from "../components/studio/StudioChapterEditor";
 import { effectiveWindReduction, resetWindReductionOverrides } from "../utils/studioAudio";
 import StudioExportDescription from "../components/StudioExportDescription";
+import StudioVideoPreview from "../components/StudioVideoPreview";
+import StudioRelinkMedia from "../components/studio/StudioRelinkMedia";
+import { useStudioReviewFrames } from "../hooks/useStudioReviewFrames";
+import StudioClipTitle from "../components/studio/StudioClipTitle";
+import { seedScorecardDefaults } from "../utils/studioGraphics";
 import "../styles/studio-editor.css";
 
 const KEY = "photogogo.videoStudio.project.v1";
@@ -29,7 +34,7 @@ async function stagingFolder() {
   if (!settings.staging_dir) throw new Error("Configure a staging folder in Settings first.");
   return settings.staging_dir;
 }
-export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => void; jobs: StudioJob[] }) {
+export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpenJobs: () => void; jobs: StudioJob[]; active?: boolean }) {
   const [project, setProject] = useState<StudioProject>(newProject);
   const projectRef = useRef(project);
   projectRef.current = project;
@@ -41,19 +46,25 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
     try { return localStorage.getItem("photogogo.studio.density") === "comfortable" ? "comfortable" : "compact"; } catch { return "compact"; }
   });
   const [finishOpen, setFinishOpen] = useState(false);
+  const [relinkOpen, setRelinkOpen] = useState(false);
+  const [previewSession, setPreviewSession] = useState<{ id: string; start: number; linear: boolean; recipe: string } | null>(null);
+  const [previewRange, setPreviewRange] = useState({ scope: "", start: 0 });
+  const [replayMark, setReplayMark] = useState<number | null>(null);
   const [projectSection, setProjectSection] = useState<ProjectSettingsSection | null>(null);
   useEffect(() => { try { localStorage.setItem("photogogo.studio.density", density); } catch { /* Optional display preference. */ } }, [density]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [frames, setFrames] = useState<{ at: number; data: string }[]>([]);
-  const [frameBusy, setFrameBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [autosaveOk, setAutosaveOk] = useState(true);
-  const request = useRef(0);
   const projectEpoch = useRef(0);
   const currentEpoch = projectEpoch.current;
-  useEffect(() => { setProjectSection(null); }, [currentEpoch]);
+  const reviewFrames = useStudioReviewFrames(project.clips, selected, currentEpoch, loaded, jobs, active);
+  const frames = reviewFrames.frames;
+  const previewScope = JSON.stringify([currentEpoch, selected]);
+  const previewStart = previewRange.scope === previewScope ? previewRange.start : 0;
+  function setPreviewStart(start: number) { setPreviewRange({ scope: previewScope, start }); }
+  useEffect(() => { setProjectSection(null); setRelinkOpen(false); }, [currentEpoch]);
   useEffect(() => {
     const clear = () => {
       projectEpoch.current++;
@@ -95,13 +106,11 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
     }
   }, [project, loaded]);
   const clip = project.clips.find((c) => c.id === selected);
+  const previewRecipe = JSON.stringify([currentEpoch, selected, clip?.path, clip?.revision, clip?.title, clip?.titleHeading, clip?.titleSubtitle, clip?.titleSeconds, clip?.stabilization, clip?.stabilizationMethod, clip?.customStabilization, clip?.preventRotation, clip?.framing, clip?.replays, project.graphics, project.defaultPreventRotation, project.fps, project.outputDir, project.encoderPreference]);
+  useEffect(() => { setPreviewSession(null); setReplayMark(null); }, [previewRecipe]);
   useEffect(() => {
     if (loaded && !project.clips.some((c) => c.id === selected)) setSelected(project.clips[0]?.id || "");
   }, [project.clips, loaded, selected]);
-  useEffect(() => {
-    request.current++;
-    setFrames([]);
-  }, [clip?.id, clip?.path]);
   function patch(p: Partial<StudioProject>) {
     setProject((prev) => editProject(prev, p));
   }
@@ -228,7 +237,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
             include: true,
             chapter: clipName(c.path),
             title: "",
-            titleSeconds: 4,
+            titleSeconds: 0,
             stabilization: prev.defaultStabilization,
             stabilizationMethod: prev.defaultStabilizationMethod,
             customStabilization: { ...prev.defaultCustomStabilization },
@@ -239,11 +248,10 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
             notes: "",
             replays: [],
           }));
-        return {
-          ...prev,
-          clips: [...prev.clips, ...added],
+        return editProject(prev, {
+          clips: [...prev.clips, ...added.map(c => seedScorecardDefaults(prev, c))],
           outputDir: prev.outputDir || stagingDir,
-        };
+        });
       });
       setMessage(`${addedPaths.size} new clip(s) added. Existing clip renders are preserved; earlier exports and saved jobs have not been updated. Review the new clips, then create an updated final video from the current sequence.`);
     });
@@ -336,6 +344,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
       if (preview) {
         if (!clip) throw new Error("Select a clip to preview.");
         const c = { ...clip, include: true, replays: [] as StudioReplay[] };
+        previewStart = Math.max(0, Math.min(clip.duration - 0.04, previewRangeStart())); previewLength = Math.min(12, clip.duration - previewStart);
         if (r) {
           previewStart = r.start; previewLength = Math.min(60, r.end - r.start);
           c.replays = [{ ...r, start: 0, end: previewLength, enabled: true }];
@@ -344,39 +353,18 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
       }
       const finalClips = p.clips.filter((candidate) => candidate.include);
       const finishingOnly = !preview && finalClips.length > 0 && finalClips.every((candidate) => isClipReady(candidate, p));
-      await invoke<string>("studio_start_render", {
+      const recipe = previewRecipe;
+      const id = await invoke<string>("studio_start_render", {
         project: p, stagingDir, preview, previewStart, previewLength,
         renderKind: preview ? "preview" : finishingOnly ? "assembly" : "project", clipId: null, assembleOnly: finishingOnly,
       });
+      if (preview) setPreviewSession({ id, start: previewStart ?? 0, linear: !r, recipe });
       setMessage(preview ? "720p preview queued; full renders use your output settings."
         : finishingOnly ? `Finishing-only export queued for ${finalClips.length} clips. Only verified cached renders will be composited; if cache or source verification fails, this export stops instead of repeating stabilisation. This saved request will not change if you edit the project.`
         : `Final video queued with ${finalClips.length} included clips. This saved request will not change if you edit the project. Matching clips will be reused, pending clips rendered, then the video assembled.`);
     });
   }
-  async function contactSheet() {
-    if (!clip) return;
-    const token = ++request.current;
-    setFrameBusy(true);
-    setFrames([]);
-    setError("");
-    try {
-      const stagingDir = await stagingFolder();
-      for (let i = 0; i < 8; i++) {
-        const at = Math.max(0, Math.min(clip.duration - 0.02, (clip.duration * (i + 0.5)) / 8));
-        const data = await invoke<string>("studio_frame", {
-          stagingDir,
-          path: clip.path,
-          at,
-        });
-        if (token !== request.current) return;
-        setFrames((f) => [...f, { at, data }]);
-      }
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setFrameBusy(false);
-    }
-  }
+  function previewRangeStart() { return Number.isFinite(previewStart) ? previewStart : 0; }
   const included = project.clips.filter((c) => c.include),
     approved = included.every((c) => c.reviewed);
   const visibleClips = project.clips.map((candidate, index) => ({ candidate, index })).filter(({ candidate }) =>
@@ -427,6 +415,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
           <button className="btn-secondary" disabled={busy} onClick={() => void saveProject()}>
             Save snapshot
           </button>
+          <button className="btn-secondary" aria-expanded={relinkOpen} onClick={() => setRelinkOpen((open) => !open)}>Relink media</button>
         </div>
       </header>
       <nav className="studio-workflow" aria-label="Video editing workflow">
@@ -449,6 +438,11 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
         onError={(text) => { if (projectEpoch.current === currentEpoch) setError(text); }}
         onMessage={(text) => { if (projectEpoch.current === currentEpoch) setMessage(text); }}
         getStagingDir={stagingFolder} expanded={projectSection} onSectionChange={setProjectSection} onOpenTitles={openTitles} />
+      {relinkOpen && <StudioRelinkMedia key={`relink-${currentEpoch}`} project={project} getStagingDir={stagingFolder}
+        onApply={(next, expected) => {
+          if (projectEpoch.current !== currentEpoch || JSON.stringify(projectRef.current) !== expected) return false;
+          projectRef.current = next; setProject(next); setPreviewSession(null); return true;
+        }} />}
       <div className="studio-workspace">
         <section id="studio-sequence" className="studio-sequence bg-surface-800 rounded-xl p-4" aria-labelledby="studio-sequence-heading">
           <div className="flex flex-wrap justify-between gap-2">
@@ -514,6 +508,10 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                 <div className="flex flex-wrap items-center gap-2"><StudioApprovalButton approved={clip.reviewed} name={clip.chapter || clipName(clip.path)} onChange={(reviewed) => edit(clip.id, { reviewed })} />
                 <button className="btn-primary" disabled={!clip.include} onClick={approveNext}>Approve & next</button></div>
               </div>
+              <label className="block text-sm">Clip name / YouTube chapter
+                <input aria-label="Clip name / YouTube chapter" aria-describedby="studio-chapter-purpose" className={input} value={clip.chapter} onChange={e => edit(clip.id, { chapter: e.target.value })} />
+              </label>
+              <p id="studio-chapter-purpose" className="studio-graphics-help">Names this clip in the list and YouTube chapter summary. Does not put text in the video or change the picture. Use the separate Clip title tab for optional on-screen text.</p>
               <div className="flex flex-wrap gap-2">
                 <button
                   className="btn-secondary"
@@ -539,10 +537,10 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                 )}
                 <button
                   className="btn-secondary"
-                  disabled={frameBusy}
-                  onClick={() => void contactSheet()}
+                  disabled={reviewFrames.working || reviewFrames.blocked}
+                  onClick={reviewFrames.refresh}
                 >
-                  {frameBusy ? "Sampling…" : "Generate review frames"}
+                  {reviewFrames.working ? "Preparing frames…" : frames.length ? "Refresh review frames" : "Generate review frames"}
                 </button>
                 <button className="btn-secondary" disabled={project.clips[0]?.id === clip.id} onClick={() => move(-1)}>
                   Move up
@@ -560,7 +558,20 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                   Remove from project
                 </button>
               </div>
-              {!frames.length && <div className="studio-preview-empty"><span>Picture review</span><p>Generate sample frames or play the original to check framing and movement.</p></div>}
+              <div className="flex flex-wrap gap-2 items-end">
+                <label className="text-sm">Preview from (seconds)<input type="number" min={0} max={Math.max(0,clip.duration-0.04)} step="0.04" className={input} aria-label="Preview start seconds" value={previewStart} onChange={(e) => setPreviewStart(Number(e.target.value))} /></label>
+                <button className="btn-secondary" disabled={busy} onClick={() => void render(true)}>Play 12-second preview</button>
+              </div>
+              <StudioVideoPreview jobId={previewSession?.recipe === previewRecipe ? previewSession.id : null} jobs={jobs} sourceStart={previewSession?.start ?? 0} resetKey={previewRecipe}
+                onTimeSelected={previewSession?.linear ? (at) => {
+                  if (replayMark === null) { setReplayMark(at); setMessage(`Replay start marked at ${at.toFixed(2)}s. Scrub forward and use the time button again to set its end.`); }
+                  else if (at <= replayMark + 0.04) setError("Choose a replay end after the marked start.");
+                  else { edit(clip.id, { replays:[...clip.replays, { id:`replay-${Date.now()}`, start:replayMark, end:Math.min(at,clip.duration), speed:0.5, caption:"Replay", enabled:true }] }); setReplayMark(null); setEditorTab("replays"); setMessage("Replay range added from preview marks. Adjust its speed and caption below."); }
+                } : undefined} />
+              {replayMark !== null && <p className="text-sm text-cyan-300">Replay start: {replayMark.toFixed(2)}s <button className="btn-secondary" onClick={() => setReplayMark(null)}>Clear mark</button></p>}
+              <p className="studio-graphics-help" data-testid="review-frame-status">Review frames · {reviewFrames.mode === "all" ? `${reviewFrames.prepared}/${project.clips.length} clips prepared` : reviewFrames.mode === "selected" ? "Selected clip automatically" : "Manual"} · {reviewFrames.count} per clip{reviewFrames.blocked ? " · Preparation paused for Studio jobs" : ""}. Configure in Settings. {reviewFrames.failed > 0 ? `${reviewFrames.failed} clip(s) need attention; select them for details and retry.` : ""}</p>
+              {reviewFrames.error && <p className="text-sm text-amber-300" role="alert">{reviewFrames.error}</p>}
+              {!frames.length && !previewSession && <div className="studio-preview-empty"><span>Picture review</span><p>{reviewFrames.mode === "manual" ? "Generate sample frames, play a short preview, or open the original." : "Frames prepare automatically when Studio is idle. You can also play a short preview or open the original."}</p></div>}
               {!!frames.length && (
                 <>
                   <div className="studio-contact-sheet grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -584,7 +595,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
                 {editorTabs.map((tab, index) => <button type="button" key={tab} id={`studio-tab-${tab}`} role="tab" aria-selected={editorTab === tab} aria-controls={`studio-panel-${tab}`} tabIndex={editorTab === tab ? 0 : -1} onClick={() => setEditorTab(tab)} onKeyDown={(event) => {
                   const next = event.key === "ArrowRight" ? (index + 1) % editorTabs.length : event.key === "ArrowLeft" ? (index + editorTabs.length - 1) % editorTabs.length : event.key === "Home" ? 0 : event.key === "End" ? editorTabs.length - 1 : -1;
                   if (next >= 0) { event.preventDefault(); setEditorTab(editorTabs[next]); document.getElementById(`studio-tab-${editorTabs[next]}`)?.focus(); }
-                }}>{tab[0].toUpperCase() + tab.slice(1)}</button>)}
+                }}>{tab === "titles" ? "Clip title" : tab[0].toUpperCase() + tab.slice(1)}</button>)}
               </div>
               <div id="studio-panel-picture" className="studio-property-panel" role="tabpanel" aria-labelledby="studio-tab-picture" hidden={editorTab !== "picture"}>
               <div className="grid md:grid-cols-2 gap-3">
@@ -657,41 +668,7 @@ export default function VideoStudio({ onOpenJobs, jobs }: { onOpenJobs: () => vo
 
               </div>
               <div id="studio-panel-titles" className="studio-property-panel" role="tabpanel" aria-labelledby="studio-tab-titles" hidden={editorTab !== "titles"}>
-              <div className="grid md:grid-cols-2 gap-3">
-                <label>
-                  Segment / chapter name
-                  <input
-                    className={input}
-                    value={clip.chapter}
-                    onChange={(e) => edit(clip.id, { chapter: e.target.value })}
-                  />
-                </label>
-                <label>
-                  Clip title (blank = hidden)
-                  <input
-                    className={input}
-                    maxLength={100}
-                    value={clip.title}
-                    onChange={(e) => edit(clip.id, { title: e.target.value })}
-                  />
-                </label>
-                <label>Heading (optional)<input className={input} maxLength={60} value={clip.titleHeading ?? ""} onChange={(event) => edit(clip.id, { titleHeading: event.target.value })} /></label>
-                <label>Subtitle (optional)<input className={input} maxLength={110} value={clip.titleSubtitle ?? ""} onChange={(event) => edit(clip.id, { titleSubtitle: event.target.value })} /></label>
-                <label>
-                  Clip title seconds
-                  <input
-                    className={input}
-                    type="number"
-                    min="0"
-                    max="30"
-                    value={clip.titleSeconds}
-                    onChange={(e) => edit(clip.id, { titleSeconds: Number(e.target.value) })}
-                  />
-                </label>
-</div>
-              <button type="button" className="btn-secondary" disabled={!clip.chapter.trim()} onClick={() => edit(clip.id, { title: clip.chapter.slice(0, 100) })}>Use chapter name as title</button>
-              <p className="studio-graphics-help">Heading and subtitle are optional; blank lines are hidden. The main clip title is required. Text edits refresh the titled fragment while retaining an unchanged verified stabilised base.</p>
-              <StudioGraphicsPreview key={`${currentEpoch}:${clip.id}:title`} project={project} clip={clip} target="clipTitle" getStagingDir={stagingFolder} disabled={busy} />
+                <StudioClipTitle key={`${currentEpoch}:${clip.id}:title`} project={project} clip={clip} onChange={change => edit(clip.id, change)} getStagingDir={stagingFolder} disabled={busy} />
               </div>
               <div id="studio-panel-scorecard" className="studio-property-panel" role="tabpanel" aria-labelledby="studio-tab-scorecard" hidden={editorTab !== "scorecard"}>
                 <StudioClipScorecard key={`${currentEpoch}:${clip.id}:scorecard`} project={project} clip={clip} onChange={(change) => edit(clip.id, change)} getStagingDir={stagingFolder} disabled={busy} />

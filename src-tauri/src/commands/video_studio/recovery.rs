@@ -39,6 +39,9 @@ static REQUESTS: OnceLock<Mutex<HashMap<String, RenderRequest>>> = OnceLock::new
 fn requests() -> &'static Mutex<HashMap<String, RenderRequest>> {
     REQUESTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
+pub(super) fn saved_request(id: &str) -> Result<RenderRequest, String> {
+    requests().lock().map_err(|e| e.to_string())?.get(id).cloned().ok_or("Saved preview request unavailable".into())
+}
 
 pub fn init_studio_recovery(app: &tauri::AppHandle) -> Result<(), String> {
     let folder = app.path().app_data_dir().map_err(|e| e.to_string())?.join("studio-jobs");
@@ -162,6 +165,11 @@ pub(super) fn enqueue(request: RenderRequest) -> Result<String, String> {
         return Err("Review every included clip before rendering".into());
     }
     if request.project.music.enabled && !request.preview && request.kind != "music" { music_audio_source(&request.project.music.audio_path)?; }
+    if request.kind != "music" {
+        for clip in request.project.clips.iter().filter(|clip| clip.include) {
+            source(Path::new(&request.staging_dir), &clip.path)?;
+        }
+    }
     let mut store = jobs().lock().map_err(|e| e.to_string())?;
     let mut saved_requests = requests().lock().map_err(|e| e.to_string())?;
     if saved_requests.len() >= 100 { return Err("Studio has 100 saved jobs. Use Clear all Studio renders before adding more work; exported media will be kept.".into()); }
@@ -296,9 +304,12 @@ fn clear_jobs() -> Result<ClearResult, String> {
 }
 
 // Revision is a UI hint. Content and source hashes are the authority for reuse.
-fn clip_signature(p: &Project, clip: &Clip, root: &str) -> Result<String, String> {
+pub(super) fn clip_signature(p: &Project, clip: &Clip, root: &str) -> Result<String, String> {
     let path = source(Path::new(root), &clip.path)?;
-    let mut parts = vec![source_signature(&path)?, format_key(p), clip.title.clone(), clip.title_seconds.to_string(),
+    clip_signature_for_source(p, clip, source_signature(&path)?)
+}
+pub(super) fn clip_signature_for_source(p: &Project, clip: &Clip, source_key: String) -> Result<String, String> {
+    let mut parts = vec![source_key, format_key(p), clip.title.clone(), clip.title_seconds.to_string(),
         clip.stabilization.clone(), clip.stabilization_method.clone(), serde_json::to_string(&clip.custom_stabilization).map_err(|e| e.to_string())?, clip.framing.clone(), serde_json::to_string(&clip.replays).map_err(|e| e.to_string())?];
     let style = graphics::title_style_key(p, clip);
     if !style.is_empty() { parts.extend(["styled-title-v1".into(), style]); }
@@ -317,6 +328,7 @@ pub(super) fn verify_clip(ff: &Path, p: &Project, clip: &Clip, rendered: &ClipRe
 }
 fn prepare_clip(format: &Project, mut clip: Clip, request: &RenderRequest, id: &str, ff: &Path) -> Result<Clip, String> {
     checkpoint(id)?;
+    let verification_started = std::time::Instant::now();
     let key = clip_signature(format, &clip, &request.staging_dir)?;
     let mut candidates = Vec::new();
     if let Some(rendered) = &clip.rendered { candidates.push(rendered.clone()); }
@@ -326,6 +338,7 @@ fn prepare_clip(format: &Project, mut clip: Clip, request: &RenderRequest, id: &
     let cached = candidates.into_iter().find(|r| r.signature == key && r.bitrate_mbps == effective_bitrate(format)
         && !r.checksum.is_empty() && compute_md5(Path::new(&r.path)).ok().as_ref() == Some(&r.checksum)
         && rendered_clip_is_valid(ff, Path::new(&r.path), format, r.duration));
+    update(id, |job| job.logs.push(format!("Verification — {}: {:.2}s (full source hash and candidate output checks)", clip.chapter, verification_started.elapsed().as_secs_f64())));
     let mut rendered = if let Some(rendered) = cached {
         update(id, |job| { job.cache_hits += 1; job.logs.push(format!("Reused verified clip: {}", clip.chapter)); });
         rendered
@@ -354,8 +367,7 @@ fn execute(request: RenderRequest, id: &str) -> Result<String, String> {
     let mut p = request.project.clone();
     if request.kind == "music" { return super::soundtrack::render_soundtrack(&p, id); }
     if request.preview {
-        p.music.enabled = false;
-        return render(p, request.staging_dir, true, request.preview_start, request.preview_length, "preview", false, id);
+        return super::preview::render_cached(request, id);
     }
     let ff = detect_ffmpeg_capabilities()?.binary;
     p.clips.retain(|clip| clip.include);
@@ -395,6 +407,79 @@ fn execute(request: RenderRequest, id: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "bounded synthetic relink, assembly reuse and preview cache test"]
+    fn studio_reliability_smoke() {
+        let root = std::env::var_os("PHOTOGOGO_STUDIO_TEST_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+            .join(format!("studio-reliability-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir_all(&root).unwrap(); let root = fs::canonicalize(&root).unwrap();
+        let old_stage = root.join("old-stage"); let old_output = root.join("old-output");
+        fs::create_dir_all(&old_stage).unwrap(); fs::create_dir_all(&old_output).unwrap();
+        let ff = detect_ffmpeg_capabilities().unwrap().binary;
+        let generated = command(&ff).args(["-v","error","-f","lavfi","-i","color=c=0x23445A:size=320x180:rate=25",
+            "-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","1","-c:v","libx264","-threads","1","-c:a","aac"])
+            .arg(old_stage.join("source.mp4")).output().unwrap();
+        assert!(generated.status.success(), "{}",String::from_utf8_lossy(&generated.stderr));
+        let mut p = super::super::tests::project(&old_stage);
+        p.output_dir = old_output.to_string_lossy().into_owned(); p.title.clear(); p.title_seconds = 0.; p.opening_title_mode = "none".into();
+        p.encoder_preference = "cpu".into(); p.adaptive_scheduling = false;
+        p.clips[0].duration = 1.; p.clips[0].stabilization = "off".into(); p.clips[0].title.clear(); p.clips[0].replays.clear();
+        let mut request = RenderRequest { project:p.clone(), staging_dir:old_stage.to_string_lossy().into_owned(), preview:false,
+            preview_start:None, preview_length:None, kind:"clip".into(), clip_id:Some(p.clips[0].id.clone()), assemble_only:false };
+        let register = |id: &str, request: &RenderRequest| {
+            requests().lock().unwrap().insert(id.into(),request.clone());
+            jobs().lock().unwrap().insert(id.into(),StudioJob { id:id.into(), kind:request.kind.clone(), status:"running".into(), ..StudioJob::default() });
+        };
+        register("reliability-clip",&request);
+        execute(request.clone(),"reliability-clip").unwrap();
+        p.clips[0].rendered = Some(jobs().lock().unwrap()["reliability-clip"].artifacts[0].rendered.clone());
+        p.clips[0].revision = 7; // UI hint differs, but the recipe is unchanged.
+        let stage = root.join("new-stage"); let output = root.join("new-output");
+        // These are exclusively this test's generated folders, never user media.
+        fs::rename(&old_stage,&stage).unwrap(); fs::rename(&old_output,&output).unwrap();
+        let plan = super::super::media::plan(p,&stage.to_string_lossy(),&old_stage.to_string_lossy(),&output.to_string_lossy()).unwrap();
+        assert!(plan.errors.is_empty(),"{:?}",plan.errors); assert_eq!(plan.verified_renders,1);
+        let rebound = plan.project.clips[0].rendered.as_ref().unwrap();
+        assert_eq!(rebound.revision,plan.project.clips[0].revision); assert_eq!(rebound.revision,8); assert!(plan.project.clips[0].reviewed);
+        verify_clip(&ff,&plan.project,&plan.project.clips[0],rebound,&stage.to_string_lossy()).unwrap();
+        for failure in ["checksum", "fps", "bitrate", "recipe"] {
+            let mut changed = plan.project.clone();
+            match failure {
+                "checksum" => changed.clips[0].rendered.as_mut().unwrap().checksum.clear(),
+                "fps" => changed.clips[0].rendered.as_mut().unwrap().fps = 50,
+                "bitrate" => changed.clips[0].rendered.as_mut().unwrap().bitrate_mbps = 20,
+                _ => changed.clips[0].title = "Changed recipe".into(),
+            }
+            let rejected = super::super::media::plan(changed,&stage.to_string_lossy(),"",&output.to_string_lossy()).unwrap();
+            assert_eq!(rejected.verified_renders,0,"{failure} incorrectly accepted");
+            assert!(rejected.project.clips[0].rendered.as_ref().unwrap().signature.is_empty());
+            assert!(Path::new(&rejected.project.clips[0].rendered.as_ref().unwrap().path).is_file(),"Unverified file must be retained");
+        }
+        request.project = plan.project.clone(); request.staging_dir = stage.to_string_lossy().into_owned(); request.kind = "assembly".into(); request.clip_id = None; request.assemble_only = true;
+        register("reliability-assembly",&request);
+        let assembled = execute(request.clone(),"reliability-assembly").unwrap();
+        assert_eq!(jobs().lock().unwrap()["reliability-assembly"].cache_hits,1);
+        assert!(Path::new(&assembled).is_file());
+        request.preview = true; request.kind = "preview".into(); request.assemble_only = false; request.preview_start = Some(0.); request.preview_length = Some(0.4);
+        register("reliability-preview-first",&request);
+        let first = execute(request.clone(),"reliability-preview-first").unwrap();
+        update("reliability-preview-first",|job| { job.status = "completed".into(); job.output = Some(first.clone()); });
+        register("reliability-preview-second",&request);
+        let second = execute(request.clone(),"reliability-preview-second").unwrap();
+        assert_eq!(fs::canonicalize(&first).unwrap(),fs::canonicalize(&second).unwrap());
+        assert_eq!(jobs().lock().unwrap()["reliability-preview-second"].cache_hits,1);
+        assert!(!jobs().lock().unwrap()["reliability-preview-second"].logs.iter().any(|s| s.contains("Stage timing")),"Cache hit started an encoder");
+        let first_job = jobs().lock().unwrap()["reliability-preview-first"].clone();
+        let saved: Checkpoint = serde_json::from_slice(&serde_json::to_vec(&Checkpoint { job:first_job.clone(),request:request.clone() }).unwrap()).unwrap();
+        assert_eq!(saved.job.preview_key, first_job.preview_key);
+        assert!(!saved.job.preview_checksum.is_empty(),"Preview identity survives checkpoint recovery");
+        fs::OpenOptions::new().append(true).open(&first).unwrap().write_all(b"changed output").unwrap();
+        register("reliability-preview-corrupt",&request);
+        let replacement = execute(request,"reliability-preview-corrupt").unwrap();
+        assert_ne!(fs::canonicalize(&first).unwrap(),fs::canonicalize(&replacement).unwrap());
+        assert_eq!(jobs().lock().unwrap()["reliability-preview-corrupt"].cache_hits,0);
+        println!("PASS: relocated clip and assembly reused; identical preview reused without encode; corrupt preview regenerated. Synthetic artifacts: {}",root.display());
+    }
     #[test]
     #[ignore = "bounded synthetic graphics export and verified cache reuse"]
     fn scorecard_delivery_smoke() {

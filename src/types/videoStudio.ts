@@ -25,6 +25,16 @@ export interface StudioGraphicsSettings {
   scorecardTiming: StudioScoreTiming;
   scorecardSeconds: number;
   scorecardStart: number;
+  // Starting defaults only; edits never rewrite a configured clip scorecard.
+  scorecardTemplate?: StudioScorecardTemplate;
+}
+export interface StudioScorecardTemplate {
+  enabled: boolean;
+  template: "line" | "result" | "table";
+  heading: string;
+  subtitle: string;
+  columns: string[];
+  blankRows: number;
 }
 export interface StudioScorecard {
   enabled: boolean;
@@ -37,7 +47,14 @@ export interface StudioScorecard {
   timing: "inherit" | StudioScoreTiming;
   seconds: number;
   start: number;
+  // New template-seeded cards stay out of export until real clip results exist.
+  // Missing on legacy cards, preserving deliberate heading-only graphics.
+  requiresResults?: boolean;
 }
+export const scorecardReady = (score: StudioScorecard | undefined): boolean => !!score?.enabled &&
+  (!score.requiresResults || (score.template === "table"
+    ? score.rows.some((row) => row.some((cell) => cell.trim().length > 0))
+    : score.result.trim().length > 0));
 export interface StudioCustomStabilization {
   radius: number;
   blockSize: number;
@@ -312,7 +329,7 @@ export const timecode = (seconds: number) =>
   `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(2).padStart(5, "0")}`;
 const scorecardExtraDuration = (p: StudioProject, c: StudioClip) => {
   const s = c.scorecard;
-  if (!s?.enabled || (s.timing === "inherit" ? p.graphics?.scorecardTiming : s.timing) !== "separateCard") return 0;
+  if (!s || !scorecardReady(s) || (s.timing === "inherit" ? p.graphics?.scorecardTiming : s.timing) !== "separateCard") return 0;
   const seconds = s.timing === "inherit" ? (p.graphics?.scorecardSeconds ?? 6) : s.seconds;
   return Math.round(seconds * p.fps) / p.fps;
 };

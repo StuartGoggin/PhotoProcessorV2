@@ -14,6 +14,7 @@ project.clips = ["Warm-up", "Technique practice", "Final run"].map((chapter, ind
   notes: "", replays: [], stabilization: "off", stabilizationMethod: "quality", customStabilization: { radius: 16, blockSize: 8, contrast: 125 }, framing: "edgeSafe", revision: 0,
   rendered: index === 0 ? { path: "D:/out/first.mp4", width: 3840, height: 2160, fps: 50, bitrateMbps: 32, revision: 0, signature: "fixture", renderedAt: new Date().toISOString(), duration: 25 } : null,
 }));
+if ((window as any).__reviewFixture) { project.clips[1].title = ""; project.clips[1].titleSeconds = 0; }
 localStorage.setItem("photogogo.videoStudio.project.v1", JSON.stringify(project));
 const fixture = window as any;
 const baseStudioJob = { kind: "clip", phase: "Render sample", progress: 40, logs: [], width: 3840, height: 2160, fps: 50, bitrateMbps: 32, createdAt: "2026-09-17T07:48:34Z", processId: 12345, processName: "ffmpeg.exe", heartbeatAt: "2026-09-17T07:48:34Z", progressAt: "2026-09-17T07:48:34Z", logPath: "D:/logs/job.log" };
@@ -32,15 +33,37 @@ fixture.__importJobs = [
 fixture.__descriptionText = "Afternoon training review\n\n00:00 Warm-up\n00:25 Technique practice\n01:00 Final run\n";
 fixture.__TAURI_INTERNALS__ = { convertFileSrc: () => "", invoke: async (command: string, args: any) => {
   console.log("preview invoke", command, args);
-  if (command === "load_settings") return { source_root: "E:/DCIM", staging_dir: "D:/Videos", archive_dir: "D:/Archive", exiftool_dir: "", stabilize_max_parallel_jobs: 3, stabilize_ffmpeg_threads_per_job: 4, face_scan_parallel_jobs: 1, face_scan_min_shard_mb: 10, face_scan_target_shard_mb: 100, timeline_preview_width: 420, timeline_preview_height: 240, timeline_preview_fps: 8 };
+  if (command === "load_settings") return { source_root: "E:/DCIM", staging_dir: "D:/Videos", archive_dir: "D:/Archive", exiftool_dir: "", stabilize_max_parallel_jobs: 3, stabilize_ffmpeg_threads_per_job: 4, face_scan_parallel_jobs: 1, face_scan_min_shard_mb: 10, face_scan_target_shard_mb: 100, timeline_preview_width: 420, timeline_preview_height: 240, timeline_preview_fps: 8, studio_review_frames_mode: "manual", studio_review_frames_count: 8, ...fixture.__reviewSettings };
+  if (command === "save_settings") { fixture.__reviewSettings = args.settings; return null; }
+  if (command === "studio_review_frame") {
+    (fixture.__reviewFrameCalls ||= []).push(args);
+    if (fixture.__reviewFrameDeferred) return new Promise(resolve => { fixture.__resolveReviewFrame = resolve; });
+    if (fixture.__reviewFrameError) throw new Error(fixture.__reviewFrameError);
+    return { at: args.duration * (args.index + 0.5) / args.count, data: args.cacheOnly && !fixture.__reviewFrameData ? null : fixture.__reviewFrameData,
+      cached: !!fixture.__reviewFrameData, deferred: false, sourceKey: args.path };
+  }
   if (command === "list_sd_cards" || command === "list_process_jobs") return [];
   if (command === "list_import_jobs") return fixture.__importJobs;
   if (command === "studio_start_render") {
     (window as any).__lastStudioRequest = args;
     return "preview-job";
   }
+  if (command === "studio_relink_media") {
+    fixture.__lastRelinkRequest = args;
+    if (fixture.__relinkDeferred) return new Promise((resolve, reject) => { fixture.__resolveRelink = resolve; fixture.__rejectRelink = reject; });
+    if (fixture.__relinkError) throw new Error(fixture.__relinkError);
+    return fixture.__relinkPlan || { project: args.project, changes: [], errors: [], warnings: [], verifiedRenders: 0, elapsedSeconds: 0 };
+  }
+  if (command === "studio_read_preview") {
+    (fixture.__studioPreviewReads ||= []).push(args);
+    if (fixture.__studioPreviewDeferred) return new Promise((resolve, reject) => { fixture.__resolveStudioPreview = resolve; fixture.__rejectStudioPreview = reject; });
+    if (!fixture.__studioPreviewDataUrl) throw new Error("No synthetic preview configured for this fixture.");
+    return fixture.__studioPreviewDataUrl;
+  }
   if (command === "studio_clear_jobs") { (window as any).__studioCleared = true; return { cleared: 1 }; }
-  if (command === "studio_list_jobs") return fixture.__studioCleared ? [] : fixture.__studioJobs;
+  // Native IPC deserializes a fresh snapshot; returning the mutable fixture
+  // array would let a test change React's existing state without a new render.
+  if (command === "studio_list_jobs") return fixture.__studioCleared ? [] : structuredClone(fixture.__studioJobs);
   if (command === "studio_read_export_description") {
     if (fixture.__descriptionReadError) throw new Error("Fixture description read failure");
     return { text: fixture.__descriptionText, path: "D:/out/finished/youtube-description.txt", chapters: [{ startSeconds: 0, title: "Warm-up" }, { startSeconds: 25, title: "Technique practice" }, { startSeconds: 60, title: "Final run" }], warnings: [] };

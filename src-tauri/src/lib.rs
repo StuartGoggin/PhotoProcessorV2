@@ -35,6 +35,7 @@ use commands::{
     video_studio::{
         studio_ai_music_direction, studio_ai_review, studio_control_job, studio_create_music_midi,
         studio_frame, studio_inspect, studio_list_jobs, studio_load_project, studio_open_lmms, studio_audio_preview, studio_graphics_preview,
+        studio_relink_media, studio_read_preview, studio_review_frame,
         studio_save_project, studio_start_render, studio_validate_project,
         studio_retry_job, init_studio_recovery,
         studio_start_music,
@@ -60,6 +61,9 @@ pub fn run() {
             studio_frame,
             studio_audio_preview,
             studio_graphics_preview,
+            studio_relink_media,
+            studio_read_preview,
+            studio_review_frame,
             studio_save_project,
             studio_load_project,
             studio_list_jobs,

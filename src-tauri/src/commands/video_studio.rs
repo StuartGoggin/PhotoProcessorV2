@@ -13,6 +13,12 @@ mod sequence;
 mod audio;
 mod graphics;
 mod stabilization;
+mod media;
+mod preview;
+mod review_frames;
+pub use review_frames::studio_review_frame;
+pub use media::studio_relink_media;
+pub use preview::studio_read_preview;
 pub use graphics::studio_graphics_preview;
 pub use audio::studio_audio_preview;
 pub use delivery::{studio_read_export_description, studio_save_export_description};
@@ -265,6 +271,8 @@ pub struct StudioJob {
     pub worker_limit: usize,
     pub threads_per_worker: usize,
     pub cache_hits: usize,
+    pub preview_key: String,
+    pub preview_checksum: String,
     pub elapsed_seconds: f64,
     pub eta_seconds: Option<f64>,
     pub recoverable: bool,
@@ -496,8 +504,8 @@ fn duration(info: &Value) -> Result<f64, String> {
         .ok_or("Missing video duration".into())
 }
 fn source(root: &Path, path: &str) -> Result<PathBuf, String> {
-    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
-    let path = fs::canonicalize(path).map_err(|e| e.to_string())?;
+    let root = fs::canonicalize(root).map_err(|e| format!("Staging folder unavailable: {}. Check Settings → Local Staging Directory, then use Relink media for a moved project. {e}", root.display()))?;
+    let path = fs::canonicalize(path).map_err(|e| format!("Source clip unavailable: {path}. Use Relink media to locate moved footage. {e}"))?;
     if !path.starts_with(root)
         || !path.is_file()
         || !path
@@ -1557,6 +1565,10 @@ fn source_signature(path: &Path) -> Result<String, String> {
     // This byte hash means cache reuse is never based on a filename, timestamp,
     // or stale sidecar alone. It is much cheaper than re-encoding a clip.
     let bytes = compute_md5(path).map_err(|error| error.to_string())?;
+    let after = fs::metadata(path).map_err(|error| error.to_string())?;
+    if metadata.len() != after.len() || metadata.modified().ok() != after.modified().ok() {
+        return Err(format!("Source changed while verifying: {}. Wait until copying or editing finishes.", path.display()));
+    }
     Ok(format!(
         "{}|{}|{}|{}|{}",
         path.to_string_lossy(),
@@ -1748,6 +1760,12 @@ fn initialize_clip_countdown(p: &mut Project, count: usize) -> bool {
     }
     owns_countdown
 }
+fn validate_preview_range(preview: bool, preview_start: Option<f64>, preview_length: Option<f64>) -> Result<(), String> {
+    if (preview_start.is_some() || preview_length.is_some()) && !preview { return Err("Preview ranges cannot trim a final render".into()); }
+    if preview_start.map(|s| !s.is_finite() || s < 0.).unwrap_or(false)
+        || preview_length.map(|s| !s.is_finite() || s <= 0. || s > 60.).unwrap_or(false) { return Err("Invalid preview range".into()); }
+    Ok(())
+}
 fn render(
     mut p: Project,
     root: String,
@@ -1759,18 +1777,7 @@ fn render(
     id: &str,
 ) -> Result<String, String> {
     validate(&p)?;
-    if (preview_start.is_some() || preview_length.is_some()) && !preview {
-        return Err("Preview ranges cannot trim a final render".into());
-    }
-    if preview_start
-        .map(|s| !s.is_finite() || s < 0.)
-        .unwrap_or(false)
-        || preview_length
-            .map(|s| !s.is_finite() || s <= 0. || s > 60.)
-            .unwrap_or(false)
-    {
-        return Err("Invalid preview range".into());
-    }
+    validate_preview_range(preview, preview_start, preview_length)?;
     let cap = detect_ffmpeg_capabilities()?;
     let ff = &cap.binary;
     let background_audio = if p.music.enabled {
@@ -2647,6 +2654,13 @@ pub async fn studio_ai_review(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn studio_missing_source_names_the_file_and_recovery_action() {
+        let root = std::env::temp_dir();
+        let missing = root.join("photogogo-missing-source-test").join("missing.mp4");
+        let error = super::source(&root, &missing.to_string_lossy()).unwrap_err();
+        assert!(error.contains("missing.mp4") && error.contains("Relink media"), "{error}");
+    }
     use super::*;
     #[test]
     fn verification_reports_exact_colour_and_format_mismatches() {

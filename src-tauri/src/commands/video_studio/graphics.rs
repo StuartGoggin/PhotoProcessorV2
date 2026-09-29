@@ -10,17 +10,32 @@ pub struct Theme { pub font: String, pub palette: String, pub accent: String, pu
 pub struct Settings {
     pub version: u8, pub theme: Theme, pub styled_titles: bool,
     pub scorecard_timing: String, pub scorecard_seconds: f64, pub scorecard_start: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scorecard_template: Option<ScorecardTemplate>,
 }
 impl Default for Settings {
     fn default() -> Self { Self { version: 1, theme: Theme { font: "segoe".into(), palette: "midnight".into(),
         accent: "#D5B46B".into(), position: "bottom".into(), opacity: 88 }, styled_titles: false,
-        scorecard_timing: "clipEnd".into(), scorecard_seconds: 6., scorecard_start: 0. } }
+        scorecard_timing: "clipEnd".into(), scorecard_seconds: 6., scorecard_start: 0., scorecard_template: None } }
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScorecardTemplate {
+    pub enabled: bool, pub template: String, pub heading: String, pub subtitle: String,
+    pub columns: Vec<String>, pub blank_rows: u8,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Scorecard {
     pub enabled: bool, pub template: String, pub heading: String, pub result: String, pub subtitle: String,
     pub columns: Vec<String>, pub rows: Vec<Vec<String>>, pub timing: String, pub seconds: f64, pub start: f64,
+    #[serde(default)]
+    pub requires_results: bool,
+}
+fn ready(s: &Scorecard) -> bool {
+    s.enabled && (!s.requires_results || if s.template == "table" {
+        s.rows.iter().any(|row| row.iter().any(|cell| !cell.trim().is_empty()))
+    } else { !s.result.trim().is_empty() })
 }
 fn settings(p: &Project) -> Settings { p.graphics.clone().unwrap_or_default() }
 fn timing<'a>(g: &'a Settings, s: &'a Scorecard) -> (&'a str, f64, f64) {
@@ -44,6 +59,14 @@ pub(super) fn validate(p: &Project) -> Result<(), String> {
         || !valid_timing(&g.scorecard_timing, g.scorecard_seconds, g.scorecard_start) {
         return Err("Invalid project graphics style or timing".into());
     }
+    if let Some(template) = &g.scorecard_template {
+        if !["line", "result", "table"].contains(&template.template.as_str())
+            || !bounded_text(&template.heading, 60) || !bounded_text(&template.subtitle, 120)
+            || template.columns.is_empty() || template.columns.len() > 5
+            || template.columns.iter().any(|value| !bounded_text(value, 24)) || !(1..=8).contains(&template.blank_rows) {
+            return Err("Invalid scorecard template: use 1–5 columns, 1–8 blank rows and bounded plain text".into());
+        }
+    }
     for c in &p.clips {
         if let Some(s) = &c.scorecard {
             let (at, seconds, start) = timing(&g, s);
@@ -56,7 +79,7 @@ pub(super) fn validate(p: &Project) -> Result<(), String> {
                 || s.rows.iter().any(|r| r.len() != s.columns.len() || r.iter().any(|v| !bounded_text(v, 24))) {
                 return Err(format!("Invalid scorecard in {}: use 1–5 columns, 1–8 rows and bounded plain text", c.chapter));
             }
-            if c.include && s.enabled && at == "custom" && start >= c.duration {
+            if c.include && ready(s) && at == "custom" && start >= c.duration {
                 return Err(format!("Scorecard start must be inside {}", c.chapter));
             }
         }
@@ -75,7 +98,7 @@ pub(super) fn title_style_key(p: &Project, c: &Clip) -> String {
 }
 pub(super) fn recipe(p: &Project) -> Option<Value> {
     let g = settings(p); let t = &g.theme;
-    let cards: Vec<_> = p.clips.iter().filter(|c| c.include).filter_map(|c| c.scorecard.as_ref().filter(|s| s.enabled).map(|s| {
+    let cards: Vec<_> = p.clips.iter().filter(|c| c.include).filter_map(|c| c.scorecard.as_ref().filter(|s| ready(s)).map(|s| {
         let (at, seconds, start) = timing(&g, s);
         json!([c.id,s.template,s.heading,s.result,s.subtitle,
           if s.template == "table" { json!(s.columns) } else { json!([]) },
@@ -100,7 +123,7 @@ pub(super) fn recipe(p: &Project) -> Option<Value> {
 #[serde(rename_all = "camelCase")]
 pub(super) struct Window { pub start: u64, pub end: u64, pub extra_frames: u64 }
 pub(super) fn window(p: &Project, c: &Clip, main: u64, total: u64) -> Result<Option<Window>, String> {
-    let Some(s) = c.scorecard.as_ref().filter(|s| s.enabled) else { return Ok(None) };
+    let Some(s) = c.scorecard.as_ref().filter(|s| ready(s)) else { return Ok(None) };
     let g = settings(p); let (at, seconds, start) = timing(&g, s);
     let frames = (seconds * f64::from(p.fps)).round() as u64;
     if at == "separateCard" { return Ok(Some(Window { start: total, end: total.checked_add(frames).ok_or("Scorecard timeline overflow")?, extra_frames: frames })); }
@@ -111,7 +134,7 @@ pub(super) fn window(p: &Project, c: &Clip, main: u64, total: u64) -> Result<Opt
 }
 pub(super) fn extra_seconds(p: &Project, c: &Clip) -> f64 {
     let g = settings(p);
-    c.scorecard.as_ref().filter(|s| s.enabled).map(|s| {
+    c.scorecard.as_ref().filter(|s| ready(s)).map(|s| {
         let (at, seconds, _) = timing(&g, s); if at == "separateCard" { (seconds * p.fps as f64).round() / p.fps as f64 } else { 0. }
     }).unwrap_or(0.)
 }
@@ -221,7 +244,7 @@ pub(super) fn title_filter(p: &Project, work: &Path, clip: Option<&Clip>, prefix
         .unwrap_or((&p.title, p.title_heading.trim(), &p.subtitle));
     if settings(p).styled_titles {
         return filter_with_title_spacing(p, work, &Scorecard { enabled: true, template: "result".into(), heading: heading.into(), result: title.into(),
-            subtitle: subtitle.into(), columns: vec![], rows: vec![], timing: "clipStart".into(),seconds: 6.,start: 0. }, prefix, frames,
+            subtitle: subtitle.into(), columns: vec![], rows: vec![], timing: "clipStart".into(),seconds: 6.,start: 0., requires_results: false }, prefix, frames,
             !heading.is_empty() || (clip.is_some() && !subtitle.is_empty()));
     }
     if !work.join("font.ttf").exists() { fs::copy("C:/Windows/Fonts/arial.ttf", work.join("font.ttf")).map_err(|e| e.to_string())?; }
@@ -297,6 +320,7 @@ pub async fn studio_graphics_preview(staging_dir: String, project: Project, clip
             let c = c.ok_or("Choose a clip for this preview")?;
             if target == "scorecard" {
                 let s = c.scorecard.as_ref().filter(|s| s.enabled).ok_or("Enable this scorecard first")?;
+                if !ready(s) { return Err("This scorecard needs results before rendered preview or export".into()); }
                 timing(&settings(p), s).0 == "separateCard"
             } else {
                 if c.title.trim().is_empty() || c.title_seconds <= 0. { return Err("The clip title is hidden".into()); }
@@ -359,6 +383,73 @@ pub async fn studio_graphics_preview(staging_dir: String, project: Project, clip
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn template_project(root: &Path) -> Project {
+        let mut p = super::super::tests::project(root);
+        p.graphics = Some(Settings { scorecard_timing: "separateCard".into(),
+            scorecard_template: Some(ScorecardTemplate { enabled: true, template: "table".into(), heading: "FINAL".into(),
+                subtitle: "Official classification".into(), columns: vec!["Place".into(), "Rider".into(), "Points".into()], blank_rows: 2 }),
+            ..Settings::default() });
+        p.clips[0].scorecard = Some(Scorecard { enabled: true, template: "table".into(), heading: "FINAL".into(), result: String::new(),
+            subtitle: "Official classification".into(), columns: vec!["Place".into(), "Rider".into(), "Points".into()],
+            rows: vec![vec![String::new(); 3]; 2], timing: "inherit".into(), seconds: 6., start: 0., requires_results: true });
+        p
+    }
+    #[test]
+    fn studio_scorecard_template_roundtrip_and_blank_contract() {
+        let root = std::env::temp_dir().join(format!("studio-template-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        let prepared = template_project(&root);
+        let baseline = super::super::tests::project(&root);
+        assert!(validate(&prepared).is_ok());
+        assert!(recipe(&prepared).is_none(), "only actual results enter finishing recipe");
+        assert_eq!(sequence::recipe(&prepared), sequence::recipe(&baseline));
+        assert!(window(&prepared, &prepared.clips[0], 50, 90).unwrap().is_none());
+        assert_eq!(extra_seconds(&prepared, &prepared.clips[0]), 0.);
+        let path = root.join("prepared.json");
+        studio_save_project(path.to_string_lossy().into_owned(), prepared.clone()).unwrap();
+        let loaded = studio_load_project(path.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(serde_json::to_value(&loaded.graphics).unwrap(), serde_json::to_value(&prepared.graphics).unwrap());
+        assert!(loaded.clips[0].scorecard.as_ref().unwrap().requires_results);
+        assert_eq!(loaded.clips[0].revision, baseline.clips[0].revision);
+        assert!(loaded.clips[0].reviewed);
+        let mut completed = loaded;
+        completed.clips[0].scorecard.as_mut().unwrap().rows[0][2] = "72".into();
+        assert!(recipe(&completed).is_some());
+        let result = window(&completed, &completed.clips[0], 50, 90).unwrap().unwrap();
+        assert_eq!((result.start, result.end, result.extra_frames), (90, 240, 150));
+        assert_eq!(extra_seconds(&completed, &completed.clips[0]), 6.);
+        let mut raw = serde_json::to_value(&completed).unwrap();
+        raw["clips"][0]["scorecard"]["rows"] = json!([["", "", ""], ["", "", ""]]);
+        raw["clips"][0]["scorecard"].as_object_mut().unwrap().remove("requiresResults");
+        let legacy: Project = serde_json::from_value(raw).unwrap();
+        assert!(recipe(&legacy).is_some(), "legacy heading-only cards must remain visible");
+        for kind in ["line", "result"] {
+            let mut p = prepared.clone(); let card = p.clips[0].scorecard.as_mut().unwrap();
+            card.template = kind.into(); card.rows[0][0] = "ignored non-table value".into();
+            assert!(recipe(&p).is_none(), "non-table card requires its result line");
+            p.clips[0].scorecard.as_mut().unwrap().result = "72 points".into();
+            assert!(recipe(&p).is_some());
+            p.clips[0].scorecard.as_mut().unwrap().result = "   ".into();
+            assert!(recipe(&p).is_none(), "clearing results suppresses the card again");
+        }
+    }
+    #[test]
+    fn studio_scorecard_template_validation_rejects_invalid_structure() {
+        let prepared = template_project(Path::new("."));
+        for (field, value) in [("template",json!("unknown")), ("heading",json!("x".repeat(61))),
+            ("subtitle",json!("bad\nline")), ("columns",json!([])), ("columns",json!(["x".repeat(25)])),
+            ("columns",json!(["a","b","c","d","e","f"])), ("blankRows",json!(0)), ("blankRows",json!(9))] {
+            let mut raw = serde_json::to_value(&prepared).unwrap(); raw["graphics"]["scorecardTemplate"][field] = value;
+            let invalid: Project = serde_json::from_value(raw).unwrap();
+            assert!(validate(&invalid).is_err(), "invalid {field} must be rejected even when no completed cards exist");
+        }
+        let mut raw = serde_json::to_value(&prepared).unwrap();
+        raw["graphics"]["scorecardTemplate"]["result"] = json!("Never copy actual scores across clips");
+        assert!(serde_json::from_value::<Project>(raw).is_err(), "template schema must not accept per-clip score content");
+        let mut raw = serde_json::to_value(&prepared).unwrap();
+        raw["clips"][0]["scorecard"]["requiresResults"] = json!("false");
+        assert!(serde_json::from_value::<Project>(raw).is_err(), "draft policy is a strict boolean");
+    }
     fn png_bytes(data: &str) -> Vec<u8> {
         let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut bits = 0u32; let mut count = 0u32; let mut out = vec![];
@@ -466,7 +557,7 @@ mod tests {
             result: "SUMMER CHAMPIONSHIP · RESULTS".into(), subtitle: "Official scores · Thank you to all riders and volunteers".into(),
             columns: vec!["Place".into(),"Rider".into(),"Horse".into(),"Penalty".into(),"Points".into()],
             rows: (1..=8).map(|i|vec![i.to_string(),"Alexandra W. Wellington".into(),"WWWWWWWWWWWWWWWWWWWWWWWW".into(),"A AAAAAAAAAAAAAAAAA BBBB".into(),"72.500".into()]).collect(),
-            timing: "separateCard".into(),seconds: 6.,start: 0. });
+            timing: "separateCard".into(),seconds: 6.,start: 0., requires_results: false });
         for font in ["segoe","georgia","trebuchet"] {
             p.graphics.as_mut().unwrap().theme.font = font.into();
             let table = studio_graphics_preview(".".into(),p.clone(),Some("one".into()),"scorecard".into()).await.unwrap();

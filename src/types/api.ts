@@ -16,6 +16,8 @@ export interface Settings {
   timeline_preview_width: number;
   timeline_preview_height: number;
   timeline_preview_fps: number;
+  studio_review_frames_mode?: "all" | "selected" | "manual";
+  studio_review_frames_count?: number;
 }
 
 export interface ImportProgress {

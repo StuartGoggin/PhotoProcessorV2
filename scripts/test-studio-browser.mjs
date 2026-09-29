@@ -193,8 +193,8 @@ try {
   let request = await page.evaluate(() => window.__lastStudioRequest);
   assert.equal(request.assembleOnly, false);
   assert.equal(request.project.width, 3840); assert.equal(request.project.fps, 50); assert.equal(request.project.bitrateMbps, 32);
-  await page.getByRole("tab", { name: "Titles", exact: true }).click();
-  await page.getByLabel("Clip title (blank = hidden)").fill("Edited warm-up");
+  await page.getByRole("tab", { name: "Clip title", exact: true }).click();
+  await page.getByLabel("On-screen clip title").fill("Edited warm-up");
   assert.equal(await review.getByRole("button", { name: /Render clip ·/ }).isDisabled(), true);
   await review.getByText("Previous render · outdated", { exact: false }).waitFor();
   const needsReview = review.getByRole("button", { name: "Needs review: Warm-up", exact: true });

@@ -1,4 +1,5 @@
 import type { BackgroundMusic, StudioClip, StudioJob, StudioProject } from "../../types/videoStudio";
+import { scorecardReady } from "../../types/videoStudio";
 import { outputLabel } from "../../utils/studioWorkflow";
 import { normalizeWindReduction, windReductionPresets } from "../../utils/studioAudio";
 import StudioBackgroundMusic from "../StudioBackgroundMusic";
@@ -36,7 +37,7 @@ export default function StudioProjectSettings({
   const summaries: Record<ProjectSettingsSection, string> = {
     project: project.name,
     filters: `Wind: ${title(normalizeWindReduction(project.defaultWindReduction))} · ${overrides.length} override(s)`,
-    graphics: `${project.clips.filter((clip) => clip.scorecard?.enabled).length} scorecard(s) · ${project.graphics?.styledTitles ? "Styled titles" : "Legacy titles"}`,
+    graphics: `${project.clips.filter((clip) => scorecardReady(clip.scorecard)).length} cards ready · ${project.clips.filter((clip) => clip.scorecard?.enabled && !scorecardReady(clip.scorecard)).length} need results`,
     music: project.music.enabled ? project.music.audioPath ? "Ready to mix" : "Audio file needed" : "Off",
     output: outputLabel(project),
   };

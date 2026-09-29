@@ -21,7 +21,7 @@ export default function StudioChapterEditor({ project, onName, onSelect, onMove,
   }
   return <details className="studio-chapter-editor" open>
     <summary className="studio-panel-heading">Chapters & finishing <span>{chapters.length} included · estimated timing</span></summary>
-    <p className="studio-graphics-help">Edit chapter names here, or use the row buttons to open a clip's Titles or Scorecard editor. Order follows the current sequence; excluded clips are omitted. Exact markers are generated after assembly; finished export descriptions are kept.</p>
+    <p className="studio-graphics-help">These clip names appear in the YouTube chapter summary, not on the video picture. Optional on-screen text is controlled separately in each Clip title tab. Order follows the current sequence; excluded clips are omitted. Exact markers are generated after assembly; finished export descriptions are kept.</p>
     {!chapters.length ? <p className="studio-graphics-help">Add an included clip to plan chapters and scorecards.</p>
       : <ol className="studio-chapter-list" aria-label="Ordered chapters" tabIndex={0}>
         {chapters.map((chapter, index) => <li key={chapter.clipId} className="studio-chapter-row">

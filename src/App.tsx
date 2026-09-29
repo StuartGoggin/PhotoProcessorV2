@@ -169,7 +169,7 @@ export default function App() {
 
         {/* Page content */}
         <main id="app-main" className="app-main flex-1 min-w-0 min-h-0 overflow-auto bg-surface-900">
-          <div hidden={page !== "videostudio"}><VideoStudio jobs={studioJobs} onOpenJobs={() => openJobs()} /></div>
+          <div hidden={page !== "videostudio"}><VideoStudio jobs={studioJobs} active={page === "videostudio"} onOpenJobs={() => openJobs()} /></div>
           {pageContent[page]}
         </main>
       </div>
