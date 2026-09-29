@@ -9,6 +9,7 @@ async function moduleAt(path) {
 const graphics = await moduleAt("src/utils/studioGraphics.ts");
 const workflow = await moduleAt("src/utils/studioWorkflow.ts");
 const studioTypes = await moduleAt("src/types/videoStudio.ts");
+const updates = await moduleAt("src/utils/studioScorecardUpdates.ts");
 const clip = { id: "one", path: "D:/one.mp4", duration: 20, include: true, reviewed: true, revision: 7,
   chapter: "Round one", title: "", titleSeconds: 4, stabilization: "off", stabilizationMethod: "quality",
   customStabilization: { radius: 16, blockSize: 8, contrast: 0.1 }, framing: "edgeSafe", notes: "", replays: [],
@@ -28,6 +29,7 @@ test("project scorecard starting defaults seed only unconfigured clips with inde
   assert.equal(seeded.clips[2], disabled, "explicitly disabled is configured, not missing");
   assert.equal(seeded.clips[3], populated, "results never overwritten");
   assert.equal(seeded.clips[0].scorecard.requiresResults, true);
+  assert.equal(seeded.clips[0].scorecard.enabled, false, "prepared cards require a deliberate per-clip opt-in");
   assert.deepEqual(seeded.clips[0].scorecard.rows, [["", "", ""], ["", "", ""]]);
   assert.equal(seeded.clips[0].scorecard.result, "");
   assert.equal(seeded.clips[0].reviewed, true);
@@ -70,7 +72,7 @@ test("blank prepared cards cannot change export recipe, chapters or duration; re
   assert.equal(studioTypes.projectDuration(seeded), 40);
   assert.deepEqual(graphics.chapterPlan(seeded), graphics.chapterPlan(baseline));
   assert.equal(graphics.chapterPlan(seeded)[0].cardStart, null);
-  const completed = { ...seeded, clips: [workflow.editClip(seeded.clips[0], { scorecard: { ...seeded.clips[0].scorecard, result: "72 points" } }), seeded.clips[1]] };
+  const completed = { ...seeded, clips: [workflow.editClip(seeded.clips[0], { scorecard: { ...seeded.clips[0].scorecard, enabled: true, result: "72 points" } }), seeded.clips[1]] };
   assert.equal(studioTypes.projectDuration(completed), 46);
   assert.equal(graphics.chapterPlan(completed)[1].start, 26);
   assert.equal(workflow.sequenceStatus({ sequence: workflow.sequenceRecipe(seeded) }, completed), "outdated");
@@ -83,11 +85,108 @@ test("blank prepared cards cannot change export recipe, chapters or duration; re
 
 test("prepared table requires an actual cell, not a common heading or result subtitle", () => {
   const source = { ...project, graphics: { ...graphics.graphicsDefaults(), scorecardTemplate: { ...graphics.scorecardTemplateDefaults(), enabled: true, template: "table" } } };
-  const prepared = graphics.seedScorecardDefaults(source, clip).scorecard;
+  const prepared = { ...graphics.seedScorecardDefaults(source, clip).scorecard, enabled: true };
   assert.equal(studioTypes.scorecardReady({ ...prepared, result: "Event", heading: "Placings", subtitle: "Results" }), false);
   assert.equal(studioTypes.scorecardReady({ ...prepared, rows: [[" ", "", ""]] }), false);
   assert.equal(studioTypes.scorecardReady({ ...prepared, rows: [["", "Rider", ""]] }), true);
   assert.equal(studioTypes.scorecardReady({ ...prepared, enabled: false, rows: [["1", "Rider", "72"]] }), false);
+});
+
+function updateFixture() {
+  const scorecard = { ...graphics.newScorecard(), heading: "OLD EVENT", result: "72 points", subtitle: "Personal rider note" };
+  return { ...project, graphics: { ...graphics.graphicsDefaults(), scorecardTemplate: {
+    ...graphics.scorecardTemplateDefaults(), enabled: true, heading: "NEW EVENT", result: "Shared result", subtitle: "" } },
+    clips: [{ ...clip, scorecard }, { ...clip, id: "two", include: false, scorecard: { ...scorecard, enabled: false, subtitle: "" } }] };
+}
+
+test("all three defaults seed disabled cards, persist, and missing legacy result loads blank", () => {
+  const source = updateFixture();
+  const next = graphics.seedScorecardDefaults(source, { ...clip, id: "new" });
+  assert.deepEqual([next.scorecard.heading, next.scorecard.result, next.scorecard.subtitle, next.scorecard.enabled], ["NEW EVENT", "Shared result", "", false]);
+  assert.equal(studioTypes.scorecardReady(next.scorecard), false, "default result is not permission to show a card");
+  assert.equal(studioTypes.scorecardReady({ ...next.scorecard, enabled: true }), true);
+  const old = structuredClone(source); delete old.graphics.scorecardTemplate.result;
+  const loaded = workflow.normalizeProject(old);
+  assert.equal(loaded.graphics.scorecardTemplate.result, "");
+  assert.deepEqual(loaded.clips.map(c => c.scorecard), old.clips.map(c => c.scorecard), "no migration changes to enabled cards");
+  const reopened = workflow.normalizeProject(JSON.parse(JSON.stringify({ ...source, clips: [...source.clips, next] })));
+  assert.equal(reopened.graphics.scorecardTemplate.result, "Shared result");
+  assert.deepEqual(reopened.clips[2].scorecard, next.scorecard);
+});
+
+test("review plans contain exact literal before/after lines including clears; planning/cancel is read-only", () => {
+  const source = updateFixture();
+  source.clips[0].scorecard.heading = "<img src=x onerror=alert(1)>";
+  const before = JSON.stringify(source), plan = updates.planScorecardTextUpdates(source);
+  assert.equal(plan.items.length, 5);
+  assert.equal(plan.items[0].before, "<img src=x onerror=alert(1)>");
+  assert.deepEqual(plan.items.filter(i => i.field === "subtitle").map(i => [i.before, i.after]), [["Personal rider note", ""]]);
+  assert.equal(plan.items[3].included, false);
+  assert.equal(plan.items[3].enabled, false);
+  assert.equal(JSON.stringify(source), before);
+  assert.equal(updates.applyScorecardTextUpdates(source, plan, []), source);
+});
+
+test("review applies only selected individual lines and preserves enable/layout/table/timing/picture state", () => {
+  const source = updateFixture(), plan = updates.planScorecardTextUpdates(source);
+  const selected = plan.items.filter(i => (i.clipId === "one" && i.field === "heading") || (i.clipId === "two" && i.field === "result")).map(i => i.key);
+  const result = updates.applyScorecardTextUpdates(source, plan, selected);
+  assert.deepEqual(result.clips[0].scorecard, { ...source.clips[0].scorecard, heading: "NEW EVENT" });
+  assert.deepEqual(result.clips[1].scorecard, { ...source.clips[1].scorecard, result: "Shared result" });
+  result.clips.forEach((c, i) => {
+    assert.deepEqual({ ...c, scorecard: source.clips[i].scorecard }, source.clips[i]);
+    assert.equal(c.rendered, source.clips[i].rendered);
+    assert.equal(c.scorecard.rows, source.clips[i].scorecard.rows);
+    assert.equal(workflow.isClipReady(c, result), true);
+  });
+  assert.equal(workflow.sequenceStatus({ sequence: workflow.sequenceRecipe(source) }, result), "outdated", "only final export is stale");
+  assert.equal(source.clips[0].scorecard.heading, "OLD EVENT");
+  assert.equal(updates.planScorecardTextUpdates(result).items.length, 3, "accepted changes disappear on next review");
+});
+
+test("clear is opt-in, whitespace is protected, duplicate selected keys apply once", () => {
+  const source = updateFixture(); source.clips[0].scorecard.subtitle = "   ";
+  const plan = updates.planScorecardTextUpdates(source), clear = plan.items.find(i => i.clipId === "one" && i.field === "subtitle");
+  assert.equal(clear.before.length, 3);
+  assert.equal(updates.applyScorecardTextUpdates(source, plan, []).clips[0].scorecard.subtitle, "   ");
+  const result = updates.applyScorecardTextUpdates(source, plan, [clear.key, clear.key]);
+  assert.equal(result.clips[0].scorecard.subtitle, "");
+  assert.equal(result.clips[0].scorecard.result, "72 points");
+});
+
+test("stale reviews reject atomically when defaults, text, enable, layout, media or clip list changes", () => {
+  const source = updateFixture(), plan = updates.planScorecardTextUpdates(source), keys = plan.items.map(i => i.key);
+  for (const mutate of [
+    p => p.graphics.scorecardTemplate.result = "Changed again", p => p.graphics.scorecardTemplate.enabled = false,
+    p => p.clips[0].scorecard.result = "80 points", p => p.clips[0].scorecard.enabled = false,
+    p => p.clips[0].scorecard.template = "table", p => p.clips[0].path = "D:/replacement.mp4",
+    p => p.clips[0].include = false, p => p.clips.reverse(), p => p.clips.pop(),
+  ]) {
+    const current = structuredClone(source); mutate(current); const before = JSON.stringify(current);
+    assert.throws(() => updates.applyScorecardTextUpdates(current, plan, keys), /changed/);
+    assert.equal(JSON.stringify(current), before);
+  }
+});
+
+test("apply preserves latest render/approval/music state and never trusts substituted plan values", () => {
+  const source = updateFixture(), plan = updates.planScorecardTextUpdates(source);
+  const latest = { ...source, music: { ...source.music, audioPath: "D:/new-music.wav" }, clips: source.clips.map(c => ({ ...c, reviewed: false, revision: 9, rendered: { ...c.rendered, signature: "newly completed" } })) };
+  plan.items[0].after = "untrusted substitution";
+  const result = updates.applyScorecardTextUpdates(latest, plan, [plan.items[0].key]);
+  assert.equal(result.clips[0].scorecard.heading, "NEW EVENT");
+  assert.equal(result.clips[0].rendered, latest.clips[0].rendered);
+  assert.equal(result.clips[0].reviewed, false); assert.equal(result.clips[0].revision, 9);
+  assert.equal(result.music, latest.music);
+  assert.throws(() => updates.applyScorecardTextUpdates(source, plan, ["unknown"]), /no longer available/);
+});
+
+test("disabled or absent project template never proposes text updates; duplicate clip IDs fail closed", () => {
+  const source = updateFixture(); source.graphics.scorecardTemplate.enabled = false;
+  assert.deepEqual(updates.planScorecardTextUpdates(source).items, []);
+  assert.deepEqual(updates.planScorecardTextUpdates(project).items, []);
+  source.graphics.scorecardTemplate.enabled = true; source.clips[1].id = source.clips[0].id;
+  const plan = updates.planScorecardTextUpdates(source);
+  assert.throws(() => updates.applyScorecardTextUpdates(source, plan, plan.items.map(i => i.key)), /duplicated/);
 });
 
 test("optional title lines preserve legacy identity when blank and stale only the affected picture", () => {

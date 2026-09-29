@@ -22,6 +22,8 @@ impl Default for Settings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScorecardTemplate {
     pub enabled: bool, pub template: String, pub heading: String, pub subtitle: String,
+    #[serde(default)]
+    pub result: String,
     pub columns: Vec<String>, pub blank_rows: u8,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -61,7 +63,7 @@ pub(super) fn validate(p: &Project) -> Result<(), String> {
     }
     if let Some(template) = &g.scorecard_template {
         if !["line", "result", "table"].contains(&template.template.as_str())
-            || !bounded_text(&template.heading, 60) || !bounded_text(&template.subtitle, 120)
+            || !bounded_text(&template.heading, 60) || !bounded_text(&template.result, 90) || !bounded_text(&template.subtitle, 120)
             || template.columns.is_empty() || template.columns.len() > 5
             || template.columns.iter().any(|value| !bounded_text(value, 24)) || !(1..=8).contains(&template.blank_rows) {
             return Err("Invalid scorecard template: use 1–5 columns, 1–8 blank rows and bounded plain text".into());
@@ -386,7 +388,7 @@ mod tests {
     fn template_project(root: &Path) -> Project {
         let mut p = super::super::tests::project(root);
         p.graphics = Some(Settings { scorecard_timing: "separateCard".into(),
-            scorecard_template: Some(ScorecardTemplate { enabled: true, template: "table".into(), heading: "FINAL".into(),
+            scorecard_template: Some(ScorecardTemplate { enabled: true, template: "table".into(), heading: "FINAL".into(), result: "Results pending".into(),
                 subtitle: "Official classification".into(), columns: vec!["Place".into(), "Rider".into(), "Points".into()], blank_rows: 2 }),
             ..Settings::default() });
         p.clips[0].scorecard = Some(Scorecard { enabled: true, template: "table".into(), heading: "FINAL".into(), result: String::new(),
@@ -409,6 +411,9 @@ mod tests {
         studio_save_project(path.to_string_lossy().into_owned(), prepared.clone()).unwrap();
         let loaded = studio_load_project(path.to_string_lossy().into_owned()).unwrap();
         assert_eq!(serde_json::to_value(&loaded.graphics).unwrap(), serde_json::to_value(&prepared.graphics).unwrap());
+        let defaults = loaded.graphics.as_ref().unwrap().scorecard_template.as_ref().unwrap();
+        assert_eq!((&defaults.heading[..], &defaults.result[..], &defaults.subtitle[..]),
+            ("FINAL", "Results pending", "Official classification"));
         assert!(loaded.clips[0].scorecard.as_ref().unwrap().requires_results);
         assert_eq!(loaded.clips[0].revision, baseline.clips[0].revision);
         assert!(loaded.clips[0].reviewed);
@@ -434,18 +439,76 @@ mod tests {
         }
     }
     #[test]
+    fn studio_scorecard_template_legacy_missing_result_preserves_enabled_cards() {
+        let root = std::env::temp_dir().join(format!("studio-template-legacy-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        let mut prepared = template_project(&root);
+        prepared.clips[0].scorecard.as_mut().unwrap().rows[0][2] = "72".into();
+        let expected_card = serde_json::to_value(&prepared.clips[0].scorecard).unwrap();
+        let mut raw = serde_json::to_value(&prepared).unwrap();
+        raw["graphics"]["scorecardTemplate"].as_object_mut().unwrap().remove("result");
+        let path = root.join("legacy.json");
+        fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+        let loaded = studio_load_project(path.to_string_lossy().into_owned()).unwrap();
+        assert!(loaded.graphics.as_ref().unwrap().scorecard_template.as_ref().unwrap().result.is_empty());
+        assert_eq!(serde_json::to_value(&loaded.clips[0].scorecard).unwrap(), expected_card);
+        assert!(loaded.clips[0].scorecard.as_ref().unwrap().enabled);
+        assert_eq!(recipe(&loaded), recipe(&prepared), "old visible cards must remain visible without altered content");
+        assert_eq!(sequence::recipe(&loaded), sequence::recipe(&prepared));
+        let saved = root.join("roundtrip.json");
+        studio_save_project(saved.to_string_lossy().into_owned(), loaded.clone()).unwrap();
+        let roundtrip = studio_load_project(saved.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(serde_json::to_value(&roundtrip.graphics).unwrap(), serde_json::to_value(&loaded.graphics).unwrap());
+        assert_eq!(serde_json::to_value(&roundtrip.clips[0].scorecard).unwrap(), expected_card);
+    }
+    #[test]
+    fn studio_scorecard_template_default_edits_do_not_change_picture_or_sequence() {
+        for card_enabled in [false, true] {
+            let mut before = template_project(Path::new("."));
+            let card = before.clips[0].scorecard.as_mut().unwrap();
+            card.enabled = card_enabled;
+            card.rows[0][2] = "72".into();
+            let mut after = before.clone();
+            let defaults = after.graphics.as_mut().unwrap().scorecard_template.as_mut().unwrap();
+            defaults.enabled = false;
+            defaults.template = "result".into();
+            defaults.heading = "NEW EVENT".into();
+            defaults.result = "New default result".into();
+            defaults.subtitle = "New division".into();
+            defaults.columns = vec!["Rank".into()];
+            defaults.blank_rows = 1;
+            assert!(validate(&after).is_ok());
+            assert_eq!(serde_json::to_value(&after.clips).unwrap(), serde_json::to_value(&before.clips).unwrap(),
+                "editing defaults must not mutate existing card content or its enabled state");
+            assert_eq!(recipe(&after), recipe(&before));
+            assert_eq!(sequence::recipe(&after), sequence::recipe(&before));
+            assert_eq!(title_style_key(&after, &after.clips[0]), title_style_key(&before, &before.clips[0]));
+            assert_eq!(stabilization::base_key(&after, &after.clips[0], "unchanged-source", "libx264").unwrap(),
+                stabilization::base_key(&before, &before.clips[0], "unchanged-source", "libx264").unwrap());
+        }
+    }
+    #[test]
     fn studio_scorecard_template_validation_rejects_invalid_structure() {
         let prepared = template_project(Path::new("."));
         for (field, value) in [("template",json!("unknown")), ("heading",json!("x".repeat(61))),
+            ("result",json!("x".repeat(91))), ("result",json!("bad\nline")), ("result",json!("bad\u{0000}line")),
             ("subtitle",json!("bad\nline")), ("columns",json!([])), ("columns",json!(["x".repeat(25)])),
             ("columns",json!(["a","b","c","d","e","f"])), ("blankRows",json!(0)), ("blankRows",json!(9))] {
             let mut raw = serde_json::to_value(&prepared).unwrap(); raw["graphics"]["scorecardTemplate"][field] = value;
             let invalid: Project = serde_json::from_value(raw).unwrap();
             assert!(validate(&invalid).is_err(), "invalid {field} must be rejected even when no completed cards exist");
         }
+        for value in [Value::Null, json!(true), json!(72), json!(["result"]), json!({"text":"result"})] {
+            let mut raw = serde_json::to_value(&prepared).unwrap();
+            raw["graphics"]["scorecardTemplate"]["result"] = value;
+            assert!(serde_json::from_value::<Project>(raw).is_err(), "default result must be a string");
+        }
         let mut raw = serde_json::to_value(&prepared).unwrap();
-        raw["graphics"]["scorecardTemplate"]["result"] = json!("Never copy actual scores across clips");
-        assert!(serde_json::from_value::<Project>(raw).is_err(), "template schema must not accept per-clip score content");
+        raw["graphics"]["scorecardTemplate"]["unexpected"] = json!("unknown field");
+        assert!(serde_json::from_value::<Project>(raw).is_err(), "template schema must still reject unknown fields");
+        let mut boundary = prepared.clone();
+        boundary.graphics.as_mut().unwrap().scorecard_template.as_mut().unwrap().result = "界".repeat(90);
+        assert!(validate(&boundary).is_ok(), "default result limit counts characters, not UTF-8 bytes");
         let mut raw = serde_json::to_value(&prepared).unwrap();
         raw["clips"][0]["scorecard"]["requiresResults"] = json!("false");
         assert!(serde_json::from_value::<Project>(raw).is_err(), "draft policy is a strict boolean");

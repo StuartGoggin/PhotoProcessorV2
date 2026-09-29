@@ -8,15 +8,15 @@ export const newScorecard = (): StudioScorecard => ({ enabled: true, template: "
   timing: "inherit", seconds: 6, start: 0 });
 
 export const scorecardTemplateDefaults = (): StudioScorecardTemplate => ({ enabled: false, template: "line",
-  heading: "RESULT", subtitle: "", columns: ["Place", "Team", "Score"], blankRows: 1 });
+  heading: "RESULT", result: "", subtitle: "", columns: ["Place", "Team", "Score"], blankRows: 1 });
 
 // Starting defaults are independent copies. Only timings and visual style keep
 // following the project; scores and other clip-specific edits remain local.
 export function seedScorecardDefaults(project: StudioProject, clip: StudioClip): StudioClip {
   const template = project.graphics?.scorecardTemplate;
   if (!template?.enabled || clip.scorecard != null) return clip;
-  return { ...clip, scorecard: { ...newScorecard(), template: template.template,
-    heading: template.heading, subtitle: template.subtitle, result: "", requiresResults: true,
+  return { ...clip, scorecard: { ...newScorecard(), enabled: false, template: template.template,
+    heading: template.heading, subtitle: template.subtitle, result: template.result ?? "", requiresResults: true,
     columns: [...template.columns], rows: Array.from({ length: template.blankRows }, () => template.columns.map(() => "")) } };
 }
 export function applyScorecardTemplate(project: StudioProject): StudioProject {

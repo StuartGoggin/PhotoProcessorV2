@@ -67,6 +67,7 @@ try {
   const seeded = await saved();
   assert.equal(seeded.clips.length, 3);
   for (let i = 0; i < 3; i++) {
+    assert.equal(seeded.clips[i].scorecard.enabled, false, "project defaults never enable a clip card");
     assert.equal(seeded.clips[i].scorecard.heading, "FINAL CLASSIFICATION");
     assert.deepEqual(seeded.clips[i].scorecard.rows, [["", "", ""], ["", "", ""]]);
     assert.equal(seeded.clips[i].revision, beforeTemplate.clips[i].revision);
@@ -75,6 +76,8 @@ try {
   }
   await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await page.getByRole("tab", { name: "Scorecard", exact: true }).click();
+  assert.equal(await page.getByLabel("Include scorecard", { exact: true }).isChecked(), false);
+  await page.getByLabel("Include scorecard", { exact: true }).check();
   await page.locator("#studio-panel-scorecard").getByText("Needs results.", { exact: true }).waitFor();
   assert.equal(await page.locator("#studio-panel-scorecard").getByRole("button", { name: "Rendered preview", exact: true }).isDisabled(), true);
   await page.getByLabel("Row 1, column 2", { exact: true }).fill("Rider A");

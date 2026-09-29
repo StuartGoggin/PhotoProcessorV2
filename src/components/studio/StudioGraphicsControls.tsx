@@ -1,13 +1,17 @@
+import { useState } from "react";
 import type { StudioClip, StudioGraphicsSettings, StudioProject, StudioScorecard, StudioScorecardTemplate, StudioScoreTiming } from "../../types/videoStudio";
 import { applyScorecardTemplate, graphicsDefaults, newScorecard, scorecardTemplateDefaults, scoreWindow } from "../../utils/studioGraphics";
 import { scorecardReady, timecode } from "../../types/videoStudio";
 import StudioGraphicsPreview from "./StudioGraphicsPreview";
+import StudioScorecardUpdateReview, { type ApplyScorecardUpdates } from "./StudioScorecardUpdateReview";
 
 const timings: [StudioScoreTiming, string][] = [["clipEnd", "End of main clip"], ["afterReplays", "End of clip + replays"], ["separateCard", "Standalone card after replays"], ["clipStart", "Start of clip"], ["custom", "Custom time in main clip"]];
 const bounded = (value: string, min: number, max: number) => Math.max(min, Math.min(max, Number(value) || min));
 interface Common { project: StudioProject; getStagingDir: () => Promise<string>; disabled?: boolean }
 
-export function StudioProjectGraphics({ project, disabled = false, onChange }: Omit<Common, "getStagingDir"> & { onChange: (patch: Partial<StudioProject>) => void }) {
+export function StudioProjectGraphics({ project, disabled = false, onChange, onApplyScorecardUpdates }: Omit<Common, "getStagingDir"> & { onChange: (patch: Partial<StudioProject>) => void; onApplyScorecardUpdates: ApplyScorecardUpdates }) {
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState("");
   const graphics = project.graphics ?? graphicsDefaults();
   const patch = (change: Partial<StudioGraphicsSettings>) => onChange({ graphics: { ...graphics, ...change } });
   const theme = (change: Partial<StudioGraphicsSettings["theme"]>) => patch({ theme: { ...graphics.theme, ...change } });
@@ -25,11 +29,12 @@ export function StudioProjectGraphics({ project, disabled = false, onChange }: O
     <fieldset disabled={disabled} className="studio-graphics-fields">
       <legend>Default scorecard template</legend>
       <label className="studio-graphics-check"><input aria-label="Use project scorecard template" type="checkbox" checked={template.enabled} onChange={(e) => templatePatch({ enabled: e.target.checked })} />Prepare scorecards from this project template</label>
-      <p className="studio-graphics-help">Starting defaults for new clips and clips without a scorecard. Enter each clip’s actual results in Scores. Existing cards—including cards switched off—are never overwritten.</p>
+      <p className="studio-graphics-help">Default text for all three lines. New clip cards start OFF, even with text filled in. Turn on Include scorecard for each clip that should display one. Editing these defaults does not change existing cards until you review and apply selected text updates.</p>
       <div className="studio-graphics-field-grid">
         <label>Default card layout<select aria-label="Default card layout" value={template.template} onChange={(e) => templatePatch({ template: e.target.value as StudioScorecardTemplate["template"] })}><option value="line">Lower-third line</option><option value="result">Result card</option><option value="table">Score table</option></select></label>
-        <label>Default card heading<input aria-label="Default card heading" maxLength={60} value={template.heading} onChange={(e) => templatePatch({ heading: e.target.value })} /></label>
-        <label>Default card subtitle<input aria-label="Default card subtitle" maxLength={120} value={template.subtitle} placeholder="Optional shared event description" onChange={(e) => templatePatch({ subtitle: e.target.value })} /></label>
+        <label>Top line / heading<input aria-label="Default card heading" maxLength={60} value={template.heading} onChange={(e) => templatePatch({ heading: e.target.value })} /></label>
+        <label>Main line / result<input aria-label="Default card result" maxLength={90} value={template.result ?? ""} placeholder="Optional default main line" onChange={(e) => templatePatch({ result: e.target.value })} /></label>
+        <label>Bottom line / subtitle<input aria-label="Default card subtitle" maxLength={120} value={template.subtitle} placeholder="Optional shared event description" onChange={(e) => templatePatch({ subtitle: e.target.value })} /></label>
       </div>
       {template.template === "table" && <div className="studio-score-table-editor">
         <div className="studio-graphics-field-grid">
@@ -39,9 +44,14 @@ export function StudioProjectGraphics({ project, disabled = false, onChange }: O
         </div>
         <p className="studio-graphics-help">Rows start completely blank. Names, places and scores are entered separately for each clip.</p>
       </div>}
-      <button type="button" className="btn-secondary" disabled={!template.enabled || !unconfigured} onClick={() => onChange({ clips: applyScorecardTemplate(project).clips })}>Apply to unconfigured clips ({unconfigured})</button>
-      <p className="studio-graphics-help">Configure these defaults before enabling. Editing them later does not rewrite existing cards. Disabling this template stops new cards being prepared; existing cards remain unchanged. Blank prepared cards say Needs results and are omitted from export until filled in.</p>
+      <div className="studio-graphics-preview-actions">
+        <button type="button" className="btn-secondary" disabled={!template.enabled || !unconfigured} onClick={() => onChange({ clips: applyScorecardTemplate(project).clips })}>Prepare missing cards ({unconfigured})</button>
+        <button type="button" className="btn-secondary" disabled={!template.enabled || !project.clips.some(c => c.scorecard)} onClick={() => { setUpdateMessage(""); setReviewOpen(true); }}>Update clip scorecards from project defaults…</button>
+      </div>
+      <p className="studio-graphics-help">Updates open a review with a separate choice for each line; nothing is selected automatically. Layout, table entries and on/off settings are kept. Disabling this template stops future cards being prepared, without changing existing cards.</p>
+      {updateMessage && <p role="status" className="studio-score-update-success">{updateMessage}</p>}
     </fieldset>
+    {reviewOpen && <StudioScorecardUpdateReview project={project} disabled={disabled} onApply={onApplyScorecardUpdates} onClose={message => { setReviewOpen(false); if (message) setUpdateMessage(message); }} />}
     <fieldset disabled={disabled} className="studio-graphics-fields">
       <legend>Shared graphics style</legend>
       <p className="studio-graphics-help">One visual style for scorecards and optional styled titles. Existing titles keep their legacy appearance until you opt in.</p>
@@ -80,8 +90,9 @@ export function StudioClipScorecard({ project, clip, getStagingDir, disabled = f
     <div className="studio-scorecard-topline"><label className="studio-graphics-check"><input aria-label="Include scorecard" type="checkbox" disabled={disabled} checked={score.enabled} onChange={(e) => patch({ enabled: e.target.checked })} />Include scorecard</label><span>FINISHING · picture render kept</span></div>
     {needsResults && <p role="status" className="studio-graphics-help"><strong>Needs results.</strong> This card was prepared from your project template. {score.template === "table" ? "Enter at least one table value" : "Enter a scorecard result"} to include it in the finished video. The common heading alone is not exported.</p>}
     <div className="studio-scorecard-layout">
-      <fieldset className="studio-graphics-fields" disabled={disabled || !score.enabled}>
+      <fieldset className="studio-graphics-fields" disabled={disabled}>
         <legend>Scorecard content</legend>
+        {!score.enabled && <p className="studio-graphics-help">This card is OFF. You can prepare its text without showing it in the video. Enable Include scorecard when ready.</p>}
         <label>Scorecard template<select aria-label="Scorecard template" value={score.template} onChange={(e) => patch({ template: e.target.value as StudioScorecard["template"] })}><option value="line">Lower-third line</option><option value="result">Result card</option><option value="table">Score table</option></select></label>
         <label>Scorecard heading<input aria-label="Scorecard heading" maxLength={60} value={score.heading} onChange={(e) => patch({ heading: e.target.value })} /></label>
         <label>Scorecard result<input aria-label="Scorecard result" maxLength={90} placeholder="Navy 12 · White 8" value={score.result} onChange={(e) => patch({ result: e.target.value })} /></label>

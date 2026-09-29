@@ -6,6 +6,7 @@ import StudioBackgroundMusic from "../StudioBackgroundMusic";
 import StudioOutputSettings from "../StudioOutputSettings";
 import StudioStabilizationFields from "../StudioStabilizationFields";
 import { StudioProjectGraphics } from "./StudioGraphicsControls";
+import type { ApplyScorecardUpdates } from "./StudioScorecardUpdateReview";
 
 const input = "bg-surface-900 rounded border border-surface-600 px-3 py-2 w-full text-sm";
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
@@ -14,13 +15,14 @@ export type ProjectSettingsSection = typeof sections[number];
 
 export default function StudioProjectSettings({
   project, selectedClip, jobs, busy, onChange, onMusicChange, onApplyStabilization,
-  onResetWind, onOutputFolder, onError, onMessage, getStagingDir, expanded, onSectionChange, onOpenTitles,
+  onResetWind, onOutputFolder, onError, onMessage, getStagingDir, expanded, onSectionChange, onOpenTitles, onApplyScorecardUpdates,
 }: {
   project: StudioProject;
   selectedClip?: StudioClip;
   jobs: StudioJob[];
   busy: boolean;
   onChange: (change: Partial<StudioProject>) => void;
+  onApplyScorecardUpdates: ApplyScorecardUpdates;
   onMusicChange: (change: Partial<BackgroundMusic>) => void;
   onApplyStabilization: (onlySelected: boolean) => void;
   onResetWind: () => void;
@@ -80,7 +82,7 @@ export default function StudioProjectSettings({
       <button type="button" className="btn-secondary mt-4" onClick={onOpenTitles}>Edit opening title in Titles & graphics</button>
     </div>
     <div id="studio-project-panel-graphics" className="studio-project-panel" role="region" aria-labelledby="studio-project-toggle-graphics" hidden={expanded !== "graphics"}>
-      <StudioProjectGraphics project={project} disabled={busy} onChange={onChange} />
+      <StudioProjectGraphics project={project} disabled={busy} onChange={onChange} onApplyScorecardUpdates={onApplyScorecardUpdates} />
       <button type="button" className="btn-secondary mt-4" onClick={onOpenTitles}>Preview opening title in Titles & graphics</button>
     </div>
     <div id="studio-project-panel-filters" className="studio-project-panel" role="region" aria-labelledby="studio-project-toggle-filters" hidden={expanded !== "filters"}>

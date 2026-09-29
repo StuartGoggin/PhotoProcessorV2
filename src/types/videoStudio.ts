@@ -25,13 +25,14 @@ export interface StudioGraphicsSettings {
   scorecardTiming: StudioScoreTiming;
   scorecardSeconds: number;
   scorecardStart: number;
-  // Starting defaults only; edits never rewrite a configured clip scorecard.
+  // Editing defaults never rewrites cards; existing text is updated by explicit review.
   scorecardTemplate?: StudioScorecardTemplate;
 }
 export interface StudioScorecardTemplate {
   enabled: boolean;
   template: "line" | "result" | "table";
   heading: string;
+  result: string;
   subtitle: string;
   columns: string[];
   blankRows: number;
@@ -316,6 +317,9 @@ export const normalizeProject = (project: StudioProject): StudioProject => ({
   adaptiveScheduling: project.adaptiveScheduling ?? true,
   encoderPreference: project.encoderPreference ?? "auto",
   defaultWindReduction: project.defaultWindReduction ?? "off",
+  ...(project.graphics?.scorecardTemplate ? { graphics: { ...project.graphics,
+    scorecardTemplate: { ...project.graphics.scorecardTemplate,
+      result: project.graphics.scorecardTemplate.result === undefined ? "" : project.graphics.scorecardTemplate.result } } } : {}),
   clips: project.clips.map((clip) => ({
     ...clip,
     stabilizationMethod: clip.stabilizationMethod ?? "quality",

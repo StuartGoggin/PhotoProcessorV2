@@ -25,6 +25,7 @@ import StudioRelinkMedia from "../components/studio/StudioRelinkMedia";
 import { useStudioReviewFrames } from "../hooks/useStudioReviewFrames";
 import StudioClipTitle from "../components/studio/StudioClipTitle";
 import { seedScorecardDefaults } from "../utils/studioGraphics";
+import { applyScorecardTextUpdates } from "../utils/studioScorecardUpdates";
 import "../styles/studio-editor.css";
 
 const KEY = "photogogo.videoStudio.project.v1";
@@ -432,6 +433,14 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
       )}
       <StudioProjectSettings key={currentEpoch} project={project} selectedClip={clip} jobs={jobs} busy={busy}
         onChange={patch}
+        onApplyScorecardUpdates={(plan, selectedKeys) => {
+          if (busy || projectEpoch.current !== currentEpoch) return "The project is busy or has changed. Reopen the scorecard review before applying updates.";
+          try {
+            const next = applyScorecardTextUpdates(projectRef.current, plan, selectedKeys);
+            projectRef.current = next; setProject(next);
+            return null;
+          } catch (failure) { return String(failure); }
+        }}
         onMusicChange={(music) => { if (projectEpoch.current === currentEpoch) setProject((prev) => ({ ...prev, music: { ...prev.music, ...music } })); }}
         onApplyStabilization={(onlySelected) => void applyDefaults(onlySelected)}
         onResetWind={() => void resetWindDefaults()} onOutputFolder={() => void action(outputFolder)}
