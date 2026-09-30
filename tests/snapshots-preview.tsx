@@ -11,6 +11,7 @@ document.head.appendChild(fixtureStyle);
 const state = window as any;
 state.__snapshotCalls = [];
 state.__snapshotExports = [];
+state.__exportFolder = "D:/synthetic/Photos";
 state.__openPaths = ["D:/synthetic/First camera.mov", "D:/synthetic/Second camera.mp4"];
 state.__snapshotIdentity = "unchanged";
 const frameImage = (index: number) => {
@@ -28,7 +29,8 @@ const frameImage = (index: number) => {
 state.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) => {
   state.__snapshotCalls.push({ command, args: structuredClone(args) });
   if (command === "plugin:dialog|confirm") return state.__confirm !== false;
-  if (command === "plugin:dialog|open") return args.options?.directory ? "D:/synthetic/Photos" : state.__openPaths;
+  if (command === "plugin:dialog|open") return args.options?.directory ? state.__exportFolder : state.__openPaths;
+  if (command === "plugin:dialog|message") return null;
   if (command === "plugin:dialog|save") return "D:/synthetic/session.snapshots.json";
   if (command === "snapshot_open") {
     if (state.__openError) throw new Error(state.__openError);
@@ -48,8 +50,10 @@ state.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) =>
   if (command === "snapshot_export") {
     state.__snapshotExports.push(structuredClone(args));
     if (state.__exportError) throw new Error(state.__exportError);
-    return { path: "D:/synthetic/Photos/2026/09/20/20260920_143510_020_Jane.jpg", enhancedPath: args.recipe.brightness || args.recipe.contrast || args.recipe.sharpness || args.recipe.crop ? "D:/synthetic/Photos/2026/09/20/20260920_143510_020_Jane_improved.jpg" : null, provenancePath: "D:/synthetic/Photos/2026/09/20/20260920_143510_020_Jane.snapshot.json", capturedAt: "2026-09-20T14:35:10.020+10:00", width: 3840, height: 2160 };
+    const stem = `${args.destination.replace(/[\\/]+$/, "")}/2026/09/20/20260920_143510_020_Jane`;
+    return { path: `${stem}.jpg`, enhancedPath: args.recipe.brightness || args.recipe.contrast || args.recipe.sharpness || args.recipe.crop ? `${stem}_improved.jpg` : null, provenancePath: `${stem}.snapshot.json`, capturedAt: "2026-09-20T14:35:10.020+10:00", width: 3840, height: 2160 };
   }
+  if (command === "reveal_in_explorer") { if (state.__revealError) throw new Error(state.__revealError); return null; }
   if (command === "snapshot_save_session") { state.__savedSession = args.json; return null; }
   if (command === "snapshot_load_session") return state.__savedSession;
   if (["snapshot_cancel", "snapshot_forget"].includes(command)) return null;

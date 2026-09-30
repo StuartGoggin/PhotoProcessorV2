@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import { confirm, message, open, save } from "@tauri-apps/plugin-dialog";
 import { defaultSnapshotRecipe } from "../types/videoSnapshots";
 import type { SnapshotClip, SnapshotExport, SnapshotFrame, SnapshotFrames, SnapshotRecipe, SnapshotSelection, SnapshotSession, SnapshotSource } from "../types/videoSnapshots";
-import { createSnapshotSession, frameAtTime, MAX_SNAPSHOT_CLIPS, MAX_SNAPSHOTS, parseSnapshotSession, SnapshotFrameCache, snapshotCapturedAt, snapshotPathKey, snapshotTime, validShootingStart, validateSnapshotClip } from "../utils/videoSnapshots";
+import { createSnapshotSession, frameAtTime, MAX_SNAPSHOT_CLIPS, MAX_SNAPSHOTS, parseSnapshotSession, SnapshotFrameCache, snapshotCapturedAt, snapshotExportMatchesDestination, snapshotPathKey, snapshotTime, validShootingStart, validateSnapshotClip } from "../utils/videoSnapshots";
 import "./VideoSnapshots.css";
 
 type QueueItem = { id: string; path: string; status: "queued" | "indexing" | "ready" | "cancelled" | "error"; error?: string; saved?: SnapshotSession["sources"][number]; photos?: SnapshotSession["selections"] };
@@ -69,6 +69,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   const exportCancel = useRef(false);
   const exportRequest = useRef("");
   const [photoErrors, setPhotoErrors] = useState<Record<string, string>>({});
+  const [locationError, setLocationError] = useState<{ id: string; path: string; message: string } | null>(null);
   const [adjusted, setAdjusted] = useState<{ key: string; data: string } | null>(null);
   const [adjustError, setAdjustError] = useState("");
   const [showBefore, setShowBefore] = useState(false);
@@ -88,6 +89,9 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   const shownIndex = showingAdjusted ? index : shownFrame?.index;
   const imageData = showingAdjusted ? adjusted?.data : shownFrame?.data;
   const capturedAt = source && snapshotCapturedAt(source.shootingStart, source.clip.frameTimesMs[index]);
+  const pendingExports = selections.filter((item) => !snapshotExportMatchesDestination(item, destination));
+  const photoExportReason = exportBlockReason(photo ? [photo] : []);
+  const batchExportReason = exportBlockReason(selections);
 
   useEffect(() => {
     if (!photo || photo.thumbnail || !exact || photo.clipId !== selectedClip || photo.index !== index || !display) return;
@@ -358,6 +362,27 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     stop(); setSelectedPhoto(selection.id); setSelectedClip(selection.clipId); selectedClipRef.current = selection.clipId;
     seek(selection.index, selection.clipId); setShowBefore(false);
   }
+  function explainPreviewSave(event: { preventDefault(): void }, selection?: SnapshotSelection) {
+    event.preventDefault(); stop();
+    if (selection) choosePhoto(selection);
+    void message("This is a reduced preview, not the full-resolution photograph.\n\nSelect the frame in the Photo Tray, confirm its shooting start, choose an export folder, then use Export full-resolution photo.\n\nIf it already says Exported, use Show original in folder to find the saved full-size file. Right-click Save image as would only save this small preview.", { title: "Export the full-resolution photo", kind: "info" })
+      .catch((reason) => setError(`Use the full-resolution export controls, not Save image as. ${explain(reason)}`));
+  }
+  async function showExportedFile(selection: SnapshotSelection, path: string) {
+    setLocationError(null);
+    try { await invoke("reveal_in_explorer", { path }); }
+    catch (reason) { if (alive.current) setLocationError({ id: selection.id, path, message: explain(reason) }); }
+  }
+  function exportBlockReason(photos: SnapshotSelection[]): string {
+    if (exporting) return "Wait for the current export to finish, or stop it.";
+    if (sessionBusy) return "Wait for the session operation to finish.";
+    if (!photos.length) return "Select an exact frame to add a photo to the tray.";
+    if (!destination) return "Choose an export folder in the Photo Tray.";
+    const pending = photos.filter((item) => !snapshotExportMatchesDestination(item, destination));
+    if (!pending.length) return "These photos are already exported to this folder. Use Show original in folder, or choose another destination.";
+    if (pending.some((item) => { const s = sourcesRef.current.find((entry) => entry.clip.id === item.clipId); return !s?.timeConfirmed || !validShootingStart(s.shootingStart); })) return "Confirm the shooting start and UTC offset below the viewer for each selected video's photos.";
+    return "";
+  }
   function editPhoto(change: Partial<SnapshotSelection>) {
     if (!photo || exporting) return;
     updateSelections((items) => items.map((p) => p.id === photo.id ? { ...p, ...change, exported: null } : p));
@@ -370,16 +395,21 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     updateSelections((items) => items.map((p) => p.clipId === source.clip.id ? { ...p, exported: null } : p), false);
   }
   async function chooseDestination() {
-    try { const folder = await open({ title: "Choose snapshot export folder", directory: true, multiple: false }); if (typeof folder === "string") setDestination(folder); }
+    try {
+      const folder = await open({ title: "Choose snapshot export folder", directory: true, multiple: false });
+      if (typeof folder === "string") {
+        setDestination(folder);
+        if (selectionsRef.current.some((item) => item.exported && !snapshotExportMatchesDestination(item, folder))) setNotice("Export folder selected. Photos saved elsewhere can be exported here too; their previous files remain untouched.");
+      }
+    }
     catch (reason) { setError(explain(reason)); }
   }
   async function exportPhotos(only?: SnapshotSelection) {
-    if (exporting || sessionBusy) return;
-    const photos = only ? [only] : selectionsRef.current.filter((p) => !p.exported);
-    if (!photos.length) return;
-    if (!destination) { setError("Choose an export folder first."); return; }
-    if (photos.some((p) => { const s = sourcesRef.current.find((item) => item.clip.id === p.clipId); return !s?.timeConfirmed || !validShootingStart(s.shootingStart); })) { setError("Confirm the shooting start and UTC offset for each selected video's photos before export."); return; }
-    stop(); setError(""); exportCancel.current = false; setExporting({ done: 0, total: photos.length });
+    const candidates = only ? [only] : selectionsRef.current;
+    const blocked = exportBlockReason(candidates);
+    if (blocked) { setError(blocked); return; }
+    const photos = candidates.filter((item) => !snapshotExportMatchesDestination(item, destination));
+    stop(); setError(""); setNotice(""); exportCancel.current = false; setExporting({ done: 0, total: photos.length });
     let done = 0, failed = 0;
     try {
       for (const selection of photos) {
@@ -389,7 +419,10 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
         setPhotoErrors((errors) => { const next = { ...errors }; delete next[selection.id]; return next; });
         try {
           const result = await tracked<SnapshotExport>("snapshot_export", { clipId: selection.clipId, index: selection.index, shootingStart: s.shootingStart, personName: selection.personName, destination, recipe: selection.recipe }, id);
-          if (alive.current) updateSelections((items) => items.map((p) => p.id === selection.id ? { ...p, exported: result } : p), false);
+          if (alive.current) {
+            updateSelections((items) => items.map((p) => p.id === selection.id ? { ...p, exported: result, exportedDestination: destination } : p), false);
+            setLocationError((previous) => previous?.id === selection.id ? null : previous);
+          }
           done++;
         } catch (reason) { failed++; if (alive.current) setPhotoErrors((errors) => ({ ...errors, [selection.id]: explain(reason) })); }
         if (alive.current) setExporting({ done: done + failed, total: photos.length });
@@ -472,10 +505,11 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
       </aside>
       <section className="snapshots-main" aria-label="Video frame workspace">
         <div className="snapshots-viewer-heading"><span>{source?.clip.name || "Your next great photo is already in your video."}</span>{source && <span className="snapshots-source-badge">ORIGINAL {source.clip.width} × {source.clip.height}</span>}</div>
-        <div ref={viewport} className={`snapshots-viewer ${source && !exact ? "is-seeking" : ""}`} tabIndex={0} aria-label="Frame viewer; scroll to move through frames">
+        <div ref={viewport} className={`snapshots-viewer ${source && !exact ? "is-seeking" : ""}`} tabIndex={0} aria-label="Frame viewer; scroll to move through frames" onContextMenu={(event) => { if (imageData) explainPreviewSave(event); }}>
           {imageData && source ? <img src={imageData} alt={`${showingAdjusted ? "Adjusted" : "Original"} video frame ${(shownIndex ?? index) + 1} at ${snapshotTime(source.clip.frameTimesMs[shownIndex ?? index])}`} draggable={false} /> : <div className="snapshots-empty-viewer"><svg width="72" height="72" viewBox="0 0 72 72" fill="none" aria-hidden="true"><rect x="9" y="16" width="54" height="42" rx="8" stroke="currentColor" strokeWidth="1.5"/><path d="M24 16L28 10H44L48 16" stroke="currentColor" strokeWidth="1.5"/><circle cx="36" cy="37" r="12" stroke="currentColor" strokeWidth="1.5"/><path d="M32 30L42 37L32 44V30Z" fill="currentColor"/></svg><h2>{source ? "Finding your frame" : "A great moment. A full-resolution photo."}</h2><p>{source ? "Reading the original video…" : "Scroll through the action, slow down, and select the exact instant."}</p>{!source && <button className="snapshots-primary" onClick={() => void addVideos()} disabled={sessionBusy}>Choose videos</button>}</div>}
           {source && <><div className="snapshots-viewer-top"><span className="snapshots-viewer-label">{showingAdjusted ? "ADJUSTED PREVIEW" : exact ? "ORIGINAL FRAME" : "BROWSING PREVIEW"}</span>{shuttle !== 0 && <span className="snapshots-shuttle-badge">{shuttle < 0 ? "◀" : "▶"} {Math.abs(shuttle)}×</span>}</div><div className="snapshots-viewer-bottom"><span>{shownIndex === undefined ? "Reading original…" : snapshotTime(source.clip.frameTimesMs[shownIndex])}</span><span>{exact ? `Frame ${(index + 1).toLocaleString()} / ${source.clip.frameTimesMs.length.toLocaleString()}` : shownIndex !== undefined ? `Showing frame ${shownIndex + 1} · seeking ${index + 1}` : "Seeking exact frame…"}</span></div></>}
         </div>
+        {source && <p className="snapshots-preview-note">Reduced preview for browsing · exports use the original video’s full resolution.</p>}
         {frameError && <div className="snapshots-inline-error" role="alert">{frameError}<button onClick={() => { failedFrames.current.delete(`${selectedClip}:${index}`); setFrameError(""); }}>Retry frame</button></div>}
         <div className="snapshots-scrubber"><span>{source ? snapshotTime(source.clip.frameTimesMs[index]) : "00:00:00.000"}</span><input type="range" aria-label="Video frame position" min={0} max={Math.max(0, (source?.clip.frameTimesMs.length || 1) - 1)} step={1} value={index} disabled={!source} onPointerDown={stop} onChange={(e) => seek(Number(e.target.value))}/><span>{source ? snapshotTime(source.clip.frameTimesMs[source.clip.frameTimesMs.length - 1]) : "00:00:00.000"}</span></div>
         <div className="snapshots-transport"><div className="snapshots-transport-buttons"><button title="Reverse shuttle (J); repeat to accelerate" aria-label="Reverse shuttle" disabled={!source} onClick={() => startShuttle(-1)}>◀◀</button><button aria-label="Previous frame; hold to accelerate" disabled={!source || index === 0} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); startHold(-1); }} onClick={(e) => { if (e.detail === 0) { stop(); step(-1); } }}>│◀</button><button className={shuttle ? "is-active" : ""} aria-label="Stop shuttle" onClick={stop} disabled={!source}>■</button><button aria-label="Next frame; hold to accelerate" disabled={!source || index === source.clip.frameTimesMs.length - 1} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); startHold(1); }} onClick={(e) => { if (e.detail === 0) { stop(); step(1); } }}>▶│</button><button title="Forward shuttle (L); repeat to accelerate" aria-label="Forward shuttle" disabled={!source} onClick={() => startShuttle(1)}>▶▶</button></div><span className="snapshots-transport-help">Wheel to scrub · arrows for precision</span><button className="snapshots-primary snapshots-capture" onClick={selectFrame} disabled={!exact || !!existing || selections.length >= MAX_SNAPSHOTS || !!exporting}>{existing ? "✓ Frame selected" : "＋ Select photo"}</button></div>
@@ -491,13 +525,20 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
           {photo.recipe.crop && <div className="snapshots-crop-fields">{(["x", "y", "width", "height"] as const).map((field) => <label key={field}>{({ x: "Left", y: "Top", width: "Width", height: "Height" })[field]} %<input type="number" aria-label={`Crop ${field} percent`} min={field === "x" || field === "y" ? 0 : 1} max={100} step={1} value={Math.round(photo.recipe.crop![field] * 100)} disabled={!!exporting} onChange={(e) => { const value = Number(e.target.value) / 100; if (!Number.isFinite(value)) return; const crop = { ...photo.recipe.crop! }; if (field === "x") crop.x = Math.max(0, Math.min(1 - crop.width, value)); else if (field === "y") crop.y = Math.max(0, Math.min(1 - crop.height, value)); else if (field === "width") crop.width = Math.max(0.01, Math.min(1 - crop.x, value)); else crop.height = Math.max(0.01, Math.min(1 - crop.y, value)); editRecipe({ crop }); }}/></label>)}</div>}
           <div className="snapshots-before-after"><button className={showBefore ? "is-active" : ""} onClick={() => { choosePhoto(photo); setShowBefore(true); }}>Before</button><button className={!showBefore ? "is-active" : ""} onClick={() => { choosePhoto(photo); setShowBefore(false); }}>After</button></div>
           <p className="snapshots-small">An unenhanced full-resolution JPEG is always saved. Adjustments create a separate improved photo.</p>{adjusted?.key !== recipeKey && !adjustError && <p className="snapshots-small" role="status">Preparing adjusted preview…</p>}{adjustError && <p className="snapshots-inline-error" role="alert">{adjustError}</p>}
-          {photo.exported ? <div className="snapshots-export-success"><strong>✓ Exported</strong><span title={photo.exported.path}>{basename(photo.exported.path)}</span>{photo.exported.enhancedPath && <span title={photo.exported.enhancedPath}>{basename(photo.exported.enhancedPath)}</span>}</div> : <button className="snapshots-export-single" onClick={() => void exportPhotos(photo)} disabled={!!exporting || !destination || !photoSource?.timeConfirmed}>Export this photo</button>}{photoErrors[photo.id] && <p className="snapshots-inline-error" role="alert">{photoErrors[photo.id]}</p>}
+          <div className="snapshots-photo-export">
+            {photo.exported && <div className="snapshots-export-success"><strong>{snapshotExportMatchesDestination(photo, destination) ? "✓ Exported" : "Previously exported"}</strong><span>Full-resolution original · {photo.exported.width} × {photo.exported.height}</span><span className="snapshots-export-path">{photo.exported.path}</span><button onClick={() => void showExportedFile(photo, photo.exported!.path)}>Show original in folder</button>{photo.exported.enhancedPath && <><span>Separate improved photo (cropping may reduce dimensions)</span><span className="snapshots-export-path">{photo.exported.enhancedPath}</span><button onClick={() => void showExportedFile(photo, photo.exported!.enhancedPath!)}>Show improved photo in folder</button></>}</div>}
+            {locationError?.id === photo.id && (locationError.path === photo.exported?.path || locationError.path === photo.exported?.enhancedPath) && <p className="snapshots-inline-error snapshots-export-location-error" role="alert">{locationError.message}</p>}
+            <button className="snapshots-export-single" onClick={() => void exportPhotos(photo)} disabled={!!photoExportReason} aria-describedby="snapshot-photo-export-reason">Export full-resolution photo</button>
+            <p id="snapshot-photo-export-reason" className="snapshots-small">{photoExportReason || `Saves an uncropped ${photoSource?.clip.width} × ${photoSource?.clip.height} JPEG from the original video, not this thumbnail.`}</p>
+            {photoErrors[photo.id] && <p className="snapshots-inline-error" role="alert">{photoErrors[photo.id]}</p>}
+          </div>
           <button className="snapshots-remove-photo" disabled={!!exporting} onClick={() => { updateSelections((items) => items.filter((p) => p.id !== photo.id)); setSelectedPhoto(""); }}>Remove from tray</button>
         </div>}
       </aside>
     </div>
-    <section className="snapshots-tray" aria-label="Selected photo tray"><div className="snapshots-tray-heading"><div><h2>Photo tray <span>{selections.length} / 200</span></h2><p>Exact original frames, ready to finish.</p></div><div className="snapshots-export-actions"><button className="snapshots-folder" onClick={() => void chooseDestination()} disabled={!!exporting} title={destination}>{destination ? `Folder: ${basename(destination)}` : "Choose export folder"}</button>{exporting ? <><span role="status">Exporting {exporting.done} / {exporting.total}</span><button onClick={() => { exportCancel.current = true; void cancelRequest(exportRequest.current); }}>Stop export</button></> : <button className="snapshots-primary" disabled={!selections.some((p) => !p.exported) || !destination || sessionBusy} onClick={() => void exportPhotos()}>Export {selections.filter((p) => !p.exported).length || ""} photo{selections.filter((p) => !p.exported).length === 1 ? "" : "s"}</button>}</div></div>
-      <div className="snapshots-tray-list">{!selections.length ? <div className="snapshots-empty-tray"><span>＋</span> Select an exact frame above to collect your first photo.</div> : selections.map((selection, i) => { const clip = sources.find((s) => s.clip.id === selection.clipId); return <button key={selection.id} className={`snapshots-photo-card ${selectedPhoto === selection.id ? "is-active" : ""} ${photoErrors[selection.id] ? "has-error" : ""}`} aria-label={`Photo ${i + 1}, ${clip?.clip.name}, frame ${selection.index + 1}`} aria-pressed={selectedPhoto === selection.id} onClick={() => choosePhoto(selection)}><div className="snapshots-photo-thumb">{selection.thumbnail ? <img src={selection.thumbnail} alt=""/> : <span>{String(i + 1).padStart(2, "0")}</span>}<span className="snapshots-photo-number">{i + 1}</span>{selection.exported && <span className="snapshots-photo-status">✓</span>}{photoErrors[selection.id] && <span className="snapshots-photo-status error">!</span>}</div><strong>{selection.personName || clip?.clip.name || "Photo"}</strong><small>{snapshotTime(clip?.clip.frameTimesMs[selection.index] || 0)}{!clip?.timeConfirmed ? " · confirm time" : ""}</small></button>; })}</div>
+    <section className="snapshots-tray" aria-label="Selected photo tray"><div className="snapshots-tray-heading"><div><h2>Photo tray <span>{selections.length} / 200</span></h2><p>Thumbnails only · use Export for full-resolution photographs.</p></div><div className="snapshots-export-actions"><button className="snapshots-folder" onClick={() => void chooseDestination()} disabled={!!exporting || sessionBusy} title={destination}>{destination ? `Folder: ${basename(destination.replace(/[\\/]+$/, ""))}` : "Choose export folder"}</button>{exporting ? <><span role="status">Exporting {exporting.done} / {exporting.total}</span><button onClick={() => { exportCancel.current = true; void cancelRequest(exportRequest.current); }}>Stop export</button></> : <button className="snapshots-primary" disabled={!!batchExportReason} aria-describedby="snapshot-batch-export-reason" onClick={() => void exportPhotos()}>Export {pendingExports.length ? `${pendingExports.length} ` : ""}full-resolution photo{pendingExports.length === 1 ? "" : "s"}</button>}</div></div>
+      <div className="snapshots-export-destination"><p>{destination ? <>Destination: <span>{destination}</span> · photos are saved inside shooting-date folders (YYYY / MM / DD).</> : "Choose where to save the full-resolution photographs."}</p><p id="snapshot-batch-export-reason">{batchExportReason || "Ready to export from the original videos. Existing files are never overwritten."}</p></div>
+      <div className="snapshots-tray-list">{!selections.length ? <div className="snapshots-empty-tray"><span>＋</span> Select an exact frame above to collect your first photo.</div> : selections.map((selection, i) => { const clip = sources.find((s) => s.clip.id === selection.clipId); return <button key={selection.id} className={`snapshots-photo-card ${selectedPhoto === selection.id ? "is-active" : ""} ${photoErrors[selection.id] ? "has-error" : ""}`} aria-label={`Photo ${i + 1}, ${clip?.clip.name}, frame ${selection.index + 1}`} aria-pressed={selectedPhoto === selection.id} onClick={() => choosePhoto(selection)} onContextMenu={(event) => explainPreviewSave(event, selection)}><div className="snapshots-photo-thumb">{selection.thumbnail ? <img src={selection.thumbnail} alt="" draggable={false}/> : <span>{String(i + 1).padStart(2, "0")}</span>}<span className="snapshots-photo-number">{i + 1}</span>{snapshotExportMatchesDestination(selection, destination) && <span className="snapshots-photo-status" title="Exported to the selected folder">✓</span>}{photoErrors[selection.id] && <span className="snapshots-photo-status error">!</span>}</div><strong>{selection.personName || clip?.clip.name || "Photo"}</strong><small>{snapshotTime(clip?.clip.frameTimesMs[selection.index] || 0)}{!clip?.timeConfirmed ? " · confirm time" : ""}</small></button>; })}</div>
     </section>
     <footer className="snapshots-footer"><span>Local originals · exact indexed frames · full-resolution JPEG export</span><span>{dirty ? "Unsaved session changes" : sources.length ? "Session saved" : "No session open"}</span></footer>
   </section>;

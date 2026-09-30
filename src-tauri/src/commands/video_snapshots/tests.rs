@@ -553,5 +553,45 @@ fn snapshots_4k50_navigation_measurement() {
     )
     .unwrap();
     println!("Snapshot 4K50 timings: {report}");
+
+    // Browsing above deliberately uses reduced JPEGs. Export the same frame
+    // through the real command and verify the on-disk master is not that preview.
+    let export_dir = dir.join("exported");
+    fs::create_dir(&export_dir).unwrap();
+    let source_before = fs::read(&path).unwrap();
+    drop(_worker);
+    let exported = tauri::async_runtime::block_on(snapshot_export(
+        info.id.clone(),
+        49,
+        "2026-09-30T12:30:00+10:00".into(),
+        "Full Resolution".into(),
+        export_dir.to_string_lossy().into_owned(),
+        photo::PhotoRecipe::default(),
+        format!(
+            "snapshot-4k-export-{}",
+            NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+        ),
+    ))
+    .unwrap();
+    let master = image::open(&exported.path).unwrap().to_rgb8();
+    assert_eq!(master.dimensions(), (3840, 2160));
+    assert_eq!((exported.width, exported.height), master.dimensions());
+    assert_eq!(exported.captured_at, "2026-09-30T12:30:00.980000000+10:00");
+    assert!(exported
+        .path
+        .ends_with("20260930_123000_980_Full_Resolution.jpg"));
+    assert!(exported.enhanced_path.is_none());
+    assert_eq!(
+        source_before,
+        fs::read(&path).unwrap(),
+        "Export must not change the source video"
+    );
+    let provenance: Value =
+        serde_json::from_slice(&fs::read(&exported.provenance_path).unwrap()).unwrap();
+    assert_eq!(provenance["source"]["sourceFrameIndex"], 49);
+    println!(
+        "Snapshot full-resolution export: {} ({} x {})",
+        exported.path, exported.width, exported.height
+    );
     snapshot_forget(vec![info.id]).unwrap();
 }

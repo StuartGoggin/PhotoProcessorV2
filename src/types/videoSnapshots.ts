@@ -45,6 +45,8 @@ export interface SnapshotSelection {
   personName: string;
   recipe: SnapshotRecipe;
   exported: SnapshotExport | null;
+  /** Transient receipt scope; not persisted in sessions or sent to the native exporter. */
+  exportedDestination?: string;
 }
 
 /** Persist paths/identities/positions, not transient IDs, frame indexes or huge decoded media. */

@@ -1,7 +1,7 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.25",
+  "version": "2.0.26",
   "type": "module",
   "scripts": {
     "dev": "node scripts/start-dev.mjs",
@@ -20,6 +20,7 @@
     "test:jobs:browser": "node scripts/test-jobs-polling-browser.mjs",
     "test:snapshots": "node scripts/test-video-snapshots.mjs",
     "test:snapshots:browser": "node scripts/test-video-snapshots-browser.mjs",
+    "test:snapshots:export:browser": "node scripts/test-video-snapshots-export-browser.mjs",
     "tauri": "tauri",
     "release": "pwsh -NoProfile -File scripts/build-release.ps1"
   },

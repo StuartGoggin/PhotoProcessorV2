@@ -41,6 +41,13 @@ export function snapshotPathKey(path: string): string {
   return path.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "").replace(/\//g, "\\").toLowerCase();
 }
 
+/** A previous receipt is not proof that a photo was saved into a newly chosen folder. */
+export function snapshotExportMatchesDestination(photo: SnapshotSelection, destination: string): boolean {
+  const folderKey = (path: string) => snapshotPathKey(path).replace(/\\+$/, "");
+  return !!photo.exported && !!photo.exportedDestination && !!destination
+    && folderKey(photo.exportedDestination) === folderKey(destination);
+}
+
 export function validateSnapshotClip(clip: SnapshotClip): SnapshotClip {
   if (!clip || typeof clip.id !== "string" || !clip.id || typeof clip.identity !== "string" || !clip.identity || typeof clip.path !== "string" || typeof clip.name !== "string" || !Array.isArray(clip.frameTimesMs) || !clip.frameTimesMs.length || clip.frameTimesMs.length > MAX_FRAME_INDEX || !Number.isFinite(clip.width) || clip.width <= 0 || !Number.isFinite(clip.height) || clip.height <= 0) throw new Error("The video did not return a usable original-frame index.");
   let previous = -1;
