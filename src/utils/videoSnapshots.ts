@@ -144,7 +144,29 @@ export function createSnapshotSession(sources: SnapshotSource[], selections: Sna
 export class SnapshotFrameCache {
   private entries = new Map<string, { frame: SnapshotFrame; bytes: number }>();
   private bytes = 0;
+  private priority = new Map<string, number>();
+  private largestFrame = 0;
   constructor(private budget = 32 * 1024 * 1024) {}
+  has(clipId: string, index: number): boolean { return this.entries.has(`${clipId}:${index}`); }
+  peek(clipId: string, index: number): SnapshotFrame | undefined { return this.entries.get(`${clipId}:${index}`)?.frame; }
+  /** Planning never touches LRU order. The requested frame always outranks speculation. */
+  focus(clipId: string, indexes: number[]): void {
+    this.priority = new Map(indexes.map((index, rank) => [`${clipId}:${index}`, rank]));
+  }
+  canPrepare(clipId: string, index: number): boolean {
+    if (this.has(clipId, index)) return false;
+    const estimate = this.largestFrame || 128 * 1024;
+    if (estimate > this.budget) return false;
+    if (this.bytes + estimate <= this.budget) return true;
+    const rank = this.priority.get(`${clipId}:${index}`) ?? Infinity;
+    let available = this.budget - this.bytes;
+    for (const [key, entry] of this.entries) {
+      if ((this.priority.get(key) ?? Infinity) > rank) available += entry.bytes;
+      if (available >= estimate) return true;
+    }
+    return false;
+  }
+  stats(): { bytes: number; budget: number; frames: number } { return { bytes: this.bytes, budget: this.budget, frames: this.entries.size }; }
   get(clipId: string, index: number): SnapshotFrame | undefined {
     const key = `${clipId}:${index}`, entry = this.entries.get(key);
     if (!entry) return undefined;
@@ -156,15 +178,53 @@ export class SnapshotFrameCache {
     if (existing) this.bytes -= existing.bytes;
     this.entries.delete(key);
     const bytes = frame.data.length * 2 + 64;
+    this.largestFrame = Math.max(this.largestFrame, bytes);
     if (bytes <= this.budget) { this.entries.set(key, { frame, bytes }); this.bytes += bytes; }
     this.trim();
   }
   setBudget(bytes: number): void { this.budget = bytes; this.trim(); }
-  clear(): void { this.entries.clear(); this.bytes = 0; }
+  clear(): void { this.entries.clear(); this.priority.clear(); this.bytes = 0; this.largestFrame = 0; }
   private trim(): void {
     while (this.bytes > this.budget && this.entries.size) {
-      const key = this.entries.keys().next().value as string;
+      let key = this.entries.keys().next().value as string;
+      for (const candidate of this.entries.keys()) {
+        if ((this.priority.get(candidate) ?? Infinity) > (this.priority.get(key) ?? Infinity)) key = candidate;
+      }
       this.bytes -= this.entries.get(key)!.bytes; this.entries.delete(key);
     }
   }
+}
+
+/** Small near-first runs keep IPC/extraction bounded; idle expands on both sides. */
+export function snapshotReadAheadOrder(index: number, length: number, direction: number, moving: boolean): number[] {
+  const result = [index], forward = direction < 0 ? -1 : 1;
+  const add = (from: number, to: number, sign: number) => {
+    for (let offset = from; offset <= to; offset++) {
+      const candidate = index + sign * offset;
+      if (candidate >= 0 && candidate < length) result.push(candidate);
+    }
+  };
+  add(1, 10, forward); add(1, 10, -forward);
+  for (let from = 11; from <= 100; from += 12) {
+    add(from, Math.min(100, from + 11), forward);
+    if (!moving) add(from, Math.min(100, from + 11), -forward);
+  }
+  return result;
+}
+
+/** At most four 960x540 decoded previews (~8 MiB pixels), never original photographs. */
+export class SnapshotPreviewWarmup {
+  private images = new Map<string, HTMLImageElement>();
+  warm(frames: SnapshotFrame[]): void {
+    const wanted = new Set(frames.slice(0, 4).map(frame => frame.data));
+    for (const [data, image] of this.images) {
+      if (!wanted.has(data)) { image.src = ""; this.images.delete(data); }
+    }
+    for (const data of wanted) {
+      if (this.images.has(data)) continue;
+      const image = new Image(); image.src = data; this.images.set(data, image);
+      void image.decode().catch(() => undefined); // A warm-up failure never blocks actual display.
+    }
+  }
+  clear(): void { for (const image of this.images.values()) image.src = ""; this.images.clear(); }
 }

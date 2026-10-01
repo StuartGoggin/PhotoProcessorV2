@@ -14,6 +14,7 @@ state.__snapshotExports = [];
 state.__exportFolder = "D:/synthetic/Photos";
 state.__openPaths = ["D:/synthetic/First camera.mov", "D:/synthetic/Second camera.mp4"];
 state.__snapshotIdentity = "unchanged";
+const frameTime = (index: number) => index < 90 ? index * 20 : 1800 + (index - 90) * 40;
 const frameImage = (index: number) => {
   const canvas = document.createElement("canvas"); canvas.width = 960; canvas.height = 540;
   const ctx = canvas.getContext("2d")!;
@@ -27,7 +28,7 @@ const frameImage = (index: number) => {
   return canvas.toDataURL("image/jpeg", .8);
 };
 state.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) => {
-  state.__snapshotCalls.push({ command, args: structuredClone(args) });
+  state.__snapshotCalls.push({ command, args: structuredClone(args), at: performance.now() });
   if (command === "plugin:dialog|confirm") return state.__confirm !== false;
   if (command === "plugin:dialog|open") return args.options?.directory ? state.__exportFolder : state.__openPaths;
   if (command === "plugin:dialog|message") return null;
@@ -36,19 +37,23 @@ state.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) =>
     if (state.__openError) throw new Error(state.__openError);
     const id = String(args.path).includes("Second") ? "clip-b" : "clip-a";
     return { id, identity: state.__snapshotIdentity + args.path, path: args.path, name: args.path.split("/").pop(), width: 3840, height: 2160,
-      frameTimesMs: Array.from({ length: 180 }, (_, i) => i < 90 ? i * 20 : 1800 + (i - 90) * 40),
+      frameTimesMs: Array.from({ length: state.__frameCount || 180 }, (_, i) => frameTime(i)),
       suggestedStart: "2026-09-20T14:35:10+10:00", timeSource: "Camera metadata (confirm time zone)", warnings: [] };
   }
   if (command === "snapshot_frames") {
-    const response = { frames: Array.from({ length: Math.min(args.count, 180 - args.start) }, (_, i) => {
-      const index = args.start + i; return { index, atMs: index < 90 ? index * 20 : 1800 + (index - 90) * 40, data: frameImage(index) };
+    const response = { frames: Array.from({ length: Math.min(args.count, (state.__frameCount || 180) - args.start) }, (_, i) => {
+      const index = args.start + i; return { index, atMs: frameTime(index), data: frameImage(index) };
     }) };
     if (state.__deferFrames) return new Promise(resolve => (state.__deferredFrames ||= []).push(() => resolve(response)));
     await new Promise(resolve => setTimeout(resolve, state.__frameDelay || 25)); return response;
   }
-  if (command === "snapshot_photo_preview") return frameImage(args.index);
+  if (command === "snapshot_photo_preview") {
+    if (state.__deferAdjustment) await new Promise(resolve => { state.__releaseAdjustment = resolve; });
+    return frameImage(args.index);
+  }
   if (command === "snapshot_export") {
     state.__snapshotExports.push(structuredClone(args));
+    if (state.__deferExport) await new Promise(resolve => { state.__releaseExport = resolve; });
     if (state.__exportError) throw new Error(state.__exportError);
     const stem = `${args.destination.replace(/[\\/]+$/, "")}/2026/09/20/20260920_143510_020_Jane`;
     return { path: `${stem}.jpg`, enhancedPath: args.recipe.brightness || args.recipe.contrast || args.recipe.sharpness || args.recipe.crop ? `${stem}_improved.jpg` : null, provenancePath: `${stem}.snapshot.json`, capturedAt: "2026-09-20T14:35:10.020+10:00", width: 3840, height: 2160 };
@@ -59,4 +64,9 @@ state.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) =>
   if (["snapshot_cancel", "snapshot_forget"].includes(command)) return null;
   throw new Error(`Unexpected fixture command: ${command}`);
 } };
-createRoot(document.getElementById("root")!).render(<React.StrictMode><VideoSnapshots active /></React.StrictMode>);
+function Fixture() {
+  const [active, setActive] = React.useState(true);
+  state.__setSnapshotsActive = setActive;
+  return <VideoSnapshots active={active} />;
+}
+createRoot(document.getElementById("root")!).render(<React.StrictMode><Fixture /></React.StrictMode>);

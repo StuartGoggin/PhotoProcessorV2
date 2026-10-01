@@ -47,6 +47,8 @@
 .snapshots-page .snapshots-add-more{margin:8px 12px;font-size:11px;background:transparent;border-style:dashed;border-color:#505247}
 .snapshots-cache{border-top:1px solid var(--snap-border);padding:12px;display:flex;align-items:center;justify-content:space-between;color:#91988f;font-size:10px}
 .snapshots-page .snapshots-cache select{font-size:10px;padding:3px 7px;max-width:80px}
+.snapshots-read-ahead{padding:0 12px 12px;display:grid;gap:4px;color:#a8b39f;font-size:10px}
+.snapshots-read-ahead small{color:#91988f;font-size:10px;line-height:1.4}
 .snapshots-queue{border:1px solid #41443c;background:#262a25;border-radius:4px;padding:9px;margin-bottom:6px;font-size:10px;overflow-wrap:anywhere}
 .snapshots-queue strong{display:block;font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:175px}
 .snapshots-queue>span{display:block;color:#b8baa8;margin-top:4px}

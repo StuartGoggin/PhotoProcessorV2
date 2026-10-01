@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { confirm, message, open, save } from "@tauri-apps/plugin-dialog";
 import { defaultSnapshotRecipe } from "../types/videoSnapshots";
 import type { SnapshotClip, SnapshotExport, SnapshotFrame, SnapshotFrames, SnapshotRecipe, SnapshotSelection, SnapshotSession, SnapshotSource } from "../types/videoSnapshots";
-import { createSnapshotSession, frameAtTime, MAX_SNAPSHOT_CLIPS, MAX_SNAPSHOTS, parseSnapshotSession, SnapshotFrameCache, snapshotCapturedAt, snapshotExportMatchesDestination, snapshotPathKey, snapshotTime, validShootingStart, validateSnapshotClip } from "../utils/videoSnapshots";
+import { createSnapshotSession, frameAtTime, MAX_SNAPSHOT_CLIPS, MAX_SNAPSHOTS, parseSnapshotSession, SnapshotFrameCache, SnapshotPreviewWarmup, snapshotReadAheadOrder, snapshotCapturedAt, snapshotExportMatchesDestination, snapshotPathKey, snapshotTime, validShootingStart, validateSnapshotClip } from "../utils/videoSnapshots";
 import "./VideoSnapshots.css";
 
 type QueueItem = { id: string; path: string; status: "queued" | "indexing" | "ready" | "cancelled" | "error"; error?: string; saved?: SnapshotSession["sources"][number]; photos?: SnapshotSession["selections"] };
@@ -57,15 +57,23 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   const [display, setDisplay] = useState<DisplayFrame | null>(null);
   const [frameError, setFrameError] = useState("");
   const cache = useRef(new SnapshotFrameCache());
+  const warmup = useRef(new SnapshotPreviewWarmup());
+  const priorityRequests = useRef(new Set<string>());
+  const suspendFrames = useRef<() => void>(() => {});
+  const navigationDirection = useRef(0);
+  const timelineMove = useRef(0);
+  const viewerPaused = useRef(false);
+  const [readAheadStatus, setReadAheadStatus] = useState("");
   const failedFrames = useRef(new Set<string>());
   const [cacheMB, setCacheMB] = useState(32);
-  const desiredFrame = useRef<{ clipId: string; index: number; changed: number }>({ clipId: "", index: 0, changed: 0 });
+  const desiredFrame = useRef({ clipId: "", index: 0, changed: 0, direction: 0 });
   const [shuttle, setShuttle] = useState(0);
   const shuttleRef = useRef(0);
   const hold = useRef<ReturnType<typeof setInterval> | null>(null);
   const [personName, setPersonName] = useState("");
   const [destination, setDestination] = useState("");
   const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
+  viewerPaused.current = sessionBusy || !!exporting;
   const exportCancel = useRef(false);
   const exportRequest = useRef("");
   const [photoErrors, setPhotoErrors] = useState<Record<string, string>>({});
@@ -117,24 +125,33 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   }
   async function tracked<T>(command: string, args: Record<string, unknown>, id: string): Promise<T> {
     requests.current.add(id);
+    const priority = command === "snapshot_export" || command === "snapshot_photo_preview";
+    if (priority) { priorityRequests.current.add(id); suspendFrames.current(); }
     try { return await invoke<T>(command, { ...args, requestId: id }); }
-    finally { requests.current.delete(id); }
+    finally { requests.current.delete(id); priorityRequests.current.delete(id); }
   }
   function stop() {
     shuttleRef.current = 0; setShuttle(0);
     if (hold.current) { clearInterval(hold.current); hold.current = null; }
   }
-  function seek(position: number, clipId = selectedClipRef.current) {
+  function seek(position: number, clipId = selectedClipRef.current, motion = false) {
     const current = sourcesRef.current.find((s) => s.clip.id === clipId);
     if (!current) return;
     const next = Math.min(current.clip.frameTimesMs.length - 1, Math.max(0, Math.round(position)));
+    navigationDirection.current = motion ? Math.sign(next - current.position) : 0;
     if (next !== current.position) updateSources((items) => items.map((s) => s.clip.id === clipId ? { ...s, position: next } : s));
   }
   function step(delta: number) {
     const current = sourcesRef.current.find((s) => s.clip.id === selectedClipRef.current);
-    if (current) seek(current.position + delta);
+    if (current) seek(current.position + delta, current.clip.id, true);
   }
-  function chooseClip(clipId: string) { stop(); setSelectedClip(clipId); selectedClipRef.current = clipId; setSelectedPhoto(""); setShowBefore(false); }
+  function seekTimeline(position: number) {
+    const now = performance.now();
+    const continuing = timelineMove.current > 0 && now - timelineMove.current < 250;
+    timelineMove.current = now;
+    seek(position, selectedClipRef.current, continuing);
+  }
+  function chooseClip(clipId: string) { stop(); navigationDirection.current = 0; setSelectedClip(clipId); selectedClipRef.current = clipId; setSelectedPhoto(""); setShowBefore(false); }
   function startShuttle(direction: number) {
     if (hold.current) { clearInterval(hold.current); hold.current = null; }
     const current = shuttleRef.current;
@@ -158,6 +175,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
       for (const id of requests.current) void cancelRequest(id);
       void invoke("snapshot_forget", { clipIds: sourcesRef.current.map((s) => s.clip.id) }).catch(() => undefined);
       cache.current.clear();
+      warmup.current.clear();
     };
   }, []);
   useEffect(() => { cache.current.setBudget(cacheMB * 1024 * 1024); }, [cacheMB]);
@@ -195,79 +213,134 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
       const now = performance.now();
       cursor += Math.min(250, now - last) * shuttle; last = now;
       const end = clip.clip.frameTimesMs[clip.clip.frameTimesMs.length - 1];
-      seek(frameAtTime(clip.clip.frameTimesMs, Math.max(0, Math.min(end, cursor))));
+      seek(frameAtTime(clip.clip.frameTimesMs, Math.max(0, Math.min(end, cursor))), clip.clip.id, true);
       if (cursor <= 0 || cursor >= end) stop();
     }, 70);
     return () => clearInterval(timer);
   }, [shuttle, active]);
 
   useEffect(() => {
-    desiredFrame.current = { clipId: selectedClip, index, changed: performance.now() };
+    desiredFrame.current = { clipId: selectedClip, index, changed: performance.now(), direction: navigationDirection.current };
     setFrameError(failedFrames.current.has(`${selectedClip}:${index}`) ? "This original frame could not be decoded. Retry or choose a neighbouring frame." : "");
     const cached = cache.current.get(selectedClip, index);
     if (cached) setDisplay({ clipId: selectedClip, frame: cached });
     else if (display?.clipId !== selectedClip) setDisplay(null);
   }, [selectedClip, index]);
 
-  // One native extraction at a time, latest desired position wins. Continuous motion
-  // can use a completed neighbour batch; settling cancels an obsolete extraction.
+  // One bounded request, never a native queue of speculative jobs. Foreground work
+  // preempts read-ahead, but sustained shuttle may finish a frame to avoid starvation.
   useEffect(() => {
-    if (!active || !selectedClip) return;
+    if (!active || !selectedClip) { setReadAheadStatus(""); return; }
     let disposed = false;
-    let flight: { id: string; key: string; started: number } | null = null;
+    let flight: { id: string; key: string; start: number; count: number; speculative: boolean; cancelled: boolean } | null = null;
+    let windowKey = "";
+    let order: number[] = [];
+    const attempted = new Set<number>();
+    const cancelFlight = () => {
+      if (flight && !flight.cancelled) {
+        flight.cancelled = true;
+        void cancelRequest(flight.id);
+      }
+    };
+    suspendFrames.current = cancelFlight;
     const tick = () => {
-      if (disposed || document.hidden) return;
+      if (disposed) return;
+      if (document.hidden || viewerPaused.current || priorityRequests.current.size) {
+        cancelFlight(); warmup.current.clear(); return;
+      }
       const desired = desiredFrame.current;
       const current = sourcesRef.current.find((s) => s.clip.id === desired.clipId);
-      if (!current) return;
+      if (!current || desired.clipId !== selectedClip) return;
       const key = `${desired.clipId}:${desired.index}`;
+      const moving = desired.direction !== 0 && performance.now() - desired.changed < 250;
+      const nextWindow = `${key}:${desired.direction}:${moving}`;
+      if (nextWindow !== windowKey) {
+        windowKey = nextWindow;
+        order = snapshotReadAheadOrder(desired.index, current.clip.frameTimesMs.length, desired.direction, moving);
+        cache.current.focus(desired.clipId, order);
+        attempted.clear();
+      }
       const cached = cache.current.get(desired.clipId, desired.index);
       if (cached) {
-        if (flight && flight.key !== key) { const old = flight; flight = null; void cancelRequest(old.id); }
         setDisplay((previous) => previous?.clipId === desired.clipId && previous.frame.index === desired.index ? previous : { clipId: desired.clipId, frame: cached });
-        return;
+        // Decoding just the closest four previews keeps display warm without a large
+        // pool of full-sized browser bitmaps. These are still NOT export pixels.
+        const sign = desired.direction < 0 ? -1 : 1;
+        warmup.current.warm([desired.index, desired.index + sign, desired.index - sign, desired.index + 2 * sign].flatMap(i => { const f = cache.current.peek(desired.clipId, i); return f ? [f] : []; }));
       }
+      const ready = (sign: number) => {
+        let count = 0;
+        while (count < 100 && cache.current.has(desired.clipId, desired.index + sign * (count + 1))) count++;
+        return count;
+      };
+      const stats = cache.current.stats();
+      const status = `${ready(-1)} before · ${ready(1)} after · ${(stats.bytes / 1024 / 1024).toFixed(1)} MB previews`;
+      setReadAheadStatus(previous => previous === status ? previous : status);
       if (flight) {
-        if (flight.key !== key && performance.now() - desired.changed > 110) {
-          const old = flight; flight = null; void cancelRequest(old.id);
-        } else return;
+        if (flight.speculative) {
+          const useful = Array.from({ length: flight.count }, (_, i) => flight!.start + i).some(i => order.includes(i));
+          if (!cached || !useful || (flight.key !== key && moving && (desired.direction > 0 ? flight.start + flight.count <= desired.index : flight.start > desired.index))) cancelFlight();
+        } else if (flight.key !== key && (cached || performance.now() - desired.changed > 110)) cancelFlight();
+        return; // Drain cancellation before scheduling another request.
       }
-      if (failedFrames.current.has(key)) return;
-      const id = requestId(), start = Math.max(0, desired.index - 3);
-      const request = { id, key, started: performance.now() }; flight = request;
-      void tracked<SnapshotFrames>("snapshot_frames", { clipId: desired.clipId, start, count: Math.min(12, current.clip.frameTimesMs.length - start) }, id).then((result) => {
-        if (disposed || flight?.id !== id) return;
+      if (!cached && failedFrames.current.has(key)) return;
+      let start = desired.index, count = 1;
+      const speculative = !!cached;
+      if (speculative) {
+        const first = order.findIndex(i => !attempted.has(i) && cache.current.canPrepare(desired.clipId, i));
+        if (first < 0) return;
+        const batch = [order[first]], direction = order[first + 1] - order[first];
+        if (Math.abs(direction) === 1) {
+          for (let p = first + 1; p < order.length && batch.length < 12; p++) {
+            const i = order[p];
+            if (i - batch[batch.length - 1] !== direction || attempted.has(i) || !cache.current.canPrepare(desired.clipId, i)) break;
+            batch.push(i);
+          }
+        }
+        start = Math.min(...batch); count = batch.length;
+        batch.forEach(i => attempted.add(i));
+      }
+      const id = requestId();
+      const request = { id, key, start, count, speculative, cancelled: false }; flight = request;
+      void tracked<SnapshotFrames>("snapshot_frames", { clipId: desired.clipId, start, count }, id).then((result) => {
+        if (disposed || request.cancelled || flight?.id !== id || selectedClipRef.current !== desired.clipId) return;
         const validFrames: SnapshotFrame[] = [];
         for (const frame of result.frames) {
-          if (!Number.isInteger(frame.index) || frame.index < 0 || frame.index >= current.clip.frameTimesMs.length || frame.atMs !== current.clip.frameTimesMs[frame.index] || !frame.data.startsWith("data:image/")) continue;
+          if (!Number.isInteger(frame.index) || frame.index < start || frame.index >= start + count || frame.atMs !== current.clip.frameTimesMs[frame.index] || !frame.data.startsWith("data:image/jpeg;base64,")) continue;
           cache.current.put(desired.clipId, frame);
           failedFrames.current.delete(`${desired.clipId}:${frame.index}`);
           validFrames.push(frame);
         }
         const latest = desiredFrame.current;
         const requested = validFrames.find((item) => item.index === desired.index);
-        if (requested) cache.current.put(desired.clipId, requested);
+        if (requested && !speculative) cache.current.put(desired.clipId, requested);
         const currentFrame = latest.clipId === desired.clipId ? validFrames.find((item) => item.index === latest.index) : undefined;
         if (currentFrame) cache.current.put(desired.clipId, currentFrame);
         const frame = cache.current.get(latest.clipId, latest.index);
         if (frame) { setDisplay({ clipId: latest.clipId, frame }); setFrameError(""); }
-        else if (latest.clipId === desired.clipId && validFrames.length) {
+        else if (!speculative && latest.clipId === desired.clipId && validFrames.length) {
           const nearest = validFrames.reduce((best, item) => Math.abs(item.index - latest.index) < Math.abs(best.index - latest.index) ? item : best);
           setDisplay({ clipId: latest.clipId, frame: nearest });
         }
-        if (!cache.current.get(desired.clipId, desired.index)) {
+        if (!speculative && !validFrames.some(frame => frame.index === desired.index)) {
           failedFrames.current.add(key);
           if (latest.clipId === desired.clipId && latest.index === desired.index) setFrameError("This original frame could not be decoded. Retry or choose a neighbouring frame.");
         }
       }).catch((reason) => {
-        if (disposed || flight?.id !== id) return;
+        if (disposed || request.cancelled || speculative || flight?.id !== id) return;
         failedFrames.current.add(key);
         if (`${desiredFrame.current.clipId}:${desiredFrame.current.index}` === key) setFrameError(explain(reason));
-      }).finally(() => { if (flight?.id === id) flight = null; });
+      }).finally(() => {
+        // Interrupted preparation is eligible again after foreground work finishes.
+        if (request.cancelled) for (let i = start; i < start + count; i++) attempted.delete(i);
+        if (flight?.id === id) flight = null;
+      });
     };
+    const visibility = () => { if (document.hidden) { cancelFlight(); warmup.current.clear(); } else tick(); };
+    document.addEventListener("visibilitychange", visibility);
     tick(); const timer = setInterval(tick, 80);
-    return () => { disposed = true; clearInterval(timer); if (flight) void cancelRequest(flight.id); };
-  }, [active, selectedClip]);
+    return () => { disposed = true; clearInterval(timer); cancelFlight(); warmup.current.clear(); document.removeEventListener("visibilitychange", visibility); if (suspendFrames.current === cancelFlight) suspendFrames.current = () => {}; };
+  }, [active, selectedClip, cacheMB]);
 
   useEffect(() => {
     if (!active || !photo || !photoSource) { setAdjusted(null); return; }
@@ -501,7 +574,8 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
         </div>
         {indexing && <div className="snapshots-indexing"><span className="snapshots-spinner" />{pendingCount} video{pendingCount === 1 ? "" : "s"} pending<button onClick={() => cancelIndexing()}>Stop indexing</button></div>}
         <button className="snapshots-add-more" onClick={() => void addVideos()} disabled={sessionBusy || !!exporting || sources.length >= MAX_SNAPSHOT_CLIPS}>＋ Add more videos</button>
-        <label className="snapshots-cache">Frame cache<select value={cacheMB} onChange={(e) => setCacheMB(Number(e.target.value))}><option value={16}>16 MB</option><option value={32}>32 MB</option><option value={64}>64 MB</option></select></label>
+        <label className="snapshots-cache" title="Encoded browsing previews only. Native decoding buffers and browser image memory are separate; at most four previews are retained for display warm-up.">Preview cache<select aria-label="Preview cache budget" value={cacheMB} onChange={(e) => setCacheMB(Number(e.target.value))}><option value={16}>16 MB</option><option value={32}>32 MB</option><option value={64}>64 MB</option></select></label>
+        <div className="snapshots-read-ahead" aria-label="Read-ahead status"><span>Read-ahead · ±10 → ±100</span><small>{readAheadStatus || "Prepares nearby frames within your cache budget."}</small></div>
       </aside>
       <section className="snapshots-main" aria-label="Video frame workspace">
         <div className="snapshots-viewer-heading"><span>{source?.clip.name || "Your next great photo is already in your video."}</span>{source && <span className="snapshots-source-badge">ORIGINAL {source.clip.width} × {source.clip.height}</span>}</div>
@@ -511,7 +585,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
         </div>
         {source && <p className="snapshots-preview-note">Reduced preview for browsing · exports use the original video’s full resolution.</p>}
         {frameError && <div className="snapshots-inline-error" role="alert">{frameError}<button onClick={() => { failedFrames.current.delete(`${selectedClip}:${index}`); setFrameError(""); }}>Retry frame</button></div>}
-        <div className="snapshots-scrubber"><span>{source ? snapshotTime(source.clip.frameTimesMs[index]) : "00:00:00.000"}</span><input type="range" aria-label="Video frame position" min={0} max={Math.max(0, (source?.clip.frameTimesMs.length || 1) - 1)} step={1} value={index} disabled={!source} onPointerDown={stop} onChange={(e) => seek(Number(e.target.value))}/><span>{source ? snapshotTime(source.clip.frameTimesMs[source.clip.frameTimesMs.length - 1]) : "00:00:00.000"}</span></div>
+        <div className="snapshots-scrubber"><span>{source ? snapshotTime(source.clip.frameTimesMs[index]) : "00:00:00.000"}</span><input type="range" aria-label="Video frame position" min={0} max={Math.max(0, (source?.clip.frameTimesMs.length || 1) - 1)} step={1} value={index} disabled={!source} onPointerDown={() => { stop(); timelineMove.current = 0; }} onChange={(e) => seekTimeline(Number(e.target.value))}/><span>{source ? snapshotTime(source.clip.frameTimesMs[source.clip.frameTimesMs.length - 1]) : "00:00:00.000"}</span></div>
         <div className="snapshots-transport"><div className="snapshots-transport-buttons"><button title="Reverse shuttle (J); repeat to accelerate" aria-label="Reverse shuttle" disabled={!source} onClick={() => startShuttle(-1)}>◀◀</button><button aria-label="Previous frame; hold to accelerate" disabled={!source || index === 0} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); startHold(-1); }} onClick={(e) => { if (e.detail === 0) { stop(); step(-1); } }}>│◀</button><button className={shuttle ? "is-active" : ""} aria-label="Stop shuttle" onClick={stop} disabled={!source}>■</button><button aria-label="Next frame; hold to accelerate" disabled={!source || index === source.clip.frameTimesMs.length - 1} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); startHold(1); }} onClick={(e) => { if (e.detail === 0) { stop(); step(1); } }}>▶│</button><button title="Forward shuttle (L); repeat to accelerate" aria-label="Forward shuttle" disabled={!source} onClick={() => startShuttle(1)}>▶▶</button></div><span className="snapshots-transport-help">Wheel to scrub · arrows for precision</span><button className="snapshots-primary snapshots-capture" onClick={selectFrame} disabled={!exact || !!existing || selections.length >= MAX_SNAPSHOTS || !!exporting}>{existing ? "✓ Frame selected" : "＋ Select photo"}</button></div>
         <div className="snapshots-source-details"><div className="snapshots-time-heading"><h3>Shooting time</h3><span>{source?.clip.timeSource || "Confirm once for each source video"}</span></div><div className="snapshots-time-fields"><label>Video shooting start, with UTC offset<input aria-label="Shooting start with UTC offset" placeholder="2026-09-30T14:30:00+10:00" value={source?.shootingStart || ""} disabled={!source || !!exporting} onChange={(e) => editSource({ shootingStart: e.target.value, timeConfirmed: false })}/></label><label className="snapshots-time-confirm"><input type="checkbox" checked={source?.timeConfirmed || false} disabled={!source || !validShootingStart(source.shootingStart) || !!exporting} onChange={(e) => editSource({ timeConfirmed: e.target.checked })}/>I confirm this is the original shooting start</label></div><div className="snapshots-time-caption">{capturedAt ? <>Selected photo: <strong>{capturedAt.replace("T", " ").replace("Z", " UTC")}</strong> · start + {snapshotTime(source!.clip.frameTimesMs[index])}</> : "Enter the camera's real date, time and UTC offset before export. Metadata is a suggestion until confirmed."}</div>{source?.clip.warnings?.map((warning, i) => <div className="snapshots-warning snapshots-small" key={i}>{warning}</div>)}</div>
       </section>

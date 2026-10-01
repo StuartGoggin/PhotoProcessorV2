@@ -79,3 +79,72 @@ test("adjacent-frame cache evicts least-recently-used data and respects reduced 
   cache.setBudget(84); assert.equal(cache.get("a", 3), undefined);
   cache.clear(); assert.equal(cache.get("a", 1), undefined);
 });
+
+test("read-ahead prepares the nearest ten in both directions before expanding to one hundred", () => {
+  const order = api.snapshotReadAheadOrder(300, 601, 0, false);
+  assert.deepEqual(order.slice(0, 4), [300, 301, 302, 303]);
+  assert.deepEqual(order.slice(10, 14), [310, 299, 298, 297]);
+  assert.equal(order[20], 290);
+  assert.equal(order[21], 311);
+  assert.equal(new Set(order).size, 201);
+  assert.equal(Math.min(...order), 200); assert.equal(Math.max(...order), 400);
+  const reverse = api.snapshotReadAheadOrder(300, 601, -1, true);
+  assert.deepEqual(reverse.slice(0, 4), [300, 299, 298, 297]);
+  assert.equal(reverse.length, 111);
+  assert.equal(Math.min(...reverse), 200); assert.equal(Math.max(...reverse), 310);
+  for (const index of [0, 600]) {
+    const edge = api.snapshotReadAheadOrder(index, 601, 1, false);
+    assert.equal(edge.length, 101);
+    assert.ok(edge.every(i => i >= 0 && i <= 600));
+  }
+});
+
+test("speculation cannot evict the requested frame; tiny budgets converge without reload churn", () => {
+  const cache = new api.SnapshotFrameCache(252); // Three encoded synthetic frames.
+  const frame = index => ({ index, atMs: index * 20, data: "abcdefghij" });
+  const order = api.snapshotReadAheadOrder(300, 601, 0, false);
+  cache.focus("a", order); cache.put("a", frame(300));
+  let requests = 0;
+  for (let tick = 0; tick < 1000; tick++) {
+    const next = order.find(i => cache.canPrepare("a", i));
+    if (next !== undefined) { requests++; cache.put("a", frame(next)); }
+  }
+  assert.equal(requests, 2); assert.equal(cache.stats().bytes, 252);
+  assert.equal(cache.has("a", 300), true);
+  cache.put("a", frame(350)); // An already-running low-priority batch finishes.
+  assert.equal(cache.has("a", 350), false); assert.equal(cache.has("a", 300), true);
+  cache.setBudget(84);
+  assert.equal(cache.has("a", 300), true); assert.equal(cache.stats().bytes, 84);
+  assert.equal(order.some(i => cache.canPrepare("a", i)), false);
+  cache.focus("a", api.snapshotReadAheadOrder(301, 601, -1, false));
+  cache.put("a", frame(301));
+  assert.equal(cache.has("a", 301), true); assert.equal(cache.has("a", 300), false);
+  assert.equal(cache.has("b", 301), false);
+});
+
+test("read-ahead membership checks do not disturb eviction order", () => {
+  const cache = new api.SnapshotFrameCache(168);
+  const frame = index => ({ index, atMs: index * 20, data: "abcdefghij" });
+  cache.put("a", frame(1)); cache.put("a", frame(2));
+  assert.equal(cache.has("a", 1), true); assert.equal(cache.peek("a", 1).index, 1);
+  cache.put("a", frame(3));
+  assert.equal(cache.has("a", 1), false); assert.equal(cache.has("a", 2), true);
+});
+
+test("display warm-up retains at most four preview images and releases obsolete ones", () => {
+  const previous = globalThis.Image, images = [];
+  globalThis.Image = class {
+    src = "";
+    constructor() { images.push(this); }
+    decode() { return Promise.resolve(); }
+  };
+  try {
+    const warm = new api.SnapshotPreviewWarmup();
+    const frames = Array.from({ length: 20 }, (_, index) => ({ index, atMs: index * 20, data: `preview-${index}` }));
+    warm.warm(frames);
+    assert.deepEqual(images.filter(i => i.src).map(i => i.src), ["preview-0", "preview-1", "preview-2", "preview-3"]);
+    warm.warm(frames.slice(2));
+    assert.deepEqual(images.filter(i => i.src).map(i => i.src), ["preview-2", "preview-3", "preview-4", "preview-5"]);
+    warm.clear(); assert.equal(images.filter(i => i.src).length, 0);
+  } finally { globalThis.Image = previous; }
+});
