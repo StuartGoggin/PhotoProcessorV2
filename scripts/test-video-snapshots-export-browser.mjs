@@ -23,6 +23,8 @@ try {
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); page.setDefaultTimeout(10000);
   const errors = []; page.on("pageerror", e => errors.push(e.message));
   await page.goto("http://127.0.0.1:1449/snapshots-preview.html");
+  await page.getByRole("button", { name: "＋ New session", exact: true }).click();
+  await page.getByRole("button", { name: "Create session", exact: true }).click();
   await page.getByRole("button", { name: "＋ Add videos", exact: true }).click();
   const capture = page.getByRole("button", { name: "＋ Select photo", exact: true });
   await page.waitForFunction(() => [...document.querySelectorAll("button")].some(b => b.textContent === "＋ Select photo" && !b.disabled));

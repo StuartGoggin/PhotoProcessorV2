@@ -23,6 +23,8 @@ try {
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); page.setDefaultTimeout(15000);
   const errors = []; page.on("pageerror", e => errors.push(e.message));
   await page.goto("http://127.0.0.1:1448/snapshots-preview.html");
+  await page.getByRole("button", { name: "＋ New session", exact: true }).click();
+  await page.getByRole("button", { name: "Create session", exact: true }).click();
   const capture = page.getByRole("button", { name: "＋ Select photo", exact: true });
   const position = page.getByLabel("Video frame position", { exact: true });
   const viewer = page.getByLabel("Frame viewer; scroll to move through frames", { exact: true });
@@ -90,11 +92,13 @@ try {
   await page.waitForFunction(previous => Number(document.querySelector('[aria-label="Video frame position"]').value) > previous, beforeWheel);
   checks.push("Accelerated shuttle keeps images moving, reverses/stops precisely, and wheel scrubs");
 
-  await page.getByRole("button", { name: /^Save session/ }).click();
+  await page.getByRole("button", { name: "More ▾", exact: true }).click();
+  await page.getByRole("button", { name: "Export session copy", exact: true }).click();
   const saved = await page.evaluate(() => window.__savedSession);
   assert.equal(JSON.parse(saved).selections.length, 2); assert.equal(saved.includes("data:image"), false);
   await page.evaluate(() => { window.__openPaths = "D:/synthetic/session.snapshots.json"; });
-  await page.getByRole("button", { name: "Open session", exact: true }).click();
+  await page.getByRole("button", { name: "More ▾", exact: true }).click();
+  await page.getByRole("button", { name: "Import saved session", exact: true }).click();
   await page.getByRole("button", { name: /Photo 2, Second camera/ }).waitFor();
   checks.push("Session reload restores multi-clip selections without persisted image data");
   await page.getByRole("button", { name: /Photo 1, First camera/ }).click();

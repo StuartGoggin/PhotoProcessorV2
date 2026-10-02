@@ -45,8 +45,9 @@ export interface SnapshotSelection {
   personName: string;
   recipe: SnapshotRecipe;
   exported: SnapshotExport | null;
-  /** Transient receipt scope; not persisted in sessions or sent to the native exporter. */
+  /** Only a receipt verified in this running session suppresses a duplicate export. */
   exportedDestination?: string;
+  exportedVerified?: boolean;
 }
 
 /** Persist paths/identities/positions, not transient IDs, frame indexes or huge decoded media. */
@@ -54,5 +55,21 @@ export interface SnapshotSession {
   kind: "photogogo-video-snapshots";
   version: 1;
   sources: { path: string; identity: string; shootingStart: string; timeConfirmed: boolean; position: number }[];
-  selections: { sourcePath: string; identity: string; index: number; personName: string; recipe: SnapshotRecipe }[];
+  selections: { sourcePath: string; identity: string; index: number; personName: string; recipe: SnapshotRecipe; exported?: SnapshotExport; exportedDestination?: string }[];
+  workspace?: { personName: string; destination: string; selectedSourcePath: string };
+  pendingPaths?: string[];
 }
+
+export interface SnapshotSessionSummary {
+  id: string;
+  name: string;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+  sourceCount: number;
+  photoCount: number;
+  recovered: boolean;
+}
+export interface SnapshotSessionDocument extends SnapshotSessionSummary { json: string }
+export interface SnapshotSessionLibrary { sessions: SnapshotSessionSummary[]; warnings: string[] }

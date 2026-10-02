@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, message, open, save } from "@tauri-apps/plugin-dialog";
 import { defaultSnapshotRecipe } from "../types/videoSnapshots";
-import type { SnapshotClip, SnapshotExport, SnapshotFrame, SnapshotFrames, SnapshotRecipe, SnapshotSelection, SnapshotSession, SnapshotSource } from "../types/videoSnapshots";
-import { createSnapshotSession, frameAtTime, MAX_SNAPSHOT_CLIPS, MAX_SNAPSHOTS, parseSnapshotSession, SnapshotFrameCache, SnapshotPreviewWarmup, snapshotReadAheadOrder, snapshotCapturedAt, snapshotExportMatchesDestination, snapshotPathKey, snapshotTime, validShootingStart, validateSnapshotClip } from "../utils/videoSnapshots";
+import type { SnapshotClip, SnapshotExport, SnapshotFrame, SnapshotFrames, SnapshotRecipe, SnapshotSelection, SnapshotSession, SnapshotSessionDocument, SnapshotSessionLibrary, SnapshotSessionSummary, SnapshotSource } from "../types/videoSnapshots";
+import { frameAtTime, MAX_SNAPSHOT_CLIPS, MAX_SNAPSHOTS, mergeSnapshotSession, parseSnapshotSession, SnapshotFrameCache, SnapshotPreviewWarmup, snapshotReadAheadOrder, snapshotCapturedAt, snapshotExportMatchesDestination, snapshotPathKey, snapshotTime, validShootingStart, validateSnapshotClip } from "../utils/videoSnapshots";
+import { SnapshotSessionWriter } from "../utils/snapshotSessionWriter";
+import type { SnapshotSaveState } from "../utils/snapshotSessionWriter";
+import SnapshotSessionsHome from "./SnapshotSessionsHome";
 import "./VideoSnapshots.css";
 
 type QueueItem = { id: string; path: string; status: "queued" | "indexing" | "ready" | "cancelled" | "error"; error?: string; saved?: SnapshotSession["sources"][number]; photos?: SnapshotSession["selections"] };
@@ -12,6 +16,9 @@ const requestId = () => `snap-${crypto.randomUUID()}`;
 const basename = (path: string) => path.split(/[\\/]/).pop() || path;
 const explain = (error: unknown) => error instanceof Error ? error.message : String(error);
 const isField = (target: EventTarget | null) => target instanceof HTMLElement && !!target.closest("input,textarea,select,[contenteditable=true],[role=textbox]");
+const emptySession = (): SnapshotSession => ({ kind: "photogogo-video-snapshots", version: 1, sources: [], selections: [], pendingPaths: [], workspace: { personName: "", destination: "", selectedSourcePath: "" } });
+const lastSessionKey = "photogogo.snapshots.last-session";
+const lastSessionId = () => { try { return localStorage.getItem(lastSessionKey) || ""; } catch { return ""; } };
 
 async function smallThumbnail(data: string): Promise<string> {
   return new Promise((resolve) => {
@@ -48,12 +55,38 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   const epoch = useRef(0);
   const alive = useRef(true);
   const requests = useRef(new Set<string>());
+  const flights = useRef(new Set<Promise<unknown>>());
+  const forgetting = useRef(new Set<Promise<unknown>>());
+  const queueFlight = useRef<Promise<void> | null>(null);
   const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false);
   const revision = useRef(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [sessionBusy, setSessionBusy] = useState(false);
+  const operationBusy = useRef(false);
+  const baseline = useRef<SnapshotSession>(emptySession());
+  const [currentSession, setCurrentSession] = useState<SnapshotSessionDocument | null>(null);
+  const [sessionHome, setSessionHome] = useState(true);
+  const sessionHomeRef = useRef(sessionHome); sessionHomeRef.current = sessionHome;
+  const [sessionLibrary, setSessionLibrary] = useState<SnapshotSessionSummary[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(true);
+  const [lastSession, setLastSession] = useState(lastSessionId);
+  const [saveState, setSaveState] = useState<SnapshotSaveState>("saved");
+  const [saveError, setSaveError] = useState("");
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [nameDialog, setNameDialog] = useState<{ mode: "new" | "rename" | "duplicate"; entry?: SnapshotSessionSummary } | null>(null);
+  const [sessionName, setSessionName] = useState("");
+  const readDocument = useRef<() => string>(() => JSON.stringify(emptySession()));
+  const writer = useRef<SnapshotSessionWriter | null>(null);
+  if (!writer.current) writer.current = new SnapshotSessionWriter(() => readDocument.current(),
+    (entry, json) => invoke<SnapshotSessionDocument>("snapshot_session_put", { id: entry.id, expectedRevision: entry.revision, name: entry.name, json }),
+    (state, entry, failure) => {
+      if (!alive.current) return;
+      setSaveState(state); setSaveError(failure || ""); setCurrentSession(entry);
+      dirtyRef.current = state !== "saved"; setDirty(state !== "saved");
+      if (entry) setSessionLibrary(items => [entry, ...items.filter(item => item.id !== entry.id)]);
+    });
   const [display, setDisplay] = useState<DisplayFrame | null>(null);
   const [frameError, setFrameError] = useState("");
   const cache = useRef(new SnapshotFrameCache());
@@ -73,7 +106,8 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   const [personName, setPersonName] = useState("");
   const [destination, setDestination] = useState("");
   const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
-  viewerPaused.current = sessionBusy || !!exporting;
+  viewerPaused.current = sessionBusy || sessionHome || !!exporting;
+  const exportingRef = useRef(false); exportingRef.current = !!exporting;
   const exportCancel = useRef(false);
   const exportRequest = useRef("");
   const [photoErrors, setPhotoErrors] = useState<Record<string, string>>({});
@@ -88,6 +122,8 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   const index = source?.position ?? 0;
   const exact = !!source && display?.clipId === source.clip.id && display.frame.index === index;
   const existing = selections.find((s) => s.clipId === selectedClip && s.index === index);
+  const preservedPhotoCount = baseline.current.selections.filter(p => !sources.some(s => snapshotPathKey(s.clip.path) === snapshotPathKey(p.sourcePath) && s.clip.identity === p.identity)).length;
+  const totalPhotoCount = selections.length + preservedPhotoCount;
   const indexing = queue.some((item) => item.status === "queued" || item.status === "indexing");
   const pendingCount = queue.filter((item) => item.status === "queued" || item.status === "indexing").length;
   const recipeKey = photo ? JSON.stringify([photo.id, photo.clipId, photo.index, photo.recipe]) : "";
@@ -100,6 +136,10 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   const pendingExports = selections.filter((item) => !snapshotExportMatchesDestination(item, destination));
   const photoExportReason = exportBlockReason(photo ? [photo] : []);
   const batchExportReason = exportBlockReason(selections);
+  readDocument.current = () => JSON.stringify(mergeSnapshotSession(baseline.current, sourcesRef.current, selectionsRef.current,
+    queueRef.current.filter(q => q.status !== "ready" && !q.saved).map(q => q.path),
+    { personName, destination, selectedSourcePath: sourcesRef.current.find(s => s.clip.id === selectedClipRef.current)?.clip.path || baseline.current.workspace?.selectedSourcePath || "" }));
+  const savingLabel = !currentSession ? "No session open" : saveState === "failed" ? "Save failed · changes kept here" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Changes waiting to save…" : "Saved automatically";
 
   useEffect(() => {
     if (!photo || photo.thumbnail || !exact || photo.clipId !== selectedClip || photo.index !== index || !display) return;
@@ -110,7 +150,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     return () => { disposed = true; };
   }, [photo?.id, photo?.thumbnail, exact, selectedClip, index, display]);
 
-  function changed() { revision.current++; dirtyRef.current = true; setDirty(true); }
+  function changed() { revision.current++; dirtyRef.current = true; setDirty(true); writer.current!.mark(); }
   function updateSources(update: (value: SnapshotSource[]) => SnapshotSource[], mark = true) {
     const next = update(sourcesRef.current); sourcesRef.current = next; setSources(next); if (mark) changed();
   }
@@ -123,12 +163,18 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   async function cancelRequest(id: string) {
     if (id) await invoke("snapshot_cancel", { requestId: id }).catch(() => undefined);
   }
+  async function forgetClips(clipIds: string[]) {
+    if (!clipIds.length) return;
+    const promise = invoke("snapshot_forget", { clipIds }); forgetting.current.add(promise); flights.current.add(promise);
+    try { await promise; } finally { forgetting.current.delete(promise); flights.current.delete(promise); }
+  }
   async function tracked<T>(command: string, args: Record<string, unknown>, id: string): Promise<T> {
     requests.current.add(id);
     const priority = command === "snapshot_export" || command === "snapshot_photo_preview";
     if (priority) { priorityRequests.current.add(id); suspendFrames.current(); }
-    try { return await invoke<T>(command, { ...args, requestId: id }); }
-    finally { requests.current.delete(id); priorityRequests.current.delete(id); }
+    const promise = invoke<T>(command, { ...args, requestId: id }); flights.current.add(promise);
+    try { return await promise; }
+    finally { requests.current.delete(id); priorityRequests.current.delete(id); flights.current.delete(promise); }
   }
   function stop() {
     shuttleRef.current = 0; setShuttle(0);
@@ -151,7 +197,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     timelineMove.current = now;
     seek(position, selectedClipRef.current, continuing);
   }
-  function chooseClip(clipId: string) { stop(); navigationDirection.current = 0; setSelectedClip(clipId); selectedClipRef.current = clipId; setSelectedPhoto(""); setShowBefore(false); }
+  function chooseClip(clipId: string) { stop(); navigationDirection.current = 0; setSelectedClip(clipId); selectedClipRef.current = clipId; setSelectedPhoto(""); setShowBefore(false); changed(); }
   function startShuttle(direction: number) {
     if (hold.current) { clearInterval(hold.current); hold.current = null; }
     const current = shuttleRef.current;
@@ -170,13 +216,37 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
 
   useEffect(() => {
     alive.current = true;
+    void refreshSessions();
     return () => {
       alive.current = false; epoch.current++; stop();
+      void writer.current!.flush().catch(() => undefined);
       for (const id of requests.current) void cancelRequest(id);
       void invoke("snapshot_forget", { clipIds: sourcesRef.current.map((s) => s.clip.id) }).catch(() => undefined);
       cache.current.clear();
       warmup.current.clear();
     };
+  }, []);
+  useEffect(() => {
+    const flush = () => { if (document.hidden || !active) void writer.current!.flush().catch(() => undefined); };
+    const unload = (event: BeforeUnloadEvent) => { if (writer.current!.dirty || exportingRef.current) { event.preventDefault(); event.returnValue = ""; } };
+    document.addEventListener("visibilitychange", flush); window.addEventListener("beforeunload", unload); flush();
+    return () => { document.removeEventListener("visibilitychange", flush); window.removeEventListener("beforeunload", unload); };
+  }, [active]);
+  useEffect(() => {
+    let disposed = false, unlisten: (() => void) | undefined;
+    // A close event can await saving; browser unload cannot. Never close through a failed save.
+    try {
+      const appWindow = getCurrentWindow();
+      void appWindow.onCloseRequested(async event => {
+        if (exportingRef.current || operationBusy.current) { event.preventDefault(); setError("Wait for the snapshot export or session operation to finish before closing."); return; }
+        if (!writer.current!.dirty) return;
+        event.preventDefault();
+        await sessionOperation(async () => { await drainWork(); await writer.current!.flush(); await appWindow.destroy(); });
+      }).then(stopListening => { if (disposed) stopListening(); else unlisten = stopListening; }).catch(reason => {
+        if (!disposed) setError(`The close-save safeguard could not start. Wait for “Saved automatically” before closing. ${explain(reason)}`);
+      });
+    } catch { /* Browser fixtures have no native window; beforeunload still protects them. */ }
+    return () => { disposed = true; unlisten?.(); };
   }, []);
   useEffect(() => { cache.current.setBudget(cacheMB * 1024 * 1024); }, [cacheMB]);
   useEffect(() => {
@@ -192,7 +262,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   useEffect(() => {
     if (!active) { stop(); return; }
     const key = (event: KeyboardEvent) => {
-      if (isField(event.target) || event.ctrlKey || event.metaKey || event.altKey || document.hidden) return;
+      if (sessionHomeRef.current || operationBusy.current || isField(event.target) || event.ctrlKey || event.metaKey || event.altKey || document.hidden) return;
       if (["ArrowLeft", "ArrowRight", " ", "j", "J", "k", "K", "l", "L"].includes(event.key)) event.preventDefault();
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") { stop(); step((event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 10 : 1)); }
       else if (event.key === " " || event.key.toLowerCase() === "k") stop();
@@ -353,6 +423,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     return () => { disposed = true; clearTimeout(timer); void cancelRequest(id); };
   }, [active, recipeKey]);
 
+  function startQueue() { if (worker.current) return; const task = processQueue(); queueFlight.current = task; void task.finally(() => { if (queueFlight.current === task) queueFlight.current = null; }); }
   async function processQueue() {
     if (worker.current) return;
     worker.current = true;
@@ -363,25 +434,30 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
         const runEpoch = epoch.current, id = requestId(); queueRequest.current = { item: item.id, request: id };
         updateQueue((items) => items.map((entry) => entry.id === item.id ? { ...entry, status: "indexing" } : entry));
         try {
+          await Promise.all([...forgetting.current]);
+          if (runEpoch !== epoch.current || queueRef.current.find(q => q.id === item.id)?.status !== "indexing") continue;
           const clip = validateSnapshotClip(await tracked<SnapshotClip>("snapshot_open", { path: item.path }, id));
           const cancelled = queueRef.current.find((entry) => entry.id === item.id)?.status !== "indexing";
-          if (!alive.current || runEpoch !== epoch.current || cancelled) { if (!sourcesRef.current.some((s) => s.clip.id === clip.id)) void invoke("snapshot_forget", { clipIds: [clip.id] }).catch(() => undefined); continue; }
+          if (!alive.current || runEpoch !== epoch.current || cancelled) { if (!sourcesRef.current.some((s) => s.clip.id === clip.id)) await forgetClips([clip.id]).catch(() => undefined); continue; }
           if (sourcesRef.current.some((s) => s.clip.id === clip.id || snapshotPathKey(s.clip.path) === snapshotPathKey(clip.path))) {
             updateQueue((items) => items.map((entry) => entry.id === item.id ? { ...entry, status: "ready" } : entry));
             continue;
           }
           const matches = !item.saved || item.saved.identity === clip.identity;
+          if (!matches || (item.photos || []).some(p => p.index >= clip.frameTimesMs.length)) {
+            await forgetClips([clip.id]);
+            throw new Error("The original video changed. Its saved frames are preserved, but cannot safely be opened. Restore the original file, then Retry.");
+          }
           const restored = item.saved && matches;
           const start = item.saved?.shootingStart || clip.suggestedStart || "";
-          updateSources((items) => [...items, { clip, shootingStart: validShootingStart(start) ? start : "", timeConfirmed: !!restored && item.saved!.timeConfirmed, position: restored ? Math.min(item.saved!.position, clip.frameTimesMs.length - 1) : 0 }]);
+          updateSources((items) => [...items, { clip, shootingStart: restored ? start : validShootingStart(start) ? start : "", timeConfirmed: !!restored && item.saved!.timeConfirmed, position: restored ? Math.min(item.saved!.position, clip.frameTimesMs.length - 1) : 0 }], false);
           if (restored && item.photos) {
             const valid = item.photos.filter((p) => p.index < clip.frameTimesMs.length);
-            updateSelections((items) => [...items, ...valid.map((p) => ({ id: requestId(), clipId: clip.id, index: p.index, thumbnail: "", personName: p.personName, recipe: p.recipe, exported: null }))].slice(0, MAX_SNAPSHOTS));
-            if (valid.length !== item.photos.length) setNotice("Some saved frames no longer exist and were skipped. Review the restored photos.");
+            updateSelections((items) => [...items, ...valid.map((p) => ({ id: requestId(), clipId: clip.id, index: p.index, thumbnail: "", personName: p.personName, recipe: p.recipe, exported: p.exported || null, exportedDestination: p.exportedDestination, exportedVerified: false }))].slice(0, MAX_SNAPSHOTS), false);
           }
-          if (!matches) setNotice(`${clip.name} changed since this session was saved. Its saved photos were discarded; confirm the shooting time again.`);
-          if (!selectedClipRef.current) { selectedClipRef.current = clip.id; setSelectedClip(clip.id); }
+          if (!selectedClipRef.current || baseline.current.workspace?.selectedSourcePath === item.path) { selectedClipRef.current = clip.id; setSelectedClip(clip.id); }
           updateQueue((items) => items.map((entry) => entry.id === item.id ? { ...entry, status: "ready" } : entry));
+          if (!restored) changed();
         } catch (reason) {
           if (alive.current && runEpoch === epoch.current) updateQueue((items) => items.map((entry) => entry.id === item.id && entry.status === "indexing" ? { ...entry, status: "error", error: explain(reason) } : entry));
         } finally { if (queueRequest.current?.request === id) queueRequest.current = null; }
@@ -401,15 +477,17 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   }
 
   async function addVideos() {
+    if (!currentSession || operationBusy.current || exportingRef.current) return;
+    const runEpoch = epoch.current;
     try {
       const paths = await open({ title: "Add original videos", multiple: true, filters: [{ name: "Videos", extensions: ["mp4", "mov", "mkv", "avi", "mts", "m2ts", "mxf", "webm"] }] });
-      if (!paths) return;
-      const existingPaths = new Set([...sourcesRef.current.map((s) => s.clip.path), ...queueRef.current.filter((q) => ["queued", "indexing"].includes(q.status)).map((q) => q.path)].map(snapshotPathKey));
+      if (!paths || runEpoch !== epoch.current) return;
+      const existingPaths = new Set([...sourcesRef.current.map((s) => s.clip.path), ...queueRef.current.map(q => q.path)].map(snapshotPathKey));
+      const available = MAX_SNAPSHOT_CLIPS - existingPaths.size;
       const unique = (Array.isArray(paths) ? paths : [paths]).filter((path) => { const key = snapshotPathKey(path); if (existingPaths.has(key)) return false; existingPaths.add(key); return true; });
-      const available = MAX_SNAPSHOT_CLIPS - sourcesRef.current.length - queueRef.current.filter((q) => ["queued", "indexing"].includes(q.status)).length;
       if (unique.length > available) setNotice(`A session holds 64 videos. Added the first ${Math.max(0, available)} new videos.`);
       updateQueue((items) => [...items.filter((q) => q.status !== "ready"), ...unique.slice(0, Math.max(0, available)).map((path) => ({ id: requestId(), path, status: "queued" as const }))]);
-      void processQueue();
+      changed(); startQueue();
     } catch (reason) { setError(explain(reason)); }
   }
   function cancelIndexing(itemId?: string) {
@@ -417,23 +495,30 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     if (queueRequest.current && (!itemId || queueRequest.current.item === itemId)) void cancelRequest(queueRequest.current.request);
   }
   async function removeClip(clip: SnapshotClip) {
+    const runEpoch = epoch.current;
     const count = selectionsRef.current.filter((p) => p.clipId === clip.id).length;
     if (count && !await confirm(`Remove ${clip.name} and its ${count} selected photo(s) from this session? Exported files remain on disk.`, { title: "Remove video from session", kind: "warning" })) return;
+    if (runEpoch !== epoch.current || operationBusy.current || exportingRef.current) return;
+    baseline.current.sources = baseline.current.sources.filter(s => snapshotPathKey(s.path) !== snapshotPathKey(clip.path));
+    baseline.current.selections = baseline.current.selections.filter(s => snapshotPathKey(s.sourcePath) !== snapshotPathKey(clip.path));
+    updateQueue(items => items.filter(q => snapshotPathKey(q.path) !== snapshotPathKey(clip.path)));
     stop(); updateSelections((items) => items.filter((p) => p.clipId !== clip.id));
     updateSources((items) => items.filter((s) => s.clip.id !== clip.id));
     if (selectedClipRef.current === clip.id) chooseClip(sourcesRef.current[0]?.clip.id || "");
-    void invoke("snapshot_forget", { clipIds: [clip.id] }).catch((reason) => setError(explain(reason)));
+    await forgetClips([clip.id]).catch((reason) => setError(explain(reason)));
   }
   function selectFrame() {
-    if (!source || !exact || !display || existing || selectionsRef.current.length >= MAX_SNAPSHOTS) return;
+    if (!source || !exact || !display || existing || selectionsRef.current.length + preservedPhotoCount >= MAX_SNAPSHOTS) return;
     stop(); const id = requestId(), data = display.frame.data;
     updateSelections((items) => [...items, { id, clipId: source.clip.id, index: display.frame.index, thumbnail: "", personName: personName.trim(), recipe: defaultSnapshotRecipe(), exported: null }]);
     setSelectedPhoto(id); setShowBefore(false);
     void smallThumbnail(data).then((thumbnail) => { if (alive.current) updateSelections((items) => items.map((p) => p.id === id ? { ...p, thumbnail } : p), false); });
   }
   function choosePhoto(selection: SnapshotSelection) {
+    const changedClip = selectedClipRef.current !== selection.clipId;
     stop(); setSelectedPhoto(selection.id); setSelectedClip(selection.clipId); selectedClipRef.current = selection.clipId;
     seek(selection.index, selection.clipId); setShowBefore(false);
+    if (changedClip) changed();
   }
   function explainPreviewSave(event: { preventDefault(): void }, selection?: SnapshotSelection) {
     event.preventDefault(); stop();
@@ -468,10 +553,11 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     updateSelections((items) => items.map((p) => p.clipId === source.clip.id ? { ...p, exported: null } : p), false);
   }
   async function chooseDestination() {
+    const runEpoch = epoch.current;
     try {
       const folder = await open({ title: "Choose snapshot export folder", directory: true, multiple: false });
-      if (typeof folder === "string") {
-        setDestination(folder);
+      if (typeof folder === "string" && runEpoch === epoch.current) {
+        setDestination(folder); changed();
         if (selectionsRef.current.some((item) => item.exported && !snapshotExportMatchesDestination(item, folder))) setNotice("Export folder selected. Photos saved elsewhere can be exported here too; their previous files remain untouched.");
       }
     }
@@ -493,7 +579,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
         try {
           const result = await tracked<SnapshotExport>("snapshot_export", { clipId: selection.clipId, index: selection.index, shootingStart: s.shootingStart, personName: selection.personName, destination, recipe: selection.recipe }, id);
           if (alive.current) {
-            updateSelections((items) => items.map((p) => p.id === selection.id ? { ...p, exported: result, exportedDestination: destination } : p), false);
+            updateSelections((items) => items.map((p) => p.id === selection.id ? { ...p, exported: result, exportedDestination: destination, exportedVerified: true } : p));
             setLocationError((previous) => previous?.id === selection.id ? null : previous);
           }
           done++;
@@ -504,37 +590,132 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     } finally { exportRequest.current = ""; if (alive.current) setExporting(null); }
   }
   async function saveSession() {
+    if (!currentSession || operationBusy.current || exportingRef.current) return;
+    const runEpoch = epoch.current;
     try {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const path = await save({ title: "Save Video Snapshots session copy", defaultPath: `video-snapshots-${stamp}.json`, filters: [{ name: "PhotoGoGo session", extensions: ["json"] }] });
-      if (!path) return;
-      const savedRevision = revision.current;
-      const json = JSON.stringify(createSnapshotSession(sourcesRef.current, selectionsRef.current), null, 2);
-      setSessionBusy(true); await invoke("snapshot_save_session", { path, json });
-      if (revision.current === savedRevision) { dirtyRef.current = false; setDirty(false); }
-      setNotice(`Session saved as ${basename(path)}.`);
+      if (!path || runEpoch !== epoch.current) return;
+      const json = readDocument.current();
+      await invoke("snapshot_save_session", { path, json });
+      if (runEpoch === epoch.current) setNotice(`Portable session copy saved as ${basename(path)}. Your library session continues to save automatically.`);
     } catch (reason) { setError(explain(reason)); }
-    finally { setSessionBusy(false); }
+  }
+  async function refreshSessions() {
+    setLibraryLoading(true);
+    try {
+      const library = await invoke<SnapshotSessionLibrary>("snapshot_sessions_list");
+      if (alive.current) { setSessionLibrary(library.sessions); if (library.warnings.length) setError(library.warnings.join(" ")); }
+    } catch (reason) { if (alive.current) setError(`Cannot open the session library. ${explain(reason)}`); }
+    finally { if (alive.current) setLibraryLoading(false); }
+  }
+  async function sessionOperation(operation: () => Promise<void>) {
+    if (operationBusy.current || exportingRef.current) return;
+    operationBusy.current = true; viewerPaused.current = true; setSessionBusy(true); setError(""); setMoreOpen(false); stop(); suspendFrames.current();
+    try { await operation(); }
+    catch (reason) { setError(explain(reason)); }
+    finally { operationBusy.current = false; if (alive.current) setSessionBusy(false); }
+  }
+  async function drainWork() {
+    stop(); epoch.current++; suspendFrames.current();
+    cancelIndexing();
+    await Promise.all([...requests.current].map(cancelRequest));
+    await Promise.allSettled([...flights.current]);
+    if (queueFlight.current) await queueFlight.current;
+  }
+  async function clearWorkspace() {
+    const oldIds = sourcesRef.current.map(s => s.clip.id);
+    await forgetClips(oldIds);
+    updateSources(() => [], false); updateSelections(() => [], false); updateQueue(() => []);
+    setSelectedClip(""); selectedClipRef.current = ""; setSelectedPhoto(""); setPersonName(""); setDestination("");
+    setDisplay(null); setAdjusted(null); setAdjustError(""); setFrameError(""); setPhotoErrors({}); setLocationError(null); setShowBefore(false);
+    cache.current.clear(); warmup.current.clear(); failedFrames.current.clear(); setReadAheadStatus("");
+  }
+  async function activateSession(entry: SnapshotSessionDocument) {
+    const session = parseSnapshotSession(entry.json);
+    await drainWork(); await writer.current!.flush(); await clearWorkspace();
+    baseline.current = session;
+    writer.current!.attach(entry); setSessionHome(false);
+    setPersonName(session.workspace?.personName || ""); setDestination(session.workspace?.destination || "");
+    updateQueue(() => [...session.sources.map(saved => ({ id: requestId(), path: saved.path, status: "queued" as const, saved, photos: session.selections.filter(p => p.sourcePath === saved.path) })), ...(session.pendingPaths || []).map(path => ({ id: requestId(), path, status: "queued" as const }))]);
+    setLastSession(entry.id); try { localStorage.setItem(lastSessionKey, entry.id); } catch { /* The library itself remains authoritative. */ }
+    setNotice(entry.recovered ? "Recovered the last-good save. Duplicate this session to save a recovered copy; the damaged file stays untouched." : session.sources.length || session.pendingPaths?.length ? "Opening session videos and checking their original-frame indexes. Missing or changed videos and their photos stay safely saved." : "A fresh session. Add original videos to begin; your work will save automatically.");
+    startQueue();
+  }
+  async function openManagedSession(id: string) {
+    await sessionOperation(async () => {
+      if (writer.current!.current?.id === id) { await writer.current!.flush(); setSessionHome(false); return; }
+      const entry = await invoke<SnapshotSessionDocument>("snapshot_session_get", { id });
+      if (entry.deletedAt) throw new Error("Restore this session from Recently deleted before opening it.");
+      await activateSession(entry);
+    });
+  }
+  function promptName(mode: "new" | "rename" | "duplicate", entry?: SnapshotSessionSummary) {
+    stop(); setMoreOpen(false); setSessionName(mode === "new" ? `Snapshots ${new Date().toLocaleDateString()}` : mode === "duplicate" ? `${entry?.name || "Snapshots"} copy` : entry?.name || ""); setNameDialog({ mode, entry });
+  }
+  async function submitName() {
+    const dialog = nameDialog, name = sessionName.trim();
+    if (!dialog || !name || name.length > 120) return;
+    await sessionOperation(async () => {
+      if (dialog.mode === "new") {
+        await drainWork(); await writer.current!.flush();
+        const entry = await invoke<SnapshotSessionDocument>("snapshot_session_put", { id: null, expectedRevision: null, name, json: JSON.stringify(emptySession()) });
+        await activateSession(entry);
+      } else {
+        const id = dialog.entry!.id;
+        const isCurrent = id === writer.current!.current?.id;
+        // A copy is also the explicit recovery path for a read-only backup or CAS failure.
+        if (dialog.mode === "duplicate" && isCurrent) {
+          await drainWork();
+          await writer.current!.settle();
+          const entry = await invoke<SnapshotSessionDocument>("snapshot_session_put", { id: null, expectedRevision: null, name, json: readDocument.current() });
+          writer.current!.adoptSavedCopy(entry); await activateSession(entry);
+        } else {
+          if (isCurrent) await drainWork();
+          await writer.current!.flush();
+          // Never adopt another window's revision while retaining stale local edits.
+          const original = isCurrent ? writer.current!.current! : await invoke<SnapshotSessionDocument>("snapshot_session_get", { id });
+          if (original.deletedAt) throw new Error("Restore the session before changing it.");
+          const entry = await invoke<SnapshotSessionDocument>("snapshot_session_put", { id: dialog.mode === "duplicate" ? null : id, expectedRevision: dialog.mode === "duplicate" ? null : original.revision, name, json: isCurrent ? readDocument.current() : original.json });
+          if (isCurrent) writer.current!.attach(entry);
+          if (dialog.mode === "duplicate") await activateSession(entry);
+        }
+      }
+      setNameDialog(null); await refreshSessions();
+    });
+  }
+  async function deleteSession(entry: SnapshotSessionSummary) {
+    await sessionOperation(async () => {
+      if (!await confirm(`Move “${entry.name}” (${entry.sourceCount} videos, ${entry.photoCount} selected photos) to Recently deleted?\n\nYou can restore it later. Source videos and exported photographs will NOT be deleted.`, { title: "Delete snapshot session", kind: "warning" })) return;
+      await drainWork(); await writer.current!.flush();
+      const fresh = await invoke<SnapshotSessionDocument>("snapshot_session_get", { id: entry.id });
+      await invoke("snapshot_session_set_deleted", { id: entry.id, expectedRevision: fresh.revision, deleted: true });
+      if (writer.current!.current?.id === entry.id) { await clearWorkspace(); writer.current!.attach(null); baseline.current = emptySession(); setSessionHome(true); }
+      setNotice(`“${entry.name}” moved to Recently deleted. Videos and exported photos were not touched.`); await refreshSessions();
+    });
+  }
+  async function restoreSession(entry: SnapshotSessionSummary) {
+    await sessionOperation(async () => {
+      await invoke("snapshot_session_set_deleted", { id: entry.id, expectedRevision: entry.revision, deleted: false });
+      setNotice(`“${entry.name}” restored to Recent sessions.`); await refreshSessions();
+    });
+  }
+  async function showSessions() {
+    await sessionOperation(async () => { await drainWork(); await writer.current!.flush(); setNotice(""); setSessionHome(true); await refreshSessions(); });
   }
   async function loadSession() {
-    if (sessionBusy || indexing || exporting) return;
-    try {
-      const path = await open({ title: "Open Video Snapshots session", multiple: false, filters: [{ name: "PhotoGoGo session", extensions: ["json"] }] });
+    await sessionOperation(async () => {
+      const path = await open({ title: "Import Video Snapshots session", multiple: false, filters: [{ name: "PhotoGoGo session", extensions: ["json"] }] });
       if (typeof path !== "string") return;
-      setSessionBusy(true);
       const session = parseSnapshotSession(await invoke<string>("snapshot_load_session", { path }));
-      if (dirtyRef.current && !await confirm("Replace the current unsaved session? Save it first if you need to keep its selections and adjustments.", { title: "Open another session", kind: "warning" })) return;
-      stop(); epoch.current++;
-      const oldIds = sourcesRef.current.map((s) => s.clip.id);
-      for (const id of requests.current) void cancelRequest(id);
-      updateSources(() => [], false); updateSelections(() => [], false); setSelectedClip(""); selectedClipRef.current = ""; setSelectedPhoto(""); setDisplay(null); setAdjusted(null); cache.current.clear(); failedFrames.current.clear(); setPhotoErrors({});
-      updateQueue(() => session.sources.map((saved) => ({ id: requestId(), path: saved.path, status: "queued", saved, photos: session.selections.filter((p) => p.sourcePath === saved.path) })));
-      await invoke("snapshot_forget", { clipIds: oldIds }).catch(() => undefined);
-      setNotice("Opening session videos and checking their original-frame indexes. Changed sources require a new time confirmation.");
-      dirtyRef.current = false; setDirty(false); revision.current++;
-      void processQueue();
-    } catch (reason) { setError(explain(reason)); }
-    finally { setSessionBusy(false); }
+      await drainWork(); await writer.current!.flush();
+      const entry = await invoke<SnapshotSessionDocument>("snapshot_session_put", { id: null, expectedRevision: null, name: basename(path).replace(/\.json$/i, "").slice(0, 120), json: JSON.stringify(session) });
+      await activateSession(entry); await refreshSessions();
+    });
+  }
+  function retryVideo(id: string) {
+    if (operationBusy.current || exportingRef.current) return;
+    updateQueue(items => items.map(item => item.id === id ? { ...item, status: "queued", error: undefined } : item)); startQueue();
   }
 
   const wheel = useRef({ when: 0, streak: 0 });
@@ -543,7 +724,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     const element = viewport.current;
     if (!element || !active) return;
     const onWheel = (event: WheelEvent) => {
-      if (event.ctrlKey || !sourcesRef.current.length || !event.deltaY) return;
+      if (operationBusy.current || sessionHomeRef.current || event.ctrlKey || !sourcesRef.current.length || !event.deltaY) return;
       event.preventDefault(); stop();
       const now = performance.now(), delta = Math.sign(event.deltaY);
       wheel.current.streak = now - wheel.current.when < 150 ? Math.min(20, wheel.current.streak + 1) : 0; wheel.current.when = now;
@@ -552,16 +733,21 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     };
     element.addEventListener("wheel", onWheel, { passive: false });
     return () => element.removeEventListener("wheel", onWheel);
-  }, [active]);
+  }, [active, sessionHome]);
 
   return <section className="snapshots-page" aria-label="Video Snapshots">
     <header className="snapshots-header">
       <div><div className="snapshots-eyebrow">ORIGINAL VIDEO · PRECISE PHOTOS</div><h1>Video Snapshots <span>PHOTO<span className="snapshots-wordmark">GOGO</span></span></h1><p>Find the moment. Keep the original detail.</p></div>
-      <div className="snapshots-header-actions"><button onClick={() => setTips(!tips)} aria-expanded={tips}>Shortcuts</button><button onClick={() => void loadSession()} disabled={sessionBusy || indexing || !!exporting}>Open session</button><button onClick={() => void saveSession()} disabled={!sources.length || sessionBusy || indexing || !!exporting}>Save session copy{dirty ? " •" : ""}</button><button className="snapshots-primary" onClick={() => void addVideos()} disabled={sessionBusy || !!exporting || sources.length >= MAX_SNAPSHOT_CLIPS}>＋ Add videos</button></div>
+      <div className="snapshots-header-actions">{!sessionHome && <><button onClick={() => setTips(!tips)} aria-expanded={tips}>Shortcuts</button><button onClick={() => void showSessions()} disabled={sessionBusy || !!exporting}>Sessions</button><button onClick={() => promptName("new")} disabled={sessionBusy || !!exporting}>New session</button><button className="snapshots-primary" onClick={() => void addVideos()} disabled={sessionBusy || !!exporting || sources.length >= MAX_SNAPSHOT_CLIPS}>＋ Add videos</button></>}</div>
     </header>
+    {currentSession && !sessionHome && <div className="snapshots-session-bar"><div><span className="snapshots-eyebrow">SESSION</span><strong>{currentSession.name}</strong></div><span role="status" aria-label="Session save status" className={`snapshots-save-state ${saveState}`}>{savingLabel}</span><div className="snapshots-session-more"><button aria-expanded={moreOpen} onClick={() => setMoreOpen(!moreOpen)} disabled={sessionBusy || !!exporting}>More ▾</button>{moreOpen && <div className="snapshots-session-menu"><button onClick={() => promptName("rename", currentSession)}>Rename session</button><button onClick={() => promptName("duplicate", currentSession)}>Duplicate session</button><button onClick={() => { setMoreOpen(false); void saveSession(); }}>Export session copy</button><button onClick={() => void loadSession()}>Import saved session</button><button onClick={() => void deleteSession(currentSession)}>Delete session</button></div>}</div></div>}
+    {saveState === "failed" && <div className="snapshots-alert" role="alert"><span><strong>Your latest changes have not been saved.</strong> {saveError} Keep this window open. Retry saving, or duplicate the session to keep a separate copy.</span><button onClick={() => void sessionOperation(() => writer.current!.flush())} disabled={sessionBusy || !!exporting}>Retry save</button>{currentSession && <button onClick={() => promptName("duplicate", currentSession)} disabled={sessionBusy || !!exporting}>Save recovery copy</button>}</div>}
+    {currentSession?.recovered && <div className="snapshots-notice"><span>Recovered last-good save. Keep the original recovery files untouched and save a new copy to continue.</span><button onClick={() => promptName("duplicate", currentSession)} disabled={sessionBusy || !!exporting}>Save recovered copy</button></div>}
+    {nameDialog && <div className="snapshots-session-modal-backdrop"><form role="dialog" aria-modal="true" aria-labelledby="snapshot-session-dialog-title" className="snapshots-session-modal" onSubmit={e => { e.preventDefault(); void submitName(); }}><span className="snapshots-eyebrow">VIDEO SNAPSHOTS</span><h2 id="snapshot-session-dialog-title">{nameDialog.mode === "new" ? "A fresh start" : nameDialog.mode === "rename" ? "Rename session" : "Keep a separate copy"}</h2><p>{nameDialog.mode === "new" ? "Your current session will be saved before starting with an empty workspace." : nameDialog.mode === "duplicate" ? "Selections, adjustments and video references are copied. Original media and photographs stay untouched." : "Choose a name that will be easy to find later."}</p><label>Session name<input autoFocus aria-label="Session name" maxLength={120} value={sessionName} onChange={e => setSessionName(e.target.value)} disabled={sessionBusy}/></label><div><button type="button" onClick={() => setNameDialog(null)} disabled={sessionBusy}>Cancel</button><button className="snapshots-primary" type="submit" disabled={sessionBusy || !sessionName.trim()}>{sessionBusy ? "Saving…" : nameDialog.mode === "new" ? "Create session" : nameDialog.mode === "duplicate" ? "Create copy" : "Save name"}</button></div></form></div>}
     {tips && <div className="snapshots-tips"><span><kbd>←</kbd> <kbd>→</kbd> one exact frame</span><span><kbd>Shift</kbd> + arrows ten frames</span><span><kbd>J</kbd> reverse · <kbd>K</kbd> stop · <kbd>L</kbd> forward; repeat for speed</span><span><kbd>Space</kbd> stop</span><span>Wheel over viewer: accelerate · <kbd>Shift</kbd> + wheel: one frame</span><span>Hold the frame buttons to accelerate.</span></div>}
     {error && <div className="snapshots-alert" role="alert">{error}<button aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
     {notice && <div className="snapshots-notice" role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice("")}>×</button></div>}
+    {sessionHome ? <SnapshotSessionsHome sessions={sessionLibrary} currentId={currentSession?.id} lastId={lastSession} busy={sessionBusy || !!exporting || !!nameDialog} loading={libraryLoading} onOpen={id => void openManagedSession(id)} onNew={() => promptName("new")} onImport={() => void loadSession()} onRename={entry => promptName("rename", entry)} onDuplicate={entry => promptName("duplicate", entry)} onDelete={entry => void deleteSession(entry)} onRestore={entry => void restoreSession(entry)} onRefresh={() => void refreshSessions()}/> : <fieldset className="snapshots-session-editor" disabled={sessionBusy || !!nameDialog}>
     <div className="snapshots-workspace">
       <aside className="snapshots-clips" aria-label="Video clips">
         <div className="snapshots-panel-heading"><h2>Source videos</h2><span>{sources.length} / 64</span></div>
@@ -570,7 +756,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
           <button className="snapshots-remove-clip" title="Remove video from session" aria-label={`Remove ${s.clip.name}`} onClick={() => void removeClip(s.clip)} disabled={!!exporting || sessionBusy}>×</button>
         </div>)}
         {!sources.length && !indexing && <div className="snapshots-empty-rail"><span>01</span><p>Add your original videos to begin.</p><small>Local files stay on this computer.</small></div>}
-        {queue.filter((q) => q.status !== "ready").map((item) => <div className={`snapshots-queue ${item.status}`} key={item.id}><strong title={item.path}>{basename(item.path)}</strong><span>{item.status === "indexing" ? "Building exact frame index…" : item.status === "queued" ? "Waiting to index" : item.status === "cancelled" ? "Cancelled" : item.error}</span>{["queued", "indexing"].includes(item.status) && <button onClick={() => cancelIndexing(item.id)}>Cancel</button>}</div>)}
+        {queue.filter((q) => q.status !== "ready").map((item) => <div className={`snapshots-queue ${item.status}`} key={item.id}><strong title={item.path}>{basename(item.path)}</strong><span>{item.status === "indexing" ? "Building exact frame index…" : item.status === "queued" ? "Waiting to index" : item.status === "cancelled" ? "Indexing paused · saved references kept" : item.error}</span>{item.saved && item.status !== "indexing" && <span>{item.photos?.length || 0} saved photo selections preserved</span>}{["queued", "indexing"].includes(item.status) ? <button onClick={() => cancelIndexing(item.id)}>Cancel</button> : <button onClick={() => retryVideo(item.id)} disabled={!!exporting || sessionBusy}>Retry video</button>}</div>)}
         </div>
         {indexing && <div className="snapshots-indexing"><span className="snapshots-spinner" />{pendingCount} video{pendingCount === 1 ? "" : "s"} pending<button onClick={() => cancelIndexing()}>Stop indexing</button></div>}
         <button className="snapshots-add-more" onClick={() => void addVideos()} disabled={sessionBusy || !!exporting || sources.length >= MAX_SNAPSHOT_CLIPS}>＋ Add more videos</button>
@@ -586,11 +772,11 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
         {source && <p className="snapshots-preview-note">Reduced preview for browsing · exports use the original video’s full resolution.</p>}
         {frameError && <div className="snapshots-inline-error" role="alert">{frameError}<button onClick={() => { failedFrames.current.delete(`${selectedClip}:${index}`); setFrameError(""); }}>Retry frame</button></div>}
         <div className="snapshots-scrubber"><span>{source ? snapshotTime(source.clip.frameTimesMs[index]) : "00:00:00.000"}</span><input type="range" aria-label="Video frame position" min={0} max={Math.max(0, (source?.clip.frameTimesMs.length || 1) - 1)} step={1} value={index} disabled={!source} onPointerDown={() => { stop(); timelineMove.current = 0; }} onChange={(e) => seekTimeline(Number(e.target.value))}/><span>{source ? snapshotTime(source.clip.frameTimesMs[source.clip.frameTimesMs.length - 1]) : "00:00:00.000"}</span></div>
-        <div className="snapshots-transport"><div className="snapshots-transport-buttons"><button title="Reverse shuttle (J); repeat to accelerate" aria-label="Reverse shuttle" disabled={!source} onClick={() => startShuttle(-1)}>◀◀</button><button aria-label="Previous frame; hold to accelerate" disabled={!source || index === 0} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); startHold(-1); }} onClick={(e) => { if (e.detail === 0) { stop(); step(-1); } }}>│◀</button><button className={shuttle ? "is-active" : ""} aria-label="Stop shuttle" onClick={stop} disabled={!source}>■</button><button aria-label="Next frame; hold to accelerate" disabled={!source || index === source.clip.frameTimesMs.length - 1} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); startHold(1); }} onClick={(e) => { if (e.detail === 0) { stop(); step(1); } }}>▶│</button><button title="Forward shuttle (L); repeat to accelerate" aria-label="Forward shuttle" disabled={!source} onClick={() => startShuttle(1)}>▶▶</button></div><span className="snapshots-transport-help">Wheel to scrub · arrows for precision</span><button className="snapshots-primary snapshots-capture" onClick={selectFrame} disabled={!exact || !!existing || selections.length >= MAX_SNAPSHOTS || !!exporting}>{existing ? "✓ Frame selected" : "＋ Select photo"}</button></div>
+        <div className="snapshots-transport"><div className="snapshots-transport-buttons"><button title="Reverse shuttle (J); repeat to accelerate" aria-label="Reverse shuttle" disabled={!source} onClick={() => startShuttle(-1)}>◀◀</button><button aria-label="Previous frame; hold to accelerate" disabled={!source || index === 0} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); startHold(-1); }} onClick={(e) => { if (e.detail === 0) { stop(); step(-1); } }}>│◀</button><button className={shuttle ? "is-active" : ""} aria-label="Stop shuttle" onClick={stop} disabled={!source}>■</button><button aria-label="Next frame; hold to accelerate" disabled={!source || index === source.clip.frameTimesMs.length - 1} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); startHold(1); }} onClick={(e) => { if (e.detail === 0) { stop(); step(1); } }}>▶│</button><button title="Forward shuttle (L); repeat to accelerate" aria-label="Forward shuttle" disabled={!source} onClick={() => startShuttle(1)}>▶▶</button></div><span className="snapshots-transport-help">Wheel to scrub · arrows for precision</span><button className="snapshots-primary snapshots-capture" onClick={selectFrame} disabled={!exact || !!existing || totalPhotoCount >= MAX_SNAPSHOTS || !!exporting}>{existing ? "✓ Frame selected" : "＋ Select photo"}</button></div>
         <div className="snapshots-source-details"><div className="snapshots-time-heading"><h3>Shooting time</h3><span>{source?.clip.timeSource || "Confirm once for each source video"}</span></div><div className="snapshots-time-fields"><label>Video shooting start, with UTC offset<input aria-label="Shooting start with UTC offset" placeholder="2026-09-30T14:30:00+10:00" value={source?.shootingStart || ""} disabled={!source || !!exporting} onChange={(e) => editSource({ shootingStart: e.target.value, timeConfirmed: false })}/></label><label className="snapshots-time-confirm"><input type="checkbox" checked={source?.timeConfirmed || false} disabled={!source || !validShootingStart(source.shootingStart) || !!exporting} onChange={(e) => editSource({ timeConfirmed: e.target.checked })}/>I confirm this is the original shooting start</label></div><div className="snapshots-time-caption">{capturedAt ? <>Selected photo: <strong>{capturedAt.replace("T", " ").replace("Z", " UTC")}</strong> · start + {snapshotTime(source!.clip.frameTimesMs[index])}</> : "Enter the camera's real date, time and UTC offset before export. Metadata is a suggestion until confirmed."}</div>{source?.clip.warnings?.map((warning, i) => <div className="snapshots-warning snapshots-small" key={i}>{warning}</div>)}</div>
       </section>
       <aside className="snapshots-inspector" aria-label="Photo adjustments"><div className="snapshots-panel-heading"><h2>{photo ? "Selected photo" : "Photo details"}</h2>{photo && <span>#{selections.indexOf(photo) + 1}</span>}</div>
-        {!photo ? <div className="snapshots-inspector-empty"><span>✧</span><h3>Keep the best moments</h3><p>Select a frame to add it to your photo tray. Then crop, adjust and export.</p><label>Person name for next selections<input aria-label="Person name for next selections" placeholder="Optional manual label" maxLength={120} value={personName} onChange={(e) => setPersonName(e.target.value)}/></label><p className="snapshots-small">This label is entered by you and included in exported filenames.</p></div> : <div className="snapshots-adjustments"><p className="snapshots-photo-source">{photoSource?.clip.name}<br/><span>Frame {photo.index + 1} · {snapshotTime(photoSource?.clip.frameTimesMs[photo.index] || 0)}</span></p><label>Person name<input aria-label="Selected photo person name" maxLength={120} placeholder="Optional manual label" value={photo.personName} disabled={!!exporting} onChange={(e) => editPhoto({ personName: e.target.value })}/></label>
+        {!photo ? <div className="snapshots-inspector-empty"><span>✧</span><h3>Keep the best moments</h3><p>Select a frame to add it to your photo tray. Then crop, adjust and export.</p><label>Person name for next selections<input aria-label="Person name for next selections" placeholder="Optional manual label" maxLength={120} value={personName} onChange={(e) => { setPersonName(e.target.value); changed(); }}/></label><p className="snapshots-small">This label is entered by you and included in exported filenames.</p></div> : <div className="snapshots-adjustments"><p className="snapshots-photo-source">{photoSource?.clip.name}<br/><span>Frame {photo.index + 1} · {snapshotTime(photoSource?.clip.frameTimesMs[photo.index] || 0)}</span></p><label>Person name<input aria-label="Selected photo person name" maxLength={120} placeholder="Optional manual label" value={photo.personName} disabled={!!exporting} onChange={(e) => editPhoto({ personName: e.target.value })}/></label>
           <div className="snapshots-adjustment-heading"><h3>Finishing</h3><button onClick={() => editPhoto({ recipe: defaultSnapshotRecipe() })} disabled={!!exporting}>Reset</button></div>
           <label className="snapshots-control">Brightness<span>{Math.round(photo.recipe.brightness * 100)}%</span><input aria-label="Brightness" type="range" min={-50} max={50} step={1} value={Math.round(photo.recipe.brightness * 100)} disabled={!!exporting} onChange={(e) => editRecipe({ brightness: Number(e.target.value) / 100 })}/></label>
           <label className="snapshots-control">Contrast<span>{photo.recipe.contrast}%</span><input aria-label="Contrast" type="range" min={-50} max={50} step={1} value={photo.recipe.contrast} disabled={!!exporting} onChange={(e) => editRecipe({ contrast: Number(e.target.value) })}/></label>
@@ -600,7 +786,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
           <div className="snapshots-before-after"><button className={showBefore ? "is-active" : ""} onClick={() => { choosePhoto(photo); setShowBefore(true); }}>Before</button><button className={!showBefore ? "is-active" : ""} onClick={() => { choosePhoto(photo); setShowBefore(false); }}>After</button></div>
           <p className="snapshots-small">An unenhanced full-resolution JPEG is always saved. Adjustments create a separate improved photo.</p>{adjusted?.key !== recipeKey && !adjustError && <p className="snapshots-small" role="status">Preparing adjusted preview…</p>}{adjustError && <p className="snapshots-inline-error" role="alert">{adjustError}</p>}
           <div className="snapshots-photo-export">
-            {photo.exported && <div className="snapshots-export-success"><strong>{snapshotExportMatchesDestination(photo, destination) ? "✓ Exported" : "Previously exported"}</strong><span>Full-resolution original · {photo.exported.width} × {photo.exported.height}</span><span className="snapshots-export-path">{photo.exported.path}</span><button onClick={() => void showExportedFile(photo, photo.exported!.path)}>Show original in folder</button>{photo.exported.enhancedPath && <><span>Separate improved photo (cropping may reduce dimensions)</span><span className="snapshots-export-path">{photo.exported.enhancedPath}</span><button onClick={() => void showExportedFile(photo, photo.exported!.enhancedPath!)}>Show improved photo in folder</button></>}</div>}
+            {photo.exported && <div className="snapshots-export-success"><strong>{snapshotExportMatchesDestination(photo, destination) ? "✓ Exported" : "Previously exported"}</strong>{photo.exportedVerified === false && <span>Saved history · file existence has not been checked.</span>}<span>Full-resolution original · {photo.exported.width} × {photo.exported.height}</span><span className="snapshots-export-path">{photo.exported.path}</span><button onClick={() => void showExportedFile(photo, photo.exported!.path)}>Show original in folder</button>{photo.exported.enhancedPath && <><span>Separate improved photo (cropping may reduce dimensions)</span><span className="snapshots-export-path">{photo.exported.enhancedPath}</span><button onClick={() => void showExportedFile(photo, photo.exported!.enhancedPath!)}>Show improved photo in folder</button></>}</div>}
             {locationError?.id === photo.id && (locationError.path === photo.exported?.path || locationError.path === photo.exported?.enhancedPath) && <p className="snapshots-inline-error snapshots-export-location-error" role="alert">{locationError.message}</p>}
             <button className="snapshots-export-single" onClick={() => void exportPhotos(photo)} disabled={!!photoExportReason} aria-describedby="snapshot-photo-export-reason">Export full-resolution photo</button>
             <p id="snapshot-photo-export-reason" className="snapshots-small">{photoExportReason || `Saves an uncropped ${photoSource?.clip.width} × ${photoSource?.clip.height} JPEG from the original video, not this thumbnail.`}</p>
@@ -610,10 +796,11 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
         </div>}
       </aside>
     </div>
-    <section className="snapshots-tray" aria-label="Selected photo tray"><div className="snapshots-tray-heading"><div><h2>Photo tray <span>{selections.length} / 200</span></h2><p>Thumbnails only · use Export for full-resolution photographs.</p></div><div className="snapshots-export-actions"><button className="snapshots-folder" onClick={() => void chooseDestination()} disabled={!!exporting || sessionBusy} title={destination}>{destination ? `Folder: ${basename(destination.replace(/[\\/]+$/, ""))}` : "Choose export folder"}</button>{exporting ? <><span role="status">Exporting {exporting.done} / {exporting.total}</span><button onClick={() => { exportCancel.current = true; void cancelRequest(exportRequest.current); }}>Stop export</button></> : <button className="snapshots-primary" disabled={!!batchExportReason} aria-describedby="snapshot-batch-export-reason" onClick={() => void exportPhotos()}>Export {pendingExports.length ? `${pendingExports.length} ` : ""}full-resolution photo{pendingExports.length === 1 ? "" : "s"}</button>}</div></div>
+    <section className="snapshots-tray" aria-label="Selected photo tray"><div className="snapshots-tray-heading"><div><h2>Photo tray <span>{totalPhotoCount} / 200</span></h2><p>Thumbnails only · use Export for full-resolution photographs.{preservedPhotoCount > 0 && ` ${preservedPhotoCount} saved selections await their original video.`}</p></div><div className="snapshots-export-actions"><button className="snapshots-folder" onClick={() => void chooseDestination()} disabled={!!exporting || sessionBusy} title={destination}>{destination ? `Folder: ${basename(destination.replace(/[\\/]+$/, ""))}` : "Choose export folder"}</button>{exporting ? <><span role="status">Exporting {exporting.done} / {exporting.total}</span><button onClick={() => { exportCancel.current = true; void cancelRequest(exportRequest.current); }}>Stop export</button></> : <button className="snapshots-primary" disabled={!!batchExportReason} aria-describedby="snapshot-batch-export-reason" onClick={() => void exportPhotos()}>Export {pendingExports.length ? `${pendingExports.length} ` : ""}full-resolution photo{pendingExports.length === 1 ? "" : "s"}</button>}</div></div>
       <div className="snapshots-export-destination"><p>{destination ? <>Destination: <span>{destination}</span> · photos are saved inside shooting-date folders (YYYY / MM / DD).</> : "Choose where to save the full-resolution photographs."}</p><p id="snapshot-batch-export-reason">{batchExportReason || "Ready to export from the original videos. Existing files are never overwritten."}</p></div>
       <div className="snapshots-tray-list">{!selections.length ? <div className="snapshots-empty-tray"><span>＋</span> Select an exact frame above to collect your first photo.</div> : selections.map((selection, i) => { const clip = sources.find((s) => s.clip.id === selection.clipId); return <button key={selection.id} className={`snapshots-photo-card ${selectedPhoto === selection.id ? "is-active" : ""} ${photoErrors[selection.id] ? "has-error" : ""}`} aria-label={`Photo ${i + 1}, ${clip?.clip.name}, frame ${selection.index + 1}`} aria-pressed={selectedPhoto === selection.id} onClick={() => choosePhoto(selection)} onContextMenu={(event) => explainPreviewSave(event, selection)}><div className="snapshots-photo-thumb">{selection.thumbnail ? <img src={selection.thumbnail} alt="" draggable={false}/> : <span>{String(i + 1).padStart(2, "0")}</span>}<span className="snapshots-photo-number">{i + 1}</span>{snapshotExportMatchesDestination(selection, destination) && <span className="snapshots-photo-status" title="Exported to the selected folder">✓</span>}{photoErrors[selection.id] && <span className="snapshots-photo-status error">!</span>}</div><strong>{selection.personName || clip?.clip.name || "Photo"}</strong><small>{snapshotTime(clip?.clip.frameTimesMs[selection.index] || 0)}{!clip?.timeConfirmed ? " · confirm time" : ""}</small></button>; })}</div>
     </section>
-    <footer className="snapshots-footer"><span>Local originals · exact indexed frames · full-resolution JPEG export</span><span>{dirty ? "Unsaved session changes" : sources.length ? "Session saved" : "No session open"}</span></footer>
+    </fieldset>}
+    <footer className="snapshots-footer"><span>Local originals · exact indexed frames · full-resolution JPEG export</span><span>{dirty ? savingLabel : currentSession ? "Saved automatically on this computer" : "Create or open a session to begin"}</span></footer>
   </section>;
 }

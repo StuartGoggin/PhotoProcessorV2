@@ -27,14 +27,15 @@ test("Windows canonical paths deduplicate the same source", () => {
   assert.notEqual(api.snapshotPathKey("D:/original/Camera.mov"), api.snapshotPathKey("E:/original/Camera.mov"));
 });
 test("export receipts belong to their destination, not whichever folder is selected now", () => {
-  const photo = { ...selection, exported: { path: "D:/Photos/2026/09/20/frame.jpg" }, exportedDestination: "D:/Photos" };
+  const photo = { ...selection, exported: { path: "D:/Photos/2026/09/20/frame.jpg", enhancedPath: null, provenancePath: "D:/Photos/2026/09/20/frame.snapshot.json", capturedAt: "2026-09-20T14:35:10Z", width: 3840, height: 2160 }, exportedDestination: "D:/Photos" };
   for (const folder of ["D:/Photos", "d:/photos/", "\\\\?\\D:\\Photos\\"]) assert.equal(api.snapshotExportMatchesDestination(photo, folder), true);
   for (const folder of ["", "D:/Photos-other", "E:/Photos"]) assert.equal(api.snapshotExportMatchesDestination(photo, folder), false);
   assert.equal(api.snapshotExportMatchesDestination({ ...photo, exported: null }, "D:/Photos"), false);
   assert.equal(api.snapshotExportMatchesDestination({ ...photo, exportedDestination: undefined }, "D:/Photos"), false);
   const encoded = JSON.stringify(api.createSnapshotSession([source], [photo]));
-  assert.equal(encoded.includes("exportedDestination"), false);
-  assert.equal(encoded.includes("frame.jpg"), false);
+  assert.equal(encoded.includes("exportedDestination"), true);
+  assert.equal(encoded.includes("frame.jpg"), true);
+  assert.equal(api.snapshotExportMatchesDestination({ ...photo, exportedVerified: false }, "D:/Photos"), false, "unverified restored history never suppresses an export");
 });
 test("session roundtrip retains choices but never media or native IDs", () => {
   const encoded = JSON.stringify(session());

@@ -44,7 +44,7 @@ export function snapshotPathKey(path: string): string {
 /** A previous receipt is not proof that a photo was saved into a newly chosen folder. */
 export function snapshotExportMatchesDestination(photo: SnapshotSelection, destination: string): boolean {
   const folderKey = (path: string) => snapshotPathKey(path).replace(/\\+$/, "");
-  return !!photo.exported && !!photo.exportedDestination && !!destination
+  return !!photo.exported && photo.exportedVerified !== false && !!photo.exportedDestination && !!destination
     && folderKey(photo.exportedDestination) === folderKey(destination);
 }
 
@@ -63,7 +63,7 @@ function record(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 function text(value: unknown, label: string, limit: number, empty = false): string {
-  if (typeof value !== "string" || value.length > limit || (!empty && !value.trim()) || /[\u0000-\u001f]/.test(value)) throw new Error(`${label} is invalid.`);
+  if (typeof value !== "string" || value.length > limit || (!empty && !value.trim()) || /[\u0000-\u001f\u007f-\u009f]/.test(value)) throw new Error(`${label} is invalid.`);
   return value;
 }
 function number(value: unknown, label: string, min: number, max: number, integer = false): number {
@@ -94,7 +94,7 @@ export function validateSnapshotRecipe(value: unknown): SnapshotRecipe {
 
 /** Read only the known bounded fields. No identifiers, previews or frame indexes are trusted. */
 export function parseSnapshotSession(json: string): SnapshotSession {
-  if (json.length > 2 * 1024 * 1024) throw new Error("This session is too large (maximum 2 MB).");
+  if (new TextEncoder().encode(json).byteLength > 2 * 1024 * 1024) throw new Error("This session is too large (maximum 2 MB).");
   const root = record(JSON.parse(json), "Session");
   if (root.kind !== "photogogo-video-snapshots" || root.version !== 1) throw new Error("Choose a PhotoGoGo Video Snapshots session (version 1).");
   if (!Array.isArray(root.sources) || root.sources.length > MAX_SNAPSHOT_CLIPS || !Array.isArray(root.selections) || root.selections.length > MAX_SNAPSHOTS) throw new Error("A session supports up to 64 videos and 200 photos.");
@@ -108,8 +108,7 @@ export function parseSnapshotSession(json: string): SnapshotSession {
     seen.add(key);
     const shootingStart = text(s.shootingStart, "Shooting start", 40, true);
     const timeConfirmed = boolean(s.timeConfirmed, "Time confirmation");
-    if (shootingStart && !validShootingStart(shootingStart)) throw new Error("A saved shooting start must include a valid date, time and UTC offset.");
-    if (timeConfirmed && !shootingStart) throw new Error("A confirmed shooting start cannot be empty.");
+    if (timeConfirmed && !validShootingStart(shootingStart)) throw new Error("A confirmed shooting start must include a valid date, time and UTC offset.");
     return { path, identity: text(s.identity, "Video identity", 512), shootingStart, timeConfirmed, position: number(s.position, "Video position", 0, MAX_FRAME_INDEX, true) };
   });
   const photos = new Set<string>();
@@ -123,9 +122,35 @@ export function parseSnapshotSession(json: string): SnapshotSession {
     const key = `${sourcePath}\0${index}`;
     if (photos.has(key)) throw new Error("This session contains duplicate photo selections.");
     photos.add(key);
-    return { sourcePath, identity, index, personName: text(s.personName, "Person name", 120, true), recipe: validateSnapshotRecipe(s.recipe) };
+    const selection: SnapshotSession["selections"][number] = { sourcePath, identity, index, personName: text(s.personName, "Person name", 120, true), recipe: validateSnapshotRecipe(s.recipe) };
+    if (s.exported !== undefined && s.exported !== null) {
+      const receipt = record(s.exported, "Export history");
+      if (typeof receipt.capturedAt !== "string" || !validShootingStart(receipt.capturedAt)) throw new Error("Saved export time is invalid.");
+      selection.exported = { path: absolutePath(receipt.path, "Export path"), enhancedPath: receipt.enhancedPath === null ? null : absolutePath(receipt.enhancedPath, "Improved photo path"), provenancePath: absolutePath(receipt.provenancePath, "Export provenance"), capturedAt: text(receipt.capturedAt, "Export time", 64), width: number(receipt.width, "Export width", 1, 100000, true), height: number(receipt.height, "Export height", 1, 100000, true) };
+      if (s.exportedDestination !== undefined) selection.exportedDestination = absolutePath(s.exportedDestination, "Previous export folder");
+    }
+    return selection;
   });
-  return { kind: "photogogo-video-snapshots", version: 1, sources, selections };
+  const result: SnapshotSession = { kind: "photogogo-video-snapshots", version: 1, sources, selections };
+  if (root.workspace !== undefined) {
+    const w = record(root.workspace, "Workspace");
+    result.workspace = { personName: text(w.personName, "Next person name", 120, true), destination: w.destination === "" ? "" : absolutePath(w.destination, "Export folder"), selectedSourcePath: w.selectedSourcePath === "" ? "" : absolutePath(w.selectedSourcePath, "Selected video") };
+  }
+  if (root.pendingPaths !== undefined) {
+    if (!Array.isArray(root.pendingPaths) || root.pendingPaths.length + sources.length > MAX_SNAPSHOT_CLIPS) throw new Error("A session supports up to 64 videos.");
+    result.pendingPaths = root.pendingPaths.map(path => {
+      const valid = absolutePath(path, "Pending video"), key = snapshotPathKey(valid);
+      if (seen.has(key)) throw new Error("This session contains the same video more than once.");
+      seen.add(key); return valid;
+    });
+  }
+  return result;
+}
+
+function absolutePath(value: unknown, label: string): string {
+  const path = text(value, label, 32767);
+  if (!/^(?:[a-zA-Z]:[\\/]|\\\\[^\\]+\\[^\\]+|\/)/.test(path)) throw new Error(`${label} must be an absolute local path.`);
+  return path;
 }
 
 export function createSnapshotSession(sources: SnapshotSource[], selections: SnapshotSelection[]): SnapshotSession {
@@ -134,10 +159,25 @@ export function createSnapshotSession(sources: SnapshotSource[], selections: Sna
     sources: sources.map((s) => ({ path: s.clip.path, identity: s.clip.identity, shootingStart: s.shootingStart, timeConfirmed: s.timeConfirmed, position: s.position })),
     selections: selections.flatMap((selection) => {
       const source = sources.find((s) => s.clip.id === selection.clipId);
-      return source ? [{ sourcePath: source.clip.path, identity: source.clip.identity, index: selection.index, personName: selection.personName, recipe: selection.recipe }] : [];
+      return source ? [{ sourcePath: source.clip.path, identity: source.clip.identity, index: selection.index, personName: selection.personName, recipe: selection.recipe, ...(selection.exported ? { exported: selection.exported, exportedDestination: selection.exportedDestination } : {}) }] : [];
     }),
   };
   return parseSnapshotSession(JSON.stringify(saved));
+}
+
+/** Hydration is not deletion. Only replace saved records for successfully reopened identities. */
+export function mergeSnapshotSession(base: SnapshotSession, sources: SnapshotSource[], selections: SnapshotSelection[], pendingPaths: string[], workspace: NonNullable<SnapshotSession["workspace"]>): SnapshotSession {
+  const live = createSnapshotSession(sources, selections);
+  const hydrated = new Set(live.sources.map(s => `${snapshotPathKey(s.path)}\0${s.identity}`));
+  const merged: SnapshotSession = {
+    ...live,
+    sources: [...base.sources.filter(s => !hydrated.has(`${snapshotPathKey(s.path)}\0${s.identity}`)), ...live.sources],
+    selections: [...base.selections.filter(s => !hydrated.has(`${snapshotPathKey(s.sourcePath)}\0${s.identity}`)), ...live.selections],
+    workspace,
+  };
+  const savedPaths = new Set(merged.sources.map(s => snapshotPathKey(s.path)));
+  merged.pendingPaths = [...new Set(pendingPaths)].filter(path => !savedPaths.has(snapshotPathKey(path)));
+  return parseSnapshotSession(JSON.stringify(merged));
 }
 
 /** Bounded encoded-image LRU. Decoded originals never enter browser state. */

@@ -2,6 +2,7 @@ mod commands;
 mod utils;
 
 use commands::{
+    video_snapshots::sessions::{snapshot_sessions_list, snapshot_session_get, snapshot_session_put, snapshot_session_set_deleted},
     video_snapshots::{snapshot_open, snapshot_frames, snapshot_photo_preview,
         snapshot_export, snapshot_cancel, snapshot_forget, snapshot_save_session, snapshot_load_session},
     files::{
@@ -67,6 +68,10 @@ pub fn run() {
             snapshot_forget,
             snapshot_save_session,
             snapshot_load_session,
+            snapshot_sessions_list,
+            snapshot_session_get,
+            snapshot_session_put,
+            snapshot_session_set_deleted,
             studio_inspect,
             studio_frame,
             studio_audio_preview,

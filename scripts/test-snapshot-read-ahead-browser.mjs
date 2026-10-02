@@ -22,6 +22,8 @@ try {
   page.setDefaultTimeout(8000);
   await page.addInitScript(() => { window.__frameCount = 601; window.__frameDelay = 120; });
   await page.goto("http://127.0.0.1:1453/snapshots-preview.html");
+  await page.getByRole("button", { name: "＋ New session", exact: true }).click();
+  await page.getByRole("button", { name: "Create session", exact: true }).click();
   await page.getByRole("button", { name: "＋ Add videos", exact: true }).click();
   const position = page.getByLabel("Video frame position", { exact: true });
   const viewer = page.getByLabel("Frame viewer; scroll to move through frames", { exact: true });

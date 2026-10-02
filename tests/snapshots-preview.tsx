@@ -14,6 +14,13 @@ state.__snapshotExports = [];
 state.__exportFolder = "D:/synthetic/Photos";
 state.__openPaths = ["D:/synthetic/First camera.mov", "D:/synthetic/Second camera.mp4"];
 state.__snapshotIdentity = "unchanged";
+state.__sessionLibrary = JSON.parse(localStorage.getItem("snapshot-fixture-library") || "[]");
+const persistLibrary = () => localStorage.setItem("snapshot-fixture-library", JSON.stringify(state.__sessionLibrary));
+const callbacks = new Map<number, (event: unknown) => Promise<void>>();
+const listeners = new Map<number, { event: string; callback: number }>();
+let callbackId = 0;
+state.__requestClose = async () => { for (const [id, listener] of listeners) if (listener.event === "tauri://close-requested") await callbacks.get(listener.callback)?.({ event: listener.event, id }); };
+state.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: (_event: string, id: number) => listeners.delete(id) };
 const frameTime = (index: number) => index < 90 ? index * 20 : 1800 + (index - 90) * 40;
 const frameImage = (index: number) => {
   const canvas = document.createElement("canvas"); canvas.width = 960; canvas.height = 540;
@@ -27,13 +34,20 @@ const frameImage = (index: number) => {
   ctx.font = "18px sans-serif"; ctx.fillText("Exact source frame · no user footage", 320, 315);
   return canvas.toDataURL("image/jpeg", .8);
 };
-state.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) => {
+state.__TAURI_INTERNALS__ = {
+  metadata: { currentWindow: { label: "main" } },
+  transformCallback: (callback: (event: unknown) => Promise<void>) => { callbacks.set(++callbackId, callback); return callbackId; },
+  invoke: async (command: string, args: any = {}) => {
   state.__snapshotCalls.push({ command, args: structuredClone(args), at: performance.now() });
+  if (command === "plugin:event|listen") { listeners.set(args.handler, { event: args.event, callback: args.handler }); return args.handler; }
+  if (command === "plugin:event|unlisten") return null;
+  if (command === "plugin:window|destroy") { state.__windowDestroyed = true; return null; }
   if (command === "plugin:dialog|confirm") return state.__confirm !== false;
   if (command === "plugin:dialog|open") return args.options?.directory ? state.__exportFolder : state.__openPaths;
   if (command === "plugin:dialog|message") return null;
   if (command === "plugin:dialog|save") return "D:/synthetic/session.snapshots.json";
   if (command === "snapshot_open") {
+    if (state.__deferOpen) await new Promise(resolve => (state.__deferredOpens ||= []).push(resolve));
     if (state.__openError) throw new Error(state.__openError);
     const id = String(args.path).includes("Second") ? "clip-b" : "clip-a";
     return { id, identity: state.__snapshotIdentity + args.path, path: args.path, name: args.path.split("/").pop(), width: 3840, height: 2160,
@@ -61,6 +75,26 @@ state.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) =>
   if (command === "reveal_in_explorer") { if (state.__revealError) throw new Error(state.__revealError); return null; }
   if (command === "snapshot_save_session") { state.__savedSession = args.json; return null; }
   if (command === "snapshot_load_session") return state.__savedSession;
+  if (command === "snapshot_sessions_list") return { sessions: structuredClone(state.__sessionLibrary), warnings: [] };
+  if (command === "snapshot_session_get") {
+    const entry = state.__sessionLibrary.find((item: any) => item.id === args.id);
+    if (!entry) throw new Error("Session not found"); return structuredClone(entry);
+  }
+  if (command === "snapshot_session_put") {
+    if (state.__deferSave) await new Promise(resolve => (state.__deferredSaves ||= []).push(resolve));
+    if (state.__saveError) throw new Error(state.__saveError);
+    const old = state.__sessionLibrary.find((item: any) => item.id === args.id);
+    if (args.id && (!old || old.deletedAt || old.revision !== args.expectedRevision)) throw new Error("Session changed in another window. Save a recovery copy.");
+    if (old?.recovered) throw new Error("Recovered from last-good backup; duplicate this session to save a recovered copy.");
+    const json = JSON.parse(args.json), now = new Date().toISOString();
+    const entry = { id: args.id || crypto.randomUUID(), name: args.name, revision: (old?.revision || 0) + 1, createdAt: old?.createdAt || now, updatedAt: now, deletedAt: null, sourceCount: json.sources.length + (json.pendingPaths?.length || 0), photoCount: json.selections.length, recovered: false, json: args.json };
+    state.__sessionLibrary = [entry, ...state.__sessionLibrary.filter((item: any) => item.id !== entry.id)]; persistLibrary(); return structuredClone(entry);
+  }
+  if (command === "snapshot_session_set_deleted") {
+    const entry = state.__sessionLibrary.find((item: any) => item.id === args.id);
+    if (!entry || entry.revision !== args.expectedRevision) throw new Error("Session changed in another window.");
+    entry.revision++; entry.deletedAt = args.deleted ? new Date().toISOString() : null; entry.updatedAt = new Date().toISOString(); persistLibrary(); return structuredClone(entry);
+  }
   if (["snapshot_cancel", "snapshot_forget"].includes(command)) return null;
   throw new Error(`Unexpected fixture command: ${command}`);
 } };

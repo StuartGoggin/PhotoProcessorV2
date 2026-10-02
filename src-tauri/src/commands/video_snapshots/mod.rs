@@ -2,6 +2,7 @@
 //! Timestamp indexes are independent of nominal FPS. Pixels are never returned
 //! until the decoder's actual presentation timestamps match the requested index.
 pub mod photo;
+pub mod sessions;
 
 use crate::utils::base64_encode;
 use md5::{Digest, Md5};
