@@ -493,6 +493,7 @@ export default function StagingExplorer() {
 
   const stagingDir = settings?.staging_dir ?? "";
   const previewWidth = Math.max(120, settings?.timeline_preview_width ?? 420);
+  const motionPreviewsEnabled = settings?.timeline_preview_enabled === true;
   const previewHeight = Math.max(68, settings?.timeline_preview_height ?? 240);
   const previewFps = Math.max(2, Math.min(30, settings?.timeline_preview_fps ?? 8));
 
@@ -1037,7 +1038,7 @@ export default function StagingExplorer() {
   // When the timeline items load, kick off background hover-frame generation for all videos
   // so that hovering over them is instant (frames are already cached).
   useEffect(() => {
-    if (!stagingDir || timelineItems.length === 0) return;
+    if (!motionPreviewsEnabled || !stagingDir || timelineItems.length === 0) return;
     const videoPaths = timelineItems
       .filter((item) => item.kind === "video")
       .map((item) => toAbsolutePath(item.relativePath));
@@ -1049,10 +1050,10 @@ export default function StagingExplorer() {
       maxHeight: previewHeight,
       previewFps,
     });
-  }, [stagingDir, timelineItems, previewWidth, previewHeight, previewFps]);
+  }, [motionPreviewsEnabled, stagingDir, timelineItems, previewWidth, previewHeight, previewFps]);
 
   useEffect(() => {
-    if (!stagingDir) {
+    if (!motionPreviewsEnabled || !stagingDir) {
       return;
     }
     void invoke<boolean>("start_preview_monitor_worker", {
@@ -1062,7 +1063,7 @@ export default function StagingExplorer() {
       previewFps,
     }).catch(() => {
     });
-  }, [stagingDir, previewWidth, previewHeight, previewFps]);
+  }, [motionPreviewsEnabled, stagingDir, previewWidth, previewHeight, previewFps]);
 
   useEffect(() => {
     schedulePreloadVisibleTimelineThumbs();
@@ -1876,7 +1877,7 @@ export default function StagingExplorer() {
   }
 
   function loadTimelineVideoPreview(relativePath: string) {
-    if (!stagingDir || timelineVideoPreviewByPath[relativePath] || loadingTimelineVideoPreviewsRef.current.has(relativePath)) {
+    if (!motionPreviewsEnabled || !stagingDir || timelineVideoPreviewByPath[relativePath] || loadingTimelineVideoPreviewsRef.current.has(relativePath)) {
       return;
     }
 
@@ -2876,7 +2877,7 @@ export default function StagingExplorer() {
                           <span className="staging-timeline-hover-preview-kind">{timelineHoverPreview.kind}</span>
                         </div>
                         <div className="staging-timeline-hover-preview-body">
-                          {timelineHoverPreview.kind === "video" && timelineHoverVideoSrc && !timelineHoverVideoError ? (
+                          {motionPreviewsEnabled && timelineHoverPreview.kind === "video" && timelineHoverVideoSrc && !timelineHoverVideoError ? (
                             <video
                               key={timelineHoverPreview.relativePath}
                               className="staging-timeline-hover-preview-video"
@@ -2888,9 +2889,9 @@ export default function StagingExplorer() {
                               preload="metadata"
                               onError={() => setTimelineHoverVideoError(true)}
                             />
-                          ) : timelineHoverPreview.kind === "video" && timelineHoverVideoStatus.loading ? (
+                          ) : motionPreviewsEnabled && timelineHoverPreview.kind === "video" && timelineHoverVideoStatus.loading ? (
                             <div className="staging-timeline-hover-preview-loading">Rendering motion preview...</div>
-                          ) : timelineHoverPreview.kind === "video" && timelineHoverVideoStatus.error ? (
+                          ) : motionPreviewsEnabled && timelineHoverPreview.kind === "video" && timelineHoverVideoStatus.error ? (
                             <div className="staging-timeline-hover-preview-loading">
                               Motion preview failed. Showing thumbnail fallback.
                             </div>

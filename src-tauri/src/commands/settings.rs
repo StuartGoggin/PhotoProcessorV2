@@ -16,6 +16,7 @@ pub struct Settings {
     pub face_scan_parallel_jobs: usize,
     pub face_scan_min_shard_mb: usize,
     pub face_scan_target_shard_mb: usize,
+    pub timeline_preview_enabled: bool,
     pub timeline_preview_width: u32,
     pub timeline_preview_height: u32,
     pub timeline_preview_fps: u32,
@@ -35,6 +36,7 @@ impl Default for Settings {
             face_scan_parallel_jobs: 0,
             face_scan_min_shard_mb: 0,
             face_scan_target_shard_mb: 0,
+            timeline_preview_enabled: false,
             timeline_preview_width: 420,
             timeline_preview_height: 240,
             timeline_preview_fps: 8,
@@ -75,4 +77,20 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
     }
     let data = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeline_motion_previews_are_opt_in_even_for_legacy_settings() {
+        assert!(!Settings::default().timeline_preview_enabled);
+        let legacy: Settings = serde_json::from_str(r#"{"timeline_preview_width":640}"#).unwrap();
+        assert!(!legacy.timeline_preview_enabled);
+        assert_eq!(legacy.timeline_preview_width, 640);
+        let enabled: Settings = serde_json::from_str(r#"{"timeline_preview_enabled":true}"#).unwrap();
+        let restored: Settings = serde_json::from_str(&serde_json::to_string(&enabled).unwrap()).unwrap();
+        assert!(restored.timeline_preview_enabled);
+    }
 }

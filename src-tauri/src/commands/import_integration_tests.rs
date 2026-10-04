@@ -1,7 +1,7 @@
 //! Cross-job protocol integration: real admission, staging cohort, streaming copy,
 //! content verification and publication. These do not start the Tauri AppHandle
 //! import workflow or emulate Windows physical-device discovery.
-use super::{import, import_safety, import_scheduler, import_sessions};
+use super::{import, import_pipeline, import_safety, import_scheduler, import_sessions};
 use md5::{Digest, Md5};
 use std::{
     fs,
@@ -16,6 +16,59 @@ use std::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+#[test]
+fn bounded_pipeline_overlaps_real_md5_verification_and_preserves_duplicate_publication() {
+    let fixture = Fixture::new();
+    let root = fixture.root();
+    let sources = [b"same bytes".as_slice(), b"same bytes".as_slice(), b"other data".as_slice()]
+        .iter().enumerate().map(|(index, contents)| {
+            let path = fixture.0.join("card-a").join(format!("photo-{index}.jpg"));
+            fs::write(&path, contents).unwrap();
+            path
+        }).collect::<Vec<_>>();
+    let scheduler = import_scheduler::Scheduler::default();
+    let permit = scheduler.queue(fixture.request("card-a")).unwrap().try_acquire().unwrap().unwrap();
+    let session = import_sessions::try_open(&root).unwrap().unwrap();
+    session.prepare_parent(&root).unwrap();
+    let (next_copied, next_ready) = mpsc::sync_channel(0);
+    let outcomes = std::cell::RefCell::new(Vec::new());
+    import_pipeline::run(&sources, |source| {
+        let mut digest = Md5::new();
+        let size = fs::metadata(source).unwrap().len();
+        let staged = import_safety::stage_copy(source, &root, size, |chunk| {
+            digest.update(chunk);
+            Ok(())
+        }).unwrap();
+        if source == &sources[1] { next_copied.send(()).unwrap(); }
+        Some((source.clone(), size, hex::encode(digest.finalize()), staged))
+    }, |(source, size, hash, mut staged)| {
+        assert_eq!(scheduler.active_sources(), 1, "source permit lives through both stages");
+        staged.verify(&hash, |path| {
+            if source == sources[0] { next_ready.recv_timeout(TIMEOUT).expect("next source copy must overlap destination MD5 verification"); }
+            crate::utils::compute_md5(path).map_err(|error| error.to_string())
+        }).unwrap();
+        let _publication = session.publication.lock().unwrap();
+        if let Some(existing) = session.published_duplicate(&hash, size, file_hash).unwrap() {
+            outcomes.borrow_mut().push(Outcome { path: existing, imported: false });
+        } else {
+            let destination = import::reserve_unique_destination(root.join("shared.jpg"), &session.reserved);
+            staged.publish(&destination).unwrap();
+            session.claimed.lock().unwrap().insert(hash, destination.clone());
+            outcomes.borrow_mut().push(Outcome { path: destination, imported: true });
+        }
+    }).unwrap();
+    let outcomes = outcomes.into_inner();
+    assert_eq!(outcomes.iter().filter(|outcome| outcome.imported).count(), 2);
+    assert_eq!(outcomes[0].path, outcomes[1].path);
+    assert_ne!(outcomes[0].path, outcomes[2].path);
+    for (source, outcome) in sources.iter().zip(&outcomes) {
+        assert_eq!(file_hash(source).unwrap(), file_hash(&outcome.path).unwrap());
+    }
+    assert_eq!(fs::read_dir(root.join(".photogogo-import")).unwrap().count(), 0);
+    drop(permit);
+    assert_eq!(scheduler.active_sources(), 0);
+}
 
 struct Fixture(PathBuf);
 

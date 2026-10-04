@@ -8,6 +8,14 @@ the same NVMe staging folder concurrently. A waiting second job on card A does n
 block a ready job on card B. This is an import-only scheduler: Video Studio and
 post-processing CPU/GPU worker/thread policies are unchanged.
 
+Copying and destination processing overlap within each normal import. While the
+destination copy of file A is independently verified and published, the reader
+may copy file B. A zero-capacity handoff prevents an unbounded backlog: at most
+two unpublished staged files per card (one being processed, one being copied or
+waiting for handoff), and still only one reader per physical card. The source
+permit and staging session remain held until both stages finish. In-place
+reprocessing keeps its existing exclusive scheduling policy.
+
 Windows source paths are resolved to their mounted volume and physical disk
 extents, not grouped by directory name or drive letter. Partitions and aliases on
 the same disk share a lane. Unknown topology uses conservative serial admission.
@@ -53,8 +61,23 @@ removed. Active streams are not swept; legacy partials and user files are retain
 
 Concurrent copies of already archived files do temporary NVMe writes before
 duplicate detection; this trades fast destination I/O for avoiding another slow
-card read. Up to four files may be staged at once, so staging needs free space for
-those files. Full/failed destinations fail the copy without publishing it.
+card read. Up to eight files across four cards may be staged at once, so staging
+needs free space for those files. Full/failed destinations fail the copy without
+publishing it. Source media are not deleted or modified by this pipeline.
+
+## Optional timeline previews
+
+Timeline video motion previews are **off by default**, including previously saved
+settings without the new flag. Enable them under Settings → Timeline Video Preview
+MP4. Import and cleanup no longer start preview/prewarm workers. Timeline browsing
+may prepare the optional small MP4 sidecars, but new preview generation and
+background timeline/thumbnail prewarming yield while any import is queued,
+running or paused. Native commands enforce the opt-in as well as the UI.
+
+Disabling previews retains existing sidecars and never changes original video
+bytes or full-resolution snapshot exports. Already-running encodes finish
+naturally; no render/encoder process is killed. Workers recheck the saved setting
+before starting another preview. Dimensions/FPS remain saved while disabled.
 
 ## UI
 
@@ -71,7 +94,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-import.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-import.ps1 -Case import_safety
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-import.ps1 -Case import_devices
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-import.ps1 -Native
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-import-pipeline.ps1
 node scripts/test-import-ui.mjs
+node scripts/test-timeline-preview-browser.mjs
 node scripts/test-video-studio-ui.mjs
 node scripts/test-studio.mjs
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-video-studio.ps1

@@ -21,6 +21,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
+use tauri::AppHandle;
 
 #[cfg(all(test, target_os = "windows"))]
 #[path = "files_windows_process_tests.rs"]
@@ -151,6 +152,42 @@ fn active_import_prewarm_workers() -> &'static Mutex<HashSet<String>> {
 
 fn active_preview_monitor_workers() -> &'static Mutex<HashSet<String>> {
     ACTIVE_PREVIEW_MONITOR_WORKERS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn motion_previews_enabled(app: &AppHandle) -> bool {
+    super::settings::load_settings(app.clone())
+        .map(|settings| settings.timeline_preview_enabled).unwrap_or(false)
+}
+
+fn preview_generation_allowed(app: &AppHandle) -> bool {
+    motion_previews_enabled(app) && !super::import::imports_have_pending_work()
+}
+
+fn require_motion_preview(app: &AppHandle) -> Result<(), String> {
+    motion_preview_policy(motion_previews_enabled(app), super::import::imports_have_pending_work())
+}
+
+fn motion_preview_policy(enabled: bool, import_pending: bool) -> Result<(), String> {
+    if !enabled {
+        return Err("Timeline video motion previews are off. Enable them in Settings to create preview MP4s.".into());
+    }
+    if import_pending {
+        return Err("Timeline video previews wait until imports finish; originals are being copied and verified.".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod preview_policy_tests {
+    use super::*;
+
+    #[test]
+    fn disabled_and_import_busy_requests_cannot_generate_motion_previews() {
+        assert!(motion_preview_policy(false, false).unwrap_err().contains("off"));
+        assert!(motion_preview_policy(false, true).unwrap_err().contains("off"));
+        assert!(motion_preview_policy(true, true).unwrap_err().contains("imports finish"));
+        assert!(motion_preview_policy(true, false).is_ok());
+    }
 }
 
 fn thumb_cache_root(staging_dir: Option<&str>) -> PathBuf {
@@ -666,6 +703,7 @@ pub fn load_staging_timeline(staging_dir: String, relative_dir: String, fast_mod
 
 #[tauri::command]
 pub fn prewarm_staging_timeline_cache(staging_dir: String) -> Result<usize, String> {
+    if super::import::imports_have_pending_work() { return Ok(0); }
     let items = load_staging_timeline(staging_dir, String::new(), Some(false))?;
     Ok(items.len())
 }
@@ -757,6 +795,7 @@ pub fn read_video_thumbnail_base64(
 
 #[tauri::command]
 pub fn read_video_hover_preview_base64(
+    app: AppHandle,
     path: String,
     max_width: Option<u32>,
     max_height: Option<u32>,
@@ -764,6 +803,7 @@ pub fn read_video_hover_preview_base64(
     preview_fps: Option<u32>,
     staging_dir: Option<String>,
 ) -> Result<String, String> {
+    require_motion_preview(&app)?;
     let width = max_width.unwrap_or(480).clamp(120, 1280);
     let height = max_height.unwrap_or(270).clamp(68, 720);
     let fps = preview_fps.unwrap_or(8).clamp(2, 30);
@@ -793,6 +833,7 @@ pub fn read_video_hover_preview_base64(
 
 #[tauri::command]
 pub fn read_video_hover_preview_path(
+    app: AppHandle,
     path: String,
     max_width: Option<u32>,
     max_height: Option<u32>,
@@ -800,6 +841,7 @@ pub fn read_video_hover_preview_path(
     preview_fps: Option<u32>,
     staging_dir: Option<String>,
 ) -> Result<String, String> {
+    require_motion_preview(&app)?;
     let width = max_width.unwrap_or(480).clamp(120, 1280);
     let height = max_height.unwrap_or(270).clamp(68, 720);
     let fps = preview_fps.unwrap_or(8).clamp(2, 30);
@@ -827,12 +869,14 @@ pub fn read_video_hover_preview_path(
 }
 
 fn generate_video_hover_preview_for_path(
+    app: &AppHandle,
     path: &str,
     staging_dir: Option<&str>,
     width: u32,
     height: u32,
     fps: u32,
 ) -> Result<(), String> {
+    require_motion_preview(app)?;
     let cache_quality = fps.clamp(0, 255) as u8;
 
     let cache_root = thumb_cache_root(staging_dir);
@@ -869,26 +913,29 @@ fn collect_timeline_video_paths(staging_dir: &str) -> Vec<String> {
 }
 
 fn prewarm_missing_preview_videos(
+    app: &AppHandle,
     staging_dir: &str,
     width: u32,
     height: u32,
     fps: u32,
 ) {
-    use rayon::prelude::*;
     let staging = staging_dir.to_string();
     let paths = collect_timeline_video_paths(staging_dir);
-    paths.par_iter().for_each(|path| {
-        let _ = generate_video_hover_preview_for_path(path, Some(&staging), width, height, fps);
-    });
+    for path in paths {
+        if !preview_generation_allowed(app) { break; }
+        let _ = generate_video_hover_preview_for_path(app, &path, Some(&staging), width, height, fps);
+    }
 }
 
 #[tauri::command]
 pub fn start_preview_monitor_worker(
+    app: AppHandle,
     staging_dir: String,
     max_width: Option<u32>,
     max_height: Option<u32>,
     preview_fps: Option<u32>,
 ) -> Result<bool, String> {
+    if !motion_previews_enabled(&app) { return Ok(false); }
     let normalized = staging_dir.trim().to_string();
     if normalized.is_empty() {
         return Err("staging_dir is required".to_string());
@@ -909,9 +956,13 @@ pub fn start_preview_monitor_worker(
 
     std::thread::spawn(move || {
         loop {
-            prewarm_missing_preview_videos(&normalized, width, height, fps);
+            if !motion_previews_enabled(&app) { break; }
+            if preview_generation_allowed(&app) {
+                prewarm_missing_preview_videos(&app, &normalized, width, height, fps);
+            }
             std::thread::sleep(Duration::from_secs(PREVIEW_MONITOR_INTERVAL_SECS));
         }
+        if let Ok(mut guard) = active_preview_monitor_workers().lock() { guard.remove(&normalized); }
     });
 
     Ok(true)
@@ -919,6 +970,7 @@ pub fn start_preview_monitor_worker(
 
 #[tauri::command]
 pub fn read_video_hover_frames_base64(
+    app: AppHandle,
     path: String,
     max_width: Option<u32>,
     max_height: Option<u32>,
@@ -932,6 +984,7 @@ pub fn read_video_hover_frames_base64(
     let fps = frame_count.unwrap_or(8).clamp(2, 30);
 
     let preview_path = read_video_hover_preview_path(
+        app,
         path,
         Some(width),
         Some(height),
@@ -947,12 +1000,14 @@ pub fn read_video_hover_frames_base64(
 /// Returns immediately (fire-and-forget). Already-cached files are skipped.
 #[tauri::command]
 pub fn prewarm_video_hover_frames(
+    app: AppHandle,
     paths: Vec<String>,
     staging_dir: Option<String>,
     max_width: Option<u32>,
     max_height: Option<u32>,
     preview_fps: Option<u32>,
 ) -> Result<(), String> {
+    if !preview_generation_allowed(&app) { return Ok(()); }
     if paths.is_empty() {
         return Ok(());
     }
@@ -961,16 +1016,17 @@ pub fn prewarm_video_hover_frames(
     let fps = preview_fps.unwrap_or(8).clamp(2, 30);
 
     std::thread::spawn(move || {
-        use rayon::prelude::*;
-        paths.par_iter().for_each(|path| {
+        for path in paths {
+            if !preview_generation_allowed(&app) { break; }
             let _ = generate_video_hover_preview_for_path(
-                path,
+                &app,
+                &path,
                 staging_dir.as_deref(),
                 width,
                 height,
                 fps,
             );
-        });
+        }
     });
 
     Ok(())
@@ -984,6 +1040,7 @@ pub fn prewarm_staging_timeline_thumbnails(
     max_height: Option<u32>,
     max_items: Option<usize>,
 ) -> Result<usize, String> {
+    if super::import::imports_have_pending_work() { return Ok(0); }
     let width = max_width.unwrap_or(220).clamp(32, 1200);
     let height = max_height.unwrap_or(160).clamp(32, 1200);
     let limit = max_items.unwrap_or(180).clamp(1, 5_000);
@@ -993,6 +1050,7 @@ pub fn prewarm_staging_timeline_thumbnails(
     let root = PathBuf::from(&staging_dir);
 
     for item in items.into_iter().take(limit) {
+        if super::import::imports_have_pending_work() { break; }
         let absolute_path = root.join(item.relative_path.replace('/', std::path::MAIN_SEPARATOR_STR));
         let path_text = absolute_path.to_string_lossy().to_string();
 
@@ -1012,11 +1070,13 @@ pub fn prewarm_staging_timeline_thumbnails(
 
 #[tauri::command]
 pub fn start_import_prewarm_worker(
+    app: AppHandle,
     staging_dir: String,
     preview_max_width: Option<u32>,
     preview_max_height: Option<u32>,
     preview_fps: Option<u32>,
 ) -> Result<bool, String> {
+    if !preview_generation_allowed(&app) { return Ok(false); }
     let normalized = staging_dir.trim().to_string();
     if normalized.is_empty() {
         return Err("staging_dir is required".to_string());
@@ -1037,6 +1097,7 @@ pub fn start_import_prewarm_worker(
 
     std::thread::spawn(move || {
         for _ in 0..IMPORT_PREWARM_CYCLES {
+            if !preview_generation_allowed(&app) { break; }
             let _ = prewarm_staging_timeline_cache(normalized.clone());
             let _ = prewarm_staging_timeline_thumbnails(
                 normalized.clone(),
@@ -1048,9 +1109,8 @@ pub fn start_import_prewarm_worker(
             // Pre-generate hover frames for all videos in the staging directory
             if let Ok(items) = load_staging_timeline(normalized.clone(), String::new(), Some(false)) {
                 let root = PathBuf::from(&normalized);
-                use rayon::prelude::*;
                 items
-                    .par_iter()
+                    .iter()
                     .filter(|item| item.kind == "video")
                     .for_each(|item| {
                         let abs_path = root
@@ -1058,6 +1118,7 @@ pub fn start_import_prewarm_worker(
                             .to_string_lossy()
                             .to_string();
                         let _ = generate_video_hover_preview_for_path(
+                            &app,
                             &abs_path,
                             Some(&normalized),
                             preview_width,

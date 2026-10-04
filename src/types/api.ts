@@ -13,6 +13,7 @@ export interface Settings {
   face_scan_parallel_jobs: number;
   face_scan_min_shard_mb: number;
   face_scan_target_shard_mb: number;
+  timeline_preview_enabled?: boolean;
   timeline_preview_width: number;
   timeline_preview_height: number;
   timeline_preview_fps: number;

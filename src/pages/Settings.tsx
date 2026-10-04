@@ -47,6 +47,7 @@ export default function SettingsPage() {
     face_scan_parallel_jobs: 0,
     face_scan_min_shard_mb: 0,
     face_scan_target_shard_mb: 0,
+    timeline_preview_enabled: false,
     timeline_preview_width: 420,
     timeline_preview_height: 240,
     timeline_preview_fps: 8,
@@ -69,6 +70,7 @@ export default function SettingsPage() {
           face_scan_parallel_jobs: loaded.face_scan_parallel_jobs ?? 0,
           face_scan_min_shard_mb: loaded.face_scan_min_shard_mb ?? 0,
           face_scan_target_shard_mb: loaded.face_scan_target_shard_mb ?? 0,
+          timeline_preview_enabled: loaded.timeline_preview_enabled === true,
           timeline_preview_width: loaded.timeline_preview_width ?? 420,
           timeline_preview_height: loaded.timeline_preview_height ?? 240,
           timeline_preview_fps: loaded.timeline_preview_fps ?? 8,
@@ -238,10 +240,27 @@ export default function SettingsPage() {
           <div>
             <h3 className="text-sm font-medium text-white">Timeline Video Preview MP4</h3>
             <p className="text-xs text-gray-500 mt-1">
-              Controls the generated hover preview video sidecars for timeline cards.
+              Optional low-resolution motion previews for timeline cards. Off by default;
+              original videos and full-resolution photo exports are unchanged.
             </p>
           </div>
 
+          <label className="flex items-start gap-3 text-sm text-gray-300">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={settings.timeline_preview_enabled === true}
+              onChange={(event) => setSettings((s) => ({ ...s, timeline_preview_enabled: event.target.checked }))}
+            />
+            <span>Enable timeline video motion previews
+              <span className="block text-xs text-gray-500 mt-1">
+                Creates additional small MP4 files beside your videos when browsing the timeline.
+                New previews wait while imports are queued, running or paused. Existing previews are retained.
+              </span>
+            </span>
+          </label>
+
+          <fieldset disabled={!settings.timeline_preview_enabled} className="space-y-4 disabled:opacity-50">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <label className="block">
               <span className="text-sm text-gray-300">Preview Width</span>
@@ -337,6 +356,7 @@ export default function SettingsPage() {
               High Quality
             </button>
           </div>
+          </fieldset>
         </div>
 
         <div className="card space-y-4">

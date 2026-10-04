@@ -2,6 +2,7 @@ pub mod files;
 pub mod faces;
 pub mod import;
 mod import_safety;
+mod import_pipeline;
 mod import_scheduler;
 mod import_sessions;
 mod import_devices;

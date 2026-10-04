@@ -116,6 +116,8 @@ pub struct ImportJob {
     pub max_sources: usize,
     #[serde(skip)]
     source_read_updated: Option<Instant>,
+    #[serde(skip)]
+    source_copy_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,11 +168,121 @@ fn source_unchanged(path: &Path, expected: &super::import_devices::SourceIdentit
 fn import_phase(id: Option<&str>, phase: &str, reason: Option<&str>) {
     if let Some(id) = id {
         update_job(id, |job| {
+            // Destination processing may overlap the next source read. The reader
+            // owns its live phase/rate while active; verification cannot erase it.
+            if job.source_copy_active && phase != "copying" { return; }
             job.phase = phase.into();
             job.wait_reason = reason.map(String::from);
             if phase != "copying" { job.source_read_mbps = 0.0; }
             if let Some(reason) = reason { job.current_file = reason.into(); }
         });
+    }
+}
+
+pub(super) fn imports_have_pending_work() -> bool {
+    // Legacy synchronous imports have no job row but still hold an admission lane.
+    if import_scheduler().active_sources() > 0 { return true; }
+    jobs_store().lock().map(|jobs| jobs.values().any(|job| {
+        matches!(job.status, ImportJobStatus::Queued | ImportJobStatus::Running | ImportJobStatus::Paused)
+    })).unwrap_or(true)
+}
+
+fn completion_file_label(job: &mut ImportJob, source: &Path) {
+    if !job.source_copy_active {
+        job.current_file = source.file_name().and_then(|name| name.to_str()).unwrap_or("").into();
+    }
+}
+
+struct SourceCopyActivity<'a>(Option<&'a str>);
+
+impl<'a> SourceCopyActivity<'a> {
+    fn begin(id: Option<&'a str>) -> Self {
+        if let Some(id) = id { update_job(id, |job| { job.source_copy_active = true; }); }
+        Self(id)
+    }
+}
+
+impl Drop for SourceCopyActivity<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.0 { update_job(id, |job| {
+            job.source_copy_active = false;
+            job.source_read_mbps = 0.0;
+            if job.phase == "copying" { job.phase = "verifying".into(); }
+        }); }
+    }
+}
+
+struct PreparedImport {
+    source: PathBuf,
+    dt: chrono::NaiveDateTime,
+    dt_source: &'static str,
+    base_dest: PathBuf,
+    src_size: u64,
+    hash_result: Result<(String, bool), String>,
+    staged_copy: Option<super::import_safety::StagedCopy>,
+}
+
+#[cfg(test)]
+mod copy_activity_tests {
+    use super::*;
+
+    struct JobFixture(&'static str);
+    impl JobFixture {
+        fn new(id: &'static str) -> Self {
+            let job: ImportJob = serde_json::from_value(serde_json::json!({
+                "id": id, "sourceDir": "test-card", "stagingDir": "test-staging",
+                "logFilePath": "", "manifestFilePath": "", "reprocessExisting": false,
+                "status": "running", "createdAt": "", "startedAt": null, "finishedAt": null,
+                "sourceFileTotal": 0, "ignoredFileTotal": 0, "ignoredLegacyMd5SidecarTotal": 0,
+                "unsupportedFileTotal": 0, "total": 0, "done": 0, "skipped": 0,
+                "speedMbps": 0, "currentFile": "next-source.jpg", "imported": 0,
+                "md5SidecarHits": 0, "md5Computed": 0, "errors": [], "logs": [],
+                "pauseRequested": false, "abortRequested": false,
+                "sourceDevice": "test-card", "sourceDeviceKey": "test-disk", "sourceIdentityKnown": true,
+                "phase": "copying", "waitReason": null, "bytesRead": 0, "bytesCopied": 0,
+                "sourceReadMbps": 31, "activeSources": 1, "maxSources": 4
+            })).unwrap();
+            jobs_store().lock().unwrap().insert(id.into(), job);
+            Self(id)
+        }
+    }
+    impl Drop for JobFixture {
+        fn drop(&mut self) { jobs_store().lock().unwrap().remove(self.0); }
+    }
+
+    #[test]
+    fn destination_activity_cannot_clobber_live_source_phase_rate_or_filename() {
+        let fixture = JobFixture::new("copy-activity-test");
+        let active = SourceCopyActivity::begin(Some(fixture.0));
+        for phase in ["verifying", "waiting", "publishing"] {
+            import_phase(Some(fixture.0), phase, Some("previous file publication"));
+        }
+        update_job(fixture.0, |job| completion_file_label(job, Path::new("previous.jpg")));
+        {
+            let jobs = jobs_store().lock().unwrap();
+            let job = &jobs[fixture.0];
+            assert_eq!(job.phase, "copying");
+            assert_eq!(job.source_read_mbps, 31.0);
+            assert_eq!(job.current_file, "next-source.jpg");
+            assert!(job.wait_reason.is_none());
+        }
+        drop(active);
+        import_phase(Some(fixture.0), "publishing", None);
+        update_job(fixture.0, |job| completion_file_label(job, Path::new("completed.jpg")));
+        let jobs = jobs_store().lock().unwrap();
+        let job = &jobs[fixture.0];
+        assert!(!job.source_copy_active);
+        assert_eq!(job.source_read_mbps, 0.0);
+        assert_eq!(job.phase, "publishing");
+        assert_eq!(job.current_file, "completed.jpg");
+    }
+
+    #[test]
+    fn running_and_paused_imports_take_priority_over_optional_background_work() {
+        let fixture = JobFixture::new("preview-priority-test");
+        assert!(imports_have_pending_work());
+        update_job(fixture.0, |job| job.status = ImportJobStatus::Paused);
+        assert!(imports_have_pending_work());
     }
 }
 
@@ -1353,23 +1465,18 @@ fn run_import(
     let job_id_clone = job_id.clone();
     let manifest_path_clone = Arc::new(manifest_path.clone());
 
-    // SD throughput is source-bound, not CPU-bound. Independent source jobs
-    // overlap, but never compete with many simultaneous reads on one card.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(if opts.reprocess_existing { (num_cpus() * 2).max(4) } else { 1 })
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    pool.install(|| {
-        ordered_files.par_iter().for_each(|src_path| {
+    // Only this closure reads source bytes/metadata. Destination verification,
+    // deduplication and publication run separately, with at most two owned
+    // temporary files in flight and still just one source reader per card.
+    let prepare = |src_path: &PathBuf| -> Option<PreparedImport> {
             if wait_if_paused_or_aborted(job_id_clone.as_deref()) {
-                return;
+                return None;
             }
 
             if let Err(error) = source_unchanged(src_path, &identity) {
                 errors_clone.lock().unwrap().push(format!("{}: {error}", src_path.display()));
                 done_clone.fetch_add(1, Ordering::Relaxed);
-                return;
+                return None;
             }
 
             let (dt, dt_source) = capture_datetime(src_path, opts.reprocess_existing);
@@ -1393,7 +1500,7 @@ fn run_import(
                         .unwrap()
                         .push(format!("{}: {}", src_path.display(), e));
                     done_clone.fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return None;
                 }
             }
 
@@ -1405,7 +1512,7 @@ fn run_import(
                         .unwrap()
                         .push(format!("{}: {}", src_path.display(), e));
                     done_clone.fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return None;
                 }
             };
 
@@ -1416,10 +1523,11 @@ fn run_import(
                 (|| -> Result<(String, bool), String> {
                     let parent = base_dest.parent().ok_or("Missing destination folder")?;
                     session.prepare_parent(parent)?;
+                    let _copy_activity = SourceCopyActivity::begin(job_id_clone.as_deref());
                     import_phase(job_id_clone.as_deref(), "copying", None);
                     if let Some(id) = job_id_clone.as_deref() { update_job(id, |j| j.current_file = src_path.file_name().unwrap_or_default().to_string_lossy().into_owned()); }
                     let mut digest = Md5::new();
-                    let mut staged = super::import_safety::stage_copy(src_path, parent, src_size, |chunk| {
+                    let staged = super::import_safety::stage_copy(src_path, parent, src_size, |chunk| {
                         if wait_if_paused_or_aborted(job_id_clone.as_deref()) { return Err("Import cancelled; source retained".into()); }
                         digest.update(chunk);
                         let total = source_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
@@ -1435,13 +1543,29 @@ fn run_import(
                     })?;
                     let hash = hex::encode(digest.finalize());
                     if let Some(id) = job_id_clone.as_deref() { update_job(id, |j| { j.bytes_read = source_bytes.load(Ordering::Relaxed); j.bytes_copied = j.bytes_read; }); }
-                    import_phase(job_id_clone.as_deref(), "verifying", None);
-                    staged.verify(&hash, |path| compute_md5(path).map_err(|e| e.to_string()))?;
                     source_unchanged(src_path, &identity)?;
                     staged_copy = Some(staged);
                     Ok((hash, false))
                 })()
             };
+            Some(PreparedImport {
+                source: src_path.clone(), dt, dt_source,
+                base_dest, src_size, hash_result, staged_copy,
+            })
+    };
+
+    let finish = |prepared: PreparedImport| {
+            let PreparedImport { source, dt, dt_source,
+                base_dest, src_size, mut hash_result, mut staged_copy } = prepared;
+            let src_path = &source;
+            if wait_if_paused_or_aborted(job_id_clone.as_deref()) { return; }
+            if let (Ok((hash, _)), Some(staged)) = (&hash_result, staged_copy.as_mut()) {
+                import_phase(job_id_clone.as_deref(), "verifying", None);
+                if let Err(error) = staged.verify(hash, |path| compute_md5(path).map_err(|e| e.to_string()))
+                    .and_then(|_| source_unchanged(src_path, &identity)) {
+                    hash_result = Err(error);
+                }
+            }
             let (src_md5, used_sidecar) = match hash_result {
                 Ok(v) => v,
                 Err(e) => {
@@ -1534,11 +1658,7 @@ fn run_import(
                         job.done = done as usize;
                         job.skipped = skipped as usize;
                         job.speed_mbps = speed;
-                        job.current_file = src_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("")
-                            .to_string();
+                        completion_file_label(job, src_path);
                     });
                 }
                 if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
@@ -1679,11 +1799,7 @@ fn run_import(
                                 job.done = done as usize;
                                 job.skipped = skipped as usize;
                                 job.speed_mbps = speed;
-                                job.current_file = src_path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("")
-                                    .to_string();
+                                completion_file_label(job, src_path);
                             });
                         }
                         if let Some(manifest_path) = manifest_path_clone.as_ref().as_ref() {
@@ -1848,11 +1964,7 @@ fn run_import(
                         job.done = done as usize;
                         job.skipped = skipped as usize;
                         job.speed_mbps = speed;
-                        job.current_file = src_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("")
-                            .to_string();
+                        completion_file_label(job, src_path);
                     });
                 }
                 return;
@@ -1962,11 +2074,7 @@ fn run_import(
                                 job.done = done as usize;
                                 job.skipped = skipped as usize;
                                 job.speed_mbps = speed;
-                                job.current_file = src_path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("")
-                                    .to_string();
+                                completion_file_label(job, src_path);
                             });
                         }
                     }
@@ -2099,11 +2207,7 @@ fn run_import(
                             job.done = done_now;
                             job.skipped = skipped_now;
                             job.speed_mbps = speed_now;
-                            job.current_file = src_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string();
+                            completion_file_label(job, src_path);
                         });
                     }
                 }
@@ -2171,11 +2275,7 @@ fn run_import(
                             job.done = done_now;
                             job.skipped = skipped_now;
                             job.speed_mbps = speed_now;
-                            job.current_file = src_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string();
+                            completion_file_label(job, src_path);
                         });
                     }
                     errors_clone
@@ -2185,17 +2285,25 @@ fn run_import(
 
                     if let Some(job_id) = &job_id_clone {
                         update_job(job_id, |job| {
-                            job.current_file = src_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string();
+                            completion_file_label(job, src_path);
                         });
                     }
                 }
             }
-        });
-    });
+    };
+
+    if opts.reprocess_existing {
+        // Existing in-place reprocessing remains exclusive and keeps its policy.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads((num_cpus() * 2).max(4))
+            .build().map_err(|e| e.to_string())?;
+        pool.install(|| ordered_files.par_iter().for_each(|path| {
+            if let Some(prepared) = prepare(path) { finish(prepared); }
+        }));
+    } else {
+        let _ = append_app_log(&app, "import pipeline: one source reader; destination verification overlaps; maximum two staged files per card");
+        super::import_pipeline::run(&ordered_files, prepare, finish)?;
+    }
 
     let final_errors = errors.lock().unwrap().clone();
     let imported = imported_count.load(Ordering::Relaxed) as usize;
@@ -2415,6 +2523,7 @@ pub async fn start_import_job(
         bytes_read: 0, bytes_copied: 0, source_read_mbps: 0.0,
         active_sources: 0, max_sources: super::import_scheduler::MAX_SOURCES,
         source_read_updated: None,
+        source_copy_active: false,
     };
 
     {
