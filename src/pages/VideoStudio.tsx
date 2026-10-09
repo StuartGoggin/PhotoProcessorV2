@@ -159,11 +159,13 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
       const target = (p: StudioProject) => p.clips.filter((c) => onlySelected ? c.id === selected : c.include);
       const scope = (p: StudioProject) => JSON.stringify([
         p.defaultStabilization, p.defaultStabilizationMethod, p.defaultCustomStabilization, p.defaultPreventRotation,
-        target(p).map((c) => [c.id, c.stabilization, c.stabilizationMethod, c.customStabilization, c.preventRotation]),
+        target(p).map((c) => [c.id, c.stabilization, c.stabilizationMethod, c.customStabilization, c.preventRotation, c.framing]),
       ]);
       const confirmedScope = scope(initial);
       const count = target(initial).length;
-      if (!count || !await confirm(`Apply project stabilisation to ${count} ${onlySelected ? "selected" : "included"} clip(s)? This replaces their individual stabilisation choices and resets review approval. Changed picture settings require re-rendering. Wind reduction, music, existing files and saved jobs are not changed.`, { title: "Apply stabilisation defaults", kind: "warning" })) return;
+      const cropChanges = initial.defaultStabilizationMethod === "gpuTripod" ? target(initial).filter(c => c.framing === "maxFrame").length : 0;
+      const cropNote = cropChanges ? ` GPU Tripod also replaces Maximum frame with a fixed 4% per-edge crop on ${cropChanges} clip(s).` : "";
+      if (!count || !await confirm(`Apply project stabilisation to ${count} ${onlySelected ? "selected" : "included"} clip(s)? This replaces their individual stabilisation choices and resets review approval.${cropNote} Changed picture settings require re-rendering. Wind reduction, music, existing files and saved jobs are not changed.`, { title: "Apply stabilisation defaults", kind: "warning" })) return;
       if (epoch !== projectEpoch.current || scope(projectRef.current) !== confirmedScope) throw new Error("The project or stabilisation settings changed while confirming. Nothing was applied; please check and try again.");
       const ids = new Set(target(initial).map((c) => c.id));
       setProject((prev) => ({
@@ -171,6 +173,7 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
         clips: prev.clips.map((c) => ids.has(c.id) ? editClip(c, {
           stabilization: initial.defaultStabilization,
           stabilizationMethod: initial.defaultStabilizationMethod,
+          ...(initial.defaultStabilizationMethod === "gpuTripod" && c.framing === "maxFrame" ? { framing: "edgeSafe" as const } : {}),
           customStabilization: { ...initial.defaultCustomStabilization },
           preventRotation: null,
           reviewed: false,
@@ -612,10 +615,12 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
                   Stabiliser for this clip
                   <select aria-label="Stabiliser for this clip" className={input} value={clip.stabilizationMethod} onChange={(e) => edit(clip.id, {
                     stabilizationMethod: e.target.value as StudioClip["stabilizationMethod"],
-                    ...(e.target.value === "quality" && clip.stabilization === "custom" ? { stabilization: "balanced" as const } : {}),
+                    ...(e.target.value !== "fast" && clip.stabilization === "custom" ? { stabilization: "balanced" as const } : {}),
+                    ...(e.target.value === "gpuTripod" && clip.framing === "maxFrame" ? { framing: "edgeSafe" as const } : {}),
                   })}>
                     <option value="fast">Fast — one pass</option>
                     <option value="quality">Quality — two passes</option>
+                    <option value="gpuTripod">GPU Tripod — experimental</option>
                   </select>
                 </label>
                 <label>
@@ -641,37 +646,47 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
                   Framing
                   <select
                     className={input}
+                    aria-label="Framing"
                     value={clip.framing}
                     onChange={(e) =>
                       edit(clip.id, { framing: e.target.value as StudioClip["framing"] })
                     }
                   >
-                    <option value="edgeSafe">{clip.stabilizationMethod === "fast" ? "Mirror edges + 4% crop" : "Edge-safe automatic zoom"}</option>
-                    <option value="maxFrame">{clip.stabilizationMethod === "fast" ? "Mirror edges — no crop" : "Maximum frame — borders may show"}</option>
-                    <option value="aggressiveCrop">{clip.stabilizationMethod === "fast" ? "Mirror edges + 10% crop" : "More crop"}</option>
+                    <option value="edgeSafe">{clip.stabilizationMethod === "gpuTripod" ? "Fixed crop — 4% per edge" : clip.stabilizationMethod === "fast" ? "Mirror edges + 4% crop" : "Edge-safe automatic zoom"}</option>
+                    <option value="maxFrame" disabled={clip.stabilizationMethod === "gpuTripod"}>{clip.stabilizationMethod === "fast" ? "Mirror edges — no crop" : "Maximum frame — borders may show"}</option>
+                    <option value="aggressiveCrop">{clip.stabilizationMethod === "gpuTripod" ? "Fixed crop — 6% per edge" : clip.stabilizationMethod === "fast" ? "Mirror edges + 10% crop" : "More crop"}</option>
                   </select>
                 </label>
               </div>
-              {clip.stabilization === "custom" && <StudioStabilizationFields key={clip.id} value={clip.customStabilization} onChange={(customStabilization) => edit(clip.id, { customStabilization })} />}
+              {clip.stabilizationMethod === "fast" && clip.stabilization === "custom" && <StudioStabilizationFields key={clip.id} value={clip.customStabilization} onChange={(customStabilization) => edit(clip.id, { customStabilization })} />}
+              {clip.stabilizationMethod === "gpuTripod" && <p className="text-xs text-gray-400 mt-2">
+                Translation needs a fixed crop to avoid exposed borders. Selecting GPU Tripod replaces Maximum frame with 4% per-edge crop;
+                the 6% option leaves more room for correction but cuts off more of the original picture. Preview rider and subject framing.
+              </p>}
               <label className="block mt-3 text-sm">
                 Prevent added rotation · this clip
                 <select className={input} aria-describedby="studio-clip-rotation-help"
                   disabled={clip.stabilizationMethod !== "quality" || clip.stabilization === "off"}
-                  value={clip.preventRotation == null ? "inherit" : clip.preventRotation ? "on" : "off"}
+                  value={clip.stabilizationMethod === "gpuTripod" ? "locked" : clip.preventRotation == null ? "inherit" : clip.preventRotation ? "on" : "off"}
                   onChange={(event) => edit(clip.id, { preventRotation: event.target.value === "inherit" ? null : event.target.value === "on" })}>
+                  {clip.stabilizationMethod === "gpuTripod" && <option value="locked">Always locked in GPU Tripod</option>}
                   <option value="inherit">Use project default ({project.defaultPreventRotation ? "On" : "Off"})</option>
                   <option value="on">On — no added rotation</option>
                   <option value="off">Off — allow rotation correction</option>
                 </select>
               </label>
               <p id="studio-clip-rotation-help" className="text-xs text-gray-400">
-                Quality mode only. Keeps the source’s roll while retaining horizontal and vertical smoothing; it does not lock pan or tilt.
-                {clip.stabilizationMethod !== "quality" || clip.stabilization === "off" ? " Inactive with the current stabilisation settings." : " Changing the effective choice requires a new preview and render from the original."}
+                {clip.stabilizationMethod === "gpuTripod"
+                  ? "GPU Tripod always preserves the source’s roll when enabled. Your Quality override is kept for switching back; this mode never adds rotation or local deformation."
+                  : <>Quality mode only. Keeps the source’s roll while retaining horizontal and vertical smoothing; it does not lock pan or tilt.
+                    {clip.stabilizationMethod !== "quality" || clip.stabilization === "off" ? " Inactive with the current stabilisation settings." : " Changing the effective choice requires a new preview and render from the original."}</>}
               </p>
               <p className="text-xs text-gray-400">
                 {clip.stabilizationMethod === "fast"
                   ? "Fast mode corrects movement in one pass and mirrors moving edges. Fixed crop reduces edge artifacts but cannot guarantee they disappear, and can cut off subjects. Preview pans and rider framing before approving."
-                  : "Quality mode analyses movement before rendering. Automatic zoom is not a fixed crop limit; compare previews for rider framing."}
+                  : clip.stabilizationMethod === "gpuTripod"
+                    ? "Experimental hardware motion analysis and picture warping. Correction is reduced when visual evidence is weak, but a large moving subject can still be mistaken for camera motion. Preview close-up subjects and tracking pans. Unsupported hardware stops the render with an explanation; choose Fast or Quality explicitly. CPU decoding and frame transfers still affect throughput."
+                    : "Quality mode analyses movement before rendering. Automatic zoom is not a fixed crop limit; compare previews for rider framing."}
                 {" "}Stabilisation precedes titles and recaps. Changing a clip’s settings resets its review approval.
               </p>
 

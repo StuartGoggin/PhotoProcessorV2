@@ -50,7 +50,22 @@ pub async fn studio_read_job_log(id: String) -> Result<String, String> {
 // exits but a descendant still holds an inherited stdout/stderr handle.
 pub(super) fn run_process(binary: &Path, args: &[String], dir: &Path, id: &str,
     phase: &str, progress: Option<(f64, f64, f64)>, timeout: Option<Duration>, resource_id: Option<u64>) -> Result<(), String> {
-    checkpoint(id)?;
+    run_process_inner(binary, args, dir, id, phase, progress, timeout, resource_id, true)
+}
+
+pub(super) const RETRY_ADMISSION: &str = "Studio admission must be retried before launch";
+// An admitted GPU caller owns scarce reservations. Never block on a queued
+// pause here: return before launch so its scope can release every reservation.
+pub(super) fn run_admitted_process(binary: &Path, args: &[String], dir: &Path, id: &str,
+    phase: &str, progress: Option<(f64, f64, f64)>, timeout: Option<Duration>, resource_id: Option<u64>) -> Result<(), String> {
+    run_process_inner(binary, args, dir, id, phase, progress, timeout, resource_id, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_process_inner(binary: &Path, args: &[String], dir: &Path, id: &str,
+    phase: &str, progress: Option<(f64, f64, f64)>, timeout: Option<Duration>, resource_id: Option<u64>, wait_for_launch: bool) -> Result<(), String> {
+    if wait_for_launch { checkpoint(id)?; }
+    else if stopped_or_paused(id) { return Err(RETRY_ADMISSION.into()); }
     let existing = jobs().lock().map_err(|e| e.to_string())?.get(id).map(|j| j.log_path.clone()).unwrap_or_default();
     let log_path = if existing.is_empty() { create_log(id)? } else { existing };
     let folder = Path::new(&log_path).parent().ok_or("Missing log folder")?;
@@ -65,7 +80,7 @@ pub(super) fn run_process(binary: &Path, args: &[String], dir: &Path, id: &str,
         job.process_name = binary.file_name().unwrap_or_default().to_string_lossy().into_owned();
         job.logs.push(format!("Launching {:?}; args={args:?}; working directory={}; stdout={}; stderr={}", binary, dir.display(), stdout_path.display(), stderr_path.display()));
     });
-    let threads = args.windows(2).filter(|pair| pair[0] == "-threads").last().map(|pair| pair[1].as_str()).unwrap_or("2");
+    let threads = args.windows(2).filter(|pair| pair[0] == "-threads" || pair[0] == "--threads").last().map(|pair| pair[1].as_str()).unwrap_or("2");
     let mut child = command(binary).env("OMP_NUM_THREADS", threads).args(args).current_dir(dir).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr))
         .spawn().map_err(|e| format!("{phase}: could not launch {}: {e}", binary.display()))?;
     super::studio_hardware::supervise_child(&mut child)?;

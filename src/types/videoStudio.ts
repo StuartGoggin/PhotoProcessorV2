@@ -7,7 +7,7 @@ export interface StudioReplay {
   enabled: boolean;
 }
 export type StudioStabilizationPreset = "off" | "gentle" | "balanced" | "strong" | "custom";
-export type StudioStabilizationMethod = "fast" | "quality";
+export type StudioStabilizationMethod = "fast" | "quality" | "gpuTripod";
 export type StudioWindReductionPreset = "off" | "light" | "moderate" | "strong";
 export type StudioClipWindReduction = "inherit" | StudioWindReductionPreset;
 export type StudioScoreTiming = "clipEnd" | "afterReplays" | "separateCard" | "clipStart" | "custom";
@@ -79,7 +79,7 @@ export interface StudioClip {
   stabilization: StudioStabilizationPreset;
   stabilizationMethod: StudioStabilizationMethod;
   customStabilization: StudioCustomStabilization;
-  // null/missing follows the project; applies only to enabled Quality stabilisation.
+  // null/missing follows the project in Quality; GPU Tripod is always rotation-locked.
   preventRotation?: boolean | null;
   framing: "edgeSafe" | "maxFrame" | "aggressiveCrop";
   reviewed: boolean;
@@ -105,6 +105,8 @@ export interface StudioClipRender {
   available?: boolean;
   titleStyleKey?: string;
   preventRotation?: boolean;
+  // Missing on legacy renders; identifies the opt-in GPU picture engine.
+  stabilizationEngine?: string;
 }
 export interface MusicSection {
   name: string;
@@ -218,7 +220,7 @@ export interface StudioJob {
   fps?: number;
   duration?: number;
   bitrateMbps?: number;
-  targets?: { clipId: string; sourcePath: string; revision: number; titleStyleKey?: string; preventRotation?: boolean }[];
+  targets?: { clipId: string; sourcePath: string; revision: number; titleStyleKey?: string; preventRotation?: boolean; stabilizationEngine?: string }[];
   artifacts?: { clipId: string; sourcePath: string; rendered: StudioClipRender }[];
   musicRequestId?: string;
   musicProjectPath?: string | null;

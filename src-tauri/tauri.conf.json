@@ -31,7 +31,8 @@
     "resources": [
       "scripts/face_scan.py",
       "resources/face-scan/**/*",
-      "tools/ffmpeg/**/*"
+      "tools/ffmpeg/**/*",
+      "tools/gpu-tripod/photogogo-gpu-tripod.exe"
     ],
     "icon": [
       "icons/32x32.png",

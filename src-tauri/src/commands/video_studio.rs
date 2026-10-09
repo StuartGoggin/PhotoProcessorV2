@@ -13,6 +13,7 @@ mod sequence;
 mod audio;
 mod graphics;
 mod stabilization;
+mod gpu_tripod;
 mod media;
 mod preview;
 mod review_frames;
@@ -136,6 +137,8 @@ pub struct ClipRender {
     pub title_style_key: String,
     #[serde(default)]
     pub prevent_rotation: bool,
+    #[serde(default)]
+    pub stabilization_engine: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -348,6 +351,8 @@ pub struct ClipTarget {
     pub title_style_key: String,
     #[serde(default)]
     pub prevent_rotation: bool,
+    #[serde(default)]
+    pub stabilization_engine: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -600,6 +605,9 @@ fn validate(p: &Project) -> Result<(), String> {
         if !["edgeSafe", "maxFrame", "aggressiveCrop"].contains(&c.framing.as_str()) {
             return Err("Unknown stabilisation preset".into());
         }
+        if c.stabilization != "off" && c.stabilization_method == "gpuTripod" && c.framing == "maxFrame" {
+            return Err("GPU Tripod requires the explicit 4% or 6% per-edge crop; Maximum frame is unsupported".into());
+        }
         if !c.duration.is_finite()
             || c.duration <= 0.
             || !c.title_seconds.is_finite()
@@ -665,7 +673,7 @@ fn validate_music_direction(direction: &MusicDirection) -> Result<(), String> {
 }
 fn validate_preset(preset: &str, method: &str, custom: &CustomStabilization) -> Result<(), String> {
     if !["off", "gentle", "balanced", "strong", "custom"].contains(&preset)
-        || !["fast", "quality"].contains(&method)
+        || !["fast", "quality", "gpuTripod"].contains(&method)
         || (preset == "custom" && method != "fast")
     {
         return Err("Unknown stabilisation preset or method (custom requires fast mode)".into());
@@ -2358,6 +2366,10 @@ fn render_clip(
         note_fragment(id, "Reused base fragment", &base_cache);
         base_cache.clone()
     } else {
+        if c.stabilization != "off" && c.stabilization_method == "gpuTripod" {
+            gpu_tripod::render_base(ff, p, c, &info, encoder_name,
+                offset, seconds, &generated_clean, work, id)?;
+        } else {
         let mut args = vec![
             "-ss".into(),
             offset.to_string(),
@@ -2397,6 +2409,7 @@ fn render_clip(
             base + span * analysis_share,
             span * (0.65 - analysis_share),
         )?;
+        }
         if preview {
             generated_clean
         } else {

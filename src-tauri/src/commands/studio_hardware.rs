@@ -587,6 +587,7 @@ fn pool() -> &'static (Mutex<Usage>, Condvar) {
 pub(super) struct ResourcePermit {
     threads: usize,
     memory: u64,
+    process_slots: usize,
     resource_pool: &'static (Mutex<Usage>, Condvar),
     id: Option<u64>,
 }
@@ -624,7 +625,7 @@ impl Drop for ResourcePermit {
     fn drop(&mut self) {
         let (lock, wake) = self.resource_pool;
         if let Ok(mut usage) = lock.lock() {
-            usage.processes = usage.processes.saturating_sub(1);
+            usage.processes = usage.processes.saturating_sub(self.process_slots);
             usage.threads = usage.threads.saturating_sub(self.threads);
             usage.memory = usage.memory.saturating_sub(self.memory);
             usage.completions = usage.completions.saturating_add(1);
@@ -676,12 +677,30 @@ fn acquire_in(
     height: u32,
     performance: &str,
     requested_threads: usize,
-    mut cancelled: impl FnMut() -> bool,
+    cancelled: impl FnMut() -> bool,
     memory_available: impl Fn() -> u64,
     on_wait: impl FnMut(Option<&str>),
 ) -> Result<ResourcePermit, String> {
+    acquire_in_slots(resource_pool, width, height, performance, requested_threads, 1, cancelled, memory_available, on_wait)
+}
+
+/// A Tripod worker owns one GPU process and two FFmpeg processes. Reserve all
+/// three atomically, avoiding sequential-permit deadlocks or hidden children.
+/// This first backend deliberately uses fixed, conservative admission instead
+/// of teaching the legacy adaptive controller an unmeasured workload class.
+pub(super) fn acquire_tripod(width: u32, height: u32, performance: &str,
+    cancelled: impl FnMut() -> bool, on_wait: impl FnMut(Option<&str>)) -> Result<ResourcePermit, String> {
+    let threads = policy(width, height, performance).threads.max(2);
+    acquire_in_slots(pool(), width, height, performance, threads, 3, cancelled, available_memory, on_wait)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn acquire_in_slots(resource_pool: &'static (Mutex<Usage>, Condvar), width: u32, height: u32,
+    performance: &str, requested_threads: usize, process_slots: usize,
+    mut cancelled: impl FnMut() -> bool, memory_available: impl Fn() -> u64,
+    on_wait: impl FnMut(Option<&str>)) -> Result<ResourcePermit, String> {
     let mut wait_reporter = MemoryWaitReporter::new(on_wait);
-    let memory = memory_per_process(width, height);
+    let memory = memory_per_process(width, height).saturating_mul(process_slots as u64);
     let cores = crate::utils::num_cpus().max(1);
     let cpu_limit = if performance == "max" {
         cores
@@ -703,13 +722,14 @@ fn acquire_in(
         }
         let memory_ok = usage.memory.saturating_add(memory) <= usage.memory_budget
             && available >= memory.saturating_add(MEMORY_HEADROOM);
-        if usage.processes < MAX_PROCESSES && usage.threads + threads <= cpu_limit && memory_ok {
-            usage.processes += 1;
+        if usage.processes + process_slots <= MAX_PROCESSES && usage.threads + threads <= cpu_limit && memory_ok {
+            usage.processes += process_slots;
             usage.threads += threads;
             usage.memory += memory;
             let permit = ResourcePermit {
                 threads,
                 memory,
+                process_slots,
                 resource_pool,
                 id: None,
             };
@@ -954,6 +974,7 @@ fn acquire_adaptive_in(
             let permit = ResourcePermit {
                 threads,
                 memory,
+                process_slots: 1,
                 resource_pool,
                 id: Some(id),
             };
@@ -1507,6 +1528,7 @@ mod tests {
         let held = ResourcePermit {
             threads: cores,
             memory,
+            process_slots: 1,
             resource_pool,
             id: None,
         };

@@ -1,7 +1,7 @@
 import { normalizeProject as normalizeHardware, newBackgroundMusic, type StudioClip, type StudioJob, type StudioProject } from "../types/videoStudio";
 import { effectiveWindReduction } from "./studioAudio";
 import { graphicsRecipe, titleStyleKey } from "./studioGraphics";
-import { effectivePreventRotation } from "./studioStabilization";
+import { effectivePreventRotation, effectiveStabilizationEngine } from "./studioStabilization";
 
 export const STUDIO_CLEARED = "studio-renders-cleared";
 export function resetProjectRenders(project: StudioProject): StudioProject {
@@ -20,7 +20,7 @@ export const suggestedBitrate = (width: number) => width === 3840 ? 32 : width =
 export const outputLabel = (p: Pick<StudioProject, "width" | "height" | "fps" | "bitrateMbps">) =>
   `${p.width}×${p.height} · ${p.fps} fps · ${p.bitrateMbps} Mbps`;
 
-// Shared v1-v4 value contract with native video_studio/sequence.rs. Compare recipes,
+// Shared v1-v5 value contract with native video_studio/sequence.rs. Compare recipes,
 // not cache/progress state or just counts. This is not a source-file hash check.
 export function sequenceRecipe(p: StudioProject): unknown[] {
   const recipe: unknown[] = [1, [p.name, p.title, p.subtitle, p.titleSeconds, p.openingTitleMode || "card"],
@@ -48,6 +48,12 @@ export function sequenceRecipe(p: StudioProject): unknown[] {
     while (recipe.length < 7) recipe.push(null);
     recipe.push([1, rotation]);
   }
+  const engines = p.clips.filter((c) => c.include).map((c) => [c.id, effectiveStabilizationEngine(c)]);
+  if (engines.some(([, engine]) => engine !== "")) {
+    recipe[0] = 5;
+    while (recipe.length < 8) recipe.push(null);
+    recipe.push([1, engines]);
+  }
   return recipe;
 }
 export type SequenceStatus = "current" | "outdated" | "unknown";
@@ -55,7 +61,8 @@ export function sequenceStatus(job: Pick<StudioJob, "sequence" | "targets">, p: 
   if (Array.isArray(job.sequence) && ((job.sequence.length === 5 && job.sequence[0] === 1)
       || (job.sequence.length === 6 && job.sequence[0] === 2)
       || (job.sequence.length === 7 && job.sequence[0] === 3)
-      || (job.sequence.length === 8 && job.sequence[0] === 4))) {
+      || (job.sequence.length === 8 && job.sequence[0] === 4)
+      || (job.sequence.length === 9 && job.sequence[0] === 5))) {
     return JSON.stringify(job.sequence) === JSON.stringify(sequenceRecipe(p)) ? "current" : "outdated";
   }
   // Legacy targets can prove a mismatch, but cannot establish a matching recipe.
@@ -69,7 +76,7 @@ export function sequenceStatus(job: Pick<StudioJob, "sequence" | "targets">, p: 
   return "unknown";
 }
 export function sequenceClipCount(job: Pick<StudioJob, "sequence" | "targets">): number | null {
-  if (Array.isArray(job.sequence) && [1, 2, 3, 4].includes(job.sequence[0]) && Array.isArray(job.sequence[4])) return job.sequence[4].length;
+  if (Array.isArray(job.sequence) && [1, 2, 3, 4, 5].includes(job.sequence[0]) && Array.isArray(job.sequence[4])) return job.sequence[4].length;
   return job.targets?.length ? job.targets.length : null;
 }
 export const normalizeProject = (p: StudioProject): StudioProject => ({
@@ -82,6 +89,7 @@ export function isClipReady(clip: StudioClip, p: StudioProject): boolean {
   return !!r?.signature && r.available !== false && r.revision === (clip.revision ?? 0) && r.width === p.width
     && r.height === p.height && r.fps === p.fps && r.bitrateMbps === p.bitrateMbps
     && (r.preventRotation ?? false) === effectivePreventRotation(p, clip)
+    && (r.stabilizationEngine ?? "") === effectiveStabilizationEngine(clip)
     && (r.titleStyleKey ?? "") === titleStyleKey(p, clip);
 }
 export function editClip(clip: StudioClip, patch: Partial<StudioClip>, project: Pick<StudioProject, "defaultPreventRotation"> = {}): StudioClip {
@@ -140,10 +148,11 @@ export function clipJob(clip: StudioClip, project: StudioProject, jobs: StudioJo
 function jobPictureSettingsMatch(job: StudioJob, clip: StudioClip, project: StudioProject): boolean {
   const target = job.targets?.find((candidate) => candidate.clipId === clip.id && candidate.sourcePath === clip.path && candidate.revision === (clip.revision ?? 0));
   if ((target?.preventRotation ?? false) !== effectivePreventRotation(project, clip)) return false;
+  if ((target?.stabilizationEngine ?? "") !== effectiveStabilizationEngine(clip)) return false;
   if (target?.titleStyleKey !== undefined) return target.titleStyleKey === titleStyleKey(project, clip);
   if (!clip.title.trim() || clip.titleSeconds <= 0) return true;
   const recipe = job.sequence;
-  const graphics = Array.isArray(recipe) && [3, 4].includes(recipe[0]) && Array.isArray(recipe[6]) ? recipe[6] : null;
+  const graphics = Array.isArray(recipe) && [3, 4, 5].includes(recipe[0]) && Array.isArray(recipe[6]) ? recipe[6] : null;
   const key = graphics?.[2] === true && Array.isArray(graphics[1]) ? JSON.stringify([1, ...graphics[1]]) : "";
   return key === titleStyleKey(project, clip);
 }

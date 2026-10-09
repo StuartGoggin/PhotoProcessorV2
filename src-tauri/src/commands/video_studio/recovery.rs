@@ -87,7 +87,7 @@ fn migrate_legacy_queue(path: &Path) -> Result<(), String> {
         request.kind = if request.preview { "preview" } else { "project" }.into();
         job.kind = request.kind.clone(); job.width = request.project.width; job.height = request.project.height;
         job.fps = request.project.fps; job.bitrate_mbps = effective_bitrate(&request.project);
-        job.targets = request.project.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(&request.project,c), prevent_rotation: stabilization::prevent_rotation(&request.project,c) }).collect();
+        job.targets = request.project.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(&request.project,c), prevent_rotation: stabilization::prevent_rotation(&request.project,c), stabilization_engine: stabilization::engine(c) }).collect();
         recover_status(&mut job);
         requests().lock().map_err(|e| e.to_string())?.insert(job.id.clone(), request);
         persist(&job)?;
@@ -193,7 +193,7 @@ pub(super) fn enqueue(request: RenderRequest) -> Result<String, String> {
         kind: request.kind.clone(), clip_id: request.clip_id.clone(),
         width: if request.preview { 1280 } else { p.width }, height: if request.preview { 720 } else { p.height },
         fps: p.fps, bitrate_mbps: effective_bitrate(p), duration: project_timeline_seconds(p),
-        targets: if request.kind == "music" { vec![] } else { p.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(p,c), prevent_rotation: stabilization::prevent_rotation(p,c) }).collect() },
+        targets: if request.kind == "music" { vec![] } else { p.clips.iter().filter(|c| c.include).map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(p,c), prevent_rotation: stabilization::prevent_rotation(p,c), stabilization_engine: stabilization::engine(c) }).collect() },
         sequence: if !request.preview && matches!(request.kind.as_str(), "project" | "assembly") { Some(sequence::recipe(p)) } else { None },
         music_request_id: if request.kind == "music" { p.music.request_id.clone() } else { String::new() },
         ..StudioJob::default()
@@ -320,6 +320,7 @@ pub(super) fn verify_clip(ff: &Path, p: &Project, clip: &Clip, rendered: &ClipRe
     if rendered.signature.is_empty() || rendered.signature != clip_signature(p, clip, root)?
         || rendered.width != p.width || rendered.height != p.height || rendered.fps != p.fps
         || rendered.bitrate_mbps != effective_bitrate(p)
+        || rendered.stabilization_engine != stabilization::engine(clip)
         || rendered.checksum.is_empty() || compute_md5(Path::new(&rendered.path)).ok().as_ref() != Some(&rendered.checksum)
         || !rendered_clip_is_valid(ff, Path::new(&rendered.path), p, rendered.duration) {
         return Err(format!("{} needs rendering again: edits, source, format or output changed", clip.chapter));
@@ -336,6 +337,7 @@ fn prepare_clip(format: &Project, mut clip: Clip, request: &RenderRequest, id: &
         candidates.extend(job.artifacts.iter().filter(|a| a.rendered.signature == key).map(|a| a.rendered.clone()));
     }
     let cached = candidates.into_iter().find(|r| r.signature == key && r.bitrate_mbps == effective_bitrate(format)
+        && r.stabilization_engine == stabilization::engine(&clip)
         && !r.checksum.is_empty() && compute_md5(Path::new(&r.path)).ok().as_ref() == Some(&r.checksum)
         && rendered_clip_is_valid(ff, Path::new(&r.path), format, r.duration));
     update(id, |job| job.logs.push(format!("Verification — {}: {:.2}s (full source hash and candidate output checks)", clip.chapter, verification_started.elapsed().as_secs_f64())));
@@ -355,6 +357,7 @@ fn prepare_clip(format: &Project, mut clip: Clip, request: &RenderRequest, id: &
             revision: clip.revision, signature: key, rendered_at: chrono::Utc::now().to_rfc3339(),
             title_style_key: graphics::title_style_key(format, &clip),
             prevent_rotation: stabilization::prevent_rotation(format, &clip),
+            stabilization_engine: stabilization::engine(&clip),
         }
     };
     rendered.revision = clip.revision;

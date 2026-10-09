@@ -60,6 +60,11 @@ Import-MsvcBuildEnvironment
     -BundleDirectory (Join-Path $repoRoot 'src-tauri/tools/ffmpeg') `
     -SourceArchive $MediaSourceArchive
 
+# The optional hardware worker is original source, built against the installed
+# Windows SDK. Do not package a stale generated executable from a prior checkout.
+& (Join-Path $PSScriptRoot 'build-gpu-tripod.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'GPU Tripod worker build/validation failed.' }
+
 $cargo = Get-Command cargo.exe -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1
 if (-not $cargo) {

@@ -108,10 +108,11 @@ export default function StudioProjectSettings({
             Stabiliser for new clips
             <select className={input} value={project.defaultStabilizationMethod} onChange={(e) => onChange({
               defaultStabilizationMethod: e.target.value as StudioProject["defaultStabilizationMethod"],
-              ...(e.target.value === "quality" && project.defaultStabilization === "custom" ? { defaultStabilization: "balanced" as const } : {}),
+              ...(e.target.value !== "fast" && project.defaultStabilization === "custom" ? { defaultStabilization: "balanced" as const } : {}),
             })}>
               <option value="fast">Fast — one pass</option>
               <option value="quality">Quality — two passes</option>
+              <option value="gpuTripod">GPU Tripod — experimental</option>
             </select>
           </label>
           <label>
@@ -148,6 +149,7 @@ export default function StudioProjectSettings({
         <p id="studio-project-rotation-help" className="text-xs text-gray-400">
           For roll-locked tripod footage in Quality mode. Following clips, including existing clips, use this setting immediately;
           individual On/Off overrides are kept. Only clips whose effective setting changes need review and re-rendering from the originals.
+          GPU Tripod always prevents added rotation when enabled, regardless of this Quality-only default.
           Fast mode and stabilisation Off are unaffected. Saved jobs and exported files are unchanged.
         </p>
         <label className="flex items-start gap-2 text-sm">
@@ -167,11 +169,17 @@ export default function StudioProjectSettings({
             </span>
           </span>
         </label>
-        {project.defaultStabilization === "custom" && <StudioStabilizationFields value={project.defaultCustomStabilization} onChange={(defaultCustomStabilization) => onChange({ defaultCustomStabilization })} />}
+        {project.defaultStabilizationMethod === "fast" && project.defaultStabilization === "custom" && <StudioStabilizationFields value={project.defaultCustomStabilization} onChange={(defaultCustomStabilization) => onChange({ defaultCustomStabilization })} />}
         <p className="text-sm text-gray-400">
           Fast stabilisation estimates movement while rendering, with no separate shake-analysis pass.
           Quality uses two passes and takes longer. The stabiliser and preset defaults apply to newly added clips; existing clips keep those settings until you apply them below.
         </p>
+        {project.defaultStabilizationMethod === "gpuTripod" && <p className="text-xs text-cyan-200">
+          Experimental GPU Tripod uses supported Windows hardware for horizontal/vertical motion analysis and picture warping, with no added rotation or local deformation.
+          It reduces correction when visual evidence is weak; it cannot reliably distinguish a moving subject from the camera in every scene.
+          Preview close-up subjects and tracking pans. Hardware is checked before rendering; if unavailable, choose Fast or Quality explicitly.
+          Decoding and transfer for encoding still use the CPU, so speed depends on the footage and machine.
+        </p>}
         <p className="text-xs text-gray-400">
           {project.encoderPreference === "cpu"
             ? "CPU encoding is selected for this project. Change Encoder above to use available hardware."
