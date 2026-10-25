@@ -94,5 +94,30 @@ success from transferred bytes alone.
 
 ## Publication
 
-GitHub and Slack delivery receipts will be added after their live read-back.
-The destination is GoggoVille #swghermes, metadata-error thread 1792958256.790289.
+GitHub publication was read back successfully. Both remote main and
+SWG/bundled-exiftool pointed to 33970c1c853e91ec26787ac41e8b0f9e7d834bc0;
+annotated tag v2.0.34 has object 8e98c8da39e3284c0a117a4073b2d62f718b69ab
+and peels to that same receipt commit. A later documentation-only commit records
+the delivery below; the release tag remains fixed.
+
+Delivered to GoggoVille #swghermes (C0BDK1DDZTM), metadata-error thread
+1792958256.790289, through the Personal Slack connection:
+
+| Delivery | File ID | Message timestamp | Upload acknowledgement |
+| --- | --- | --- | --- |
+| EXE | F0CC0JTV1HQ | 1792964372.944339 | HTTP 200, OK - 71115157 |
+| MSI | F0CBVFSPUG5 | 1792964497.878159 | HTTP 200, OK - 91964691 |
+
+The exact local length and SHA-256 were checked again immediately before each
+upload. Both files were finalized/shared once, then the full thread was read
+back. It shows the expected filenames/IDs, portable-executable versus binary
+MIME metadata, 67.8 MiB and 87.7 MiB displayed sizes, and the complete testing
+instructions. This is byte-acknowledgement and attachment-metadata verification,
+not a remote download/checksum comparison.
+
+Release message timestamp 1792964547.825429:
+https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792964547825429.
+It includes both installer checksums, the GitHub tag, the existing unchanged
+FFmpeg corresponding-source attachment, metadata readiness steps and the separate
+account-error boundary. No repeated request to install a standalone metadata
+tool, no deployment-PC operation and no live Google upload was performed.
