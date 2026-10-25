@@ -49,6 +49,9 @@ Copy-Item -LiteralPath (Join-Path $exif 'LICENSE') -Destination (Join-Path $runt
 New-Item -ItemType Directory -Path (Join-Path $runtime 't/images') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $exif 't/images/ICC_Profile.icc') -Destination (Join-Path $runtime 't/images/ICC_Profile.icc')
 Copy-Item -LiteralPath (Join-Path $repo 'resources/exiftool-NOTICE.txt') -Destination (Join-Path $destination 'PhotoGoGo-NOTICE.txt')
+# Perl's installation marks modules read-only. Keep build resources writable so
+# Tauri can refresh its generated resource copy on later builds; bytes stay pinned.
+Get-ChildItem -LiteralPath $destination -Recurse -Force -File | ForEach-Object { $_.IsReadOnly=$false }
 $lockPath=Join-Path $PSScriptRoot 'exiftool-bundle.lock.json'
 if ($WriteLock) {
     $files=@(Get-ChildItem -LiteralPath $destination -Recurse -Force -File | Sort-Object FullName | ForEach-Object { [ordered]@{path=[IO.Path]::GetRelativePath($destination,$_.FullName).Replace('\','/');bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()} })

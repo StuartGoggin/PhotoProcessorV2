@@ -30,7 +30,8 @@ Restoration errors identify the partial outcome instead of claiming no write.
 
 ## Validation
 
-- Native regressions: 250 passed, zero failed, 23 opt-in tests ignored.
+- Native regressions after integrating current main's Name Events changes:
+  262 passed, zero failed, 23 opt-in tests ignored.
 - Both separately run real-runtime tests passed on the final source-built
   candidate. The upload-copy test covers Enhanced/B&W, GPS retain/remove,
   portrait dimensions/orientation, capture date/offset/subseconds, compatible
@@ -38,12 +39,13 @@ Restoration errors identify the partial outcome instead of claiming no write.
   unchanged source hashes. The tag test verifies Unicode text, unchanged image
   pixels and historical modification-time preservation.
 - Final full acceptance receipt:
-  test-output/exiftool-runtime-20261025T211359822Z/report.json.
+  test-output/exiftool-runtime-20261025T212330177Z/report.json.
 - Acceptance relocated the runtime into a path with spaces, accents and CJK
   characters, removed PATH dependencies, and supplied hostile Perl environment
   variables and user config. Missing/tampered payload files were rejected.
 - Google Photos browser regressions: 16 groups passed. Google Jobs browser
   regressions: seven groups passed. TypeScript/frontend production build passed.
+  Integrated Name Events naming-rule and browser checks also passed.
 - Independent review checked all 2,204 lock entries, all 246 ExifTool libraries
   and upstream script against source, complete source archives/recipe/notices,
   and all 52 native binaries against the accepted Perl build.
