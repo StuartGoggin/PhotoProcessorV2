@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import { ProgressBar } from "../components";
 import StudioJobs from "../components/StudioJobs";
+import GooglePhotoJobCard from "../components/GooglePhotoJobCard";
+import { useGooglePhotoJobs } from "../hooks/useJobsMonitor";
+import type { GooglePhotosJob, GooglePhotosStatus } from "../types/googlePhotos";
 import ImportSchedulingStatus, { ImportJobSchedulingStatus } from "../components/ImportSchedulingStatus";
 import { formatImportRate } from "../utils/importScheduling";
 import { getProcessAttemptLabel, getProcessResultLabel, getProcessResultToken } from "../utils";
@@ -77,7 +80,22 @@ function summarizeLabels(values: string[]): Array<{ label: string; count: number
     .map(([label, count]) => ({ label, count }));
 }
 
-export default function Jobs({ initialView = "active" }: { initialView?: JobsView }) {
+export interface GooglePhotosJobsSnapshot {
+  jobs: GooglePhotosJob[];
+  account: GooglePhotosStatus["account"];
+  error: string | null;
+  refresh: () => Promise<void>;
+}
+export default function Jobs({ initialView = "active", googlePhotos }: { initialView?: JobsView; googlePhotos?: GooglePhotosJobsSnapshot }) {
+  const fallbackGoogle = useGooglePhotoJobs(!googlePhotos);
+  const googleJobs = googlePhotos?.jobs ?? fallbackGoogle.googlePhotosJobs;
+  const googleAccount = googlePhotos ? googlePhotos.account : fallbackGoogle.googlePhotosAccount;
+  const googleError = googlePhotos ? googlePhotos.error : fallbackGoogle.googlePhotosError;
+  const refreshGoogle = googlePhotos?.refresh ?? fallbackGoogle.refreshGooglePhotos;
+  const [googleBusy, setGoogleBusy] = useState("");
+  const googleActionPending = useRef(false);
+  const [googleMessage, setGoogleMessage] = useState("");
+  const [googleActionError, setGoogleActionError] = useState("");
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [processJobs, setProcessJobs] = useState<ProcessJob[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +104,18 @@ export default function Jobs({ initialView = "active" }: { initialView?: JobsVie
   const [view, setView] = useState<JobsView>(initialView);
   useEffect(() => setView(initialView), [initialView]);
   const [expandedProcessLogs, setExpandedProcessLogs] = useState<Record<string, boolean>>({});
+
+  async function googleAction(name: string, action: () => Promise<unknown>, success = "") {
+    if (googleActionPending.current) return;
+    googleActionPending.current = true; setGoogleBusy(name); setGoogleActionError(""); setGoogleMessage("");
+    try { await action(); setGoogleMessage(success); await refreshGoogle(); }
+    catch (error) { setGoogleActionError(String(error)); }
+    finally { googleActionPending.current = false; setGoogleBusy(""); }
+  }
+  async function googleControl(job: GooglePhotosJob, action: "pause" | "resume" | "retry") {
+    if (action !== "pause" && googleAccount?.id !== job.accountId) { setGoogleActionError("Reconnect the original Google account and OAuth client before continuing this job."); return; }
+    await googleAction(`${action}-${job.id}`, () => invoke("google_photos_control", { jobId: job.id, action }));
+  }
 
   async function loadJobs(showLoading = true) {
     // Keep automatic refreshes quiet; initial/manual refreshes still give feedback.
@@ -293,6 +323,16 @@ export default function Jobs({ initialView = "active" }: { initialView?: JobsVie
           {error}
         </div>
       )}
+
+      <section aria-label="Google Photos upload jobs" className="space-y-3 mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm uppercase tracking-wide text-gray-400">Google Photos jobs</h3><button className="btn-secondary" onClick={() => void refreshGoogle()}>Refresh Google Photos jobs</button></div>
+        <p className="text-xs text-gray-400">Saved upload attempts and recovery remain available here. Clearing import/process history never removes Google Photos receipts or albums.</p>
+        {googleError && <p role="alert" className="text-sm text-amber-200">{googleError}</p>}
+        {googleActionError && <p role="alert" className="text-sm text-red-300">{googleActionError}</p>}
+        {googleMessage && <p role="status" className="text-sm text-emerald-200">{googleMessage}</p>}
+        {[...googleJobs].sort((a,b) => b.createdAt.localeCompare(a.createdAt)).filter(job => matchesJobsView(job, view)).map(job => <GooglePhotoJobCard key={job.id} job={job} account={googleAccount} busy={!!googleBusy} run={googleAction} control={googleControl} />)}
+        {!googleJobs.some(job => matchesJobsView(job, view)) && <p className="text-sm text-gray-400">No Google Photos jobs in this view.</p>}
+      </section>
 
       <div className="card mb-6">
         <StudioJobs view={view} />

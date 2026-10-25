@@ -13,15 +13,16 @@ export const JOBS_VIEWS: ReadonlyArray<{ id: JobsView; label: string }> = [
   { id: "attention", label: "Needs attention" },
   { id: "history", label: "History" },
 ];
+const ACTIVE_STATES = ["running", "queued", "paused", "preparing", "uploading", "committing"];
 export function isActiveJob(job: JobSummary): boolean {
-  return ["running", "queued", "paused"].includes(job.status);
+  return ACTIVE_STATES.includes(job.status);
 }
 export function jobNeedsAttention(job: JobSummary): boolean {
   // Superseded errors remain visible in History, not a perpetual alert.
   if (job.status === "retried") return false;
   return ["failed", "interrupted", "aborted", "cancelled"].includes(job.status)
     || Boolean(job.error || job.persistenceError || job.errors?.length)
-    || !["running", "queued", "paused", "completed"].includes(job.status);
+    || !(ACTIVE_STATES.includes(job.status) || job.status === "completed");
 }
 export function matchesJobsView(job: JobSummary, view: JobsView): boolean {
   if (view === "active") return isActiveJob(job);

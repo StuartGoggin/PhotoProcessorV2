@@ -44,6 +44,8 @@ fixture.__TAURI_INTERNALS__ = { convertFileSrc: () => "", invoke: async (command
   }
   if (command === "list_sd_cards" || command === "list_process_jobs") return [];
   if (command === "list_import_jobs") return fixture.__importJobs;
+  if (command === "google_photos_list_jobs") return [];
+  if (command === "google_photos_status") return { configured: false, connecting: false, account: null };
   if (command === "studio_start_render") {
     (window as any).__lastStudioRequest = args;
     return "preview-job";

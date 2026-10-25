@@ -45,7 +45,7 @@ export default function App() {
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
-  const { importJobs, processJobs, studioJobs, loading, error } = useJobsMonitor(true, 500);
+  const { importJobs, processJobs, studioJobs, googlePhotosJobs, googlePhotosAccount, googlePhotosError, refreshGooglePhotos, loading, error } = useJobsMonitor(true, 500, true);
   function openJobs(view: JobsView = "active") {
     setJobsView(view);
     setJobsNavigation((value) => value + 1);
@@ -108,7 +108,7 @@ export default function App() {
     videosnapshots: null,
     nameevents: <NameEvents />,
     cleanup: <Cleanup />,
-    jobs: <Jobs key={jobsNavigation} initialView={jobsView} />,
+    jobs: <Jobs key={jobsNavigation} initialView={jobsView} googlePhotos={{ jobs: googlePhotosJobs, account: googlePhotosAccount, error: googlePhotosError, refresh: refreshGooglePhotos }} />,
     postprocess: <PostProcess onOpenJobs={() => openJobs()} />,
     review: <Review />,
     transfer: <Transfer />,
@@ -187,7 +187,7 @@ export default function App() {
       </div>
 
       {/* Jobs panel (bottom frame) */}
-      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} loading={loading} error={error} onOpenJobs={openJobs} preferCollapsed={page === "videostudio" || page === "videosnapshots"} />
+      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} googlePhotosJobs={googlePhotosJobs} googlePhotosAccount={googlePhotosAccount} googlePhotosError={googlePhotosError} refreshGooglePhotos={refreshGooglePhotos} loading={loading} error={error} onOpenJobs={openJobs} preferCollapsed={page === "videostudio" || page === "videosnapshots"} />
     </div>
   );
 }

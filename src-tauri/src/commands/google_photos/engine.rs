@@ -1,6 +1,7 @@
 //! Durable write-ahead job engine. One process/account worker lease is held by
 //! the caller throughout drive(); every external mutation has saved intent.
 use super::{
+    diagnostics::{self, Outcome, Stage},
     metadata::{self, Prepared},
     model::*,
     store::GoogleStore,
@@ -47,6 +48,8 @@ pub struct Job {
     pub errors: Vec<String>,
     pub retry_after: i64,
     pub original_hashes: Vec<(String, String)>,
+    #[serde(default)]
+    pub diagnostics: Vec<diagnostics::Event>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -183,6 +186,7 @@ impl Job {
             errors: Vec::new(),
             retry_after: 0,
             original_hashes,
+            diagnostics: Vec::new(),
         })
     }
     pub fn summary(&self) -> JobSummary {
@@ -333,22 +337,50 @@ fn verify_item(
         .ok_or("Missing media registration receipt.")?
         .id
         .clone();
-    let results = api.verify(std::slice::from_ref(&id))?;
-    let result = results
+    diagnostics::note(job, Stage::VerifyMedia, Some(index), Outcome::Started, None);
+    job.save(store)?;
+    let verified = api.verify(std::slice::from_ref(&id)).and_then(|results| {
+        let result = results
         .into_iter()
         .find(|m| m.id == id)
         .ok_or("Google did not confirm the registered media ID.")?;
-    if let Some(prepared) = &job.items[index].prepared {
+        if let Some(prepared) = &job.items[index].prepared {
         // Google reports display dimensions; portrait EXIF may swap raw pixels.
         if !((result.width == prepared.width as u64 && result.height == prepared.height as u64)
             || (result.width == prepared.height as u64 && result.height == prepared.width as u64))
         {
             return Err("Google's reported photo dimensions differ from the full-resolution upload. Needs review; not marked successful.".into());
         }
-    }
+        }
+        Ok(result)
+    });
+    let result = match verified {
+        Ok(result) => result,
+        Err(error) => {
+            // Keep the registered receipt and checkpoint. Retry must verify the
+            // same ID, never turn a read-back failure into another byte upload.
+            job.items[index].error = Some(error.clone());
+            diagnostics::note(
+                job,
+                Stage::VerifyMedia,
+                Some(index),
+                Outcome::Failed,
+                Some(&error),
+            );
+            job.save(store)?;
+            return Err(error);
+        }
+    };
     job.items[index].media = Some(result);
     job.items[index].state = "verified".into();
     job.items[index].error = None;
+    diagnostics::note(
+        job,
+        Stage::VerifyMedia,
+        Some(index),
+        Outcome::Succeeded,
+        None,
+    );
     job.save(store)?;
     remember(store, job, index)?;
     // Only copies whose exact prepared bytes are no longer needed for recovery
@@ -381,6 +413,7 @@ fn upload_item(
     if job.items[index].prepared.is_none() {
         stop_requested(stop)?;
         job.items[index].state = "preparing".into();
+        diagnostics::note(job, Stage::Prepare, Some(index), Outcome::Started, None);
         job.save(store)?;
         let extension = Path::new(&item.path)
             .extension()
@@ -456,6 +489,8 @@ fn upload_item(
         job.items[index].session = None;
     }
     stop_requested(stop)?;
+    diagnostics::note(job, Stage::UploadBytes, Some(index), Outcome::Started, None);
+    job.save(store)?;
     if job.items[index].session.is_none() {
         let name = Path::new(&item.path)
             .file_name()
@@ -547,6 +582,13 @@ fn upload_item(
             job.items[index].token = Some(token);
             job.items[index].token_at = chrono::Utc::now().timestamp();
             job.items[index].state = "uploaded_bytes".into();
+            diagnostics::note(
+                job,
+                Stage::UploadBytes,
+                Some(index),
+                Outcome::Succeeded,
+                None,
+            );
             job.save(store)?;
             return Ok(());
         }
@@ -581,6 +623,7 @@ pub fn drive(
     }
     job.status = "running".into();
     job.errors.clear();
+    diagnostics::note(job, Stage::Preflight, None, Outcome::Started, None);
     job.save(store)?;
     // Recheck immutable local evidence before the FIRST external write, not
     // after creating an album that may otherwise end up empty.
@@ -642,6 +685,7 @@ pub fn drive(
         });
         if job.albums[album_index].id.is_none() && has_work {
             job.albums[album_index].state = "creating".into();
+            diagnostics::note(job, Stage::CreateAlbum, None, Outcome::Started, None);
             job.save(store)?;
             match api.create_album(&job.albums[album_index].title) {
                 Ok(Album {
@@ -651,6 +695,7 @@ pub fn drive(
                     job.albums[album_index].product_url = product_url;
                     job.albums[album_index].state = "ready".into();
                     job.albums[album_index].title_done = true;
+                    diagnostics::note(job, Stage::CreateAlbum, None, Outcome::Succeeded, None);
                     job.save(store)?;
                     save_album_mapping(store, job, album_index)?;
                 }
@@ -678,9 +723,12 @@ pub fn drive(
             .ok_or("Job album is unavailable.")?;
         if !job.albums[album_index].title_done || job.albums[album_index].product_url.is_empty() {
             stop_requested(stop)?;
+            diagnostics::note(job, Stage::AlbumDetails, None, Outcome::Started, None);
+            job.save(store)?;
             let confirmed = api.update_title(&album_id, &job.albums[album_index].title)?;
             job.albums[album_index].product_url = confirmed.product_url;
             job.albums[album_index].title_done = true;
+            diagnostics::note(job, Stage::AlbumDetails, None, Outcome::Succeeded, None);
             job.save(store)?;
         }
         save_album_mapping(store, job, album_index)?;
@@ -733,6 +781,7 @@ pub fn drive(
             for index in batch {
                 job.items[*index].state = "registering".into();
             }
+            diagnostics::note(job, Stage::RegisterMedia, None, Outcome::Started, None);
             job.save(store)?;
             let results = api.register(&album_id, &payload)?;
             let mut failure = None;
@@ -741,18 +790,32 @@ pub fn drive(
                 let matching: Vec<_> = results.iter().filter(|r| r.token == token).collect();
                 if matching.len() != 1 {
                     job.items[*index].error = Some("Google registration result is missing/ambiguous. Retry safely reuses these exact prepared bytes.".into());
-                    failure = job.items[*index].error.clone();
+                    failure = job.items[*index].error.clone().map(|error| (*index, error));
                 } else {
                     match &matching[0].result {
                         Ok(media) => {
                             job.items[*index].media = Some(media.clone());
                             job.items[*index].state = "registered".into();
                             job.items[*index].error = None;
+                            diagnostics::note(
+                                job,
+                                Stage::RegisterMedia,
+                                Some(*index),
+                                Outcome::Succeeded,
+                                None,
+                            );
                         }
                         Err(error) => {
                             job.items[*index].state = "failed".into();
                             job.items[*index].error = Some(error.clone());
-                            failure = Some(error.clone());
+                            failure = Some((*index, error.clone()));
+                            diagnostics::note(
+                                job,
+                                Stage::RegisterMedia,
+                                Some(*index),
+                                Outcome::Failed,
+                                Some(error),
+                            );
                         }
                     }
                 }
@@ -765,7 +828,18 @@ pub fn drive(
                     cleanup_copy(job, *index, workspace)?;
                 }
             }
-            if let Some(error) = failure {
+            if let Some((index, error)) = failure {
+                // Successful siblings were verified after registration. Restore
+                // the actual failure context before the outer job error handler
+                // logs it; otherwise the healthy sibling would be blamed.
+                diagnostics::note(
+                    job,
+                    Stage::RegisterMedia,
+                    Some(index),
+                    Outcome::Failed,
+                    Some(&error),
+                );
+                job.save(store)?;
                 return Err(error);
             }
         }
@@ -781,9 +855,13 @@ pub fn drive(
                     .as_ref()
                     .ok_or("Selected cover was not successfully uploaded.")?;
                 stop_requested(stop)?;
-                api.cover(&album_id, &media.id)?;
+                let media_id = media.id.clone();
+                diagnostics::note(job, Stage::AlbumCover, Some(index), Outcome::Started, None);
+                job.save(store)?;
+                api.cover(&album_id, &media_id)?;
             }
             job.albums[album_index].cover_done = true;
+            diagnostics::note(job, Stage::AlbumCover, None, Outcome::Succeeded, None);
             job.save(store)?;
         }
     }
@@ -797,6 +875,7 @@ pub fn drive(
         "completed"
     }
     .into();
+    diagnostics::note(job, Stage::Job, None, Outcome::Succeeded, None);
     job.save(store)
 }
 fn cleanup_copy(job: &Job, index: usize, workspace: &Path) -> Result<(), String> {
@@ -830,7 +909,8 @@ pub fn finish_error(
     stopped: bool,
 ) -> Result<(), String> {
     job.status = if stopped { "paused" } else { "needs_attention" }.into();
-    if error.contains("429") {
+    diagnostics::finish(job, &error, stopped);
+    if diagnostics::rate_limited(&error) {
         job.retry_after = chrono::Utc::now().timestamp() + 30;
     }
     if !stopped && !job.errors.contains(&error) {

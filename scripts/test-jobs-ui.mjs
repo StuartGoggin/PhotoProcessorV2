@@ -11,6 +11,7 @@ async function compile(path, imports = {}) {
   let compiled = ts.transpileModule(source, { compilerOptions: {
     module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX,
   } }).outputText;
+  compiled = compiled.replace(/^import\s+["'][^"']+\.css["'];?\s*$/gm, "");
   for (const [name, url] of Object.entries({
     react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
     "@tauri-apps/api/core": import.meta.resolve("@tauri-apps/api/core"), ...imports,
@@ -27,9 +28,12 @@ const diagnosticsUrl = await compile("../src/components/StudioJobDiagnostics.tsx
 const jobTileUrl = await compile("../src/components/JobTile.tsx", { "../utils": processUrl, "./ImportSchedulingStatus": importStatusUrl });
 const jobConsoleUrl = await compile("../src/components/JobConsole.tsx", { "../utils": processUrl, "./ImportSchedulingStatus": importStatusUrl, "../utils/importScheduling": importUrl });
 const studioTileUrl = await compile("../src/components/StudioJobTile.tsx", { "./StudioJobDiagnostics": diagnosticsUrl });
+const googleUtilsUrl = await compile("../src/utils/googlePhotos.ts");
+const googleCardUrl = await compile("../src/components/GooglePhotoJobCard.tsx", { "../utils/googlePhotos": googleUtilsUrl });
 const panelUrl = await compile("../src/components/JobsPanel.tsx", {
   "../types/videoStudio": modelUrl, "../utils/jobsView": jobsUrl, "./JobTile": jobTileUrl,
   "./JobConsole": jobConsoleUrl, "./StudioJobTile": studioTileUrl, "./ImportSchedulingStatus": importStatusUrl,
+  "./GooglePhotoJobCard": googleCardUrl,
 });
 const { isActiveJob, jobNeedsAttention, matchesJobsView, countJobs, readPanelSize } = await import(jobsUrl);
 const { default: JobsPanel } = await import(panelUrl);
@@ -64,6 +68,21 @@ test("attention includes partial failures and lost checkpoints even during execu
 });
 test("mixed-family counts distinguish recoverable interruption from active", () => {
   assert.deepEqual(countJobs([importJob("running"), importJob("completed"), studioJob("interrupted"), studioJob("paused")]), { active: 2, attention: 1, history: 2 });
+});
+
+test("Google execution phases are active and failed or unverified attempts need attention", () => {
+  for (const status of ["preparing", "uploading", "committing"]) {
+    assert.equal(isActiveJob({ status }), true, status);
+    assert.equal(jobNeedsAttention({ status }), false, status);
+  }
+  for (const status of ["needs_attention", "completed_with_errors", "waiting_for_account"]) assert.equal(jobNeedsAttention({ status }), true, status);
+});
+
+test("dock counts saved Google failures and renders active cloud tiles without mixing local job types", () => {
+  const google = (status, id) => ({ id, status, accountId: "client:subject", accountEmail: "test@example.test", createdAt: "2026-10-26T00:00:00Z", done: 1, total: 3, uploaded: 0, skipped: 0, failed: 1, bytesDone: 100, totalBytes: 300, currentFile: "horse.jpg", albums: [{ key: "event", title: "Synthetic cloud event" }], errors: status === "needs_attention" ? ["Read-back unavailable"] : [] });
+  const markup = render(JobsPanel, { importJobs: [importJob("running")], processJobs: [], googlePhotosJobs: [google("uploading", "cloud-active"), google("needs_attention", "cloud-failed")] });
+  assert.match(markup, /2 active/); assert.match(markup, /Needs attention \(1\)/); assert.match(markup, /History \(1\)/);
+  assert.match(markup, /Select Google Photos job cloud-active/); assert.doesNotMatch(markup, /Select Google Photos job cloud-failed/);
 });
 test("preference reading is SSR safe and resilient to invalid or unavailable storage", () => {
   assert.equal(readPanelSize("jobsPanelHeight", 280, 180, 560), 280);

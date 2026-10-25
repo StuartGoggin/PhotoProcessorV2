@@ -1,6 +1,7 @@
 //! Google Photos publishing is an additive export, not a cloud-library sync.
 //! Only this module owns cloud credentials, immutable plans and resumable jobs.
 mod catalogue;
+mod diagnostics;
 mod engine;
 mod metadata;
 pub mod model;
@@ -261,6 +262,8 @@ fn spawn_worker(app: AppHandle, mut job: Job, lease: File) -> Result<(), String>
             let _clear = Clear;
             let result = (|| {
                 let store = protected(&app)?;
+                diagnostics::note(&mut job, diagnostics::Stage::Account, None, diagnostics::Outcome::Started, None);
+                job.save(&store)?;
                 same_account(&store, &job.plan.account_id)?;
                 let _ = oauth::access_token(&store, &job.plan.account_id)?;
                 let account_id = job.plan.account_id.clone();
@@ -338,6 +341,14 @@ pub fn google_photos_list_jobs(app: AppHandle) -> Result<Vec<JobSummary>, String
     }
     jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(jobs)
+}
+#[tauri::command]
+pub async fn google_photos_job_diagnostics(app: AppHandle, job_id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = protected(&app)?;
+        let job = load_job(&store, &job_id)?;
+        Ok(diagnostics::report(&job))
+    }).await.map_err(|_| "Could not read the saved Google Photos diagnostics. No upload was started.")?
 }
 #[tauri::command]
 pub async fn google_photos_control(

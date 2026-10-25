@@ -129,6 +129,7 @@ struct FakeGoogle {
     lose_album_response: bool,
     partial_registration_once: bool,
     fail_verify_once: bool,
+    verify_error_once: Option<String>,
     begin_granularity: Option<u64>,
     query_error_once: Option<String>,
     pause_after_first_chunk: Option<Arc<AtomicBool>>,
@@ -245,6 +246,9 @@ impl GoogleApi for FakeGoogle {
     }
     fn verify(&mut self, ids: &[String]) -> Result<Vec<Media>, String> {
         self.verifies += 1;
+        if let Some(error) = self.verify_error_once.take() {
+            return Err(error);
+        }
         if self.fail_verify_once {
             self.fail_verify_once = false;
             return Err("Simulated read-back interruption".into());
@@ -320,8 +324,22 @@ fn partial_registration_success_is_durable_and_retry_only_registers_failed_item(
         partial_registration_once: true,
         ..Default::default()
     };
-    assert!(fixture.drive(&mut api, &stop).is_err());
+    let error = fixture.drive(&mut api, &stop).unwrap_err();
+    finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
     fixture.reload();
+    let report = diagnostics::report(&fixture.job);
+    assert!(
+        !report
+            .lines()
+            .any(|line| line.contains("Read back registered media | Failed")),
+        "A registration failure must not be attributed to a successfully verified sibling photo"
+    );
+    let last_failure = report
+        .lines()
+        .rev()
+        .find(|line| line.contains("| Failed"))
+        .unwrap();
+    assert!(last_failure.contains("Register uploaded media") && last_failure.contains("photo 2"));
     assert_eq!(fixture.job.items[0].state, "verified");
     assert_eq!(fixture.job.items[1].state, "failed");
     let first_media = fixture.job.items[0].media.as_ref().unwrap().id.clone();
@@ -358,6 +376,95 @@ fn registered_media_resumes_readback_without_new_registration_or_upload() {
         fixture.workspace.read_dir().unwrap().next().is_none(),
         "read-back recovery must also remove its verified upload copy"
     );
+}
+
+#[test]
+fn failed_readback_saves_per_photo_diagnostics_and_retry_never_reuploads() {
+    let mut fixture = Fixture::new(1);
+    let stop = AtomicBool::new(false);
+    let mut api = FakeGoogle {
+        verify_error_once: Some("Google media read-back failed: PERMISSION_DENIED (code 7). private@example.test bearer fixture-secret https://invalid.test/private?token=fixture".into()),
+        ..Default::default()
+    };
+    let error = fixture.drive(&mut api, &stop).unwrap_err();
+    finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+    fixture.reload();
+    assert_eq!(fixture.job.status, "needs_attention");
+    assert_eq!(fixture.job.items[0].state, "registered");
+    assert!(fixture.job.items[0].error.is_some());
+    assert_eq!(fixture.job.summary().failed, 1);
+    assert_eq!(fixture.job.summary().uploaded, 0);
+    let report = diagnostics::report(&fixture.job);
+    for expected in [
+        "Read back registered media",
+        "PERMISSION_DENIED (code 7)",
+        "photo 1",
+        "registered receipt saved",
+        "not confirmation of upload success",
+    ] {
+        assert!(report.contains(expected), "Missing {expected} in report");
+    }
+    for private in [
+        "private@example",
+        "fixture-secret",
+        "invalid.test",
+        "token=fixture",
+        "test-session",
+        "media-token",
+        "horse-0",
+        "client-A-account",
+        fixture.photos.to_str().unwrap(),
+    ] {
+        assert!(
+            !report.contains(private),
+            "Private data in diagnostic export"
+        );
+    }
+    assert!(fixture
+        .store
+        .load::<Vec<LedgerEntry>>("ledger")
+        .unwrap()
+        .is_none());
+    let receipt = fixture.job.items[0].media.as_ref().unwrap().id.clone();
+    fixture.drive(&mut api, &stop).unwrap();
+    fixture.reload();
+    assert_eq!(fixture.job.items[0].state, "verified");
+    assert_eq!(fixture.job.items[0].media.as_ref().unwrap().id, receipt);
+    assert_eq!(api.begins, 1);
+    assert_eq!(api.registrations, 1);
+    assert_eq!(api.verifies, 2);
+    assert!(fixture.job.items[0].error.is_none());
+    assert_eq!(fixture.job.summary().failed, 0);
+}
+
+#[test]
+fn old_jobs_load_without_diagnostics_and_new_history_is_bounded() {
+    let fixture = Fixture::new(1);
+    let mut value = serde_json::to_value(&fixture.job).unwrap();
+    value.as_object_mut().unwrap().remove("diagnostics");
+    let mut old: Job = serde_json::from_value(value).unwrap();
+    assert!(old.diagnostics.is_empty());
+    assert!(diagnostics::report(&old).contains("earlier job has no checkpoint history"));
+    for _ in 0..600 {
+        diagnostics::note(
+            &mut old,
+            Stage::VerifyMedia,
+            Some(0),
+            Outcome::Failed,
+            Some("Google read-back failed: NOT_FOUND (code 5)."),
+        );
+    }
+    assert_eq!(old.diagnostics.len(), 256);
+    assert!(diagnostics::report(&old).len() < 128 * 1024);
+    let mut limited = old;
+    finish_error(
+        &fixture.store,
+        &mut limited,
+        "Google read-back failed: RESOURCE_EXHAUSTED (code 8).".into(),
+        false,
+    )
+    .unwrap();
+    assert!(limited.retry_after >= chrono::Utc::now().timestamp() + 29);
 }
 
 #[test]

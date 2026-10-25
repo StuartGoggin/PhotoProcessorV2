@@ -2,19 +2,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettings } from "../hooks";
-import type { GooglePhotoAlbumEdit, GooglePhotoMode, GooglePhotoPlanItem, GooglePhotosExistingAlbum, GooglePhotosJob, GooglePhotosPlan, GooglePhotosPlanRequest, GooglePhotosStatus } from "../types/googlePhotos";
+import type { GooglePhotoAlbumEdit, GooglePhotoMode, GooglePhotoPlanItem, GooglePhotoVariant, GooglePhotosJob, GooglePhotosPlan, GooglePhotosPlanRequest, GooglePhotosStatus } from "../types/googlePhotos";
 import { GOOGLE_PHOTO_VARIANTS, googlePhotoCounts, googlePhotoSize, googlePhotoVariantLabel } from "../utils/googlePhotos";
+import GooglePhotoJobCard from "../components/GooglePhotoJobCard";
 import "./GooglePhotos.css";
 
 const MODES: { id: GooglePhotoMode; label: string; detail: string }[] = [
-  { id: "checked", label: "My Lightbox selections", detail: "Only the exact versions you checked. Recommended." },
-  { id: "preferred_colour", label: "Best colour version", detail: "One per original: crop enhanced → crop → enhanced → original." },
+  { id: "checked", label: "Use my Lightbox selections", detail: "Upload only the exact images checked in Photo Lightbox. Recommended." },
+  { id: "variants", label: "Choose versions for this upload", detail: "Choose which photo versions to include without changing Lightbox checks." },
+];
+const ADVANCED_MODES: { id: GooglePhotoMode; label: string; detail: string }[] = [
+  { id: "preferred_colour", label: "Best available colour", detail: "One per original: crop enhanced → crop → enhanced → original." },
   { id: "originals", label: "All originals", detail: "Untouched originals in this scope, with your filters applied." },
-  { id: "variants", label: "Choose version types", detail: "Every available version of the types you explicitly choose below." },
+];
+type PhotoFraming = "uncropped" | "cropped" | "both";
+type UploadVersion = "original" | "enhanced" | "bw";
+const PHOTO_VERSIONS: { id: UploadVersion; label: string; uncropped: GooglePhotoVariant; cropped: GooglePhotoVariant }[] = [
+  { id: "original", label: "Original", uncropped: "original", cropped: "crop" },
+  { id: "enhanced", label: "Enhanced", uncropped: "enhanced", cropped: "crop_enhanced" },
+  { id: "bw", label: "B&W", uncropped: "bw", cropped: "crop_bw" },
 ];
 const emptyStatus: GooglePhotosStatus = { configured: false, connecting: false };
 const defaultRequest = (root: string): GooglePhotosPlanRequest => ({ root, mode: "checked", variants: ["original"], minStars: 0, favouritesOnly: false, excludeTrash: true, stripGps: false, albumMode: "new", groupByEventDay: true });
-const activeStates = new Set(["queued", "running", "uploading", "preparing", "committing"]);
 const thumbnailQueue: (() => Promise<void>)[] = [];
 let thumbnailReads = 0;
 function readThumbnail(planId: string, itemId: string, cancelled: () => boolean): Promise<string | null> {
@@ -89,47 +98,6 @@ function AlbumReview({ planId, items, edit, disabled, expanded, onToggle, onChan
   </div>;
 }
 
-function JobCard({ job, account, busy, run, control }: {
-  job: GooglePhotosJob; account: GooglePhotosStatus["account"]; busy: boolean;
-  run: (name: string, action: () => Promise<unknown>, success?: string) => Promise<void>;
-  control: (job: GooglePhotosJob, action: "pause" | "resume" | "retry") => Promise<void>;
-}) {
-  const [albums, setAlbums] = useState<GooglePhotosExistingAlbum[] | null>(null);
-  const [recovering, setRecovering] = useState<string | null>(null);
-  const [chosen, setChosen] = useState("");
-  const active = activeStates.has(job.status);
-  const sameAccount = !!account && !!job.accountId && account.id === job.accountId;
-  const needsAttention = ["failed", "blocked", "needs_attention", "unknown", "completed_with_errors"].includes(job.status);
-  async function recover(albumKey: string) {
-    setChosen("");
-    await run(`albums-${job.id}`, async () => {
-      const existing = await invoke<GooglePhotosExistingAlbum[]>("google_photos_albums");
-      setAlbums(existing); setRecovering(albumKey);
-    });
-  }
-  return <article className="gp-job">
-    <div className="gp-row gp-between"><div><strong>{job.albums.map(album => album.title).join(" · ") || "Google Photos upload"}</strong><p className="gp-muted">{job.accountEmail} · {new Date(job.createdAt).toLocaleString()}</p></div><span className={`gp-pill ${job.status === "completed" ? "gp-pill-ready" : needsAttention ? "gp-pill-blocked" : ""}`}>{job.status.replace(/_/g, " ")}</span></div>
-    <progress aria-label={`Upload progress ${job.id}`} value={job.done} max={Math.max(1, job.total)} />
-    <div className="gp-row gp-between"><span className="gp-muted">{job.uploaded} uploaded · {job.skipped} skipped · {job.failed} failed · {job.done}/{job.total} processed</span><span className="gp-muted">{googlePhotoSize(job.bytesDone)} / {googlePhotoSize(job.totalBytes)}</span></div>
-    {job.currentFile && <p className="gp-muted truncate mt-1" title={job.currentFile}>{job.currentFile}</p>}
-    {!sameAccount && <p className="gp-note">Reconnect {job.accountEmail} to continue this job. It cannot upload into another account.</p>}
-    {job.status === "completed_with_errors" && <p className="gp-note">Finished with excluded or failed versions. Successfully uploaded photos are retained. Resolve the reported preflight checks and create a fresh publish plan for blocked files; they are not silently converted or replaced.</p>}
-    {job.errors.length > 0 && <details className="gp-details gp-job-errors" open={needsAttention}><summary>Job messages ({job.errors.length})</summary><ul>{job.errors.map((entry, index) => <li key={index}>{entry}</li>)}</ul></details>}
-    <div className="gp-row gp-actions mt-3">
-      {active && <button className="btn-secondary" disabled={busy} onClick={() => void control(job, "pause")}>Pause</button>}
-      {["paused", "interrupted", "waiting_for_account"].includes(job.status) && <button className="btn-secondary" disabled={busy || !sameAccount} onClick={() => void control(job, "resume")}>Resume</button>}
-      {["failed", "partial", "needs_attention", "blocked"].includes(job.status) && <button className="btn-secondary" disabled={busy || !sameAccount} onClick={() => void control(job, "retry")}>Retry safe remaining work</button>}
-      {job.albums.filter(album => album.productUrl).map(album => <button className="btn-secondary" key={album.key} disabled={busy || !sameAccount} onClick={() => void run(`open-${job.id}`, () => invoke("google_photos_open_album", { jobId: job.id, albumKey: album.key }))}>Open {job.albums.length === 1 ? "album" : album.title} ↗</button>)}
-    </div>
-    {job.albums.filter(album => album.state === "creation_outcome_unknown").map(album => <div className="gp-note" key={album.key}>
-      <strong>Album creation needs reconciliation: {album.title}</strong>
-      <p>Google’s response was lost, so this album may already exist. PhotoGoGo will not create a duplicate or guess from its name. Review your Google Photos account, then explicitly select the correct PhotoGoGo-created album.</p>
-      <button className="btn-secondary mt-2" disabled={busy || !sameAccount} onClick={() => void recover(album.key)}>Choose existing app-created album</button>
-      {recovering === album.key && albums && <div className="gp-field mt-3"><span>Verified app-created album</span><select aria-label={`Recover album ${album.key}`} value={chosen} onChange={event => setChosen(event.target.value)}><option value="">Select the exact album — no automatic match</option>{albums.map(existing => <option key={existing.id} value={existing.id}>{existing.title} · ID …{existing.id.slice(-12)}</option>)}</select><small>Associates this saved job only; no photos are uploaded by this action. Resume explicitly after verifying the association.</small><div className="gp-row gp-actions"><button className="btn-secondary" disabled={busy || !chosen || !sameAccount} onClick={() => void run(`reconcile-${job.id}`, async () => { await invoke("google_photos_reconcile", { jobId: job.id, albumKey: album.key, albumId: chosen }); setRecovering(null); }, "Album association saved. Review the job, then resume when ready.")}>Associate selected album</button><button className="btn-secondary" disabled={busy} onClick={() => setRecovering(null)}>Cancel</button></div></div>}
-    </div>)}
-  </article>;
-}
-
 export default function GooglePhotos() {
   const { settings, error: settingsError } = useSettings();
   const root = settings?.staging_dir ?? "";
@@ -137,6 +105,7 @@ export default function GooglePhotos() {
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [jobs, setJobs] = useState<GooglePhotosJob[]>([]);
   const [request, setRequest] = useState<GooglePhotosPlanRequest>(defaultRequest(""));
+  const [framing, setFraming] = useState<PhotoFraming>("uncropped");
   const [plan, setPlan] = useState<GooglePhotosPlan | null>(null);
   const [albumEdits, setAlbumEdits] = useState<GooglePhotoAlbumEdit[]>([]);
   const [previewAlbum, setPreviewAlbum] = useState<string | null>(null);
@@ -151,7 +120,7 @@ export default function GooglePhotos() {
   const planGeneration = useRef(0);
   const pollBusy = useRef(false);
   const actionBusy = useRef(false);
-  useEffect(() => { setRequest(defaultRequest(root)); setPlan(null); ++planGeneration.current; }, [root]);
+  useEffect(() => { setRequest(defaultRequest(root)); setFraming("uncropped"); setPlan(null); ++planGeneration.current; }, [root]);
 
   const refresh = useCallback(async () => {
     if (pollBusy.current) return;
@@ -174,6 +143,11 @@ export default function GooglePhotos() {
 
   function changeRequest(update: Partial<GooglePhotosPlanRequest>) {
     ++planGeneration.current; setRequest(previous => ({ ...previous, ...update })); setPlan(null); setAccepted(false); setMessage("");
+  }
+  const selectedVersions = PHOTO_VERSIONS.filter(version => request.variants.includes(version.uncropped) || request.variants.includes(version.cropped)).map(version => version.id);
+  function changeVersions(versions: UploadVersion[], nextFraming = framing) {
+    const variants = PHOTO_VERSIONS.filter(version => versions.includes(version.id)).flatMap(version => nextFraming === "cropped" ? [version.cropped] : nextFraming === "both" ? [version.uncropped, version.cropped] : [version.uncropped]);
+    setFraming(nextFraming); changeRequest({ variants });
   }
   async function action(name: string, run: () => Promise<unknown>, success?: string) {
     if (actionBusy.current) return;
@@ -216,6 +190,7 @@ export default function GooglePhotos() {
     await action(`${actionName}-${job.id}`, () => invoke("google_photos_control", { jobId: job.id, action: actionName }));
   }
   const counts = useMemo(() => googlePhotoCounts(plan?.items ?? []), [plan]);
+  const reviewedVersions = useMemo(() => GOOGLE_PHOTO_VARIANTS.map(variant => ({ ...variant, count: plan?.items.filter(item => item.variant === variant.id).length ?? 0 })).filter(variant => variant.count > 0), [plan]);
   const hasWarnings = !!plan && (plan.warnings.length > 0 || plan.items.some(item => item.warnings.length > 0));
   const albumOnlyEdit = !!plan && counts.skipped > 0 && plan.albums.some(album => {
     const edit = albumEdits.find(item => item.key === album.key);
@@ -246,9 +221,11 @@ export default function GooglePhotos() {
       <div className="gp-row gp-between"><div className="gp-muted" style={{ overflowWrap: "anywhere" }}><strong className="text-gray-200">Scope:</strong> {request.scopeDir || root || "Set a local staging directory in Settings"}</div><div className="gp-row gp-actions"><button className="btn-secondary" disabled={!root || !!busy} onClick={() => void chooseScope()}>Choose folder</button>{request.scopeDir && <button className="btn-secondary" disabled={!!busy} onClick={() => changeRequest({ scopeDir: undefined })}>Entire staging</button>}</div></div>
       <div className="gp-mode-list" role="radiogroup" aria-label="Photo selection mode">{MODES.map(mode => <label className="gp-mode" key={mode.id}><input type="radio" name="google-photo-mode" value={mode.id} checked={request.mode === mode.id} disabled={!!busy} onChange={() => changeRequest({ mode: mode.id })} /><span><strong>{mode.label}</strong><small>{mode.detail}</small></span></label>)}</div>
       {request.mode !== "checked" && <div className="gp-note">This is a one-job override. It does not alter any checkbox in Photo Lightbox.</div>}
-      {request.mode === "variants" && <fieldset className="gp-row" aria-label="Photo version types">{GOOGLE_PHOTO_VARIANTS.map(variant => <label className="gp-checkbox" key={variant.id}><input type="checkbox" checked={request.variants.includes(variant.id)} disabled={!!busy} onChange={event => changeRequest({ variants: event.target.checked ? [...request.variants, variant.id] : request.variants.filter(id => id !== variant.id) })} />{variant.label}</label>)}</fieldset>}
-      <div className="gp-grid" style={{ marginTop: 16 }}><div className="space-y-3"><label className="gp-field"><span>Minimum Lightbox stars</span><select aria-label="Minimum Lightbox stars" value={request.minStars} disabled={!!busy} onChange={event => changeRequest({ minStars: Number(event.target.value) })}><option value={0}>All ratings</option><option value={1}>★ or higher</option><option value={2}>★★ or higher</option><option value={3}>★★★ only</option></select></label><label className="gp-checkbox"><input type="checkbox" checked={request.favouritesOnly} disabled={!!busy} onChange={event => changeRequest({ favouritesOnly: event.target.checked })} />Only Google Photos favourites from Lightbox</label><br /><label className="gp-checkbox"><input type="checkbox" checked={request.excludeTrash} disabled={!!busy} onChange={event => changeRequest({ excludeTrash: event.target.checked })} />Exclude photos marked as trash</label></div>
-      <div className="space-y-3"><label className="gp-field"><span>Album destination</span><select aria-label="Album destination" value={request.albumMode} disabled={!!busy} onChange={event => changeRequest({ albumMode: event.target.value as "new" | "continue" })}><option value="new">Create new album(s)</option><option value="continue">Continue PhotoGoGo event album(s)</option></select><small>Continue uses this account’s saved PhotoGoGo-created albums, never a title-only match.</small></label><label className="gp-checkbox"><input type="checkbox" checked={request.groupByEventDay} disabled={!!busy} onChange={event => changeRequest({ groupByEventDay: event.target.checked })} />Separate album for each event / shooting day</label><br /><label className="gp-checkbox"><input type="checkbox" checked={request.stripGps} disabled={!!busy} onChange={event => changeRequest({ stripGps: event.target.checked })} />Remove GPS location from upload copies</label></div></div>
+      {request.mode === "variants" && <div className="gp-version-choice"><fieldset className="gp-row" aria-label="Photo version types"><legend>Photo versions</legend>{PHOTO_VERSIONS.map(version => <label className="gp-checkbox" key={version.id}><input type="checkbox" checked={selectedVersions.includes(version.id)} disabled={!!busy} onChange={event => changeVersions(event.target.checked ? [...selectedVersions, version.id] : selectedVersions.filter(id => id !== version.id))} />{version.label}</label>)}</fieldset><label className="gp-field"><span>Photo framing</span><select aria-label="Photo framing" value={framing} disabled={!!busy} onChange={event => changeVersions(selectedVersions, event.target.value as PhotoFraming)}><option value="uncropped">Uncropped versions</option><option value="cropped">Cropped versions only</option><option value="both">Both uncropped and cropped</option></select></label>{framing === "cropped" && <p className="gp-muted">Only existing cropped versions will be included. Missing crops are skipped; uncropped files are never substituted.</p>}{framing === "both" && <p className="gp-muted">Each chosen version is included both uncropped and cropped where those files exist. Missing versions are skipped.</p>}</div>}
+      <details className="gp-details gp-advanced"><summary><span>Advanced photo selection</span>{(request.mode === "preferred_colour" || request.mode === "originals" || request.minStars > 0 || request.favouritesOnly) && <span className="gp-pill">Active</span>}</summary><div className="gp-mode-list" role="radiogroup" aria-label="Advanced selection strategies">{ADVANCED_MODES.map(mode => <label className="gp-mode" key={mode.id}><input type="radio" name="google-photo-advanced-mode" value={mode.id} checked={request.mode === mode.id} disabled={!!busy} onChange={() => changeRequest({ mode: mode.id })} /><span><strong>{mode.label}</strong><small>{mode.detail}</small></span></label>)}</div><div className="gp-grid"><label className="gp-field"><span>Minimum Lightbox stars</span><select aria-label="Minimum Lightbox stars" value={request.minStars} disabled={!!busy} onChange={event => changeRequest({ minStars: Number(event.target.value) })}><option value={0}>All ratings</option><option value={1}>★ or higher</option><option value={2}>★★ or higher</option><option value={3}>★★★ only</option></select></label><label className="gp-checkbox"><input type="checkbox" checked={request.favouritesOnly} disabled={!!busy} onChange={event => changeRequest({ favouritesOnly: event.target.checked })} />Only Google Photos favourites from Lightbox</label></div></details>
+      {(request.mode === "preferred_colour" || request.mode === "originals" || request.minStars > 0 || request.favouritesOnly) && <p className="gp-muted">Advanced selection active: {ADVANCED_MODES.find(mode => mode.id === request.mode)?.label ?? (request.mode === "checked" ? "Lightbox selections" : "Chosen versions")}{request.minStars > 0 ? ` · ${request.minStars}+ stars` : ""}{request.favouritesOnly ? " · favourites only" : ""}.</p>}
+      <div className="gp-grid" style={{ marginTop: 16 }}><div className="space-y-3"><label className="gp-checkbox"><input type="checkbox" checked={request.excludeTrash} disabled={!!busy} onChange={event => changeRequest({ excludeTrash: event.target.checked })} />Exclude photos marked as trash</label><br /><label className="gp-checkbox"><input type="checkbox" checked={request.stripGps} disabled={!!busy} onChange={event => changeRequest({ stripGps: event.target.checked })} />Remove GPS location from upload copies</label></div>
+      <div className="space-y-3"><label className="gp-field"><span>Album destination</span><select aria-label="Album destination" value={request.albumMode} disabled={!!busy} onChange={event => changeRequest({ albumMode: event.target.value as "new" | "continue" })}><option value="new">Create new album(s)</option><option value="continue">Continue PhotoGoGo event album(s)</option></select><small>Continue uses this account’s saved PhotoGoGo-created albums, never a title-only match.</small></label><label className="gp-checkbox"><input type="checkbox" checked={request.groupByEventDay} disabled={!!busy} onChange={event => changeRequest({ groupByEventDay: event.target.checked })} />Separate album for each event / shooting day</label></div></div>
       <details className="gp-details"><summary>Optional event and date override</summary><p className="gp-muted">Album names use event folders and shooting dates when available. Override only when that information is missing or you intentionally want a different grouping; local capture metadata is not invented from this label.</p><div className="gp-grid" style={{ marginTop: 10 }}><label className="gp-field"><span>Event name</span><input aria-label="Event name override" value={request.eventName ?? ""} disabled={!!busy} onChange={event => changeRequest({ eventName: event.target.value || undefined })} placeholder="Use event folder names" /></label><label className="gp-field"><span>Event date</span><input type="date" aria-label="Event date override" value={request.eventDate ?? ""} disabled={!!busy} onChange={event => changeRequest({ eventDate: event.target.value || undefined })} /></label></div></details>
       <p className="gp-muted">Full resolution · no extra image recompression · originals remain untouched. Metadata and privacy changes use temporary upload copies. Changed files become new Google media versions; existing Google images are not overwritten.</p>
       <div className="gp-row gp-actions" style={{ marginTop: 14 }}><button className="btn-primary" disabled={!canPreview} onClick={() => void preview()}>{busy === "plan" ? "Inspecting local photos…" : "Review publish plan"}</button><span className="gp-muted">No album or photo is created until you confirm the plan.</span></div>
@@ -257,6 +234,7 @@ export default function GooglePhotos() {
 
     {plan && <section className="gp-section" aria-labelledby="gp-review-heading"><h3 id="gp-review-heading"><span className="gp-step" aria-hidden="true">3</span>Review before publishing</h3><p className="gp-muted">Destination account: <strong className="text-gray-100">{plan.accountEmail}</strong>. This saved plan pins the versions inspected now; changed or missing files will not be silently substituted.</p>
       <div className="gp-summary"><div className="gp-stat"><strong>{counts.ready.toLocaleString()}</strong><span>Ready to upload{counts.changed ? ` · ${counts.changed} changed` : ""}</span></div><div className="gp-stat"><strong>{counts.skipped.toLocaleString()}</strong><span>Already uploaded · skipped</span></div><div className="gp-stat"><strong>{counts.blocked.toLocaleString()}</strong><span>Blocked / missing / unsupported</span></div><div className="gp-stat"><strong>{googlePhotoSize(plan.totalBytes)}</strong><span>{plan.albums.length} album{plan.albums.length === 1 ? "" : "s"} · full-resolution payload</span></div></div>
+      <div className="gp-version-summary" role="group" aria-label="Exact photo versions in this plan"><strong>Exact versions inspected</strong><div className="gp-pills">{reviewedVersions.map(variant => <span className="gp-pill" key={variant.id}>{variant.label}: {variant.count.toLocaleString()}</span>)}</div><p className="gp-muted">These counts include already-uploaded and excluded versions; the totals above show what will actually upload. No missing version is silently replaced.</p></div>
       {hasWarnings && <div className="gp-note"><strong>Review these checks</strong><ul className="list-disc ml-4 mt-1">{plan.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>{plan.items.some(item => item.warnings.length > 0) && <details className="gp-details"><summary>Per-photo metadata and availability warnings</summary><ul>{plan.items.filter(item => item.warnings.length > 0).map(item => <li key={item.id}><strong>{item.relativePath}:</strong> {item.warnings.join("; ")}</li>)}</ul></details>}</div>}
       {status.account?.id !== plan.accountId && <div className="gp-error" role="alert">The connected account has changed. Create a fresh plan for the intended account.</div>}
       {plan.albums.map(album => { const edit = albumEdits.find(item => item.key === album.key)!; const ids = new Set(album.itemIds); const albumItems = plan.items.filter(item => ids.has(item.id)); return <div key={album.key}><div className="gp-pills"><span className="gp-pill">{album.albumId ? "Continuing an app-created album" : "New private album"}</span>{album.date && <span className="gp-pill">{album.date}</span>}</div><AlbumReview planId={plan.id} items={albumItems} edit={edit} disabled={!!busy} expanded={previewAlbum === album.key} onToggle={() => setPreviewAlbum(previous => previous === album.key ? null : album.key)} onChange={changed => { setAlbumEdits(previous => previous.map(item => item.key === changed.key ? changed : item)); setAccepted(false); }} /></div>; })}
@@ -267,7 +245,7 @@ export default function GooglePhotos() {
 
     <section className="gp-section" aria-labelledby="gp-jobs-heading"><div className="gp-row gp-between"><h3 id="gp-jobs-heading">Upload jobs</h3><button className="btn-secondary text-xs" disabled={!!busy} onClick={() => void refresh()}>Refresh jobs</button></div><p className="gp-muted">Jobs are saved natively and recover after restart. Pause stops further network work at a safe point. Retry keeps successful receipts and retries only work that can safely continue.</p>
       {!jobs.length && <div className="gp-offline mt-3">No Google Photos upload jobs yet. Your first reviewed publish plan will appear here.</div>}
-      {[...jobs].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(job => <JobCard key={job.id} job={job} account={status.account} busy={!!busy} run={action} control={control} />)}
+      {[...jobs].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(job => <GooglePhotoJobCard key={job.id} job={job} account={status.account} busy={!!busy} run={action} control={control} />)}
     </section>
   </div>;
 }
