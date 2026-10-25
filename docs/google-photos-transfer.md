@@ -53,7 +53,7 @@ bound to both the OAuth client and Google's stable account subject.
 
 Create the Google Cloud project, enable the API and create the Desktop OAuth
 client once for PhotoGoGo, not once per machine. Reuse that same Desktop client
-configuration on your PCs. In **2.0.32**, each PC still needs **Import OAuth
+configuration on your PCs. In **2.0.33**, each PC still needs **Import OAuth
 setup**, followed by its own **Connect Google Photos** browser sign-in. The
 installer does not yet contain a shared client configuration or configure it
 automatically. API enablement alone is not enough to connect an account.
@@ -74,16 +74,24 @@ separate explicit workflow; do not treat the current exporter as a two-way sync.
 ## Review and publish
 
 Choose a folder inside the configured staging root, or use all staging, then
-choose one of four modes:
+choose one of two main selection options:
 
-- **My Lightbox selections:** only the exact checked versions.
-- **Best colour version:** one per original, preferring Crop Enhanced, Crop,
-  Enhanced, then Original.
-- **All originals:** original photographs only.
-- **Choose version types:** all available versions of the explicitly chosen types.
+- **Use my Lightbox selections:** only the exact versions checked in Lightbox.
+- **Choose versions for this upload:** independent **Original**, **Enhanced** and
+  **B&W** checkboxes. Choose **Uncropped versions**, **Cropped versions only** or
+  **Both uncropped and cropped** in the separate framing control. Cropped-only
+  does not silently substitute an uncropped photo when its crop is missing.
+
+**Advanced selection options** contains the less-common strategies and rating
+filters. **Best available colour** chooses one version per original, preferring
+Crop Enhanced, Crop, Enhanced, then Original. **All originals** selects original
+photos only. Minimum-star and favourite filters refine the chosen scope. These
+options are collapsed initially so the normal selection remains compact.
 
 Overrides affect this job only; they do not rewrite Lightbox selections. Trash
-is excluded by default. Minimum-star and favourite filters refine the scope.
+is excluded by default. The review shows counts for the actual returned versions,
+including cropped versions, rather than promising that every source has every
+requested output.
 
 Album names use event-folder names and shooting dates where available. You can
 override those labels, group by event/day, edit individual album titles and
@@ -123,6 +131,28 @@ Success requires a Google media ID and read-back of the resulting dimensions;
 the controlled pilot must also inspect capture dates, orientation and colour.
 
 ## Pause, restart and recovery
+
+Google Photos uploads appear in the normal **Jobs** page and background Jobs
+panel as well as on the Transfer page. Failed uploads appear under **Needs
+attention**. Resume/retry and album recovery use the same native saved job on
+every screen. The generic **Clear finished** action does not erase Google Photos
+jobs, successful receipts or album history.
+
+**View diagnostics** displays a local, sanitised report; **Copy diagnostics**
+copies it for support. Neither action contacts Google or starts a retry. The
+report contains photo checkpoints, processing stages, safe Google status/HTTP
+codes and the latest 256 saved checkpoint events. It omits filenames, local
+paths, account details, album/media identifiers, credentials, upload tokens,
+session URLs and raw Google response messages. If clipboard access is denied,
+the report remains selectable for manual copying.
+
+Jobs created in 2.0.32 remain recoverable, but their discarded Google status
+codes cannot be reconstructed. A deliberate retry of that same saved job can
+record fresh diagnostic events. Keep the original account and OAuth client;
+do not create another upload job just to get around a verification failure.
+
+**Bytes transferred** and **confirmed uploads** are separate. A full byte meter
+does not mean Google has registered and successfully read back the photograph.
 
 Only one Google upload worker runs at a time, including across app processes.
 Local archive transfer remains a separate module. Eight prepared photographs
@@ -194,6 +224,8 @@ remain unchanged. Do not include sensitive photographs in that pilot.
 - [Google Photos authorization](https://developers.google.com/photos/overview/authorization)
 - [App-created content changes](https://developers.google.com/photos/support/updates)
 - [Upload and per-item results](https://developers.google.com/photos/library/guides/upload-media)
+- [Media read-back and per-item statuses](https://developers.google.com/photos/library/reference/rest/v1/mediaItems/batchGet)
+- [Google API error codes](https://google.aip.dev/193)
 - [Resumable upload protocol](https://developers.google.com/photos/library/guides/resumable-uploads)
 - [Album management](https://developers.google.com/photos/library/guides/manage-albums)
 - [Photos API policy](https://developers.google.com/photos/support/api-policy)

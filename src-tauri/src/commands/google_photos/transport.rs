@@ -4,9 +4,96 @@ use reqwest::{blocking::Response, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::io::Read;
 
 const BASE: &str = "https://photoslibrary.googleapis.com/v1";
 const UPLOADS: &str = "https://photoslibrary.googleapis.com/v1/uploads";
+pub(super) const SAFE_REASONS: &[&str] = &[
+    "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+    "SERVICE_DISABLED",
+    "ACCESS_NOT_CONFIGURED",
+    "RATE_LIMIT_EXCEEDED",
+    "QUOTA_EXCEEDED",
+    "USER_PROJECT_DENIED",
+    "IAM_PERMISSION_DENIED",
+];
+pub(super) fn status_name(code: i64) -> &'static str {
+    match code {
+        0 => "OK",
+        1 => "CANCELLED",
+        2 => "UNKNOWN",
+        3 => "INVALID_ARGUMENT",
+        4 => "DEADLINE_EXCEEDED",
+        5 => "NOT_FOUND",
+        6 => "ALREADY_EXISTS",
+        7 => "PERMISSION_DENIED",
+        8 => "RESOURCE_EXHAUSTED",
+        9 => "FAILED_PRECONDITION",
+        10 => "ABORTED",
+        11 => "OUT_OF_RANGE",
+        12 => "UNIMPLEMENTED",
+        13 => "INTERNAL",
+        14 => "UNAVAILABLE",
+        15 => "DATA_LOSS",
+        16 => "UNAUTHENTICATED",
+        _ => "UNKNOWN_STATUS",
+    }
+}
+pub(super) fn status_hint(code: i64) -> &'static str {
+    match code {
+        5 => "Google could not read the registered photo. Open the existing album and retry this saved job to verify its stored media ID; do not create another upload.",
+        7 => "Check the original Google account, unchanged Desktop OAuth client and app-created-data read permission. Do not change clients or re-upload just to bypass read-back.",
+        16 => "Reconnect the same Google account and grant the required Photos permissions, then retry this saved job.",
+        8 => "Google quota/rate limit: wait at least 30 seconds before retrying this saved job.",
+        1 | 2 | 4 | 10 | 13 | 14 => "The operation was interrupted or unavailable. Retry this saved job; any registered media IDs will be verified again, not uploaded again.",
+        3 | 9 | 11 => "Review this photo and its saved job diagnostics before retrying. Existing registered media and local originals are preserved.",
+        _ => "Review this saved job and its Google album before retrying. No upload success was assumed and no local original was changed.",
+    }
+}
+fn rpc_error(stage: &str, code: i64) -> String {
+    format!(
+        "Google {stage} failed: {} (code {code}). {}",
+        status_name(code),
+        status_hint(code)
+    )
+}
+fn http_error(code: u16, value: &Value, stage: &str) -> String {
+    // Allowlisted machine-readable fields only. Google's message/details may
+    // echo private media/account data or request credentials; never log them.
+    let status = value["error"]["status"]
+        .as_str()
+        .filter(|value| (1..=16).any(|code| status_name(code) == *value));
+    let reason = value["error"]["details"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|v| v["@type"].as_str() == Some("type.googleapis.com/google.rpc.ErrorInfo"))
+        .filter_map(|v| v["reason"].as_str())
+        .find(|v| SAFE_REASONS.contains(v));
+    let mut details = format!("HTTP {code}");
+    if let Some(status) = status {
+        details.push_str(&format!("; {status}"));
+    }
+    if let Some(reason) = reason {
+        details.push_str(&format!("; reason {reason}"));
+    }
+    let hint = if code == 429 || matches!(reason, Some("RATE_LIMIT_EXCEEDED" | "QUOTA_EXCEEDED")) {
+        status_hint(8)
+    } else if reason == Some("ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+        "Reconnect the same account and include app-created-data read permission. Keep the original Desktop client and existing saved job."
+    } else if matches!(reason, Some("SERVICE_DISABLED" | "ACCESS_NOT_CONFIGURED")) {
+        "Check that Photos Library API is enabled for the original Google Cloud project; keep its existing Desktop client."
+    } else if code == 401 {
+        status_hint(16)
+    } else if code == 403 {
+        status_hint(7)
+    } else if code >= 500 || code == 408 {
+        status_hint(14)
+    } else {
+        status_hint(9)
+    };
+    format!("Google {stage} failed ({details}). {hint}")
+}
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Album {
@@ -64,22 +151,26 @@ pub struct LiveGoogle<'a> {
     pub account_id: &'a str,
 }
 fn checked(response: Response) -> Result<Response, String> {
+    checked_at(response, "request")
+}
+fn checked_at(response: Response, stage: &str) -> Result<Response, String> {
     let code = response.status().as_u16();
     if response.status().is_success() {
-        Ok(response)
-    } else if code == 429 {
-        Err(
-            "Google rate limit (HTTP 429). Wait at least 30 seconds before retrying this job."
-                .into(),
-        )
-    } else if code == 401 || code == 403 {
-        Err(format!("Google authorization/permission error (HTTP {code}). Reconnect the same account and check Photos permissions."))
-    } else {
-        Err(format!("Google request failed (HTTP {code}). No response content or credentials have been logged."))
+        return Ok(response);
     }
+    let mut bytes = Vec::new();
+    let value = if response.take(65537).read_to_end(&mut bytes).is_ok() && bytes.len() <= 65536 {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    Err(http_error(code, &value, stage))
 }
 fn json_response(response: Response) -> Result<Value, String> {
-    checked(response)?.json().map_err(|_| {
+    json_response_at(response, "request")
+}
+fn json_response_at(response: Response, stage: &str) -> Result<Value, String> {
+    checked_at(response, stage)?.json().map_err(|_| {
         "Google response was incomplete or invalid. The outcome may need reconciliation.".into()
     })
 }
@@ -298,9 +389,7 @@ fn registrations(value: &Value, items: &[(String, String)]) -> Result<Vec<Regist
             result: if code == 0 {
                 media(&result["mediaItem"])
             } else {
-                Err(format!(
-                    "Google could not register this photo (code {code})."
-                ))
+                Err(rpc_error("media registration", code))
             },
         });
     }
@@ -320,15 +409,12 @@ fn verification(value: &Value, ids: &[String]) -> Result<Vec<Media>, String> {
     let mut seen = HashSet::new();
     let mut output = Vec::new();
     for result in results {
-        if result
-            .get("status")
-            .and_then(|value| value.get("code"))
-            .is_some_and(|code| code.as_i64() != Some(0))
-        {
-            return Err(
-                "Google reported an error during media read-back. No upload success was assumed."
-                    .into(),
-            );
+        let code = match result.get("status").and_then(|v| v.get("code")) {
+            None => 0,
+            Some(code) => code.as_i64().ok_or("Google media read-back returned an invalid status code. No registered receipt was discarded.")?,
+        };
+        if code != 0 {
+            return Err(rpc_error("media read-back", code));
         }
         let item = media(&result["mediaItem"])?;
         if !expected.contains(item.id.as_str()) || !seen.insert(item.id.clone()) {
@@ -485,7 +571,7 @@ impl GoogleApi for LiveGoogle<'_> {
         }
         registration_tokens(items)?;
         safe_id(album_id)?;
-        let value = json_response(oauth::client()?.post(format!("{BASE}/mediaItems:batchCreate")).bearer_auth(self.token()?).json(&json!({"albumId":album_id,"newMediaItems":items.iter().map(|(token,name)| json!({"simpleMediaItem":{"uploadToken":token,"fileName":name}})).collect::<Vec<_>>()})).send().map_err(|_| "Media registration response was lost. Retry uses the same prepared bytes, never a new album.")?)?;
+        let value = json_response_at(oauth::client()?.post(format!("{BASE}/mediaItems:batchCreate")).bearer_auth(self.token()?).json(&json!({"albumId":album_id,"newMediaItems":items.iter().map(|(token,name)| json!({"simpleMediaItem":{"uploadToken":token,"fileName":name}})).collect::<Vec<_>>()})).send().map_err(|_| "Media registration response was lost. Retry uses the same prepared bytes, never a new album.")?, "media registration")?;
         registrations(&value, items)
     }
     fn verify(&mut self, ids: &[String]) -> Result<Vec<Media>, String> {
@@ -500,7 +586,7 @@ impl GoogleApi for LiveGoogle<'_> {
             safe_id(id)?;
             url.query_pairs_mut().append_pair("mediaItemIds", id);
         }
-        let value = json_response(
+        let value = json_response_at(
             oauth::client()?
                 .get(url)
                 .bearer_auth(self.token()?)
@@ -508,6 +594,7 @@ impl GoogleApi for LiveGoogle<'_> {
                 .map_err(|_| {
                     "Google media read-back failed. This is not a checksum verification."
                 })?,
+            "media read-back",
         )?;
         verification(&value, ids)
     }
@@ -713,6 +800,71 @@ mod tests {
         ] {
             assert!(verification(&bad, &ids).is_err());
         }
+    }
+    #[test]
+    fn readback_diagnostics_preserve_status_and_safe_next_step_not_response_content() {
+        let ids = vec!["media-a".into()];
+        let value = json!({"mediaItemResults":[{"status":{"code":5,"message":"private response with bearer secret-fixture and https://example.invalid/private?token=fixture"}}]});
+        let error = verification(&value, &ids).err().unwrap();
+        assert!(
+            error.contains("NOT_FOUND"),
+            "Missing actionable status in: {error}"
+        );
+        assert!(
+            error.contains("code 5"),
+            "Missing original numeric status in: {error}"
+        );
+        assert!(
+            error.contains("registered"),
+            "Missing recovery context in: {error}"
+        );
+        for private in [
+            "private response",
+            "secret-fixture",
+            "example.invalid",
+            "token=fixture",
+        ] {
+            assert!(
+                !error.contains(private),
+                "Response content must not cross the diagnostics boundary"
+            );
+        }
+    }
+    #[test]
+    fn http_diagnostics_keep_only_allowlisted_status_and_reason() {
+        let body = json!({"error":{"code":403,"status":"PERMISSION_DENIED","message":"Bearer fixture-secret private@example.test","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT","metadata":{"token":"fixture-token"}}]}});
+        let error = http_error(403, &body, "media read-back");
+        for expected in [
+            "HTTP 403",
+            "PERMISSION_DENIED",
+            "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+            "same account",
+        ] {
+            assert!(error.contains(expected), "{error}");
+        }
+        for private in [
+            "Bearer",
+            "fixture-secret",
+            "private@example",
+            "fixture-token",
+        ] {
+            assert!(!error.contains(private));
+        }
+        let unknown = http_error(
+            500,
+            &json!({"error":{"status":"PRIVATE_STATUS_FIXTURE", "details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"PRIVATE_REASON_FIXTURE"}]}}),
+            "media read-back",
+        );
+        assert!(unknown.contains("HTTP 500"));
+        assert!(!unknown.contains("PRIVATE_"));
+        let malformed = verification(
+            &json!({"mediaItemResults":[{"status":{"code":"private-status-fixture"}}]}),
+            &["media-a".into()],
+        )
+        .err()
+        .unwrap();
+        assert!(malformed.contains("invalid status code"));
+        assert!(!malformed.contains("private-status-fixture"));
     }
     #[test]
     fn pagination_is_bounded_even_when_pages_are_empty() {

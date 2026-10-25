@@ -1,10 +1,54 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { STUDIO_CLEARED } from "../utils/studioWorkflow";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import type { StudioJob } from "../types/videoStudio";
+import type { GooglePhotosJob, GooglePhotosStatus } from "../types/googlePhotos";
 
-export interface JobsMonitorResult {
+export interface GooglePhotoJobsMonitorResult {
+  googlePhotosJobs: GooglePhotosJob[];
+  googlePhotosAccount: GooglePhotosStatus["account"];
+  googlePhotosError: string | null;
+  refreshGooglePhotos: () => Promise<void>;
+}
+
+/** Native-only account/job summaries have an independent slow poll. A failed
+ * protected-store read must not stall or erase local import/processing jobs. */
+export function useGooglePhotoJobs(enabled = true, interval = 2500): GooglePhotoJobsMonitorResult {
+  const [googlePhotosJobs, setJobs] = useState<GooglePhotosJob[]>([]);
+  const [googlePhotosAccount, setAccount] = useState<GooglePhotosStatus["account"]>(null);
+  const [googlePhotosError, setError] = useState<string | null>(null);
+  const refreshRef = useRef<() => Promise<void>>(async () => {});
+  const refreshGooglePhotos = useCallback(() => refreshRef.current(), []);
+  useEffect(() => {
+    if (!enabled) { refreshRef.current = async () => {}; return; }
+    let alive = true, pending = false;
+    const refresh = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const [jobs, status] = await Promise.allSettled([
+          invoke<GooglePhotosJob[]>("google_photos_list_jobs"),
+          invoke<GooglePhotosStatus>("google_photos_status"),
+        ]);
+        if (!alive) return;
+        const errors: string[] = [];
+        if (jobs.status === "fulfilled" && Array.isArray(jobs.value)) setJobs(jobs.value);
+        else errors.push(`Google Photos jobs unavailable; showing the last known state. ${jobs.status === "rejected" ? String(jobs.reason) : "Invalid job summary response."}`);
+        if (status.status === "fulfilled" && status.value && typeof status.value === "object") setAccount(status.value.account ?? null);
+        else { setAccount(null); errors.push(`Google Photos account status unavailable; reconnect-sensitive actions are disabled. ${status.status === "rejected" ? String(status.reason) : "Invalid account status response."}`); }
+        setError(errors.length ? errors.join(" ") : null);
+      } finally { pending = false; }
+    };
+    refreshRef.current = refresh;
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), Math.max(2500, interval));
+    return () => { alive = false; refreshRef.current = async () => {}; window.clearInterval(timer); };
+  }, [enabled, interval]);
+  return { googlePhotosJobs, googlePhotosAccount, googlePhotosError, refreshGooglePhotos };
+}
+
+export interface JobsMonitorResult extends GooglePhotoJobsMonitorResult {
   importJobs: ImportJob[];
   processJobs: ProcessJob[];
   studioJobs: StudioJob[];
@@ -16,7 +60,8 @@ export interface JobsMonitorResult {
  * Hook that monitors jobs in real-time (every 500ms by default).
  * Automatically fetches and updates job lists.
  */
-export function useJobsMonitor(enabled = true, interval = 500): JobsMonitorResult {
+export function useJobsMonitor(enabled = true, interval = 500, includeGooglePhotos = false): JobsMonitorResult {
+  const googlePhotos = useGooglePhotoJobs(enabled && includeGooglePhotos, 2500);
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [processJobs, setProcessJobs] = useState<ProcessJob[]>([]);
   const [studioJobs, setStudioJobs] = useState<StudioJob[]>([]);
@@ -73,5 +118,5 @@ export function useJobsMonitor(enabled = true, interval = 500): JobsMonitorResul
     };
   }, [enabled, interval]);
 
-  return { importJobs, processJobs, studioJobs, loading, error };
+  return { importJobs, processJobs, studioJobs, loading, error, ...googlePhotos };
 }

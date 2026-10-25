@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import type { StudioJob } from "../types/videoStudio";
 import { liveStudioScheduler, sortStudioJobs } from "../types/videoStudio";
@@ -7,20 +8,40 @@ import JobTile from "./JobTile";
 import JobConsole from "./JobConsole";
 import StudioJobTile from "./StudioJobTile";
 import ImportSchedulingStatus from "./ImportSchedulingStatus";
+import GooglePhotoJobCard from "./GooglePhotoJobCard";
+import type { GooglePhotosJob, GooglePhotosStatus } from "../types/googlePhotos";
 
 interface JobsPanelProps {
   importJobs: ImportJob[];
   processJobs: ProcessJob[];
   studioJobs?: StudioJob[];
+  googlePhotosJobs?: GooglePhotosJob[];
+  googlePhotosAccount?: GooglePhotosStatus["account"];
+  googlePhotosError?: string | null;
+  refreshGooglePhotos?: () => Promise<void>;
   loading?: boolean;
   error?: string | null;
   onOpenJobs?: (view: JobsView) => void;
   preferCollapsed?: boolean;
 }
 
-export default function JobsPanel({ importJobs, processJobs, studioJobs = [], loading = false, error, onOpenJobs, preferCollapsed = false }: JobsPanelProps) {
+export default function JobsPanel({ importJobs, processJobs, studioJobs = [], googlePhotosJobs = [], googlePhotosAccount = null, googlePhotosError, refreshGooglePhotos, loading = false, error, onOpenJobs, preferCollapsed = false }: JobsPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const googleActionPending = useRef(false);
+  const [googleActionError, setGoogleActionError] = useState("");
+  async function googleRun(_name: string, action: () => Promise<unknown>) {
+    if (googleActionPending.current) return;
+    googleActionPending.current = true; setGoogleBusy(true); setGoogleActionError("");
+    try { await action(); await refreshGooglePhotos?.(); }
+    catch (error) { setGoogleActionError(String(error)); }
+    finally { googleActionPending.current = false; setGoogleBusy(false); }
+  }
+  async function googleControl(job: GooglePhotosJob, action: "pause" | "resume" | "retry") {
+    if (action !== "pause" && googlePhotosAccount?.id !== job.accountId) { setGoogleActionError("Reconnect the original Google account and OAuth client before continuing this job."); return; }
+    await googleRun(`${action}-${job.id}`, () => invoke("google_photos_control", { jobId: job.id, action }));
+  }
   const [panelHeight, setPanelHeight] = useState(() => readPanelSize("jobsPanelHeight", 280, 180, 560));
   const [collapseChoice, setCollapseChoice] = useState<boolean | null>(() => {
     try { const saved = localStorage.getItem("jobsPanelCollapsed"); return saved === "true" ? true : saved === "false" ? false : null; } catch { return null; }
@@ -40,7 +61,8 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs = [], lo
       || b.job.id.localeCompare(a.job.id);
   });
   const activeStudio = sortStudioJobs(studioJobs.filter(isActiveJob));
-  const counts = countJobs([...importJobs, ...processJobs, ...studioJobs]);
+  const counts = countJobs([...importJobs, ...processJobs, ...studioJobs, ...googlePhotosJobs]);
+  const activeGoogle = googlePhotosJobs.filter(isActiveJob);
   const expanded = counts.active > 0 && !collapsed;
   const isMemoryWait = (value: unknown): value is string => typeof value === "string" && /^Waiting for (?:available )?(?:RAM|memory)\b/i.test(value);
   const memoryWaiting = activeStudio.filter((job) => job.status === "running" && !job.paused && isMemoryWait(job.phase));
@@ -48,6 +70,7 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs = [], lo
   const memorySummary = memoryWaiting.length ? `${memoryWaiting.length} Studio job${memoryWaiting.length === 1 ? "" : "s"} waiting for RAM · ${memoryWaiting[0].phase}`
     : isMemoryWait(schedulerReason) ? `Shared render capacity · ${schedulerReason}` : "";
   const selectedJob = jobs.find(({ key }) => key === selectedJobKey)?.job;
+  const selectedGoogle = activeGoogle.find(job => `google-${job.id}` === selectedJobKey);
 
   useEffect(() => {
     try { window.localStorage.setItem("jobsPanelHeight", String(panelHeight)); } catch { /* Optional preference. */ }
@@ -93,6 +116,7 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs = [], lo
         </div>
       </div>
       {error && <p role="alert" className="jobs-panel-warning">Job updates unavailable; showing the last known state. {error}</p>}
+      {(googlePhotosError || googleActionError) && <p role="alert" className="jobs-panel-warning">{googlePhotosError || googleActionError}</p>}
       {!expanded && memorySummary && <p role="status" aria-label="Memory wait" title={memorySummary} className="px-3 pb-2 text-xs text-amber-200 truncate">{memorySummary}</p>}
       {loading && counts.active === 0 && <p role="status" className="px-3 pb-2 text-xs text-gray-400">Checking jobs…</p>}
       <div id="active-jobs-content" hidden={!expanded} className="jobs-panel-content">
@@ -100,10 +124,12 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs = [], lo
           <ImportSchedulingStatus jobs={importJobs} compact />
           <div className="jobs-panel-grid">
             {activeStudio.map((job) => <StudioJobTile key={`studio-${job.id}`} job={job} />)}
+            {activeGoogle.map(job => <button key={`google-${job.id}`} type="button" className="job-tile text-left rounded border border-sky-800 bg-sky-950/30 p-3" aria-label={`Select Google Photos job ${job.id}`} aria-pressed={selectedJobKey === `google-${job.id}`} onClick={() => setSelectedJobKey(selectedJobKey === `google-${job.id}` ? null : `google-${job.id}`)}><strong className="text-sm text-sky-200">Google Photos</strong><span className="block text-xs text-gray-300 truncate">{job.albums.map(album => album.title).join(" · ") || job.id}</span><span className="block text-xs text-gray-400">{job.status.replace(/_/g, " ")} · {job.done}/{job.total}</span><progress className="w-full" aria-label={`Google Photos progress ${job.id}`} value={job.done} max={Math.max(1, job.total)} /></button>)}
             {jobs.map(({ job, key }) => <JobTile key={key} job={job} isSelected={selectedJobKey === key} onClick={() => setSelectedJobKey(selectedJobKey === key ? null : key)} />)}
           </div>
         </div>
         {selectedJob && <div className="jobs-panel-console"><JobConsole job={selectedJob} onClose={() => setSelectedJobKey(null)} /></div>}
+        {selectedGoogle && <div className="jobs-panel-console"><button className="jobs-header-button" onClick={() => setSelectedJobKey(null)}>Close Google Photos job</button><GooglePhotoJobCard job={selectedGoogle} account={googlePhotosAccount} busy={googleBusy} run={googleRun} control={googleControl} /></div>}
       </div>
     </section>
   );

@@ -26,6 +26,61 @@ async function fixture(options = {}, viewport = { width: 1440, height: 1050 }) {
 const calls = (page, command) => page.evaluate(command => window.__googleCalls.filter(call => call.command === command), command);
 const preview = async page => { await page.getByRole("button", { name: "Review publish plan", exact: true }).click(); await page.getByRole("heading", { name: "Review before publishing", exact: true }).waitFor(); };
 const consent = page => page.getByRole("checkbox", { name: /I reviewed this account/ });
+const croppedOnlyFixture = { __googlePlanItems: [
+  { id: "cropped-enhanced", relativePath: "2026/10/24/Horse event/rider_crop_improved.jpg", variant: "crop_enhanced", bytes: 19123456, status: "ready", warnings: [] },
+  { id: "cropped-bw", relativePath: "2026/10/24/Horse event/rider_crop_BW.jpg", variant: "crop_bw", bytes: 12123456, status: "ready", warnings: [] },
+] };
+async function simplifiedSelection(page) {
+  await page.getByText("rider@example.test", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("combobox", { name: "Minimum Lightbox stars", exact: true }).isVisible(), false,
+    "Less-common rating filters stay under collapsed Advanced rather than competing with primary upload choices");
+  await page.getByText("Advanced photo selection", { exact: true }).click();
+  const primaryLightbox = page.getByRole("radio", { name: /Use my Lightbox selections/ });
+  await primaryLightbox.focus(); await page.keyboard.press("ArrowRight"); await page.keyboard.press("ArrowRight");
+  assert.equal(await primaryLightbox.isChecked(), true, "Keyboard arrows stay within the two primary choices even while Advanced is open");
+  await page.getByText("Advanced photo selection", { exact: true }).click();
+  await page.getByRole("radio", { name: /Choose versions for this upload/ }).check();
+  assert.equal(await page.getByRole("group", { name: "Photo version types", exact: true }).getByRole("checkbox").count(), 3,
+    "Upload versions are Original, Enhanced and B&W; cropping is a separate choice, not three extra version types");
+  assert.equal(await page.getByRole("checkbox", { name: "Original", exact: true }).isChecked(), true);
+  assert.equal(await page.getByRole("checkbox", { name: "Enhanced", exact: true }).isChecked(), false);
+  assert.equal(await page.getByRole("checkbox", { name: "B&W", exact: true }).isChecked(), false);
+  await page.getByRole("checkbox", { name: "Original", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "Enhanced", exact: true }).check();
+  await page.getByRole("checkbox", { name: "B&W", exact: true }).check();
+  await page.getByRole("combobox", { name: "Photo framing", exact: true }).selectOption("cropped");
+  await page.getByText("Missing crops are skipped; uncropped files are never substituted.", { exact: false }).waitFor();
+  await page.getByRole("region", { name: "Choose photos and publishing rules", exact: true }).screenshot({ path: `${output}/upload-version-choices-${await page.evaluate(() => innerWidth)}px.png` });
+  await preview(page);
+  const planned = (await calls(page, "google_photos_plan")).at(-1).args.request;
+  assert.equal(planned.mode, "variants");
+  assert.deepEqual(planned.variants, ["crop_enhanced", "crop_bw"], "Only the explicitly requested processing/framing combination reaches native planning");
+  assert.equal((await calls(page, "google_photos_set_selection")).length, 0, "One-upload choices never rewrite Lightbox checks");
+  assert.equal((await calls(page, "google_photos_start")).length, 0, "Selection review is not publication");
+  assert.equal(await page.getByRole("group", { name: "Exact photo versions in this plan", exact: true }).count(), 1,
+    "The review exposes counts for the exact native-returned photo versions, so crop selection cannot hide behind a total");
+  const breakdown = page.getByRole("group", { name: "Exact photo versions in this plan", exact: true });
+  await breakdown.getByText("Crop enhanced: 1", { exact: true }).waitFor();
+  await breakdown.getByText("Crop B&W: 1", { exact: true }).waitFor();
+  assert.equal(await breakdown.getByText("Original", { exact: true }).count(), 0);
+  await page.getByRole("combobox", { name: "Photo framing", exact: true }).selectOption("uncropped");
+  assert.equal(await page.getByRole("heading", { name: "Review before publishing", exact: true }).count(), 0, "Framing change invalidates the old saved plan");
+  await preview(page);
+  assert.deepEqual((await calls(page, "google_photos_plan")).at(-1).args.request.variants, ["enhanced", "bw"]);
+  await page.getByRole("combobox", { name: "Photo framing", exact: true }).selectOption("both");
+  await preview(page);
+  assert.deepEqual((await calls(page, "google_photos_plan")).at(-1).args.request.variants, ["enhanced", "crop_enhanced", "bw", "crop_bw"]);
+  await page.getByRole("checkbox", { name: "Enhanced", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "B&W", exact: true }).uncheck();
+  assert.equal(await page.getByRole("button", { name: "Review publish plan", exact: true }).isDisabled(), true, "No selected processing version cannot fall back to another image");
+  await page.getByRole("radio", { name: /Use my Lightbox selections/ }).check();
+  assert.equal(await page.getByRole("button", { name: "Review publish plan", exact: true }).isEnabled(), true, "Lightbox selection is independent of empty one-upload override choices");
+  await preview(page);
+  assert.equal((await calls(page, "google_photos_plan")).at(-1).args.request.mode, "checked");
+  assert.equal((await calls(page, "google_photos_set_selection")).length, 0);
+  assert.equal((await calls(page, "google_photos_start")).length, 0);
+  report.checks.push("Three clear processing-version choices and separate cropped-only framing map exactly to native variants without fallback or curation writes");
+}
 
 try {
   if (server) {
@@ -38,9 +93,14 @@ try {
     assert.ok(ready, `Fixture did not start: ${log}`);
   }
   browser = await chromium.launch({ channel: "msedge", headless: true });
+  if (process.env.GOOGLE_PHOTOS_TEST_FOCUS === "selection") {
+    await simplifiedSelection(await fixture(croppedOnlyFixture));
+  } else {
   const page = await fixture();
   await page.getByText("rider@example.test", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("radio", { name: /My Lightbox selections/ }).isChecked(), true);
+  assert.equal(await page.getByRole("radiogroup", { name: "Photo selection mode", exact: true }).getByRole("radio").count(), 2,
+    "Primary selection offers only Lightbox selections or explicit upload versions; advanced modes are separate");
+  assert.equal(await page.getByRole("radio", { name: /Use my Lightbox selections/ }).isChecked(), true);
   assert.equal(await page.getByRole("checkbox", { name: "Exclude photos marked as trash", exact: true }).isChecked(), true);
   assert.equal((await calls(page, "google_photos_start")).length, 0);
   await preview(page);
@@ -89,18 +149,20 @@ try {
   await page.waitForFunction(() => window.__googleRevokedUrls.length > 0);
   report.checks.push("Frozen-plan publication is single-flight, album edits locked while saving; native-backed jobs pause/resume, open album and discard preview object URLs");
 
-  await page.getByRole("radio", { name: /Choose version types/ }).check();
-  await page.getByRole("checkbox", { name: "Crop enhanced", exact: true }).check();
+  await page.getByRole("radio", { name: /Choose versions for this upload/ }).check();
+  await page.getByRole("checkbox", { name: "Enhanced", exact: true }).check();
+  await page.getByRole("combobox", { name: "Photo framing", exact: true }).selectOption("both");
+  await page.getByText("Advanced photo selection", { exact: true }).click();
   await page.getByRole("combobox", { name: "Minimum Lightbox stars", exact: true }).selectOption("2");
   await page.getByRole("checkbox", { name: "Only Google Photos favourites from Lightbox", exact: true }).check();
   await page.getByRole("checkbox", { name: "Remove GPS location from upload copies", exact: true }).check();
   await page.getByRole("combobox", { name: "Album destination", exact: true }).selectOption("continue");
   await preview(page);
   const override = (await calls(page, "google_photos_plan")).at(-1).args.request;
-  assert.deepEqual(override.variants, ["original", "crop_enhanced"]); assert.equal(override.mode, "variants");
+  assert.deepEqual(override.variants, ["original", "crop", "enhanced", "crop_enhanced"]); assert.equal(override.mode, "variants");
   assert.equal(override.minStars, 2); assert.equal(override.favouritesOnly, true); assert.equal(override.stripGps, true); assert.equal(override.albumMode, "continue");
   assert.equal((await calls(page, "google_photos_set_selection")).length, 0, "Transfer override never rewrites Lightbox flags");
-  await page.getByRole("radio", { name: /Best colour version/ }).check();
+  await page.getByRole("radio", { name: /Best available colour/ }).check();
   assert.equal(await page.getByRole("heading", { name: "Review before publishing", exact: true }).count(), 0, "Changed selection rules invalidate saved review");
   await preview(page); assert.equal((await calls(page, "google_photos_plan")).at(-1).args.request.mode, "preferred_colour");
   await page.getByRole("radio", { name: /All originals/ }).check(); await preview(page);
@@ -128,6 +190,10 @@ try {
   const bounds = await compact.locator(".google-photos").evaluate(node => ({ width: node.getBoundingClientRect().width, scroll: node.scrollWidth, viewport: innerWidth }));
   assert.ok(bounds.width <= bounds.viewport && bounds.scroll <= bounds.viewport, "Compact publish review has no horizontal overflow");
   report.checks.push("390px compact account, filters, album names, filmstrip and confirmation controls remain usable without horizontal overflow");
+  const compactChoices = await fixture(croppedOnlyFixture, { width: 390, height: 844 });
+  await simplifiedSelection(compactChoices);
+  const choiceBounds = await compactChoices.getByRole("region", { name: "Choose photos and publishing rules", exact: true }).evaluate(node => ({ width: node.getBoundingClientRect().width, scroll: node.scrollWidth, viewport: innerWidth }));
+  assert.ok(choiceBounds.width <= choiceBounds.viewport && choiceBounds.scroll <= choiceBounds.viewport, "Explicit version and framing choices fit the compact viewport");
 
   const signedOut = await fixture({ __googleStatus: { configured: false, connecting: false, account: null } });
   await signedOut.getByText("Not connected", { exact: true }).waitFor();
@@ -169,6 +235,8 @@ try {
   await failed.getByRole("alert").filter({ hasText: "metadata preflight failed" }).waitFor();
   assert.equal((await calls(failed, "google_photos_start")).length, 0);
   report.checks.push("Preflight failure remains actionable and cannot create albums or start an upload");
+  await simplifiedSelection(await fixture(croppedOnlyFixture));
+  }
   assert.deepEqual(errors, [], "No browser runtime errors");
   report.complete = true; console.log(`Google Photos: ${report.checks.length} browser regression groups passed`);
 } catch (error) { report.error = String(error); throw error; }

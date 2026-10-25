@@ -40,11 +40,13 @@ fixture.__TAURI_INTERNALS__ = {
     if (command === "google_photos_plan") {
       if (fixture.__googlePlanError) throw new Error(fixture.__googlePlanError);
       if (fixture.__googlePlanDelay) await new Promise<void>(resolve => { fixture.__googleResolvePlan = resolve; });
-      const planItems = fixture.__googleAlreadyUploadedOnly ? items.map(item => ({ ...item, status: item.status === "unsupported" ? "unsupported" : "already_uploaded" })) : items;
-      return { id: `plan-${fixture.__googleCalls.filter((call: any) => call.command === command).length}`, accountId: fixture.__googleStatus.account.id, accountEmail: fixture.__googleStatus.account.email, root: args.request.root, items: planItems, albums: [
-        { key: "horse-24", title: "Horse event — 24 October 2026", date: "2026-10-24", albumId: args.request.albumMode === "continue" ? "saved-horse-album" : null, itemIds: items.slice(0, 3).map(item => item.id), coverItemId: null },
-        { key: "arena-25", title: "Arena — 25 October 2026", date: "2026-10-25", albumId: args.request.albumMode === "continue" ? "saved-app-album" : null, itemIds: items.slice(3).map(item => item.id), coverItemId: null },
-      ], warnings: ["Synthetic metadata check: confirm capture dates before publishing."], totalBytes: 51370368 };
+      const sourceItems = fixture.__googlePlanItems ?? items;
+      const planItems = fixture.__googleAlreadyUploadedOnly ? sourceItems.map((item: any) => ({ ...item, status: item.status === "unsupported" ? "unsupported" : "already_uploaded" })) : sourceItems;
+      const albums = [
+        { key: "horse-24", title: "Horse event — 24 October 2026", date: "2026-10-24", albumId: args.request.albumMode === "continue" ? "saved-horse-album" : null, itemIds: planItems.filter((item: any) => item.relativePath.includes("/24/")).map((item: any) => item.id), coverItemId: null },
+        { key: "arena-25", title: "Arena — 25 October 2026", date: "2026-10-25", albumId: args.request.albumMode === "continue" ? "saved-app-album" : null, itemIds: planItems.filter((item: any) => item.relativePath.includes("/25/")).map((item: any) => item.id), coverItemId: null },
+      ].filter(album => album.itemIds.length > 0);
+      return { id: `plan-${fixture.__googleCalls.filter((call: any) => call.command === command).length}`, accountId: fixture.__googleStatus.account.id, accountEmail: fixture.__googleStatus.account.email, root: args.request.root, items: planItems, albums, warnings: ["Synthetic metadata check: confirm capture dates before publishing."], totalBytes: 51370368 };
     }
     if (command === "google_photos_thumbnail") {
       fixture.__googleThumbnailActive++;
@@ -65,6 +67,7 @@ fixture.__TAURI_INTERNALS__ = {
       return true;
     }
     if (command === "google_photos_open_album") return null;
+    if (command === "google_photos_job_diagnostics") return `Synthetic Google Photos job ${args.jobId}\nConfirmed uploads: 1\nNo credentials, protected paths or raw logs are included.`;
     if (command === "google_photos_albums") return [{ id: "verified-app-album-1234", title: "Horse event — 24 October 2026", productUrl: "https://photos.google.com/lr/album/synthetic" }];
     if (command === "google_photos_reconcile") { const job = fixture.__googleJobs.find((job: any) => job.id === args.jobId); job.albums.find((album: any) => album.key === args.albumKey).state = "created"; job.status = "paused"; return true; }
     throw new Error(`Unexpected Google Photos fixture command: ${command}`);

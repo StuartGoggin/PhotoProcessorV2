@@ -1,11 +1,12 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.32",
+  "version": "2.0.33",
   "type": "module",
   "scripts": {
     "test:google-photos": "node scripts/test-google-photos.mjs",
     "test:google-photos:browser": "node scripts/test-google-photos-browser.mjs",
+    "test:google-photos:jobs:browser": "node scripts/test-google-photos-jobs-browser.mjs",
     "test:lightbox": "node scripts/test-lightbox.mjs",
     "test:lightbox:browser": "node scripts/test-lightbox-browser.mjs",
     "test:photo-process:browser": "node scripts/test-photo-process-browser.mjs",
