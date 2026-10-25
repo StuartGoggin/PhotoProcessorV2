@@ -1,0 +1,71 @@
+.google-photos { max-width: 1180px; margin: 0 auto; padding: 22px; color: #e2e8f0; font-size: 13px; }
+.gp-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
+.gp-eyebrow { font-size: 10px; text-transform: uppercase; letter-spacing: .17em; color: #a5b4c8; }
+.gp-header h2 { font-size: 25px; color: #fff; font-weight: 600; margin: 3px 0 6px; }
+.gp-muted { color: #94a3b8; font-size: 12px; line-height: 1.55; }
+.gp-step { display: inline-flex; border: 1px solid #475569; border-radius: 50%; align-items: center; justify-content: center; width: 23px; height: 23px; font-size: 11px; color: #fde68a; margin-right: 8px; flex: 0 0 auto; }
+.gp-section { background: #1e293b; border: 1px solid #3d4b60; border-radius: 12px; margin: 13px 0; padding: 17px; min-width: 0; }
+.gp-section h3 { display: flex; align-items: center; font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 12px; }
+.gp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.gp-between { justify-content: space-between; }
+.gp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.gp-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; min-width: 0; }
+.gp-field > span:first-child { color: #cbd5e1; font-weight: 600; }
+.gp-field small { color: #94a3b8; line-height: 1.5; }
+.gp-field input, .gp-field select { padding: 8px 10px; min-height: 36px; width: 100%; border-radius: 7px; border: 1px solid #526176; background: #111c2d; color: #f1f5f9; }
+.gp-checkbox { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; line-height: 1.6; cursor: pointer; }
+.gp-checkbox input { accent-color: #38bdf8; width: 15px; height: 15px; flex: 0 0 auto; }
+.gp-mode-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
+.gp-mode { border: 1px solid #475569; border-radius: 8px; padding: 10px; text-align: left; cursor: pointer; display: flex; align-items: flex-start; gap: 8px; background: #172236; }
+.gp-mode:has(input:checked) { background: #103446; border-color: #38bdf8; }
+.gp-mode input { margin-top: 3px; accent-color: #38bdf8; }
+.gp-mode strong { color: #f1f5f9; font-weight: 600; font-size: 12px; }
+.gp-mode small { display: block; color: #a6b4c6; margin-top: 3px; font-size: 11px; line-height: 1.5; }
+.gp-note, .gp-error, .gp-success { padding: 10px 12px; border-radius: 8px; margin: 12px 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.gp-note { color: #fde68a; border: 1px solid #806634; background: #3a2f1b; }
+.gp-error { color: #fecaca; border: 1px solid #9f4646; background: #3c222a; }
+.gp-success { color: #a7f3d0; border: 1px solid #39795e; background: #143c33; }
+.gp-pills { display: flex; gap: 7px; flex-wrap: wrap; }
+.gp-pill { border: 1px solid #475569; border-radius: 20px; padding: 3px 9px; color: #cbd5e1; font-size: 11px; }
+.gp-pill-ready { color: #a7f3d0; border-color: #39795e; }
+.gp-pill-blocked { color: #fcd9a6; border-color: #806634; }
+.gp-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
+.gp-stat { background: #111b2b; border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; }
+.gp-stat strong { font-size: 21px; color: #f8fafc; display: block; font-weight: 600; }
+.gp-stat span { font-size: 11px; color: #94a3b8; }
+.gp-album { border: 1px solid #475569; border-radius: 9px; margin: 12px 0; padding: 13px; background: #172236; }
+.gp-album-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, .6fr); gap: 12px; margin-bottom: 10px; }
+.gp-filmstrip { display: grid; grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: 8px; }
+.gp-frame { min-width: 0; border: 1px solid #3d4b60; border-radius: 7px; overflow: hidden; background: #111b2b; }
+.gp-frame button { display: block; width: 100%; text-align: left; padding: 0; }
+.gp-frame[aria-current=true] { border-color: #f5d889; box-shadow: 0 0 0 1px #f5d889; }
+.gp-thumb { width: 100%; height: 90px; object-fit: contain; background: #080e17; display: block; }
+.gp-thumb-empty { display: flex; align-items: center; justify-content: center; color: #64748b; font-size: 11px; }
+.gp-frame-caption { padding: 7px; font-size: 10px; overflow-wrap: anywhere; }
+.gp-frame-caption strong { color: #cbd5e1; font-weight: 500; display: block; margin-bottom: 4px; }
+.gp-frame-caption span { color: #94a3b8; }
+.gp-cover-tag { color: #fde68a !important; display: block; margin-top: 4px; }
+.gp-details { margin: 10px 0; color: #a6b4c6; font-size: 12px; }
+.gp-details summary { cursor: pointer; color: #cbd5e1; padding: 4px 0; }
+.gp-details ul { margin: 8px 0 8px 18px; list-style: disc; }
+.gp-details li { padding: 2px 0; overflow-wrap: anywhere; }
+.gp-publish { border-top: 1px solid #475569; padding-top: 14px; margin-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.gp-publish .gp-checkbox { max-width: 700px; }
+.gp-account { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.gp-account-icon { display: flex; align-items: center; justify-content: center; width: 35px; height: 35px; border-radius: 50%; color: #a7f3d0; background: #154139; border: 1px solid #39795e; flex: 0 0 auto; }
+.gp-job { border: 1px solid #475569; border-radius: 9px; padding: 13px; margin-top: 10px; }
+.gp-job progress { width: 100%; accent-color: #38bdf8; margin: 8px 0; height: 7px; }
+.gp-job-errors { max-height: 130px; overflow: auto; }
+.gp-actions button { font-size: 12px; padding: 7px 11px; }
+.gp-disconnect { padding: 12px; border: 1px solid #9f4646; border-radius: 8px; margin-top: 12px; }
+.gp-offline { border: 1px dashed #475569; border-radius: 8px; padding: 10px; color: #94a3b8; font-size: 12px; }
+.gp-transfer-subnav { margin-left: 21px; border-left: 1px solid #475569; padding-left: 5px; }
+.gp-transfer-subnav button { padding: 8px 10px; font-size: 12px; }
+@media (max-width: 740px) {
+  .google-photos { padding: 12px; }
+  .gp-grid, .gp-mode-list, .gp-album-heading { grid-template-columns: 1fr; }
+  .gp-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gp-header { flex-wrap: wrap; }
+  .gp-section { padding: 12px; }
+  .gp-filmstrip { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+}

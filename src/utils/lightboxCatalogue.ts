@@ -32,8 +32,12 @@ export function lightboxCatalogue(nodes: TreeNode[]): { tree: TreeNode[]; photos
       const exact = candidates.filter(other => key(stem(other.name)) === key(rawBase));
       const preferred = exact.length ? exact : candidates;
       // Photo Process produces these variants from JPEGs, not same-stem RAWs.
-      const jpegSources = preferred.filter(other => JPEG.test(other.name));
-      const sources = jpegSources.length === 1 ? jpegSources : preferred;
+      // An untagged RAW exact match must not steal versions belonging to its
+      // uniquely identifiable rated JPEG sibling. Still never guess between
+      // several JPEG originals after stripping review tags.
+      const exactJpegs = exact.filter(other => JPEG.test(other.name));
+      const allJpegs = candidates.filter(other => JPEG.test(other.name));
+      const sources = exactJpegs.length ? exactJpegs : allJpegs.length ? allJpegs : preferred;
       if (sources.length === 1) variants.set(file.path, { source: sources[0], kind: match[1].toLowerCase() as "bw" | "improved" });
     }
     const entries = files.filter(file => !variants.has(file.path)).map(node => ({ node, original: node } as LightboxPhoto));

@@ -7,9 +7,11 @@ interface ImagePanelProps {
   onPan?: (dx: number, dy: number) => void;
   panX?: number;
   panY?: number;
+  /** Actions are separate from the image so selecting a version never starts a pan. */
+  headerAction?: React.ReactNode;
 }
 
-export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0 }: ImagePanelProps) {
+export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, headerAction }: ImagePanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [localPanX, setLocalPanX] = useState(0);
@@ -47,8 +49,9 @@ export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0 }:
   return (
     <div className="flex flex-col h-full">
       {label && (
-        <div className="flex-shrink-0 text-center text-xs text-gray-400 py-1 border-b border-surface-600 bg-surface-800">
-          {label}
+        <div className="flex-shrink-0 flex flex-wrap items-center justify-between gap-1 text-xs text-gray-400 px-2 py-1 border-b border-surface-600 bg-surface-800">
+          <span>{label}</span>
+          {headerAction}
         </div>
       )}
       <div

@@ -55,6 +55,18 @@ test("regenerating a rated original prefers its exact current-stem comparison", 
   assert.equal(result.photos.get("one{Like o}.jpg").improved?.name,"one{Like o}_improved.jpg");
 });
 
+test("untagged RAW cannot preempt a uniquely rated JPEG's untagged processed versions", () => {
+  const result = lightboxCatalogue([file("shot.CR3"), file("shot{Like oo}.JPG"), file("shot_BW.jpg"), file("shot_improved.jpg")]);
+  assert.equal(result.folders.get("").length, 2);
+  assert.equal(result.photos.get("shot{Like oo}.JPG").bw.name, "shot_BW.jpg");
+  assert.equal(result.photos.get("shot{Like oo}.JPG").improved.name, "shot_improved.jpg");
+  assert.equal(result.photos.get("shot.CR3").bw, undefined);
+  assert.equal(result.photos.get("shot.CR3").improved, undefined);
+  const ambiguous = lightboxCatalogue([file("shot.CR3"), file("shot{Like o}.JPG"), file("shot{Like oo}.JPG"), file("shot_BW.jpg")]);
+  assert.equal(ambiguous.photos.has("shot_BW.jpg"), true);
+  assert.equal(ambiguous.photos.get("shot.CR3").bw, undefined);
+});
+
 test("crop versions attach to one original with their own independent comparisons, including rating changes", () => {
   const result = lightboxCatalogue([file("shot{Like o}.JPEG"), file("shot_BW.jpg"), file("shot_improved.jpg"), file("shot_crop.jpg"), file("shot_crop_BW.jpg"), file("shot_crop_improved.jpg"), file("shot_crop.photogogo-crop.json")]);
   assert.equal(result.folders.get("").length, 1);

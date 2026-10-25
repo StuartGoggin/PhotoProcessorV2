@@ -2,6 +2,10 @@ mod commands;
 mod utils;
 
 use commands::{
+    google_photos::{google_photos_status, google_photos_configure, google_photos_connect, google_photos_disconnect,
+        google_photos_catalogue, google_photos_set_selection, google_photos_plan, google_photos_start,
+        google_photos_list_jobs, google_photos_control, google_photos_open_album, google_photos_albums,
+        google_photos_reconcile, google_photos_thumbnail},
     process_preview::{process_preview, process_preview_candidates},
     lightbox::read_lightbox_image,
     lightbox_crop::{lightbox_crop_info, lightbox_apply_crop},
@@ -63,6 +67,10 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            google_photos_status, google_photos_configure, google_photos_connect, google_photos_disconnect,
+            google_photos_catalogue, google_photos_set_selection, google_photos_plan, google_photos_start,
+            google_photos_list_jobs, google_photos_control, google_photos_open_album, google_photos_albums,
+            google_photos_reconcile, google_photos_thumbnail,
             snapshot_open,
             snapshot_frames,
             snapshot_photo_preview,

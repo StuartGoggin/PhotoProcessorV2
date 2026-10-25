@@ -11,6 +11,7 @@ export type Page =
   | "postprocess"
   | "review"
   | "transfer"
+  | "googlephotos"
   | "faceidentify"
   | "settings"
   | "logs";

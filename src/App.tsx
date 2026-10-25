@@ -13,6 +13,7 @@ import Jobs from "./pages/Jobs";
 import PostProcess from "./pages/PostProcess";
 import Review from "./pages/Review";
 import Transfer from "./pages/Transfer";
+import GooglePhotos from "./pages/GooglePhotos";
 import FaceIdentify from "./pages/FaceIdentify";
 import Settings from "./pages/Settings";
 import Logs from "./pages/Logs";
@@ -111,6 +112,7 @@ export default function App() {
     postprocess: <PostProcess onOpenJobs={() => openJobs()} />,
     review: <Review />,
     transfer: <Transfer />,
+    googlephotos: <GooglePhotos />,
     faceidentify: <FaceIdentify onOpenJobs={() => openJobs()} />,
     settings: <Settings />,
     logs: <Logs />,
@@ -120,7 +122,7 @@ export default function App() {
     <div className="app-root flex flex-col overflow-hidden bg-surface-900">
       <header className="app-mobile-header">
         <button ref={menuButtonRef} className="btn-secondary" aria-controls="app-navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? "Close menu" : "☰ Menu"}</button>
-        <span className="font-semibold truncate">{NAV_ITEMS.find((item) => item.id === page)?.label}</span>
+        <span className="font-semibold truncate">{page === "googlephotos" ? "Transfer to Google Photos" : NAV_ITEMS.find((item) => item.id === page)?.label}</span>
         <span className="text-xs text-gray-400">PhotoGoGo</span>
       </header>
       {/* Main content area (sidebar + page content) */}
@@ -137,7 +139,13 @@ export default function App() {
             </div>
           </div>
           <nav className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1" aria-label="Main navigation">
-            {NAV_ITEMS.map((item) => (
+            {NAV_ITEMS.map((item) => item.id === "transfer" ? <div key={item.id}>
+              <button onClick={() => { setPage("transfer"); setMenuOpen(false); }} className={`nav-item w-full text-left ${page === "transfer" || page === "googlephotos" ? "active" : ""}`}><span className="text-lg leading-none">{item.icon}</span><span className="text-sm font-medium">Transfer</span></button>
+              <div className="gp-transfer-subnav" role="group" aria-label="Transfer destinations">
+                <button onClick={() => { setPage("transfer"); setMenuOpen(false); }} aria-current={page === "transfer" ? "page" : undefined} className={`nav-item w-full text-left ${page === "transfer" ? "active" : ""}`}>To Archive</button>
+                <button onClick={() => { setPage("googlephotos"); setMenuOpen(false); }} aria-current={page === "googlephotos" ? "page" : undefined} className={`nav-item w-full text-left ${page === "googlephotos" ? "active" : ""}`}>To Google Photos</button>
+              </div>
+            </div> : (
               <button
                 key={item.id}
                 onClick={() => { setPage(item.id); if (item.id === "jobs") setJobsView("active"); setMenuOpen(false); }}

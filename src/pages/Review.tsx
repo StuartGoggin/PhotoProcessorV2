@@ -2,16 +2,34 @@ import { useEffect, useState } from "react";
 import { useReview } from "../hooks";
 import { FileTree, ImagePanel, StarRating } from "../components";
 import LightboxCropEditor from "../components/LightboxCropEditor";
+import { useGooglePhotoCuration } from "../hooks/useGooglePhotoCuration";
+import { googlePhotoAssetForPath } from "../utils/googlePhotos";
+import type { GooglePhotoAsset } from "../types/googlePhotos";
 
 export default function Review() {
   const {
     tree, selected, siblings, siblingIdx, images,
     zoom, loading, trashed, stars, error, renaming,
-    stagingDir, cropped, selectedPhoto, setCropVersion,
+    stagingDir, cropped, selectedPhoto, catalogueRevision, setCropVersion,
     refreshTree, selectNode, handleStars, handleTrash, navigate, setZoom,
   } = useReview();
   const [cropOpen, setCropOpen] = useState(false);
   const [cropMessage, setCropMessage] = useState("");
+  const curation = useGooglePhotoCuration(catalogueRevision ? stagingDir : "", catalogueRevision);
+  const version = cropped && selectedPhoto?.crop ? selectedPhoto.crop : selectedPhoto;
+  function uploadControls(path: string | undefined, label: string) {
+    if (!path) return undefined;
+    const asset = googlePhotoAssetForPath(curation.assets, path);
+    if (!asset) return <span title={curation.error || "Loading this version's saved upload selection"} className="text-[10px] text-gray-500">{curation.loading ? "Loading selection…" : "Selection unavailable"}</span>;
+    return <div className="flex items-center gap-2 text-[10px]">
+      <label className="flex items-center gap-1 cursor-pointer" title="Select this exact version for the Google Photos publish review. This does not upload it.">
+        <input type="checkbox" checked={asset.selected} disabled={curation.saving || renaming} aria-label={`Upload ${label} to Google Photos`} onChange={event => void curation.update(asset, { selected: event.target.checked })} />
+        Google Photos
+      </label>
+      <button type="button" aria-label={`Favourite ${label}`} aria-pressed={asset.favourite} disabled={curation.saving || renaming} title="Favourite this version for the Google Photos favourites filter" className={asset.favourite ? "text-amber-300" : "text-gray-500"} onClick={() => void curation.update(asset as GooglePhotoAsset, { favourite: !asset.favourite })}>{asset.favourite ? "★" : "☆"}</button>
+      {asset.uploadStatus && <span title="Previously uploaded to the connected account. Review a publish plan to recheck current bytes and metadata; this badge alone does not prove the file is unchanged." className="text-cyan-200">{asset.uploadStatus === "uploaded_previously" ? "Uploaded previously" : asset.uploadStatus.replace(/_/g, " ")}</span>}
+    </div>;
+  }
   const editable = !!selected && /\.jpe?g$/i.test(selected.name) && !/_(crop|bw|improved)(?:\{[^}]+\})*\.jpe?g$/i.test(selected.name);
   const shortcutsBlocked = (event: KeyboardEvent) => cropOpen || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || (event.target instanceof HTMLElement && !!event.target.closest("input, select, textarea, [contenteditable=true]"));
 
@@ -126,6 +144,8 @@ export default function Review() {
         </div>
 
         {error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800">{error}</div>}
+        {curation.error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800 flex items-center justify-between gap-3"><span>{curation.error} Photos remain available for review.</span><button className="btn-secondary py-1 px-2 text-xs" onClick={() => void curation.refresh()}>Retry selections</button></div>}
+        {curation.warnings.length > 0 && <details className="px-4 py-2 text-xs text-amber-200 bg-surface-800"><summary className="cursor-pointer">Upload selection notes ({curation.warnings.length})</summary><ul className="mt-1 ml-4 list-disc">{curation.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
         {cropMessage && <div role="status" className="px-4 py-2 text-xs text-cyan-100 bg-surface-800 flex gap-3 justify-between"><span>{cropMessage}</span><button type="button" aria-label="Dismiss crop result" onClick={() => setCropMessage("")}>×</button></div>}
         {/* 3-panel image display */}
         <div className="review-images flex-1 flex min-h-0">
@@ -134,13 +154,13 @@ export default function Review() {
           ) : (
             <>
               <div className="flex-1 border-r border-surface-700 min-w-0">
-                <ImagePanel src={images.original} label={cropped ? "Cropped" : "Original"} zoom={zoom} />
+                <ImagePanel src={images.original} label={cropped ? "Cropped" : "Original"} zoom={zoom} headerAction={uploadControls(version?.original.path, cropped ? "Cropped" : "Original")} />
               </div>
               <div className="flex-1 border-r border-surface-700 min-w-0">
-                <ImagePanel src={images.bw} label="B&W" zoom={zoom} />
+                <ImagePanel src={images.bw} label="B&W" zoom={zoom} headerAction={uploadControls(version?.bw?.path, cropped ? "Cropped B&W" : "B&W")} />
               </div>
               <div className="flex-1 min-w-0">
-                <ImagePanel src={images.improved} label="Enhanced" zoom={zoom} />
+                <ImagePanel src={images.improved} label="Enhanced" zoom={zoom} headerAction={uploadControls(version?.improved?.path, cropped ? "Cropped Enhanced" : "Enhanced")} />
               </div>
             </>
           )}
@@ -155,6 +175,7 @@ export default function Review() {
           <span>Del trash</span>
           <span>1/2/3 stars</span>
           <span>C crop · original untouched</span>
+          <span>Google Photos checks are saved · publish from Transfer</span>
         </div>
       </div>
       {cropOpen && selectedPhoto && <LightboxCropEditor stagingDir={stagingDir} photo={selectedPhoto} onClose={() => { setCropOpen(false); refreshTree(); }} onSaved={result => {

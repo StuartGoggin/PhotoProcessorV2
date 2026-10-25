@@ -2960,13 +2960,14 @@ dependencies = [
 
 [[package]]
 name = "photogogo-v2"
-version = "2.0.31"
+version = "2.0.32"
 dependencies = [
  "anyhow",
  "chrono",
  "env_logger",
  "fs2",
  "futures",
+ "getrandom 0.3.4",
  "hex",
  "image",
  "kamadak-exif",
@@ -2976,6 +2977,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

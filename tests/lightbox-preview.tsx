@@ -22,6 +22,7 @@ fixture.__lightboxTree = {
     ] },
   ],
 } satisfies TreeNode;
+if (fixture.__lightboxTaggedPairFixture) fixture.__lightboxTree.children.push(file("paired.CR3"), file("paired{Like oo}.jpg"), file("paired_BW.jpg"), file("paired_improved.jpg"));
 fixture.__lightboxReads = [];
 fixture.__lightboxPending = [];
 fixture.__lightboxRenames = [];
@@ -32,6 +33,9 @@ fixture.__lightboxCropInfoReads = 0;
 fixture.__lightboxCropFingerprint ??= "synthetic-original-v1";
 fixture.__lightboxPayloads = new Map<string, { path: string; generation: number }>();
 fixture.__lightboxRevokedUrls = [];
+fixture.__lightboxSelections ??= new Map();
+fixture.__lightboxSelectionWrites = [];
+fixture.__lightboxCatalogueReads = 0;
 const nativeRevoke = URL.revokeObjectURL.bind(URL);
 URL.revokeObjectURL = (url) => { fixture.__lightboxRevokedUrls.push(url); nativeRevoke(url); };
 
@@ -53,6 +57,13 @@ function image(path: string) {
 function allFiles(nodes: TreeNode[]): TreeNode[] {
   return nodes.flatMap((node) => node.type === "file" ? [node] : allFiles(node.children ?? []));
 }
+function curation() {
+  return { root: "D:\\Synthetic photos", revision: fixture.__lightboxSelectionWrites.length, warnings: [], assets: allFiles(fixture.__lightboxTree.children).filter(node => /\.(jpe?g|png|cr3|dng)$/i.test(node.name)).map(node => {
+    const id = node.path.replace(/\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi, "").toLowerCase();
+    const saved = fixture.__lightboxSelections.get(id) ?? { selected: false, favourite: false };
+    return { id, relativePath: node.path, variant: "original", ...saved };
+  }) };
+}
 
 fixture.__lightboxRelease = (match: string) => {
   const matches = fixture.__lightboxPending.filter((pending: any) => pending.path.includes(match));
@@ -64,6 +75,18 @@ fixture.__lightboxReleaseAll = () => fixture.__lightboxRelease("");
 fixture.__TAURI_INTERNALS__ = {
   convertFileSrc: () => "",
   invoke: async (command: string, args: any) => {
+    if (command === "google_photos_catalogue") {
+      fixture.__lightboxCatalogueReads++;
+      if (fixture.__lightboxSelectionError) throw new Error(fixture.__lightboxSelectionError);
+      return structuredClone(curation());
+    }
+    if (command === "google_photos_set_selection") {
+      fixture.__lightboxSelectionWrites.push(args);
+      if (fixture.__lightboxSelectionWriteError) throw new Error(fixture.__lightboxSelectionWriteError);
+      if (fixture.__lightboxDeferSelection) await new Promise<void>(resolve => { fixture.__lightboxResolveSelection = resolve; });
+      fixture.__lightboxSelections.set(args.assetId, { selected: args.selected, favourite: args.favourite });
+      return structuredClone(curation());
+    }
     if (command === "load_settings") return { staging_dir: "D:\\Synthetic photos", source_root: "", archive_dir: "", exiftool_dir: "" };
     if (command === "list_staging_tree") {
       fixture.__lightboxTreeReads++;

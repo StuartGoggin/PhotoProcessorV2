@@ -93,9 +93,22 @@ try {
   await expectImage(page, "B&W", "01-rider_BW.jpg");
   await expectImage(page, "Enhanced", "01-rider_improved.jpg");
   await page.getByText("1 / 5", { exact: true }).waitFor();
+  const originalUpload = page.getByRole("checkbox", { name: "Upload Original to Google Photos", exact: true });
+  await originalUpload.check();
+  await page.waitForFunction(() => window.__lightboxSelectionWrites.length === 1);
+  await originalUpload.waitFor();
+  assert.equal(await originalUpload.isChecked(), true, "Native acknowledgement persists this exact original selection");
+  assert.equal(await page.getByRole("checkbox", { name: "Upload B&W to Google Photos", exact: true }).isChecked(), false);
+  assert.equal(await page.getByRole("checkbox", { name: "Upload Enhanced to Google Photos", exact: true }).isChecked(), false);
+  await page.getByRole("button", { name: "Favourite Original", exact: true }).click();
+  await page.waitForFunction(() => window.__lightboxSelectionWrites.length === 2);
+  assert.equal(await page.getByRole("button", { name: "Favourite Original", exact: true }).getAttribute("aria-pressed"), "true");
+  assert.equal(await page.evaluate(() => window.__lightboxSelectionWrites.some(write => write.command?.includes("start"))), false, "Checking and favouriting never uploads");
+  report.checks.push("Each comparison version has independent native-backed upload/favourite curation; checking is not publication");
   assert.equal(await page.getByRole("button", { name: "Previous original photo", exact: true }).isDisabled(), true);
   await page.waitForFunction(() => window.__lightboxReads.some((entry) => entry.path.endsWith("\\02-arena.CR3")));
   const warmed = await waitSettled(page);
+  const curationReadsBeforeNavigation = await page.evaluate(() => window.__lightboxCatalogueReads);
   const prepared = await page.evaluate(() => window.__lightboxReads.map((entry) => entry.path));
   assert.ok(prepared.some((path) => path.endsWith("\\02-arena_improved.jpg")), "Upcoming comparison version is prepared too");
   const warmStarted = performance.now();
@@ -110,6 +123,7 @@ try {
   const secondOriginalReads = await page.evaluate(() => window.__lightboxReads.filter((entry) => entry.path.endsWith("\\02-arena.CR3")).length);
   assert.equal(firstOriginalReads, 1, "Back navigation reuses selected-photo cache");
   assert.equal(secondOriginalReads, 1, "Forward navigation consumes prefetched photo without repeat native read");
+  assert.equal(await page.evaluate(() => window.__lightboxCatalogueReads), curationReadsBeforeNavigation, "Ordinary next/back navigation does not rescan the whole staging tree for upload curation");
   report.warmReadCount = warmed;
   report.checks.push("Root arrows/counter skip derivatives; read-ahead prepares comparison images and cached forward/back navigation avoids duplicate IPC");
 
@@ -228,10 +242,14 @@ try {
   await expectImage(cropPage, "Cropped", "01-rider_crop.jpg", 1);
   await expectImage(cropPage, "B&W", "01-rider_crop_BW.jpg", 1);
   await expectImage(cropPage, "Enhanced", "01-rider_crop_improved.jpg", 1);
+  await cropPage.getByRole("checkbox", { name: "Upload Cropped to Google Photos", exact: true }).check();
+  await cropPage.getByRole("checkbox", { name: "Upload Cropped Enhanced to Google Photos", exact: true }).check();
   assert.equal(await cropPage.locator(".review-file-tree").getByText("01-rider_crop.jpg", { exact: true }).count(), 0);
   await cropPage.getByRole("group", { name: "Photo version" }).getByRole("button", { name: "Original", exact: true }).click();
   await expectImage(cropPage, "Original", "01-rider.jpg", 1);
   await expectImage(cropPage, "B&W", "01-rider_BW.jpg", 1);
+  assert.equal(await cropPage.getByRole("checkbox", { name: "Upload Original to Google Photos", exact: true }).isChecked(), false, "Crop and untouched original upload flags are independent");
+  assert.equal(await cropPage.getByRole("checkbox", { name: "Upload Enhanced to Google Photos", exact: true }).isChecked(), false);
   await cropPage.getByRole("button", { name: "Crop", exact: true }).click();
   await cropPage.getByTestId("crop-selection").waitFor();
   const restored = await cropPage.getByTestId("crop-selection").evaluate(node => parseFloat(node.style.width) / 100);
@@ -272,6 +290,27 @@ try {
   await select(cropCompact, "02-arena.CR3"); await expectImage(cropCompact, "Original", "02-arena.CR3");
   assert.equal(await cropCompact.getByRole("button", { name: "Crop", exact: true }).isDisabled(), true, "Unsupported RAW cannot enter JPEG crop pipeline");
   report.checks.push("Compact crop controls fit 390px viewport with useful image area; RAW crop is clearly disabled");
+
+  const selectionFailure = await newFixture({ __lightboxSelectionWriteError: "Synthetic protected curation write failure" });
+  await select(selectionFailure, "01-rider.jpg"); await expectImage(selectionFailure, "Original", "01-rider.jpg");
+  await selectionFailure.getByRole("checkbox", { name: "Upload Original to Google Photos", exact: true }).click();
+  await selectionFailure.getByRole("status").filter({ hasText: "Selection was not saved" }).waitFor();
+  assert.equal(await selectionFailure.getByRole("checkbox", { name: "Upload Original to Google Photos", exact: true }).isChecked(), false, "Failed curation cannot look successfully saved");
+  await expectImage(selectionFailure, "Original", "01-rider.jpg");
+  report.checks.push("Selection persistence failure remains visible without breaking image review or falsely checking a version");
+  await selectionFailure.close();
+  const taggedPair = await newFixture({ __lightboxTaggedPairFixture: true });
+  await select(taggedPair, "paired{Like oo}.jpg");
+  await expectImage(taggedPair, "Original", "paired{Like oo}.jpg");
+  await expectImage(taggedPair, "B&W", "paired_BW.jpg");
+  await expectImage(taggedPair, "Enhanced", "paired_improved.jpg");
+  await taggedPair.getByRole("checkbox", { name: "Upload Enhanced to Google Photos", exact: true }).check();
+  assert.equal((await taggedPair.evaluate(() => window.__lightboxSelectionWrites.at(-1))).assetId, "paired_improved.jpg");
+  await select(taggedPair, "paired.CR3"); await expectImage(taggedPair, "Original", "paired.CR3");
+  assert.equal(await taggedPair.getByRole("img", { name: "B&W", exact: true }).count(), 0);
+  assert.equal(await taggedPair.getByRole("img", { name: "Enhanced", exact: true }).count(), 0);
+  report.checks.push("Untagged RAW never steals the rated JPEG's processed panels or upload flags; ambiguous variants remain visible");
+  await taggedPair.close();
 
   await page.close(); await stale.close(); await priority.close(); await leaving.close(); await cropPage.close(); await cropFailure.close(); await cropCompact.close();
   assert.deepEqual(failures, [], "No browser runtime errors");

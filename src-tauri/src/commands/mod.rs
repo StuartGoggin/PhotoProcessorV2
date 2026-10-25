@@ -20,6 +20,7 @@ pub mod settings;
 pub mod staging_tags;
 pub mod tidy;
 pub mod transfer;
+pub mod google_photos;
 pub mod video_studio;
 pub mod video_snapshots;
 mod studio_hardware;

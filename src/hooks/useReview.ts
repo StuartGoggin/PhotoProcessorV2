@@ -26,6 +26,7 @@ export function useReview() {
   const [stagingDir, setStagingDir] = useState("");
   const [cropped, setCropped] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<LightboxPhoto | null>(null);
+  const [catalogueRevision, setCatalogueRevision] = useState(0);
   const showingCrop = useRef(false);
   const root = useRef("");
   const catalogue = useRef(lightboxCatalogue([]));
@@ -78,6 +79,7 @@ export function useReview() {
     void invoke<TreeNode>("list_staging_tree", { stagingDir: target }).then(result => {
       if (request !== treeRequest.current) return;
       catalogue.current = lightboxCatalogue(result?.children ?? []);
+      setCatalogueRevision(value => value + 1);
       setTree(catalogue.current.tree);
       const photo = selectedPath.current ? catalogue.current.photos.get(selectedPath.current) : undefined;
       if (photo) show(photo, 1, preferCrop);
@@ -91,6 +93,7 @@ export function useReview() {
   useEffect(() => {
     if (!settings?.staging_dir) return;
     root.current = settings.staging_dir;
+    setCatalogueRevision(0);
     setStagingDir(root.current); selectedPath.current = null;
     refreshTree(root.current);
   }, [settings?.staging_dir]);
@@ -145,7 +148,7 @@ export function useReview() {
 
   return {
     tree, selected, siblings, siblingIdx, images,
-    zoom, loading, error, renaming, stagingDir, cropped, selectedPhoto,
+    zoom, loading, error, renaming, stagingDir, cropped, selectedPhoto, catalogueRevision,
     trashed: selected ? isTrashed(selected.name) : false,
     stars: selected ? parseStars(selected.name) : 0,
     refreshTree, selectNode, handleStars, handleTrash, navigate, setZoom, setCropVersion,
