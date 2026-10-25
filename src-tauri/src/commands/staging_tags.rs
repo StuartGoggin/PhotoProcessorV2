@@ -4,8 +4,37 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tauri::AppHandle;
+
+#[cfg(test)]
+mod metadata_runtime_tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires pinned portable runtime; synthetic photo only"]
+    fn bundled_exiftool_staging_tags_round_trip_unicode_without_pixel_changes() {
+        let tool = std::env::var_os("PHOTOGOGO_TEST_EXIFTOOL").map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/exiftool/exiftool_files/perl.exe"));
+        assert_eq!(detect_exiftool_version(&tool).unwrap(), "13.59");
+        let root = std::env::temp_dir().join(format!("pgg-staging-tags-café-馬-{}",std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let photo = root.join("portrait été.jpg");
+        let mut bytes=Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut bytes).encode_image(
+            &image::DynamicImage::ImageRgb8(image::RgbImage::new(30,50))).unwrap();
+        fs::write(&photo,&bytes).unwrap();
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        fs::OpenOptions::new().write(true).open(&photo).unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+        let before=image::load_from_memory(&bytes).unwrap().to_rgb8();
+        write_tags_with_exiftool(&tool,&photo,&["café".into(),"馬".into()]).unwrap();
+        let tags=read_tags_with_exiftool(&tool,&photo).unwrap();
+        assert_eq!(tags.len(),2);
+        assert!(tags.contains(&"café".to_string()) && tags.contains(&"馬".to_string()));
+        assert_eq!(image::open(&photo).unwrap().to_rgb8(),before);
+        assert_eq!(fs::metadata(&photo).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),1_600_000_000);
+        fs::remove_dir_all(&root).unwrap();
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -135,54 +164,23 @@ fn is_metadata_writable_extension(path: &Path) -> bool {
 }
 
 fn resolve_exiftool_program(exiftool_dir: &str) -> PathBuf {
-    let trimmed = exiftool_dir.trim();
-    if trimmed.is_empty() {
-        return PathBuf::from("exiftool");
-    }
-
-    let base = PathBuf::from(trimmed);
-    #[cfg(target_os = "windows")]
-    {
-        let exe = base.join("exiftool.exe");
-        if exe.exists() {
-            return exe;
-        }
-    }
-
-    let plain = base.join("exiftool");
-    if plain.exists() {
-        return plain;
-    }
-
-    PathBuf::from("exiftool")
+    super::metadata_tools::resolve(exiftool_dir).0
 }
 
 fn detect_exiftool_version(exiftool_program: &Path) -> Result<String, String> {
-    let output = Command::new(exiftool_program)
-        .arg("-ver")
-        .output()
-        .map_err(|e| format!("Failed to execute exiftool: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "exiftool command failed".to_string()
-        } else {
-            format!("exiftool failed: {}", stderr)
-        });
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let output = super::metadata_tools::run(exiftool_program, &["-ver".into()])?;
+    Ok(String::from_utf8_lossy(&output).trim().to_string())
 }
 
 fn write_tags_with_exiftool(exiftool_program: &Path, path: &Path, tags: &[String]) -> Result<(), String> {
-    let mut cmd = Command::new(exiftool_program);
-    cmd.arg("-overwrite_original")
-        .arg("-P")
-        .arg("-XMP-dc:Subject=");
+    // Perl's optional Windows time API is not part of the private runtime.
+    // Preserve the timestamp with Rust's native wide-path file API instead.
+    let modified = fs::metadata(path).and_then(|metadata| metadata.modified())
+        .map_err(|_| "Could not read the original metadata file timestamp.")?;
+    let mut args: Vec<std::ffi::OsString> = vec!["-overwrite_original".into(), "-XMP-dc:Subject=".into()];
 
     for tag in tags {
-        cmd.arg(format!("-XMP-dc:Subject+={}", tag));
+        args.push(format!("-XMP-dc:Subject+={}", tag).into());
     }
 
     let is_mp4 = path
@@ -192,26 +190,14 @@ fn write_tags_with_exiftool(exiftool_program: &Path, path: &Path, tags: &[String
         .unwrap_or(false);
 
     if is_mp4 {
-        cmd.arg(format!("-Keys:Keywords={}", tags.join(", ")));
+        args.push(format!("-Keys:Keywords={}", tags.join(", ")).into());
     }
 
-    cmd.arg(path.as_os_str());
-
-    let output = cmd.output().map_err(|e| format!("Failed to execute exiftool: {}", e))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let message = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            "Unknown exiftool error".to_string()
-        };
-        Err(message)
-    }
+    args.push(path.as_os_str().to_owned());
+    super::metadata_tools::run(exiftool_program, &args)?;
+    fs::OpenOptions::new().write(true).open(path)
+        .and_then(|file| file.set_times(fs::FileTimes::new().set_modified(modified)))
+        .map_err(|_| "Metadata was written, but its original file timestamp could not be restored. Review the file and any backup before retrying.".into())
 }
 
 fn backup_file(staging_dir: &Path, absolute_path: &Path, relative_path: &str, backup_dir: &Path) -> Result<(), String> {
@@ -225,24 +211,8 @@ fn backup_file(staging_dir: &Path, absolute_path: &Path, relative_path: &str, ba
 }
 
 fn read_tags_with_exiftool(exiftool_program: &Path, path: &Path) -> Result<Vec<String>, String> {
-    let output = Command::new(exiftool_program)
-        .arg("-j")
-        .arg("-XMP-dc:Subject")
-        .arg("-Keys:Keywords")
-        .arg(path.as_os_str())
-        .output()
-        .map_err(|e| format!("Failed to execute exiftool: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "Failed reading metadata with exiftool".to_string()
-        } else {
-            stderr
-        });
-    }
-
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    let output = super::metadata_tools::run(exiftool_program, &["-j".into(), "-XMP-dc:Subject".into(), "-Keys:Keywords".into(), path.as_os_str().to_owned()])?;
+    let value: serde_json::Value = serde_json::from_slice(&output).map_err(|e| e.to_string())?;
     let Some(first) = value.as_array().and_then(|items| items.first()) else {
         return Ok(vec![]);
     };

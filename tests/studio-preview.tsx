@@ -35,6 +35,7 @@ fixture.__TAURI_INTERNALS__ = { convertFileSrc: () => "", invoke: async (command
   console.log("preview invoke", command, args);
   if (command === "load_settings") return { source_root: "E:/DCIM", staging_dir: "D:/Videos", archive_dir: "D:/Archive", exiftool_dir: "", stabilize_max_parallel_jobs: 3, stabilize_ffmpeg_threads_per_job: 4, face_scan_parallel_jobs: 1, face_scan_min_shard_mb: 10, face_scan_target_shard_mb: 100, timeline_preview_width: 420, timeline_preview_height: 240, timeline_preview_fps: 8, studio_review_frames_mode: "manual", studio_review_frames_count: 8, ...fixture.__reviewSettings };
   if (command === "save_settings") { fixture.__reviewSettings = args.settings; return null; }
+  if (command === "metadata_tool_status") return { ready: true, source: "bundled", version: "13.50", path: "C:/Synthetic app/resources/metadata/exiftool.exe", message: "Synthetic bundled ExifTool is ready." };
   if (command === "studio_review_frame") {
     (fixture.__reviewFrameCalls ||= []).push(args);
     if (fixture.__reviewFrameDeferred) return new Promise(resolve => { fixture.__resolveReviewFrame = resolve; });

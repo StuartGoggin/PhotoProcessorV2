@@ -1,6 +1,6 @@
 param(
-    [string]$Version = '2.0.31',
-    [string]$PreviousVersion = '2.0.30'
+    [string]$Version = '2.0.34',
+    [string]$PreviousVersion = '2.0.33'
 )
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
@@ -26,6 +26,56 @@ function Read-MsiProperty([string]$path,[string]$property) {
     [Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) | Out-Null
     [Runtime.InteropServices.Marshal]::FinalReleaseComObject($database) | Out-Null
     return $value
+}
+function Expand-MsiMetadataLayout([string]$packagePath,[string]$extractionRoot) {
+    # 7-Zip extracts MSI cabinets under File IDs, not installed filenames.
+    # Reconstruct only the managed metadata tree from the read-only MSI tables.
+    $database=$installer.OpenDatabase($packagePath,0)
+    $directories=@{}; $components=@{}; $files=@()
+    try {
+        foreach ($table in @('Directory','Component','File')) {
+            $query=switch ($table) {
+                'Directory' { 'SELECT `Directory`,`Directory_Parent`,`DefaultDir` FROM `Directory`' }
+                'Component' { 'SELECT `Component`,`Directory_` FROM `Component`' }
+                'File' { 'SELECT `File`,`Component_`,`FileName` FROM `File`' }
+            }
+            $view=$database.OpenView($query); $null=$view.Execute()
+            try {
+                while ($record=$view.Fetch()) {
+                    if ($table -eq 'Directory') { $directories[$record.StringData(1)]=@{parent=$record.StringData(2);name=$record.StringData(3)} }
+                    elseif ($table -eq 'Component') { $components[$record.StringData(1)]=$record.StringData(2) }
+                    else { $files+=@{id=$record.StringData(1);component=$record.StringData(2);name=$record.StringData(3)} }
+                    [Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) | Out-Null
+                }
+            } finally { $null=$view.Close(); [Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) | Out-Null }
+        }
+    } finally { [Runtime.InteropServices.Marshal]::FinalReleaseComObject($database) | Out-Null }
+    $cache=@{INSTALLDIR=''}
+    function Get-InstalledDirectory([string]$id,[int]$depth=0) {
+        if ($cache.ContainsKey($id)) { return $cache[$id] }
+        if ($depth -gt 100) { throw 'MSI directory cycle refused.' }
+        if (-not $directories.ContainsKey($id) -or -not $directories[$id].parent) { return $null }
+        $parent=Get-InstalledDirectory $directories[$id].parent ($depth+1)
+        if ($null -eq $parent) { return $null }
+        $name=($directories[$id].name.Split(':')[0].Split('|'))[-1]
+        $relative=if ($name -eq '.') { $parent } elseif ($parent) { Join-Path $parent $name } else { $name }
+        $cache[$id]=$relative
+        return $relative
+    }
+    $layout=[IO.Path]::GetFullPath((Join-Path $extractionRoot 'metadata-layout'))
+    $cabFiles=@{}
+    Get-ChildItem -LiteralPath $extractionRoot -Recurse -File | ForEach-Object { $cabFiles[$_.Name]=$_.FullName }
+    foreach ($file in $files) {
+        $directory=Get-InstalledDirectory $components[$file.component]
+        if ($null -eq $directory -or -not ($directory+'\').StartsWith('tools\exiftool\',[StringComparison]::OrdinalIgnoreCase)) { continue }
+        if (-not $cabFiles.ContainsKey($file.id)) { throw 'MSI metadata file is missing from the extracted cabinet.' }
+        $name=($file.name.Split('|'))[-1]
+        $target=[IO.Path]::GetFullPath((Join-Path $layout (Join-Path $directory $name)))
+        if (-not $target.StartsWith($layout+'\',[StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $target)) { throw 'Unsafe or duplicate MSI metadata target.' }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        Copy-Item -LiteralPath $cabFiles[$file.id] -Destination $target
+    }
+    return $layout
 }
 $productVersion = Read-MsiProperty $msi 'ProductVersion'
 $upgradeCode = Read-MsiProperty $msi 'UpgradeCode'
@@ -71,8 +121,17 @@ foreach ($package in @(@{ kind='msi'; path=$msi },@{ kind='nsis'; path=$nsis }))
         if ($application.sha256 -ne $binaryHash) { throw "Application differs beyond its Tauri bundle marker in $($package.kind)" }
         $hashes = @($payloadFiles | ForEach-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash })
         foreach ($hash in $expected) { if ($hashes -notcontains $hash) { throw "Missing expected payload hash in $($package.kind): $hash" } }
+        if ($package.kind -eq 'msi') {
+            $metadataLayout=Expand-MsiMetadataLayout $package.path $extracted
+            $payloadFiles=@(Get-ChildItem -LiteralPath $metadataLayout -Recurse -File)
+        }
+        $metadataExecutables = @($payloadFiles | Where-Object { $_.Name -ieq 'perl.exe' -and $_.Directory.Name -ieq 'exiftool_files' -and $_.Directory.Parent.Name -ieq 'exiftool' })
+        if ($metadataExecutables.Count -ne 1) { throw "Expected exactly one managed metadata tool in $($package.kind)" }
+        # Verify relative paths and every file, then execute the relocated intact
+        # package with PATH empty. Do not install either package for inspection.
+        & (Join-Path $PSScriptRoot 'verify-exiftool-bundle.ps1') -BundleDirectory $metadataExecutables[0].Directory.Parent.FullName -ForRelease
         $file = Get-Item -LiteralPath $package.path
-        $packages += @{ path=$file.FullName; bytes=$file.Length; sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash; payloadsVerified=($expected.Count + 1); application=@{ sha256=(Get-FileHash -LiteralPath $applications[0].FullName -Algorithm SHA256).Hash; normalizedSha256=$application.sha256; bundleType=$application.bundleType; markerOffset=$application.markerOffset }; signature=(Get-AuthenticodeSignature -LiteralPath $file.FullName).Status.ToString() }
+        $packages += @{ path=$file.FullName; bytes=$file.Length; sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash; payloadsVerified=($expected.Count + 1); metadataRuntime=@{ version='13.59'; closureVerified=$true; relocatedWithoutPath=$true }; application=@{ sha256=(Get-FileHash -LiteralPath $applications[0].FullName -Algorithm SHA256).Hash; normalizedSha256=$application.sha256; bundleType=$application.bundleType; markerOffset=$application.markerOffset }; signature=(Get-AuthenticodeSignature -LiteralPath $file.FullName).Status.ToString() }
     } finally {
         # Only this new run's exact, validated extraction directory is disposable.
         if ($extracted -notin @((Join-Path $reportRoot 'msi'),(Join-Path $reportRoot 'nsis'))) { throw 'Unsafe extraction cleanup target' }

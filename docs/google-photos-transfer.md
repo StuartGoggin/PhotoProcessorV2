@@ -113,8 +113,15 @@ format list is wider; that does not make every format validated by PhotoGoGo.
 The file limit is 200 MB; local dimension validation is bounded at 100 megapixels.
 
 Untouched originals are copied without recompression and checked against their
-reviewed SHA-256. Generated JPEGs and GPS removal require **ExifTool**, configured
-in Settings or available on PATH. The app never installs it automatically.
+reviewed SHA-256. Generated JPEGs and GPS removal require **ExifTool**. From
+2.0.34 the installer includes a complete pinned runtime built from source. Leave
+Settings → ExifTool Folder Override empty for **Automatic (bundled ExifTool)**.
+Use **Check metadata tool** to see its source and version before reviewing an
+upload. An explicit override takes precedence; clear an invalid override to
+return to the bundled copy. Existing PATH installations remain a fallback when
+the managed copy is absent. The application performs no runtime downloads or
+global PATH changes. Untouched original uploads without GPS removal do not
+need ExifTool. Repair the installer if the automatic check fails.
 
 Metadata preparation happens only in independent upload copies. It restores
 capture date/time and available offset/subsecond fields from the original,

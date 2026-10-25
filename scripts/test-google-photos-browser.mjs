@@ -19,8 +19,8 @@ async function fixture(options = {}, viewport = { width: 1440, height: 1050 }) {
   const page = await browser.newPage({ viewport }); page.setDefaultTimeout(12000);
   page.on("pageerror", error => errors.push(error.message));
   await page.addInitScript(initial => Object.assign(window, initial), options);
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
-  await page.getByRole("heading", { name: "Transfer to Google Photos", exact: true }).waitFor();
+  await page.goto(options.__metadataSettingsPage ? `${url}?page=settings` : url, { waitUntil: "domcontentloaded", timeout: 45000 });
+  await page.getByRole("heading", { name: options.__metadataSettingsPage ? "Settings" : "Transfer to Google Photos", exact: true }).waitFor();
   return page;
 }
 const calls = (page, command) => page.evaluate(command => window.__googleCalls.filter(call => call.command === command), command);
@@ -81,6 +81,79 @@ async function simplifiedSelection(page) {
   assert.equal((await calls(page, "google_photos_start")).length, 0);
   report.checks.push("Three clear processing-version choices and separate cropped-only framing map exactly to native variants without fallback or curation writes");
 }
+async function metadataReadiness() {
+  const settingsPage = await fixture({ __metadataSettingsPage: true });
+  assert.equal(await settingsPage.getByText("Automatic (bundled ExifTool)", { exact: true }).count(), 1,
+    "An empty metadata override is clearly automatic, not a request to manually install or find ExifTool");
+  await settingsPage.getByRole("button", { name: "Check metadata tool", exact: true }).click();
+  await settingsPage.getByText("Metadata tool ready", { exact: true }).waitFor();
+  assert.equal((await calls(settingsPage, "metadata_tool_status")).at(-1).args.directory, "", "Settings checks the current empty textbox explicitly, not an unrelated saved override");
+  assert.equal(await settingsPage.getByText("Version 13.50", { exact: true }).count(), 1);
+  const override = settingsPage.getByRole("textbox", { name: "ExifTool folder override (optional)", exact: true });
+  await override.fill("D:\\Unsaved metadata tools");
+  assert.equal(await settingsPage.getByText("Metadata tool ready", { exact: true }).count(), 0, "Changing the folder invalidates a previous ready result");
+  await settingsPage.getByRole("button", { name: "Check metadata tool", exact: true }).click();
+  await settingsPage.getByText("Metadata tool ready", { exact: true }).waitFor();
+  assert.equal((await calls(settingsPage, "metadata_tool_status")).at(-1).args.directory, "D:\\Unsaved metadata tools");
+  assert.equal(await settingsPage.getByText("Folder override", { exact: true }).count(), 1);
+  assert.equal(await settingsPage.evaluate(() => window.__metadataSavedSettings.length), 0, "Checking a tool never saves settings");
+  report.checks.push("Settings distinguishes bundled automatic resolution from an optional override and checks unsaved text without saving settings");
+  const google = await fixture();
+  assert.equal(await google.getByRole("group", { name: "Metadata tool readiness", exact: true }).count(), 1,
+    "Google Photos shows metadata readiness before the user has to discover a per-photo preflight failure");
+  await google.getByText("Metadata tool ready", { exact: true }).waitFor();
+  const savedCheck = (await calls(google, "metadata_tool_status"))[0];
+  assert.equal(Object.hasOwn(savedCheck.args, "directory"), false, "Google Photos checks saved configuration instead of overriding it with an empty folder");
+  assert.equal(await google.getByRole("group", { name: "Metadata tool readiness", exact: true }).locator(".gp-note").count(), 0, "A working bundled tool is not presented as a missing-tool warning");
+  report.checks.push("Google Photos checks the saved native resolver early and presents a working bundled tool as ready, not a warning");
+
+  await settingsPage.evaluate(() => { window.__metadataResult = { ready: false, source: "unavailable", message: "The configured override is unavailable. Clear the override to use the bundled tool, then check again." }; });
+  await override.fill("D:\\Missing metadata tools");
+  await settingsPage.getByRole("button", { name: "Check metadata tool", exact: true }).click();
+  await settingsPage.getByText("Metadata tool unavailable", { exact: true }).waitFor();
+  await settingsPage.getByText("The configured override is unavailable.", { exact: false }).waitFor();
+  assert.equal(await settingsPage.getByRole("button", { name: /install|download/i }).count(), 0, "Readiness does not introduce software installation or downloading");
+  await settingsPage.evaluate(() => { window.__metadataResult = null; window.__metadataHold = true; });
+  await override.fill("D:\\First unsaved folder");
+  await settingsPage.getByRole("button", { name: "Check metadata tool", exact: true }).click();
+  await settingsPage.waitForFunction(() => !!window.__metadataResolve);
+  await override.fill("D:\\Second unsaved folder");
+  await settingsPage.evaluate(() => { window.__metadataHold = false; window.__metadataResolve(); });
+  await settingsPage.getByText("Folder changed. Check the metadata tool again", { exact: false }).waitFor();
+  assert.equal(await settingsPage.getByText("Metadata tool ready", { exact: true }).count(), 0, "A late result cannot claim a newly entered override is ready");
+  await override.fill("");
+  await settingsPage.getByRole("button", { name: "Check metadata tool", exact: true }).click();
+  await settingsPage.getByText("Metadata tool ready", { exact: true }).waitFor();
+  assert.equal((await calls(settingsPage, "metadata_tool_status")).at(-1).args.directory, "");
+  assert.equal(await settingsPage.evaluate(() => window.__metadataSavedSettings.length), 0);
+  await settingsPage.getByRole("textbox", { name: "ExifTool folder override (optional)", exact: true }).scrollIntoViewIfNeeded();
+  await settingsPage.screenshot({ path: `${output}/metadata-settings.png`, fullPage: true });
+  report.checks.push("Missing/stale override results are actionable; late checks cannot mark edited paths ready, and clearing the textbox restores automatic resolution without saving");
+
+  const unavailable = await fixture({ __metadataSavedOverride: "D:\\Unavailable saved override", __metadataResult: { ready: false, source: "unavailable", message: "Saved metadata override was not found. Check the optional override in Settings." }, __googlePlanItems: [
+    { id: "untouched-original", relativePath: "2026/10/24/Horse event/rider.jpg", variant: "original", bytes: 18123456, status: "ready", warnings: [] },
+  ] });
+  await unavailable.getByText("Metadata tool unavailable", { exact: true }).waitFor();
+  await unavailable.getByText("Untouched originals without GPS removal can still be reviewed", { exact: false }).waitFor();
+  await unavailable.getByRole("radio", { name: /Choose versions for this upload/ }).check();
+  assert.equal(await unavailable.getByRole("button", { name: "Review publish plan", exact: true }).isEnabled(), true, "Unavailable metadata tool cannot globally block untouched original-only review");
+  await preview(unavailable);
+  const originalRequest = (await calls(unavailable, "google_photos_plan")).at(-1).args.request;
+  assert.deepEqual(originalRequest.variants, ["original"]); assert.equal(originalRequest.stripGps, false);
+  await consent(unavailable).check();
+  assert.equal(await unavailable.getByRole("button", { name: "Publish 1 photo", exact: true }).isEnabled(), true, "Native-ready original stays publishable; the advisory readiness banner adds no new client-side blocker");
+  assert.equal((await calls(unavailable, "google_photos_start")).length, 0);
+  assert.equal(await unavailable.evaluate(() => window.__metadataSavedSettings.length), 0);
+  await unavailable.getByRole("group", { name: "Metadata tool readiness", exact: true }).screenshot({ path: `${output}/metadata-google-unavailable.png` });
+  report.checks.push("Early missing-tool advice preserves native per-file gates and does not block an untouched original-only job or silently change saved settings");
+  await unavailable.evaluate(() => { window.__metadataResult = { ready: true, source: "path", version: "13.42", message: "ExifTool from system PATH is ready." }; });
+  await unavailable.getByRole("button", { name: "Recheck metadata tool", exact: true }).click();
+  await unavailable.getByText("Metadata tool ready", { exact: true }).waitFor();
+  await unavailable.getByText("System PATH", { exact: false }).first().waitFor();
+  assert.equal(Object.hasOwn((await calls(unavailable, "metadata_tool_status")).at(-1).args, "directory"), false);
+  assert.equal(await unavailable.getByRole("group", { name: "Metadata tool readiness", exact: true }).getAttribute("class").then(value => value.includes("gp-metadata-unavailable")), false);
+  report.checks.push("Manual recheck reflects a recovered PATH tool/version without changing the saved override or creating an upload");
+}
 
 try {
   if (server) {
@@ -93,7 +166,9 @@ try {
     assert.ok(ready, `Fixture did not start: ${log}`);
   }
   browser = await chromium.launch({ channel: "msedge", headless: true });
-  if (process.env.GOOGLE_PHOTOS_TEST_FOCUS === "selection") {
+  if (process.env.GOOGLE_PHOTOS_TEST_FOCUS === "metadata") {
+    await metadataReadiness();
+  } else if (process.env.GOOGLE_PHOTOS_TEST_FOCUS === "selection") {
     await simplifiedSelection(await fixture(croppedOnlyFixture));
   } else {
   const page = await fixture();
@@ -236,6 +311,7 @@ try {
   assert.equal((await calls(failed, "google_photos_start")).length, 0);
   report.checks.push("Preflight failure remains actionable and cannot create albums or start an upload");
   await simplifiedSelection(await fixture(croppedOnlyFixture));
+  await metadataReadiness();
   }
   assert.deepEqual(errors, [], "No browser runtime errors");
   report.complete = true; console.log(`Google Photos: ${report.checks.length} browser regression groups passed`);

@@ -8,6 +8,12 @@
 .gp-section h3 { display: flex; align-items: center; font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 12px; }
 .gp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .gp-between { justify-content: space-between; }
+.gp-metadata { margin: 0 0 14px; padding: 10px 12px; border: 1px solid #475569; border-radius: 8px; background: #172236; font-size: 12px; }
+.gp-metadata p { margin-top: 4px; }
+.gp-metadata-ready { border-color: #39795e; }
+.gp-metadata-ready strong { color: #a7f3d0; }
+.gp-metadata-unavailable { border-color: #806634; }
+.gp-metadata-unavailable strong { color: #fde68a; }
 .gp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 .gp-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; min-width: 0; }
 .gp-field > span:first-child { color: #cbd5e1; font-weight: 600; }

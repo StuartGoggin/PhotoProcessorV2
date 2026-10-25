@@ -12,6 +12,7 @@ pub mod logs;
 pub mod lightbox;
 pub mod lightbox_crop;
 mod media_tools;
+pub mod metadata_tools;
 pub mod naming;
 pub mod process;
 mod photo_process;

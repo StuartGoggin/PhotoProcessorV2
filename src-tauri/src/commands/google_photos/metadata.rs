@@ -7,8 +7,6 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::{Duration, Instant},
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -68,94 +66,14 @@ pub fn needs_tool(item: &PlanItem) -> bool {
     is_derived(item) || item.strip_gps
 }
 pub fn tool_path(directory: &str) -> PathBuf {
-    if directory.trim().is_empty() {
-        return PathBuf::from("exiftool");
-    }
-    let path = PathBuf::from(directory);
-    if path.is_file() {
-        return path;
-    }
-    let exe = path.join("exiftool.exe");
-    if exe.is_file() {
-        exe
-    } else {
-        path.join("exiftool")
-    }
+    crate::commands::metadata_tools::resolve(directory).0
 }
 fn run_tool(tool: &Path, args: &[std::ffi::OsString]) -> Result<Vec<u8>, String> {
-    // ExifTool's Windows filename decoding is explicitly UTF-8. An argument
-    // stream avoids the console code page for Unicode event/user paths.
-    let mut argument_bytes = Vec::new();
-    for argument in args {
-        let value = argument
-            .to_str()
-            .ok_or("Metadata paths must be valid Unicode.")?;
-        if value.contains(['\r', '\n', '\0']) {
-            return Err("Metadata arguments cannot contain line breaks or nulls.".into());
-        }
-        argument_bytes.extend_from_slice(value.as_bytes());
-        argument_bytes.push(b'\n');
-    }
-    let mut command = Command::new(tool);
-    command
-        .args(["-charset", "filename=UTF8", "-@", "-"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .stdin(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let mut child = command.spawn().map_err(|_| "ExifTool is required for upload-copy metadata/GPS protection. Configure its folder in Settings; no original was changed.")?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or("ExifTool argument stream is unavailable.")?;
-    let input_writer = std::thread::spawn(move || stdin.write_all(&argument_bytes));
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if input_writer
-                    .join()
-                    .map_err(|_| "ExifTool argument writer failed.")?
-                    .is_err()
-                {
-                    return Err("Could not send Unicode-safe metadata arguments.".into());
-                }
-                if !status.success() {
-                    return Err("ExifTool could not prepare verified upload metadata. The original was not changed.".into());
-                }
-                let mut output = Vec::new();
-                child
-                    .stdout
-                    .take()
-                    .ok_or("ExifTool output unavailable.")?
-                    .take(65537)
-                    .read_to_end(&mut output)
-                    .map_err(|_| "Could not read metadata result.")?;
-                if output.len() > 65536 {
-                    return Err("Metadata response exceeds its safety limit.".into());
-                }
-                return Ok(output);
-            }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = input_writer.join();
-                return Err(
-                    "ExifTool metadata preparation timed out; no original was changed.".into(),
-                );
-            }
-        }
-    }
+    crate::commands::metadata_tools::run(tool, args)
 }
 pub fn check_tool(directory: &str) -> bool {
-    run_tool(&tool_path(directory), &["-ver".into()]).is_ok()
+    crate::commands::metadata_tools::check(directory)
 }
-
 /// SHA over JPEG coding markers + entropy; ignores metadata-only APP/COM
 /// segments. ExifTool edits must not change the actual encoded image payload.
 fn jpeg_picture_hash(bytes: &[u8]) -> Result<String, String> {
@@ -425,6 +343,62 @@ pub fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires the pinned portable metadata bundle; synthetic photos only"]
+    fn bundled_exiftool_restores_dates_and_gps_without_reencoding_sources() {
+        use super::super::model::PlanItemStatus;
+        let tool = std::env::var_os("PHOTOGOGO_TEST_EXIFTOOL").map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/exiftool/exiftool_files/perl.exe"));
+        assert!(check_tool(tool.to_str().unwrap()), "complete pinned runtime required");
+        let root = std::env::temp_dir().join(format!("pgg-metadata-café-馬-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let original = root.join("original été.jpg");
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg).encode_image(
+            &image::DynamicImage::ImageRgb8(image::RgbImage::new(40, 60))).unwrap();
+        fs::write(&original, jpeg).unwrap();
+        let profile = tool.parent().unwrap().join("t/images/ICC_Profile.icc");
+        run_tool(&tool, &[
+            "-overwrite_original".into(), "-DateTimeOriginal=2026:10:24 10:42:32".into(),
+            "-OffsetTimeOriginal=+11:00".into(), "-SubSecTimeOriginal=360".into(),
+            "-Orientation#=6".into(), "-GPSLatitude=37.8".into(), "-GPSLatitudeRef=S".into(),
+            "-GPSLongitude=145.0".into(), "-GPSLongitudeRef=E".into(),
+            format!("-ICC_Profile<={}", profile.display()).into(), original.as_os_str().to_owned(),
+        ]).unwrap();
+        let original_hash = hash_file(&original).unwrap();
+        for variant in [PhotoVariant::Enhanced, PhotoVariant::Bw] {
+            let source = root.join(format!("derived-{variant:?}.jpg"));
+            let mut bytes = Vec::new();
+            let image = if variant == PhotoVariant::Bw {
+                image::DynamicImage::ImageLuma8(image::GrayImage::new(40,60))
+            } else { image::DynamicImage::ImageRgb8(image::RgbImage::new(40,60)) };
+            image::codecs::jpeg::JpegEncoder::new(&mut bytes).encode_image(&image).unwrap();
+            fs::write(&source, &bytes).unwrap();
+            let source_hash = hash_file(&source).unwrap();
+            for strip_gps in [false, true] {
+                let destination = root.join(format!("upload-{variant:?}-{strip_gps}.jpg"));
+                let item = PlanItem { id:"fixture".into(), relative_path:"fixture.jpg".into(),
+                    variant, bytes:bytes.len() as u64, status:PlanItemStatus::Ready, warnings:vec![],
+                    path:source.to_string_lossy().into(), original_path:original.to_string_lossy().into(),
+                    source_sha256:source_hash.clone(), original_sha256:original_hash.clone(),
+                    modified_ms:0,event_name:"test".into(),event_date:None,album_key:"test".into(),strip_gps };
+                let prepared = prepare(&item,&destination,tool.to_str().unwrap()).unwrap();
+                assert_eq!(prepared.capture_date.as_deref(),Some("2026:10:24 10:42:32"));
+                assert_eq!((prepared.width,prepared.height),(40,60));
+                assert_eq!(jpeg_picture_hash(&bytes).unwrap(),jpeg_picture_hash(&fs::read(&destination).unwrap()).unwrap());
+                assert_eq!(icc_colour_space(&destination).unwrap(),if variant == PhotoVariant::Bw {None}else{Some(*b"RGB ")});
+                let read = run_tool(&tool,&["-j".into(),"-n".into(),"-Orientation".into(),"-OffsetTimeOriginal".into(),"-SubSecTimeOriginal".into(),"-GPSLatitude".into(),destination.as_os_str().to_owned()]).unwrap();
+                let value: Vec<serde_json::Value> = serde_json::from_slice(&read).unwrap();
+                assert_eq!(value[0]["Orientation"],1);
+                assert_eq!(value[0]["OffsetTimeOriginal"],"+11:00");
+                assert_eq!(value[0]["SubSecTimeOriginal"].to_string().trim_matches('"'),"360");
+                assert_eq!(value[0].get("GPSLatitude").is_none(),strip_gps);
+                assert_eq!(hash_file(&source).unwrap(),source_hash);
+                assert_eq!(hash_file(&original).unwrap(),original_hash);
+            }
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
     #[test]
     fn metadata_can_change_without_changing_encoded_pixels() {
         let mut jpeg = Vec::new();

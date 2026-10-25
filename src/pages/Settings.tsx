@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Settings } from "../types";
+import { METADATA_TOOL_SOURCES, type MetadataToolStatus } from "../types/metadataTool";
 
 type PathSettingKey = "source_root" | "staging_dir" | "archive_dir" | "exiftool_dir";
 
@@ -23,8 +24,8 @@ const FIELDS: { key: PathSettingKey; label: string; help: string }[] = [
   },
   {
     key: "exiftool_dir",
-    label: "ExifTool Folder",
-    help: "Folder containing exiftool.exe (used for writing metadata tags)",
+    label: "ExifTool folder override (optional)",
+    help: "Leave empty to use the packaged ExifTool automatically. An existing custom folder can still override it; no manual installation is normally needed.",
   },
 ];
 
@@ -56,6 +57,28 @@ export default function SettingsPage() {
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [metadataStatus, setMetadataStatus] = useState<MetadataToolStatus | null>(null);
+  const [checkedDirectory, setCheckedDirectory] = useState<string | null>(null);
+  const [checkingMetadata, setCheckingMetadata] = useState(false);
+  const metadataBusy = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
+  async function checkMetadataTool() {
+    if (metadataBusy.current) return;
+    const directory = settings.exiftool_dir;
+    metadataBusy.current = true; setCheckingMetadata(true);
+    try {
+      const result = await invoke<MetadataToolStatus>("metadata_tool_status", { directory });
+      if (mounted.current) { setMetadataStatus(result); setCheckedDirectory(directory); }
+    } catch (reason) {
+      if (mounted.current) {
+        setMetadataStatus({ ready: false, source: "unavailable", message: `Could not check the metadata tool: ${String(reason)}` });
+        setCheckedDirectory(directory);
+      }
+    } finally { metadataBusy.current = false; if (mounted.current) setCheckingMetadata(false); }
+  }
+  const currentMetadataStatus = checkedDirectory === settings.exiftool_dir ? metadataStatus : null;
 
   useEffect(() => {
     invoke<Settings>("load_settings")
@@ -133,20 +156,31 @@ export default function SettingsPage() {
         </div>
         {FIELDS.map(({ key, label, help }) => (
           <div key={key} className="card">
-            <label className="block text-sm font-medium text-gray-300 mb-1">{label}</label>
+            <label htmlFor={`setting-${key}`} className="block text-sm font-medium text-gray-300 mb-1">{label}</label>
             <p className="text-xs text-gray-500 mb-2">{help}</p>
             <div className="flex gap-2">
               <input
+                id={`setting-${key}`}
                 type="text"
                 className="input-field flex-1"
                 value={settings[key]}
                 onChange={(e) => setSettings((s) => ({ ...s, [key]: e.target.value }))}
-                placeholder="Click Browse or enter path..."
+                placeholder={key === "exiftool_dir" ? "Automatic (bundled ExifTool)" : "Click Browse or enter path..."}
               />
               <button className="btn-secondary whitespace-nowrap" onClick={() => pickDir(key)}>
                 Browse...
               </button>
             </div>
+            {key === "exiftool_dir" && <div className="mt-3 space-y-2 text-xs">
+              <p className="text-gray-300">{settings.exiftool_dir.trim() ? "Custom folder override" : <strong>Automatic (bundled ExifTool)</strong>}<span className="text-gray-500"> · Save Settings applies an override; checking does not save anything.</span></p>
+              <button type="button" className="btn-secondary text-xs" disabled={checkingMetadata} onClick={() => void checkMetadataTool()}>{checkingMetadata ? "Checking metadata tool…" : "Check metadata tool"}</button>
+              {currentMetadataStatus ? <div role="status" className={`rounded-lg border px-3 py-2 ${currentMetadataStatus.ready ? "border-emerald-700 bg-emerald-950/20 text-emerald-100" : "border-amber-700 bg-amber-950/20 text-amber-100"}`}>
+                <strong>{currentMetadataStatus.ready ? "Metadata tool ready" : "Metadata tool unavailable"}</strong>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1"><span>{METADATA_TOOL_SOURCES[currentMetadataStatus.source] ?? "Unavailable"}</span>{currentMetadataStatus.version && <span>Version {currentMetadataStatus.version}</span>}</div>
+                <p className="mt-1">{currentMetadataStatus.message}</p>
+                {currentMetadataStatus.path && <details className="mt-1"><summary className="cursor-pointer">Resolved local tool</summary><p className="mt-1 break-all font-mono">{currentMetadataStatus.path}</p></details>}
+              </div> : <p className="text-gray-400">{checkedDirectory === null ? "Check to verify the tool and version for this setting." : "Folder changed. Check the metadata tool again before relying on the previous result."}</p>}
+            </div>}
           </div>
         ))}
 

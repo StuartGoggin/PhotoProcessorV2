@@ -1,0 +1,29 @@
+PhotoGoGo source-built metadata runtime
+
+ExifTool 13.59, copyright Phil Harvey, is distributed under the same terms as
+Perl (Perl Artistic or GPL). The Perl Artistic route is used for this separate
+command-line tool. The complete ExifTool source archive is retained in sources/;
+the loaded script, libraries and original licence notices are in exiftool_files/.
+Source tag13.59 commit: 2200871d9cef988051d2a99d67df3bda6cbb30a8
+https://github.com/exiftool/exiftool/tree/13.59
+
+Perl 5.44.0 is built from the unmodified official Perl source with the Microsoft
+C/C++ compiler and its documented Windows build recipe. Perl copyright and
+licence texts, including Artistic and Copying, accompany the runtime. The full
+source archive and PhotoGoGo build recipe are in sources/. This is an
+application-owned private runtime; it does not install Perl or change PATH.
+https://www.cpan.org/src/5.0/perl-5.44.0.tar.gz
+https://github.com/Perl/perl5/tree/v5.44.0
+
+Source archive hashes, runtime files and build provenance are recorded in
+build-manifest.json. The tool is invoked directly as perl.exe with its ExifTool
+script and local modules. User ExifTool config and inherited Perl startup/module
+path overrides are disabled. Photographs are never recompressed by this tool.
+
+Any app-local Microsoft release runtime files are redistributed under the
+installed Visual Studio Build Tools licence and its REDIST list, with their
+original notices/provenance. No debug CRT or system-directory copies are used.
+The old Strawberry Perl/GCC/GMP portable bundle is not included.
+
+This notice does not replace the preserved upstream component notices.
+No warranty is supplied. See the original source licence texts for terms.

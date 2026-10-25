@@ -5,6 +5,7 @@ import { useSettings } from "../hooks";
 import type { GooglePhotoAlbumEdit, GooglePhotoMode, GooglePhotoPlanItem, GooglePhotoVariant, GooglePhotosJob, GooglePhotosPlan, GooglePhotosPlanRequest, GooglePhotosStatus } from "../types/googlePhotos";
 import { GOOGLE_PHOTO_VARIANTS, googlePhotoCounts, googlePhotoSize, googlePhotoVariantLabel } from "../utils/googlePhotos";
 import GooglePhotoJobCard from "../components/GooglePhotoJobCard";
+import { METADATA_TOOL_SOURCES, type MetadataToolStatus } from "../types/metadataTool";
 import "./GooglePhotos.css";
 
 const MODES: { id: GooglePhotoMode; label: string; detail: string }[] = [
@@ -116,6 +117,9 @@ export default function GooglePhotos() {
   const [pollError, setPollError] = useState("");
   const [disconnectOpen, setDisconnectOpen] = useState(false);
   const [revoke, setRevoke] = useState(true);
+  const [metadataStatus, setMetadataStatus] = useState<MetadataToolStatus | null>(null);
+  const [checkingMetadata, setCheckingMetadata] = useState(false);
+  const metadataBusy = useRef(false);
   const mounted = useRef(true);
   const planGeneration = useRef(0);
   const pollBusy = useRef(false);
@@ -140,6 +144,20 @@ export default function GooglePhotos() {
     const interval = window.setInterval(() => void refresh(), 2500);
     return () => { mounted.current = false; window.clearInterval(interval); ++planGeneration.current; };
   }, [refresh]);
+
+  const checkMetadataTool = useCallback(async () => {
+    if (metadataBusy.current) return;
+    metadataBusy.current = true; setCheckingMetadata(true);
+    try {
+      // Omit directory: Google Photos must resolve SAVED settings, not replace
+      // a saved custom override with an accidental empty automatic override.
+      const result = await invoke<MetadataToolStatus>("metadata_tool_status");
+      if (mounted.current) setMetadataStatus(result);
+    } catch (reason) {
+      if (mounted.current) setMetadataStatus({ ready: false, source: "unavailable", message: `Could not check the metadata tool: ${String(reason)}` });
+    } finally { metadataBusy.current = false; if (mounted.current) setCheckingMetadata(false); }
+  }, []);
+  useEffect(() => { void checkMetadataTool(); }, [checkMetadataTool]);
 
   function changeRequest(update: Partial<GooglePhotosPlanRequest>) {
     ++planGeneration.current; setRequest(previous => ({ ...previous, ...update })); setPlan(null); setAccepted(false); setMessage("");
@@ -218,6 +236,11 @@ export default function GooglePhotos() {
     </section>
 
     <section className="gp-section" aria-labelledby="gp-select-heading"><h3 id="gp-select-heading"><span className="gp-step" aria-hidden="true">2</span>Choose photos and publishing rules</h3>
+      <div role="group" aria-label="Metadata tool readiness" className={`gp-metadata ${metadataStatus?.ready ? "gp-metadata-ready" : metadataStatus ? "gp-metadata-unavailable" : ""}`}>
+        <div className="gp-row gp-between"><div role="status"><strong>{checkingMetadata ? "Checking metadata tool…" : metadataStatus?.ready ? "Metadata tool ready" : metadataStatus ? "Metadata tool unavailable" : "Metadata tool not checked"}</strong>{metadataStatus && !checkingMetadata && <span className="gp-muted"> · {METADATA_TOOL_SOURCES[metadataStatus.source] ?? "Unavailable"}{metadataStatus.version ? ` · Version ${metadataStatus.version}` : ""}</span>}</div><button type="button" className="btn-secondary text-xs" disabled={checkingMetadata} onClick={() => void checkMetadataTool()}>Recheck metadata tool</button></div>
+        {metadataStatus && !checkingMetadata && <p className="gp-muted">{metadataStatus.message}</p>}
+        <p className="gp-muted">{metadataStatus?.ready ? "Processed versions and GPS-safe upload copies can use this metadata tool. Every file is still checked during review." : "Processed versions and GPS removal need a working metadata tool. Untouched originals without GPS removal can still be reviewed; native preflight checks each file. Check the optional override in Settings if needed."}</p>
+      </div>
       <div className="gp-row gp-between"><div className="gp-muted" style={{ overflowWrap: "anywhere" }}><strong className="text-gray-200">Scope:</strong> {request.scopeDir || root || "Set a local staging directory in Settings"}</div><div className="gp-row gp-actions"><button className="btn-secondary" disabled={!root || !!busy} onClick={() => void chooseScope()}>Choose folder</button>{request.scopeDir && <button className="btn-secondary" disabled={!!busy} onClick={() => changeRequest({ scopeDir: undefined })}>Entire staging</button>}</div></div>
       <div className="gp-mode-list" role="radiogroup" aria-label="Photo selection mode">{MODES.map(mode => <label className="gp-mode" key={mode.id}><input type="radio" name="google-photo-mode" value={mode.id} checked={request.mode === mode.id} disabled={!!busy} onChange={() => changeRequest({ mode: mode.id })} /><span><strong>{mode.label}</strong><small>{mode.detail}</small></span></label>)}</div>
       {request.mode !== "checked" && <div className="gp-note">This is a one-job override. It does not alter any checkbox in Photo Lightbox.</div>}
