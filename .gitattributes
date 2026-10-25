@@ -1,3 +1,10 @@
 # Unified diffs contain required single-space blank context lines. Preserve
 # their LF bytes so the saved native-source patches apply on Windows too.
 *.patch text eol=lf whitespace=-blank-at-eol
+
+# These files are copied byte-for-byte into the pinned metadata runtime.
+# Preserve their reviewed bytes regardless of a developer's autocrlf setting.
+resources/exiftool-NOTICE.txt -text
+resources/run-exiftool.pl -text
+scripts/build-metadata-perl.ps1 -text
+scripts/exiftool-bundle.lock.json -text whitespace=cr-at-eol
