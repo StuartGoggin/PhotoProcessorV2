@@ -681,26 +681,28 @@ fn acquire_in(
     memory_available: impl Fn() -> u64,
     on_wait: impl FnMut(Option<&str>),
 ) -> Result<ResourcePermit, String> {
-    acquire_in_slots(resource_pool, width, height, performance, requested_threads, 1, cancelled, memory_available, on_wait)
+    acquire_fixed_budget(resource_pool,performance,requested_threads,1,
+        memory_per_process(width,height),cancelled,memory_available,on_wait)
 }
 
-/// A Tripod worker owns one GPU process and two FFmpeg processes. Reserve all
-/// three atomically, avoiding sequential-permit deadlocks or hidden children.
-/// This first backend deliberately uses fixed, conservative admission instead
-/// of teaching the legacy adaptive controller an unmeasured workload class.
-pub(super) fn acquire_tripod(width: u32, height: u32, performance: &str,
-    cancelled: impl FnMut() -> bool, on_wait: impl FnMut(Option<&str>)) -> Result<ResourcePermit, String> {
-    let threads = policy(width, height, performance).threads.max(2);
-    acquire_in_slots(pool(), width, height, performance, threads, 3, cancelled, available_memory, on_wait)
+/// Segmentation's model/state dominates memory; do not estimate it as a small
+/// conventional decoder. Reserve the owner, Python and one finite decoder
+/// atomically. Picture filtering instead owns the worker and two FFmpeg children.
+pub(super) fn acquire_finishing(width:u32,height:u32,performance:&str,masks:bool,
+    cancelled:impl FnMut()->bool,on_wait:impl FnMut(Option<&str>))->Result<ResourcePermit,String> {
+    let memory=if masks {4*1024*MIB} else {memory_per_process(width,height).saturating_mul(3)
+        .saturating_add(width as u64*height as u64*16)};
+    let threads=if masks {10}else{policy(width,height,performance).threads.max(2)};
+    acquire_fixed_budget(pool(),performance,threads,3,memory,cancelled,available_memory,on_wait)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn acquire_in_slots(resource_pool: &'static (Mutex<Usage>, Condvar), width: u32, height: u32,
-    performance: &str, requested_threads: usize, process_slots: usize,
-    mut cancelled: impl FnMut() -> bool, memory_available: impl Fn() -> u64,
-    on_wait: impl FnMut(Option<&str>)) -> Result<ResourcePermit, String> {
+fn acquire_fixed_budget(resource_pool:&'static (Mutex<Usage>,Condvar),performance:&str,
+    requested_threads:usize,process_slots:usize,memory:u64,
+    mut cancelled:impl FnMut()->bool,memory_available:impl Fn()->u64,
+    on_wait:impl FnMut(Option<&str>))->Result<ResourcePermit,String> {
+    if process_slots==0 || process_slots>MAX_PROCESSES || memory==0 {return Err("Invalid fixed finishing resource budget".into());}
     let mut wait_reporter = MemoryWaitReporter::new(on_wait);
-    let memory = memory_per_process(width, height).saturating_mul(process_slots as u64);
     let cores = crate::utils::num_cpus().max(1);
     let cpu_limit = if performance == "max" {
         cores
@@ -1501,6 +1503,21 @@ mod tests {
     #[test]
     fn cancellation_never_reserves_capacity() {
         assert!(acquire(1920, 1080, "max", || true).is_err());
+    }
+
+    #[test]
+    fn finishing_fixed_budget_reserves_model_ram_and_three_children_atomically() {
+        let resource_pool:&'static (Mutex<Usage>,Condvar)=Box::leak(Box::new((Mutex::new(Usage::default()),Condvar::new())));
+        let memory=4*1024*MIB;
+        let permit=acquire_fixed_budget(resource_pool,"max",1,3,memory,||false,||16*1024*MIB,|_|{}).unwrap();
+        {let usage=resource_pool.0.lock().unwrap();assert_eq!((usage.processes,usage.threads,usage.memory),(3,1,memory));}
+        drop(permit);
+        {let usage=resource_pool.0.lock().unwrap();assert_eq!((usage.processes,usage.threads,usage.memory),(0,0,0));}
+        let mut checks=0;let mut notes=0;
+        let result=acquire_fixed_budget(resource_pool,"max",1,3,memory,
+            ||{checks+=1;checks>=2},||3*1024*MIB,|note|{if note.is_some(){notes+=1;}});
+        assert!(result.is_err());assert!(notes>0);
+        let usage=resource_pool.0.lock().unwrap();assert_eq!((usage.processes,usage.threads,usage.memory),(0,0,0));
     }
 
     #[test]

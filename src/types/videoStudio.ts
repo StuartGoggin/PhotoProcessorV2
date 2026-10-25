@@ -7,7 +7,7 @@ export interface StudioReplay {
   enabled: boolean;
 }
 export type StudioStabilizationPreset = "off" | "gentle" | "balanced" | "strong" | "custom";
-export type StudioStabilizationMethod = "fast" | "quality" | "gpuTripod";
+export type StudioStabilizationMethod = "fast" | "quality";
 export type StudioWindReductionPreset = "off" | "light" | "moderate" | "strong";
 export type StudioClipWindReduction = "inherit" | StudioWindReductionPreset;
 export type StudioScoreTiming = "clipEnd" | "afterReplays" | "separateCard" | "clipStart" | "custom";
@@ -67,6 +67,7 @@ export const defaultCustomStabilization = (): StudioCustomStabilization => ({
   contrast: 125,
 });
 export interface StudioClip {
+  finishingSelection?: import("./studioFinishing").StudioSubjectSelection;
   id: string;
   path: string;
   duration: number;
@@ -79,7 +80,7 @@ export interface StudioClip {
   stabilization: StudioStabilizationPreset;
   stabilizationMethod: StudioStabilizationMethod;
   customStabilization: StudioCustomStabilization;
-  // null/missing follows the project in Quality; GPU Tripod is always rotation-locked.
+  // null/missing follows the project; applies only to enabled Quality stabilisation.
   preventRotation?: boolean | null;
   framing: "edgeSafe" | "maxFrame" | "aggressiveCrop";
   reviewed: boolean;
@@ -93,6 +94,7 @@ export interface StudioClip {
   scorecard?: StudioScorecard;
 }
 export interface StudioClipRender {
+  finishingRecipe?: unknown[] | null;
   path: string;
   width: number;
   height: number;
@@ -105,7 +107,8 @@ export interface StudioClipRender {
   available?: boolean;
   titleStyleKey?: string;
   preventRotation?: boolean;
-  // Missing on legacy renders; identifies the opt-in GPU picture engine.
+  // Historical experimental metadata is read only to reject stale artifacts.
+  // New legacy renders leave this empty; it never selects a processing engine.
   stabilizationEngine?: string;
 }
 export interface MusicSection {
@@ -151,6 +154,7 @@ export const newBackgroundMusic = (): BackgroundMusic => ({
   projectPath: "",
 });
 export interface StudioProject {
+  finishing?: import("./studioFinishing").StudioFinishingSettings;
   version: number;
   name: string;
   team: string;
@@ -213,14 +217,14 @@ export interface StudioJob {
   logs: string[];
   cancelled: boolean;
   paused: boolean;
-  kind?: "preview" | "clip" | "project" | "assembly" | "music";
+  kind?: "preview" | "clip" | "project" | "assembly" | "music" | "subjectBase" | "subjectMasks" | "subjectFrame";
   clipId?: string | null;
   width?: number;
   height?: number;
   fps?: number;
   duration?: number;
   bitrateMbps?: number;
-  targets?: { clipId: string; sourcePath: string; revision: number; titleStyleKey?: string; preventRotation?: boolean; stabilizationEngine?: string }[];
+  targets?: { clipId: string; sourcePath: string; revision: number; titleStyleKey?: string; preventRotation?: boolean; stabilizationEngine?: string; finishingRecipe?: unknown[] | null }[];
   artifacts?: { clipId: string; sourcePath: string; rendered: StudioClipRender }[];
   musicRequestId?: string;
   musicProjectPath?: string | null;

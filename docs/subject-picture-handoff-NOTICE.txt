@@ -1,0 +1,40 @@
+PhotoGoGo cached subject-finishing validation kit - component notice
+
+The native controller and subject-picture implementation are PhotoGoGo-owned
+validation source. The exact source closure and build receipt are supplied in
+source/photogogo-owned and build-receipt.json. This notice does not invent a new
+MIT/BSD or other public licence for PhotoGoGo-owned code. No warranty or image-
+quality/production-export qualification is asserted for this evaluation kit.
+
+The unchanged managed FFmpeg backend is PhotoGoGo-rowtest1 (n8.1.1). Its exact
+28-file manifest, modification recipes, upstream licence texts and dependency
+notices are under media/. The matching modified FFmpeg/dependency source,
+patches and build recipes are supplied in:
+source/PhotoGoGo-FFmpeg-rowtest1-source.tar.gz
+SHA-256 27f7cd21a21e661314d76fe4689f7e4d92b0c0e13bc101376e8443e10eec8fd8
+This backend enables GPL components, including x264 and vid.stab. Preserve the
+applicable GPL and other component terms, notices and corresponding sources.
+Do not apply patches again to the already-patched source snapshots. The source
+archive and recipes identify the retained backend changes; this kit introduces
+no further changes to FFmpeg, its linked dependencies or JPEG routines.
+
+This software is based in part on the work of the Independent JPEG Group.
+See media/licenses/FFmpeg-LICENSE.md and the source-file notices in the supplied
+source archive for the JPEG components and their applicable conditions.
+
+The four unchanged Microsoft Visual C++ release runtime DLLs beside FFmpeg
+remain subject to Microsoft's applicable redistribution conditions. They are
+the exact managed backend files, not the unresolved Python/Torch/NumPy runtime
+files from the inference evaluation. Relevant publisher reference:
+https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution
+This kit does not install a runtime, accept licence terms or establish a new
+entitlement. Windows system DLLs and graphics-driver libraries are supplied by
+the host; no NVIDIA/Intel graphics driver is included or changed.
+
+No Python, Torch, NumPy, SAM weights, Intel inference OpenMP runtime or CUDA
+inference package is included. Their unresolved production distribution gates
+are not cleared by this cached-picture validation kit.
+
+The supplied excerpts/masks are bounded evaluation material supplied for this
+PhotoGoGo task. Do not re-publish that footage or infer a public media licence.
+Do not include the local rendered test videos in the return-report upload.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -12,7 +12,7 @@ await mkdir(output, { recursive: true });
 const url = process.env.STUDIO_TEST_URL || "http://127.0.0.1:1431/studio-preview.html";
 const server = process.env.STUDIO_TEST_URL ? null : spawn(process.execPath,
   ["node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "1431", "--strictPort"],
-  { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  { cwd: fileURLToPath(new URL("..", import.meta.url)), windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
 let serverLog = "", browser;
 server?.stdout.on("data", (data) => { serverLog += data; });
 server?.stderr.on("data", (data) => { serverLog += data; });
@@ -30,10 +30,15 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10000);
   const failures = [];
+  const pending = new Set(), network = [];
+  page.on("request", request => pending.add(request.url()));
+  page.on("requestfinished", request => pending.delete(request.url()));
+  page.on("requestfailed", request => { pending.delete(request.url()); network.push({url:request.url(),failure:request.failure()?.errorText}); });
   page.on("pageerror", (error) => failures.push(error.message));
   // Cold Vite startup can exceed the control timeout; assert readiness through
   // the controls below rather than waiting for every preview media resource.
-  await page.goto(url, { timeout: 45000, waitUntil: "domcontentloaded" });
+  try { await page.goto(url, { timeout: 45000, waitUntil: "domcontentloaded" }); }
+  catch (error) { throw new Error(`Studio startup failed: ${String(error)}\nPending module URLs: ${JSON.stringify([...pending])}\nNetwork: ${JSON.stringify(network)}\nPage errors: ${JSON.stringify(failures)}\nVite: ${serverLog}`); }
   await page.evaluate(() => {
     window.__confirmCalls = [];
     const originalInvoke = window.__TAURI_INTERNALS__.invoke;
@@ -56,6 +61,16 @@ try {
   };
   await projectSettings.waitFor();
   assert.equal(await projectSettings.getAttribute("aria-label"), "Project settings");
+  const expandedSection = projectSettings.locator("button[aria-expanded='true']");
+  const initiallyExpandedSection = await expandedSection.count() ? await expandedSection.getAttribute("aria-label") : null;
+  if (await projectSection("Filters").getAttribute("aria-expanded") !== "true") await projectSection("Filters").click();
+  assert.deepEqual(await projectSettings.getByRole("combobox", { name: "Stabiliser for new clips", exact: true })
+    .locator("option").evaluateAll(options => options.map(option => option.value)), ["fast", "quality"],
+    "The retired experimental stabilizer is not offered for new clips");
+  assert.deepEqual(await review.getByRole("combobox", { name: "Stabiliser for this clip", exact: true })
+    .locator("option").evaluateAll(options => options.map(option => option.value)), ["fast", "quality"],
+    "Existing clips retain only the supported legacy stabilization choices");
+  if (initiallyExpandedSection !== "Filters") await projectSection(initiallyExpandedSection ?? "Filters").click();
   const projectLayout = await projectSettings.evaluate((node) => {
     const workspace = document.querySelector(".studio-workspace");
     return { bottom: node.getBoundingClientRect().bottom, workspaceTop: workspace.getBoundingClientRect().top,

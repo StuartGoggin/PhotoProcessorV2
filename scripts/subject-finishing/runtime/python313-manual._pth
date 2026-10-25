@@ -1,0 +1,6 @@
+python313.zip
+.
+Lib/site-packages
+# Dot resolves relative to this sealed runtime, not the process working folder.
+# Deliberately no import site: package .pth,
+# sitecustomize and usercustomize startup hooks must never execute in inference.

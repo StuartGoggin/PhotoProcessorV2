@@ -26,6 +26,10 @@ import { useStudioReviewFrames } from "../hooks/useStudioReviewFrames";
 import StudioClipTitle from "../components/studio/StudioClipTitle";
 import { seedScorecardDefaults } from "../utils/studioGraphics";
 import { applyScorecardTextUpdates } from "../utils/studioScorecardUpdates";
+import { useStudioSubjectPreparation } from "../hooks/useStudioSubjectPreparation";
+import { useStudioSubjectTracking } from "../hooks/useStudioSubjectTracking";
+import { StudioSubjectSelectionEditor } from "../components/studio/StudioSubjectFinishing";
+import StudioSubjectPreview from "../components/studio/StudioSubjectPreview";
 import "../styles/studio-editor.css";
 
 const KEY = "photogogo.videoStudio.project.v1";
@@ -107,7 +111,9 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
     }
   }, [project, loaded]);
   const clip = project.clips.find((c) => c.id === selected);
-  const previewRecipe = JSON.stringify([currentEpoch, selected, clip?.path, clip?.revision, clip?.title, clip?.titleHeading, clip?.titleSubtitle, clip?.titleSeconds, clip?.stabilization, clip?.stabilizationMethod, clip?.customStabilization, clip?.preventRotation, clip?.framing, clip?.replays, project.graphics, project.defaultPreventRotation, project.fps, project.outputDir, project.encoderPreference]);
+  const subjectPreparation=useStudioSubjectPreparation(project,clip,currentEpoch,active,jobs,stagingFolder);
+  const subjectTracking=useStudioSubjectTracking(subjectPreparation.base,clip?.finishingSelection,subjectPreparation.frame,jobs);
+  const previewRecipe = JSON.stringify([currentEpoch, selected, clip?.path, clip?.revision, clip?.title, clip?.titleHeading, clip?.titleSubtitle, clip?.titleSeconds, clip?.stabilization, clip?.stabilizationMethod, clip?.customStabilization, clip?.preventRotation, clip?.framing, clip?.replays, project.graphics, project.defaultPreventRotation, project.fps, project.outputDir, project.encoderPreference, project.finishing, clip?.finishingSelection]);
   useEffect(() => { setPreviewSession(null); setReplayMark(null); }, [previewRecipe]);
   useEffect(() => {
     if (loaded && !project.clips.some((c) => c.id === selected)) setSelected(project.clips[0]?.id || "");
@@ -163,9 +169,7 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
       ]);
       const confirmedScope = scope(initial);
       const count = target(initial).length;
-      const cropChanges = initial.defaultStabilizationMethod === "gpuTripod" ? target(initial).filter(c => c.framing === "maxFrame").length : 0;
-      const cropNote = cropChanges ? ` GPU Tripod also replaces Maximum frame with a fixed 4% per-edge crop on ${cropChanges} clip(s).` : "";
-      if (!count || !await confirm(`Apply project stabilisation to ${count} ${onlySelected ? "selected" : "included"} clip(s)? This replaces their individual stabilisation choices and resets review approval.${cropNote} Changed picture settings require re-rendering. Wind reduction, music, existing files and saved jobs are not changed.`, { title: "Apply stabilisation defaults", kind: "warning" })) return;
+      if (!count || !await confirm(`Apply project stabilisation to ${count} ${onlySelected ? "selected" : "included"} clip(s)? This replaces their individual stabilisation choices and resets review approval. Changed picture settings require re-rendering. Wind reduction, music, existing files and saved jobs are not changed.`, { title: "Apply stabilisation defaults", kind: "warning" })) return;
       if (epoch !== projectEpoch.current || scope(projectRef.current) !== confirmedScope) throw new Error("The project or stabilisation settings changed while confirming. Nothing was applied; please check and try again.");
       const ids = new Set(target(initial).map((c) => c.id));
       setProject((prev) => ({
@@ -173,7 +177,6 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
         clips: prev.clips.map((c) => ids.has(c.id) ? editClip(c, {
           stabilization: initial.defaultStabilization,
           stabilizationMethod: initial.defaultStabilizationMethod,
-          ...(initial.defaultStabilizationMethod === "gpuTripod" && c.framing === "maxFrame" ? { framing: "edgeSafe" as const } : {}),
           customStabilization: { ...initial.defaultCustomStabilization },
           preventRotation: null,
           reviewed: false,
@@ -374,7 +377,7 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
   const visibleClips = project.clips.map((candidate, index) => ({ candidate, index })).filter(({ candidate }) =>
     (!search.trim() || `${candidate.chapter} ${clipName(candidate.path)}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()))
     && (clipFilter === "all" || clipFilter === "included" && candidate.include || clipFilter === "excluded" && !candidate.include || clipFilter === "review" && candidate.include && !candidate.reviewed || clipFilter === "render" && candidate.include && !isClipReady(candidate, project) || clipFilter === "ready" && isClipReady(candidate, project)));
-  const editorTabs = ["picture", "titles", "scorecard", "replays", "notes", "sound"];
+  const editorTabs = ["picture", "finishing", "titles", "scorecard", "replays", "notes", "sound"];
   const readyCount = included.filter((c) => isClipReady(c, project)).length;
   const reviewedCount = included.filter((c) => c.reviewed).length;
   const pendingCount = included.filter((c) => c.reviewed && !isClipReady(c, project) && !clipJob(c, project, jobs)).length;
@@ -615,12 +618,10 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
                   Stabiliser for this clip
                   <select aria-label="Stabiliser for this clip" className={input} value={clip.stabilizationMethod} onChange={(e) => edit(clip.id, {
                     stabilizationMethod: e.target.value as StudioClip["stabilizationMethod"],
-                    ...(e.target.value !== "fast" && clip.stabilization === "custom" ? { stabilization: "balanced" as const } : {}),
-                    ...(e.target.value === "gpuTripod" && clip.framing === "maxFrame" ? { framing: "edgeSafe" as const } : {}),
+                    ...(e.target.value === "quality" && clip.stabilization === "custom" ? { stabilization: "balanced" as const } : {}),
                   })}>
                     <option value="fast">Fast — one pass</option>
                     <option value="quality">Quality — two passes</option>
-                    <option value="gpuTripod">GPU Tripod — experimental</option>
                   </select>
                 </label>
                 <label>
@@ -652,44 +653,67 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
                       edit(clip.id, { framing: e.target.value as StudioClip["framing"] })
                     }
                   >
-                    <option value="edgeSafe">{clip.stabilizationMethod === "gpuTripod" ? "Fixed crop — 4% per edge" : clip.stabilizationMethod === "fast" ? "Mirror edges + 4% crop" : "Edge-safe automatic zoom"}</option>
-                    <option value="maxFrame" disabled={clip.stabilizationMethod === "gpuTripod"}>{clip.stabilizationMethod === "fast" ? "Mirror edges — no crop" : "Maximum frame — borders may show"}</option>
-                    <option value="aggressiveCrop">{clip.stabilizationMethod === "gpuTripod" ? "Fixed crop — 6% per edge" : clip.stabilizationMethod === "fast" ? "Mirror edges + 10% crop" : "More crop"}</option>
+                    <option value="edgeSafe">{clip.stabilizationMethod === "fast" ? "Mirror edges + 4% crop" : "Edge-safe automatic zoom"}</option>
+                    <option value="maxFrame">{clip.stabilizationMethod === "fast" ? "Mirror edges — no crop" : "Maximum frame — borders may show"}</option>
+                    <option value="aggressiveCrop">{clip.stabilizationMethod === "fast" ? "Mirror edges + 10% crop" : "More crop"}</option>
                   </select>
                 </label>
               </div>
-              {clip.stabilizationMethod === "fast" && clip.stabilization === "custom" && <StudioStabilizationFields key={clip.id} value={clip.customStabilization} onChange={(customStabilization) => edit(clip.id, { customStabilization })} />}
-              {clip.stabilizationMethod === "gpuTripod" && <p className="text-xs text-gray-400 mt-2">
-                Translation needs a fixed crop to avoid exposed borders. Selecting GPU Tripod replaces Maximum frame with 4% per-edge crop;
-                the 6% option leaves more room for correction but cuts off more of the original picture. Preview rider and subject framing.
-              </p>}
+              {clip.stabilization === "custom" && <StudioStabilizationFields key={clip.id} value={clip.customStabilization} onChange={(customStabilization) => edit(clip.id, { customStabilization })} />}
               <label className="block mt-3 text-sm">
                 Prevent added rotation · this clip
                 <select className={input} aria-describedby="studio-clip-rotation-help"
                   disabled={clip.stabilizationMethod !== "quality" || clip.stabilization === "off"}
-                  value={clip.stabilizationMethod === "gpuTripod" ? "locked" : clip.preventRotation == null ? "inherit" : clip.preventRotation ? "on" : "off"}
+                  value={clip.preventRotation == null ? "inherit" : clip.preventRotation ? "on" : "off"}
                   onChange={(event) => edit(clip.id, { preventRotation: event.target.value === "inherit" ? null : event.target.value === "on" })}>
-                  {clip.stabilizationMethod === "gpuTripod" && <option value="locked">Always locked in GPU Tripod</option>}
                   <option value="inherit">Use project default ({project.defaultPreventRotation ? "On" : "Off"})</option>
                   <option value="on">On — no added rotation</option>
                   <option value="off">Off — allow rotation correction</option>
                 </select>
               </label>
               <p id="studio-clip-rotation-help" className="text-xs text-gray-400">
-                {clip.stabilizationMethod === "gpuTripod"
-                  ? "GPU Tripod always preserves the source’s roll when enabled. Your Quality override is kept for switching back; this mode never adds rotation or local deformation."
-                  : <>Quality mode only. Keeps the source’s roll while retaining horizontal and vertical smoothing; it does not lock pan or tilt.
-                    {clip.stabilizationMethod !== "quality" || clip.stabilization === "off" ? " Inactive with the current stabilisation settings." : " Changing the effective choice requires a new preview and render from the original."}</>}
+                Quality mode only. Keeps the source’s roll while retaining horizontal and vertical smoothing; it does not lock pan or tilt.
+                {clip.stabilizationMethod !== "quality" || clip.stabilization === "off" ? " Inactive with the current stabilisation settings." : " Changing the effective choice requires a new preview and render from the original."}
               </p>
               <p className="text-xs text-gray-400">
                 {clip.stabilizationMethod === "fast"
                   ? "Fast mode corrects movement in one pass and mirrors moving edges. Fixed crop reduces edge artifacts but cannot guarantee they disappear, and can cut off subjects. Preview pans and rider framing before approving."
-                  : clip.stabilizationMethod === "gpuTripod"
-                    ? "Experimental hardware motion analysis and picture warping. Correction is reduced when visual evidence is weak, but a large moving subject can still be mistaken for camera motion. Preview close-up subjects and tracking pans. Unsupported hardware stops the render with an explanation; choose Fast or Quality explicitly. CPU decoding and frame transfers still affect throughput."
-                    : "Quality mode analyses movement before rendering. Automatic zoom is not a fixed crop limit; compare previews for rider framing."}
+                  : "Quality mode analyses movement before rendering. Automatic zoom is not a fixed crop limit; compare previews for rider framing."}
                 {" "}Stabilisation precedes titles and recaps. Changing a clip’s settings resets its review approval.
               </p>
 
+              </div>
+              <div id="studio-panel-finishing" className="studio-property-panel" role="tabpanel" aria-labelledby="studio-tab-finishing" hidden={editorTab !== "finishing"}>
+                <h3 className="studio-panel-heading">Subject finishing · horse & rider</h3>
+                <p>Configure detail and colour under Project settings → Filters. Prepare this full stabilized base once, then select horse and rider together. Titles, scorecards and filter changes do not repeat stabilization.</p>
+                <p className="text-xs text-amber-200">Development preview only. Tracking, mask review and subject-finishing export are not yet qualified; the existing rendering workflow remains available with finishing off.</p>
+                {!subjectPreparation.base&&<button type="button" className="btn-secondary" disabled={busy||subjectPreparation.preparing||!project.outputDir}
+                  onClick={()=>void subjectPreparation.prepare()}>{subjectPreparation.preparing?"Preparing full stabilized base…":"Prepare exact stabilized base"}</button>}
+                {!project.outputDir&&<p>Choose an existing output folder in Project settings → Output first.</p>}
+                {subjectPreparation.preparing&&<><p role="status">{subjectPreparation.job?.phase||"Waiting for native base preparation…"} {subjectPreparation.job?`${Math.round(subjectPreparation.job.progress)}%`:""}</p>
+                  <button type="button" className="btn-secondary" onClick={subjectPreparation.release}>Cancel preparation · keep cached media</button></>}
+                {subjectPreparation.error&&<p role="alert">{subjectPreparation.error}</p>}
+                {subjectPreparation.base&&<>
+                  {subjectPreparation.base.warnings.map(warning=><p key={warning} className="text-xs text-amber-200">{warning}</p>)}
+                  <StudioSubjectSelectionEditor key={`${subjectPreparation.base.id}:${JSON.stringify(clip.finishingSelection)}`}
+                    base={subjectPreparation.base} frame={subjectPreparation.frame} response={subjectPreparation.response}
+                    selection={clip.finishingSelection} mask={subjectTracking.mask} tracking={subjectTracking.metadata} active={active&&editorTab==="finishing"}
+                    busy={busy||subjectTracking.pending} onFrame={subjectPreparation.readFrame}
+                    onSelection={finishingSelection=>edit(clip.id,{finishingSelection})}/>
+                  <section aria-label="Subject mask tracking" className="studio-subject-status">
+                    <p>Track the saved selection, then inspect its gold overlay on earlier and later frames. The mask is not a confidence score or automatic visual approval.</p>
+                    <p className="text-xs text-amber-200">Current development tracker is CPU-only: two seconds took about 13 minutes on this development host. NVIDIA tracking is not yet qualified. Tracking never changes the stabilized base.</p>
+                    {!subjectTracking.id&&<button type="button" className="btn-secondary" disabled={busy||subjectTracking.pending||!subjectTracking.valid||!project.finishing?.enabled}
+                      onClick={()=>void subjectTracking.start()}>Track saved horse & rider prompts</button>}
+                    {subjectTracking.pending&&<p role="status">{subjectTracking.job?.phase||"Waiting for subject tracking…"} {subjectTracking.job?`${Math.round(subjectTracking.job.progress)}%`:""}</p>}
+                    {subjectTracking.metadata&&<p role="status">Exact mask ready · {subjectTracking.metadata.device.toUpperCase()} · {Math.round(subjectTracking.metadata.secondsIncludingLoad)}s. Inspect the silhouette and motion; export remains unqualified.</p>}
+                    {subjectTracking.error&&<p role="alert">{subjectTracking.error}</p>}
+                    {subjectTracking.id&&<button type="button" className="btn-secondary" onClick={subjectTracking.release}>Release tracking · keep base and masks</button>}
+                  </section>
+                  {subjectTracking.metadata&&<StudioSubjectPreview base={subjectPreparation.base} tracking={subjectTracking.metadata}
+                    frame={subjectPreparation.frame} settings={project.finishing} busy={busy||!!subjectTracking.reading} active={active&&editorTab==="finishing"}/>}
+                  <button type="button" className="btn-secondary" disabled={busy} onClick={subjectPreparation.release}>Release preparation · keep cached media</button>
+                </>}
               </div>
               <div id="studio-panel-titles" className="studio-property-panel" role="tabpanel" aria-labelledby="studio-tab-titles" hidden={editorTab !== "titles"}>
                 <StudioClipTitle key={`${currentEpoch}:${clip.id}:title`} project={project} clip={clip} onChange={change => edit(clip.id, change)} getStagingDir={stagingFolder} disabled={busy} />

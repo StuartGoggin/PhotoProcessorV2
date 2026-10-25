@@ -34,12 +34,11 @@ pub(super) fn recipe(p: &Project) -> Value {
         parts.push(json!([1, p.clips.iter().filter(|c| c.include)
             .map(|c| json!([c.id, stabilization::prevent_rotation(p, c)])).collect::<Vec<_>>() ]));
     }
-    if p.clips.iter().any(|c| c.include && !stabilization::engine(c).is_empty()) {
-        result[0] = json!(5);
-        let parts = result.as_array_mut().unwrap();
-        while parts.len() < 8 { parts.push(Value::Null); }
-        parts.push(json!([1, p.clips.iter().filter(|c| c.include)
-            .map(|c| json!([c.id, stabilization::engine(c)])).collect::<Vec<_>>() ]));
+    if p.finishing.as_ref().is_some_and(|settings|settings.enabled) && p.clips.iter().any(|c|c.include) {
+        result[0]=json!(6);let parts=result.as_array_mut().unwrap();
+        while parts.len()<9 {parts.push(Value::Null);}
+        parts.push(json!([1,p.clips.iter().filter(|c|c.include)
+            .map(|c|json!([c.id,subject_finishing::clip_recipe(p,c)])).collect::<Vec<_>>() ]));
     }
     result
 }
@@ -77,7 +76,7 @@ pub(super) fn verify_assembly(p: &Project, segments: &[(PathBuf, String)], has_c
     if included.is_empty() || segments.len() != included.len() + offset {
         return Err("Assembly clip count does not match this saved render request; no final video was published".into());
     }
-    let planned = included.iter().map(|c| ClipTarget { clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(p,c), prevent_rotation: stabilization::prevent_rotation(p,c), stabilization_engine: stabilization::engine(c) }).collect();
+    let planned = included.iter().map(|c| ClipTarget { finishing_recipe:subject_finishing::clip_recipe(p,c), clip_id: c.id.clone(), source_path: c.path.clone(), revision: c.revision, title_style_key: graphics::title_style_key(p,c), prevent_rotation: stabilization::prevent_rotation(p,c), stabilization_engine: String::new() }).collect();
     let mut assembled = Vec::with_capacity(included.len());
     for (clip, (actual_path, _)) in included.into_iter().zip(&segments[offset..]) {
         let rendered = clip.rendered.as_ref().ok_or("Assembly clip has no verified render")?;
@@ -123,6 +122,7 @@ mod tests {
         p.clips.push(second);
         for clip in &mut p.clips {
             clip.rendered = Some(ClipRender {
+                finishing_recipe:Value::Null,
                 path: format!("{}.render.mp4", clip.id), width: p.width, height: p.height,
                 fps: p.fps, duration: clip.duration, rendered_at: "fixture".into(),
                 bitrate_mbps: p.bitrate_mbps, revision: clip.revision,

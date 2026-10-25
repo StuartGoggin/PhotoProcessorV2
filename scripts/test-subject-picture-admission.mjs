@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import {mkdtemp,readFile,readdir} from 'node:fs/promises';
+import {resolve,join,dirname} from 'node:path';
+const binary=resolve(process.argv[2]??'test-output/subject-picture-handoff-v3/bin/PhotoGoGo-Cached-Picture-Test.exe');
+const root=resolve('.'),receiptPath=join(dirname(dirname(binary)),'build-receipt.json');
+const receipt=JSON.parse(await readFile(receiptPath));
+assert.equal(receipt.kind,'native-cached-picture-handoff-build');assert.equal(receipt.testFaultsEnabled,false);
+const sha=async path=>createHash('sha256').update(await readFile(path)).digest('hex');
+assert.equal(await sha(binary),receipt.executable.sha256);
+for(const pin of receipt.sources)assert.equal(await sha(resolve(pin.path)),pin.sha256);
+const folder=await mkdtemp(join(root,'test-output','subject-picture-unrelated-job-'));
+const child=spawn('pwsh',['-NoProfile','-File','scripts/subject-finishing/launch-unrelated-picture-job.ps1',
+ '-Binary',binary,'-Output',join(folder,'black-horse-cpu.mp4')],{windowsHide:true,stdio:['ignore','pipe','pipe']});
+let out='',err='',killed=false;const timer=setTimeout(()=>{killed=true;child.kill();},35000);
+child.stdout.on('data',chunk=>{out+=chunk;assert.ok(Buffer.byteLength(out)<65536);});
+child.stderr.on('data',chunk=>{err+=chunk;assert.ok(Buffer.byteLength(err)<65536);});
+const code=await new Promise((done,reject)=>{child.once('error',reject);child.once('close',done);}).finally(()=>clearTimeout(timer));
+assert.equal(killed,false);assert.equal(code,0,err);assert.equal(err,'');
+assert.deepEqual(JSON.parse(out),{event:'unrelatedJobFixture',verifiedAmbientJob:true,issuedInput:false,childExit:1});
+assert.deepEqual(await readdir(folder),[],'Unrelated job cannot create even a partial media artifact');
+assert.equal(await sha(binary),receipt.executable.sha256);
+for(const pin of receipt.sources)assert.equal(await sha(resolve(pin.path)),pin.sha256);
+console.log(JSON.stringify({event:'passed',seam:'internal-render-rejects-unrelated-job',folder,productionExportQualified:false}));

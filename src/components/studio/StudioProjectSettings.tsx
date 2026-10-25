@@ -7,6 +7,8 @@ import StudioOutputSettings from "../StudioOutputSettings";
 import StudioStabilizationFields from "../StudioStabilizationFields";
 import { StudioProjectGraphics } from "./StudioGraphicsControls";
 import type { ApplyScorecardUpdates } from "./StudioScorecardUpdateReview";
+import { StudioFinishingSettings } from "./StudioSubjectFinishing";
+import { confirm } from "@tauri-apps/plugin-dialog";
 
 const input = "bg-surface-900 rounded border border-surface-600 px-3 py-2 w-full text-sm";
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
@@ -108,11 +110,10 @@ export default function StudioProjectSettings({
             Stabiliser for new clips
             <select className={input} value={project.defaultStabilizationMethod} onChange={(e) => onChange({
               defaultStabilizationMethod: e.target.value as StudioProject["defaultStabilizationMethod"],
-              ...(e.target.value !== "fast" && project.defaultStabilization === "custom" ? { defaultStabilization: "balanced" as const } : {}),
+              ...(e.target.value === "quality" && project.defaultStabilization === "custom" ? { defaultStabilization: "balanced" as const } : {}),
             })}>
               <option value="fast">Fast — one pass</option>
               <option value="quality">Quality — two passes</option>
-              <option value="gpuTripod">GPU Tripod — experimental</option>
             </select>
           </label>
           <label>
@@ -149,7 +150,6 @@ export default function StudioProjectSettings({
         <p id="studio-project-rotation-help" className="text-xs text-gray-400">
           For roll-locked tripod footage in Quality mode. Following clips, including existing clips, use this setting immediately;
           individual On/Off overrides are kept. Only clips whose effective setting changes need review and re-rendering from the originals.
-          GPU Tripod always prevents added rotation when enabled, regardless of this Quality-only default.
           Fast mode and stabilisation Off are unaffected. Saved jobs and exported files are unchanged.
         </p>
         <label className="flex items-start gap-2 text-sm">
@@ -169,17 +169,11 @@ export default function StudioProjectSettings({
             </span>
           </span>
         </label>
-        {project.defaultStabilizationMethod === "fast" && project.defaultStabilization === "custom" && <StudioStabilizationFields value={project.defaultCustomStabilization} onChange={(defaultCustomStabilization) => onChange({ defaultCustomStabilization })} />}
+        {project.defaultStabilization === "custom" && <StudioStabilizationFields value={project.defaultCustomStabilization} onChange={(defaultCustomStabilization) => onChange({ defaultCustomStabilization })} />}
         <p className="text-sm text-gray-400">
           Fast stabilisation estimates movement while rendering, with no separate shake-analysis pass.
           Quality uses two passes and takes longer. The stabiliser and preset defaults apply to newly added clips; existing clips keep those settings until you apply them below.
         </p>
-        {project.defaultStabilizationMethod === "gpuTripod" && <p className="text-xs text-cyan-200">
-          Experimental GPU Tripod uses supported Windows hardware for horizontal/vertical motion analysis and picture warping, with no added rotation or local deformation.
-          It reduces correction when visual evidence is weak; it cannot reliably distinguish a moving subject from the camera in every scene.
-          Preview close-up subjects and tracking pans. Hardware is checked before rendering; if unavailable, choose Fast or Quality explicitly.
-          Decoding and transfer for encoding still use the CPU, so speed depends on the footage and machine.
-        </p>}
         <p className="text-xs text-gray-400">
           {project.encoderPreference === "cpu"
             ? "CPU encoding is selected for this project. Change Encoder above to use available hardware."
@@ -194,6 +188,9 @@ export default function StudioProjectSettings({
 
         </fieldset>
       </div>
+      <StudioFinishingSettings value={project.finishing} busy={busy} available={true}
+        onChange={finishing=>onChange({finishing})}
+        onConfirmClean={()=>confirm("Prepare a separate clean base without Quality's whole-frame sharpening? This may repeat stabilization for selected clips. Existing caches and exported videos will be preserved.",{title:"Explicit clean-base regeneration",kind:"warning"})}/>
     </div>
     <div id="studio-project-panel-music" className="studio-project-panel" role="region" aria-labelledby="studio-project-toggle-music" hidden={expanded !== "music"}>
       <p className="text-sm text-cyan-200">Music and the overall camera/music balance apply to the whole final video, not the selected clip. Camera wind reduction is applied before mixing; music is never wind-filtered.</p>

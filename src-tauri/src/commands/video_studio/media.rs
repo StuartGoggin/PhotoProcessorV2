@@ -62,7 +62,7 @@ fn old_identities(path: &str, current_source_key: &str) -> Vec<String> {
     paths.into_iter().map(|p| format!("{p}|{evidence}")).collect()
 }
 fn proven_identity(p: &Project, clip: &Clip, current_source_key: &str, saved: &ClipRender) -> bool {
-    saved.stabilization_engine == stabilization::engine(clip) && !saved.signature.is_empty() && old_identities(&clip.path, current_source_key).into_iter()
+    saved.stabilization_engine.is_empty() && !saved.signature.is_empty() && old_identities(&clip.path, current_source_key).into_iter()
         .any(|key| recovery::clip_signature_for_source(p, clip, key).ok().as_ref() == Some(&saved.signature))
 }
 fn next_revision(clip: &Clip, history: &[StudioJob]) -> Result<u32, String> {
@@ -138,13 +138,12 @@ pub(super) fn plan(original: Project, staging: &str, old_staging: &str, output: 
                         let signature = recovery::clip_signature_for_source(&original, clip, source_key)?;
                         let style = graphics::title_style_key(&original, clip);
                         let rotation = stabilization::prevent_rotation(&original, clip);
-                        let engine = stabilization::engine(clip);
                         let rendered = clip.rendered.as_mut().unwrap();
                         rendered.signature = signature;
                         rendered.revision = clip.revision;
                         rendered.title_style_key = style;
                         rendered.prevent_rotation = rotation;
-                        rendered.stabilization_engine = engine;
+                        rendered.stabilization_engine.clear();
                         result.verified_renders += 1;
                     }
                 }
@@ -169,7 +168,7 @@ mod tests {
     #[test]
     fn studio_relink_revision_fences_newer_historical_jobs() {
         let p = super::super::tests::project(Path::new(".")); let mut clip = p.clips[0].clone(); clip.revision = 6;
-        let job = StudioJob { targets:vec![ClipTarget { clip_id:clip.id.clone(), source_path:clip.path.clone(), revision:7, title_style_key:String::new(), prevent_rotation:false, stabilization_engine:String::new() }], ..StudioJob::default() };
+        let job = StudioJob { targets:vec![ClipTarget { finishing_recipe:Value::Null, clip_id:clip.id.clone(), source_path:clip.path.clone(), revision:7, title_style_key:String::new(), prevent_rotation:false, stabilization_engine:String::new() }], ..StudioJob::default() };
         assert_eq!(next_revision(&clip,&[job]).unwrap(),8);
         clip.revision = u32::MAX; assert!(next_revision(&clip,&[]).is_err());
     }
@@ -189,7 +188,7 @@ mod tests {
         let path = root.join("source.mp4"); fs::write(&path, b"start middle end").unwrap();
         let canonical = fs::canonicalize(&path).unwrap();
         let key = source_signature(&canonical).unwrap();
-        let saved = ClipRender { path: "unused".into(), width:p.width, height:p.height, fps:p.fps, duration:2., rendered_at:String::new(), bitrate_mbps:p.bitrate_mbps, revision:0,
+        let saved = ClipRender { finishing_recipe:Value::Null, path: "unused".into(), width:p.width, height:p.height, fps:p.fps, duration:2., rendered_at:String::new(), bitrate_mbps:p.bitrate_mbps, revision:0,
             signature:recovery::clip_signature_for_source(&p, &p.clips[0], key.clone()).unwrap(), checksum:"checksum".into(), title_style_key:String::new(), prevent_rotation:false, stabilization_engine:String::new() };
         assert!(proven_identity(&p, &p.clips[0], &key, &saved));
         let modified = fs::metadata(&path).unwrap().modified().unwrap();

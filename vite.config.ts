@@ -34,7 +34,10 @@ export default defineConfig(async () => ({
   plugins: [react()],
   clearScreen: false,
   // Native diagnostic/build trees contain HTML that is not an app entry point.
-  optimizeDeps: { entries: ["index.html", "studio-preview.html"] },
+  // Keep development startup deterministic. Automatic discovery stalls before
+  // serving the module/CSS graph in the large sealed-runtime worktree. These
+  // are the app's CommonJS framework imports; Tauri packages are native ESM.
+  optimizeDeps: { noDiscovery: true, include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime", "react/jsx-dev-runtime"] },
   server: {
     port: 1430,
     strictPort: true,

@@ -13,7 +13,10 @@ mod sequence;
 mod audio;
 mod graphics;
 mod stabilization;
-mod gpu_tripod;
+mod subject_finishing;
+pub use subject_finishing::preparation::{studio_subject_prepare,studio_subject_prepared,studio_subject_frame,studio_subject_forget};
+pub use subject_finishing::preparation::{studio_subject_track,studio_subject_tracked,studio_subject_tracking_forget,studio_subject_mask_frame,studio_subject_mask_review};
+pub use subject_finishing::preparation::{studio_subject_finish_frame,studio_subject_finish_cancel,studio_subject_finish_epoch};
 mod media;
 mod preview;
 mod review_frames;
@@ -85,6 +88,8 @@ pub struct Replay {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Clip {
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub finishing_selection: Option<subject_finishing::Selection>,
     pub id: String,
     pub path: String,
     pub duration: f64,
@@ -119,6 +124,8 @@ pub struct Clip {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipRender {
+    #[serde(default)]
+    pub finishing_recipe: Value,
     pub path: String,
     pub width: u32,
     pub height: u32,
@@ -138,6 +145,7 @@ pub struct ClipRender {
     #[serde(default)]
     pub prevent_rotation: bool,
     #[serde(default)]
+    // Read historical provenance only to refuse retired-engine cache reuse.
     pub stabilization_engine: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -218,6 +226,8 @@ pub struct Project {
     pub default_wind_reduction: String,
     #[serde(default)]
     pub graphics: Option<graphics::Settings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finishing: Option<subject_finishing::Settings>,
     #[serde(default)]
     pub assemble_rendered_clips: bool,
     #[serde(default)]
@@ -346,12 +356,15 @@ pub struct StudioJob {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipTarget {
+    #[serde(default)]
+    pub finishing_recipe: Value,
     pub clip_id: String, pub source_path: String, pub revision: u32,
     #[serde(default)]
     pub title_style_key: String,
     #[serde(default)]
     pub prevent_rotation: bool,
     #[serde(default)]
+    // Historical requests remain inspectable, never a backend selector.
     pub stabilization_engine: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -542,6 +555,7 @@ fn music_audio_source(path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 fn validate(p: &Project) -> Result<(), String> {
+    subject_finishing::validate(p)?;
     audio::validate(p)?;
     graphics::validate(p)?;
     // Bound delivery text before any expensive work. This exceeds the complete
@@ -604,9 +618,6 @@ fn validate(p: &Project) -> Result<(), String> {
         )?;
         if !["edgeSafe", "maxFrame", "aggressiveCrop"].contains(&c.framing.as_str()) {
             return Err("Unknown stabilisation preset".into());
-        }
-        if c.stabilization != "off" && c.stabilization_method == "gpuTripod" && c.framing == "maxFrame" {
-            return Err("GPU Tripod requires the explicit 4% or 6% per-edge crop; Maximum frame is unsupported".into());
         }
         if !c.duration.is_finite()
             || c.duration <= 0.
@@ -672,8 +683,11 @@ fn validate_music_direction(direction: &MusicDirection) -> Result<(), String> {
     Ok(())
 }
 fn validate_preset(preset: &str, method: &str, custom: &CustomStabilization) -> Result<(), String> {
+    if method == "gpuTripod" {
+        return Err("The experimental GPU Tripod stabilizer has been retired. This saved request was preserved, not converted. Choose Quality or Fast explicitly before saving or rendering.".into());
+    }
     if !["off", "gentle", "balanced", "strong", "custom"].contains(&preset)
-        || !["fast", "quality", "gpuTripod"].contains(&method)
+        || !["fast", "quality"].contains(&method)
         || (preset == "custom" && method != "fast")
     {
         return Err("Unknown stabilisation preset or method (custom requires fast mode)".into());
@@ -1163,9 +1177,12 @@ fn compose_midi(direction: &MusicDirection, bars: u32) -> Result<Vec<u8>, String
 }
 #[tauri::command]
 pub fn studio_list_jobs() -> Vec<StudioJob> {
+    // A failed background cleanup-thread start must not strand finishing
+    // leases/admission after its owned process tree has actually exited.
+    subject_finishing::poll_cleanup();
     let mut list: Vec<_> = jobs()
         .lock()
-        .map(|j| j.values().cloned().collect())
+        .map(|mut j| {subject_finishing::retire_history(&mut j);j.values().cloned().collect()})
         .unwrap_or_default();
     let scheduler = list.iter().any(|j| j.status == "running").then(studio_hardware::snapshot);
     for job in &mut list {
@@ -1785,6 +1802,7 @@ fn render(
     id: &str,
 ) -> Result<String, String> {
     validate(&p)?;
+    subject_finishing::preflight(&p)?;
     validate_preview_range(preview, preview_start, preview_length)?;
     let cap = detect_ffmpeg_capabilities()?;
     let ff = &cap.binary;
@@ -1946,6 +1964,9 @@ fn render(
         .ok_or("A TrueType font (Arial or DejaVu Sans) is required")?;
     fs::copy(font, work.join("font.ttf")).map_err(|e| e.to_string())?;
     let mut segments: Vec<(PathBuf, String)> = vec![];
+    // Keep verified finishing inputs and pictures immutable through all graphics,
+    // replay derivation and the final concat, not just through render_clip.
+    let mut picture_guards = Vec::new();
     let final_delivery = !preview && render_kind != "clip";
     if final_delivery && p.opening_title_mode == "card" && p.title_seconds > 0. && !p.title.trim().is_empty() {
         let filter = graphics::title_filter(&p, &work, None, "opening", None)?;
@@ -2006,8 +2027,8 @@ fn render(
         if job.preparing_total > 0 { job.work_weights.extend(weights); } else { job.work_weights = weights; }
     });
     let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<Option<Result<Vec<(PathBuf, String)>, String>>>> =
-        Mutex::new(vec![None; count]);
+    let results: Mutex<Vec<Option<Result<subject_finishing::PreparedSegments, String>>>> =
+        Mutex::new((0..count).map(|_|None).collect());
     thread::scope(|scope| {
         let mut workers = Vec::new();
         let ceiling = if p.adaptive_scheduling { studio_hardware::adaptive_ceiling(&p.performance) } else { policy.workers };
@@ -2035,6 +2056,7 @@ fn render(
                         id,
                         &clip_work,
                         &fragment_cache,
+                        Path::new(&root),
                     )
                 })();
                 if let Err(error) = &result {
@@ -2067,7 +2089,8 @@ fn render(
         return Err(error);
     }
     for result in results.into_inner().map_err(|e| e.to_string())? {
-        segments.extend(result.ok_or("Clip worker did not return a result")??);
+        let prepared=result.ok_or("Clip worker did not return a result")??;
+        segments.extend(prepared.segments);picture_guards.push(prepared.picture);
     }
     }
     // One measured frame manifest drives embedded chapters and publishing text.
@@ -2265,8 +2288,18 @@ fn render(
     Ok(final_folder.join(output_name).to_string_lossy().into_owned())
 }
 
+struct StabilizedBase {
+    path: PathBuf,
+    key: String,
+    seconds: f64,
+    resource_project: Project,
+}
+
+/// Full-base preparation and legacy rendering share this one motion stage.
+/// Selection callers must pass preview=false, a fresh measured duration and an
+/// owned cache/work folder. Disabling finishing is not a preparation shortcut.
 #[allow(clippy::too_many_arguments)]
-fn render_clip(
+fn prepare_stabilized_base(
     p: &Project,
     c: &Clip,
     i: usize,
@@ -2278,7 +2311,7 @@ fn render_clip(
     id: &str,
     work: &Path,
     fragment_cache: &Path,
-) -> Result<Vec<(PathBuf, String)>, String> {
+) -> Result<StabilizedBase, String> {
     let info = inspect(ff, Path::new(&c.path))?;
     let video = info["streams"]
         .as_array()
@@ -2302,7 +2335,6 @@ fn render_clip(
             .unwrap_or(2160)
             .min(u32::MAX as u64) as u32,
     );
-    let mut segments = Vec::new();
     checkpoint(id)?;
     let base = 0.;
     let span = 100.;
@@ -2366,10 +2398,6 @@ fn render_clip(
         note_fragment(id, "Reused base fragment", &base_cache);
         base_cache.clone()
     } else {
-        if c.stabilization != "off" && c.stabilization_method == "gpuTripod" {
-            gpu_tripod::render_base(ff, p, c, &info, encoder_name,
-                offset, seconds, &generated_clean, work, id)?;
-        } else {
         let mut args = vec![
             "-ss".into(),
             offset.to_string(),
@@ -2409,7 +2437,6 @@ fn render_clip(
             base + span * analysis_share,
             span * (0.65 - analysis_share),
         )?;
-        }
         if preview {
             generated_clean
         } else {
@@ -2426,6 +2453,28 @@ fn render_clip(
             base_cache.clone()
         }
     };
+    Ok(StabilizedBase{path:clean,key:base_key,seconds,resource_project})
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_clip(
+    p: &Project, c: &Clip, i: usize, ff: &Path, encoder_name: &str,
+    preview: bool, preview_start: Option<f64>, preview_length: Option<f64>,
+    id: &str, work: &Path, fragment_cache: &Path, staging_authority: &Path,
+) -> Result<subject_finishing::PreparedSegments, String> {
+    let mut subject_base=None;
+    let prepared=if p.finishing.as_ref().is_some_and(|settings|settings.enabled) {
+        if preview {return Err("Subject preview must use the full selected base; no separately stabilized preview excerpt was generated".into());}
+        let owned=subject_finishing::existing_export_base(p,c,ff,staging_authority,id)?;
+        let prepared=StabilizedBase{path:owned.path.clone(),key:owned.key.clone(),seconds:owned.seconds,resource_project:p.clone()};
+        subject_base=Some(owned);prepared
+    }else{prepare_stabilized_base(p,c,i,ff,encoder_name,preview,preview_start,preview_length,id,work,fragment_cache)?};
+    let StabilizedBase{path:clean,key:base_key,seconds,resource_project}=prepared;
+    let mut segments=Vec::new();let base=0.;let span=100.;
+    let picture=subject_finishing::prepare_picture(ff,p,c,&clean,&base_key,encoder_name,preview,
+        fragment_cache,work,id)?;
+    drop(subject_base);
+    let clean=picture.path.clone();let base_key=picture.key.clone();
     if !c.title.trim().is_empty() && c.title_seconds > 0. {
         let mut title_parts = vec![
             "title".into(),
@@ -2563,7 +2612,7 @@ fn render_clip(
     }
 
     record_progress(id, &format!("clip_{i}"), "Clip ready", 100., None, None);
-    Ok(segments)
+    Ok(subject_finishing::PreparedSegments{segments,picture})
 }
 
 fn check_file_size_limit(path: &Path, bytes: u64) -> Result<(), String> {
@@ -2728,6 +2777,57 @@ mod tests {
         assert_ne!(info["streams"][0]["color_range"], "pc");
         println!("Verified full-range conversion, titles and assembly: {output}");
     }
+    #[test]
+    fn subject_finishing_saved_recipe_roundtrip_keeps_base_cache_identity() {
+        let root = std::env::temp_dir().join(format!("studio-subject-settings-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir(&root).unwrap();
+        let old = project(&root);
+        let base = stabilization::base_key(&old, &old.clips[0], "source", "libx264").unwrap();
+        let mut saved = serde_json::to_value(old).unwrap();
+        saved["finishing"] = json!({"version":1,"enabled":true,"basePolicy":"reuse","colour":{"lightEv":-0.3}});
+        let current: Project = serde_json::from_value(saved).unwrap();
+        let file = root.join("project.json").to_string_lossy().into_owned();
+        studio_save_project(file.clone(), current).unwrap();
+        let loaded = studio_load_project(file).unwrap();
+        let readback = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(readback["finishing"]["enabled"], json!(true));
+        assert_eq!(readback["finishing"]["colour"]["lightEv"], json!(-0.3));
+        assert_eq!(stabilization::base_key(&loaded, &loaded.clips[0], "source", "libx264").unwrap(), base);
+    }
+
+    #[test]
+    fn subject_finishing_invalid_settings_are_rejected_before_render_work() {
+        let old = project(Path::new("."));
+        let mut saved = serde_json::to_value(old).unwrap();
+        for value in [json!({"enabled":"yes"}), json!({"version":2}), json!({"subject":"background"}),
+            json!({"colour":{"lightEv":4}}), json!({"sharpening":{"noiseThreshold":0}}), json!({"colour":{"exposureEv":0.3}})] {
+            saved["finishing"] = value;
+            let rejected = serde_json::from_value::<Project>(saved.clone()).map(|p| validate(&p).is_err()).unwrap_or(true);
+            assert!(rejected, "Invalid finishing settings were silently ignored");
+        }
+    }
+
+    #[test]
+    fn studio_loading_retired_stabilizer_refuses_without_rewriting_the_saved_project() {
+        let root = std::env::temp_dir().join(format!("studio-retired-method-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("project.json");
+        for use_default in [true, false] {
+            let mut saved = serde_json::to_value(project(&root)).unwrap();
+            if use_default { saved["defaultStabilizationMethod"] = json!("gpuTripod"); }
+            else {
+                saved["clips"][0]["stabilizationMethod"] = json!("gpuTripod");
+                saved["clips"][0]["stabilization"] = json!("off");
+                saved["clips"][0]["include"] = json!(false);
+            }
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            let result = studio_load_project(path.to_string_lossy().into_owned());
+            assert!(matches!(result, Err(ref error) if error.contains("retired")), "Saved retired method must be refused even when dormant, not converted or run");
+            assert_eq!(fs::read(&path).unwrap(), bytes, "Refusal must preserve the saved file");
+        }
+    }
+
     pub(super) fn project(root: &Path) -> Project {
         Project {
             version: 1,
@@ -2745,6 +2845,7 @@ mod tests {
             music: BackgroundMusic::default(),
             default_wind_reduction: off_preset(),
             graphics: None,
+            finishing: None,
             assemble_rendered_clips: false,
             bitrate_mbps: 4,
             default_stabilization: "off".into(),
@@ -2757,6 +2858,7 @@ mod tests {
             remaining_clips: None,
             source_profile: String::new(),
             clips: vec![Clip {
+                finishing_selection:None,
                 id: "one".into(),
                 path: root.join("source.mp4").to_string_lossy().into_owned(),
                 duration: 2.,
@@ -3395,6 +3497,7 @@ pub fn studio_start_render(
         project.music.enabled = false;
     } else if clip_id.is_some() { return Err("Only a clip render may set a clip ID".into()); }
     if preview { project.music.enabled = false; }
+    subject_finishing::preflight(&project)?;
     recovery::enqueue(recovery::RenderRequest {
         project, staging_dir, preview, preview_start, preview_length,
         kind, clip_id, assemble_only: assembly,

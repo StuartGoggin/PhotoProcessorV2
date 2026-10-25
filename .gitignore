@@ -29,6 +29,13 @@ test-output/
 tools/ffmpeg-n71-test/
 *.zip
 *.exe
+__pycache__/
+*.pyc
+
+# Generated finishing executables and frozen runner copies; canonical source
+# lives in src-tauri/native/ and src-tauri/scripts/ and is checkpointed in Git.
+/src-tauri/tools/subject-finishing/
+/report.json
 
 # Bundled face-scan payloads are generated locally for release builds.
 src-tauri/resources/face-scan/python-runtime/*

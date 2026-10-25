@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "profile": "manual-video-cpu-v1",
+  "sourceRevision": "2b90b9f5ceec907a1c18123530e92e794ad901a4",
+  "archiveFile": "sam2-2b90b9f5ceec907a1c18123530e92e794ad901a4.zip",
+  "archiveSha256": "fe93082a71a885a427894b1eab76341768781b6b58a298a0717e03862097d137",
+  "archiveUrl": "https://codeload.github.com/facebookresearch/sam2/zip/2b90b9f5ceec907a1c18123530e92e794ad901a4",
+  "sourceAliases": {
+    "sam2/sam2_hiera_b+.yaml": "configs/sam2/sam2_hiera_b+.yaml",
+    "sam2/sam2_hiera_l.yaml": "configs/sam2/sam2_hiera_l.yaml",
+    "sam2/sam2_hiera_s.yaml": "configs/sam2/sam2_hiera_s.yaml",
+    "sam2/sam2_hiera_t.yaml": "configs/sam2/sam2_hiera_t.yaml"
+  },
+  "modelFile": "sam2.1_hiera_tiny.pt",
+  "modelSha256": "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69",
+  "modelBytes": 156008466,
+  "modelRevision": "de431c4043854a71d8101e17995dfe596bf101a5",
+  "modelUrl": "https://huggingface.co/facebook/sam2.1-hiera-tiny/resolve/de431c4043854a71d8101e17995dfe596bf101a5/sam2.1_hiera_tiny.pt",
+  "licenseEvidenceUrl": "https://github.com/facebookresearch/sam2/blob/2b90b9f5ceec907a1c18123530e92e794ad901a4/README.md#license"
+}

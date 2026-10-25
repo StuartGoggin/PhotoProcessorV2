@@ -2,18 +2,12 @@
 use super::*;
 
 pub(super) fn prevent_rotation(p: &Project, c: &Clip) -> bool {
-    c.stabilization != "off" && (c.stabilization_method == "gpuTripod"
-        || c.stabilization_method == "quality" && c.prevent_rotation.unwrap_or(p.default_prevent_rotation))
-}
-
-pub(super) const GPU_TRIPOD_ENGINE: &str = "gpu-tripod-d3d11-v1";
-pub(super) fn engine(c: &Clip) -> String {
-    if c.stabilization != "off" && c.stabilization_method == "gpuTripod" { GPU_TRIPOD_ENGINE.into() } else { String::new() }
+    c.stabilization != "off" && c.stabilization_method == "quality"
+        && c.prevent_rotation.unwrap_or(p.default_prevent_rotation)
 }
 
 pub(super) fn append_cache_policy(parts: &mut Vec<String>, p: &Project, c: &Clip) {
-    if !engine(c).is_empty() { parts.push(GPU_TRIPOD_ENGINE.into()); }
-    else if prevent_rotation(p, c) { parts.push("quality-no-added-rotation-v1".into()); }
+    if prevent_rotation(p, c) { parts.push("quality-no-added-rotation-v1".into()); }
 }
 
 pub(super) fn base_key(p: &Project, c: &Clip, source_key: &str, encoder: &str) -> Result<String, String> {
@@ -21,6 +15,7 @@ pub(super) fn base_key(p: &Project, c: &Clip, source_key: &str, encoder: &str) -
         c.stabilization_method.clone(), serde_json::to_string(&c.custom_stabilization).map_err(|e| e.to_string())?,
         c.framing.clone(), encoder.into()];
     append_cache_policy(&mut parts, p, c);
+    if subject_finishing::clean_base(p) { parts.push("subject-clean-base-v1".into()); }
     Ok(signature(&parts))
 }
 
@@ -33,7 +28,8 @@ pub(super) fn quality_filter(p: &Project, c: &Clip, transform: &str, smoothing: 
     // vid.stab clamps the applied alpha after smoothing. 0 prevents added roll;
     // unlike virtual tripod, relative=1 and pan/tilt smoothing remain unchanged.
     let rotation = if prevent_rotation(p, c) { ":maxangle=0" } else { "" };
-    format!("vidstabtransform=input={transform}:smoothing={smoothing}:zoom={zoom}:optzoom={optzoom}:zoomspeed={speed}:relative=1:crop=black:interpol=bicubic{rotation},unsharp=5:5:0.6:3:3:0.0,{output}")
+    let sharpening = if subject_finishing::clean_base(p) { "" } else { ",unsharp=5:5:0.6:3:3:0.0" };
+    format!("vidstabtransform=input={transform}:smoothing={smoothing}:zoom={zoom}:optzoom={optzoom}:zoomspeed={speed}:relative=1:crop=black:interpol=bicubic{rotation}{sharpening},{output}")
 }
 
 #[cfg(test)]
