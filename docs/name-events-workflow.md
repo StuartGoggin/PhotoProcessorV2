@@ -60,4 +60,10 @@ This feature changes the Name Events page and native naming commands, plus a nar
 - Naming-rule tests and the real-page browser workflow passed, including 360 px, 736 px and desktop layouts, reload recovery, long favourite names and job completion. IPC was stubbed in the browser; filesystem behaviour was tested separately in Rust.
 - TypeScript and the Vite production build passed. Existing Browserslist-age and bundle-size advisories remain; there were no build errors.
 - Two inherited Google Photos test edits were preserved separately in the named Git stash `Inherited Google Photos test edits preserved before Name Events integration`. They were not included as new feature work or reapplied over the newer main implementation.
-- This checkpoint is source/build validation, not installer publication or a rename against a live photo collection. The feature remains on `SWG/name-events-workflow` for the coordinated release.
+- This checkpoint is source/build validation, not installer publication or a rename against a live photo collection. At this checkpoint the feature was on `SWG/name-events-workflow` awaiting main-branch integration.
+
+## Main integration — 26 October 2026
+
+The validated Name Events implementation is now merged into `master` through feature commit `2d063af`. Main advanced from `a1cc122` by fast-forward, with no additional implementation changes or conflicts, so the validation above applies to the merged code.
+
+The separate `SWG/bundled-exiftool` checkout had unrelated work in progress and was left intact. Installer packaging, versioning and Slack publication remain part of the coordinated release; this merge does not itself publish a new installer.
