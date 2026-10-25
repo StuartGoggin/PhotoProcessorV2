@@ -98,9 +98,39 @@ node scripts/test-photo-process-browser.mjs
 npm.cmd run build
 ```
 
-Final package inspection, Git references and Slack read-back receipts follow
-after successful packaging and delivery. Managed FFmpeg and its corresponding
-source archive are unchanged; no dependency upgrade is included.
+## Package verification
+
+Built from source commit `105eaf31c90d778f7c5eb0366f94265096e46f31`, merged into
+`master` by fast-forward. Build identifier:
+`20261025T192916751Z-105eaf31+local`. Tauri's manifest line-ending rewrite caused
+the `+local` marker; the normalized Cargo manifest was verified equal to the
+committed blob `66b213da8065f945357302e8e38bdc5fd2a062fc`, with no content diff.
+Later receipt commits change documentation only.
+
+Both unsigned Windows x64 packages were extracted and inspected without
+installation. Each verified 29 payloads: application, managed-media manifest
+and 27 managed-media files. Only the unique three-byte Tauri bundle marker is
+normalized when comparing application bytes; all other bytes must match.
+MSI version is 2.0.33 and its upgrade identity matches 2.0.32:
+`{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}`.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `PhotoGoGoV2_2.0.33_x64-setup.exe` | 24,981,126 | `87E0B2D7A0C6B3E07EC0E636DE25D3DFC981423BF90D03B85D7CBADA0C9FA2E0` |
+| `PhotoGoGoV2_2.0.33_x64_en-US.msi` | 33,349,632 | `C109353D76ABE348CBFF20B94BDE9C28A3655F862CBE437D73C50D7109C367EC` |
+| Standalone application | See receipt | `88E90A4C164AD4237D9C2B673CDAD83C62A72F2399B62C53F7D733D3C1919D05` |
+| `PhotoGoGo-FFmpeg-rowtest1-source.tar.gz` | 49,570,807 | `27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8` |
+
+Inspection receipt:
+`test-output/release-2.0.33-inspection-20261025T193337305Z/report.json`.
+The committed frontend was rebuilt successfully during packaging. Managed
+FFmpeg and corresponding source are unchanged; no dependency upgrade is
+included. Previous installers remain available for rollback.
+
+```powershell
+pwsh -NoProfile -File scripts/build-release.ps1 -SkipFaceBundle -SkipDependencyInstall -MediaSourceArchive test-output/media-delivery/PhotoGoGo-FFmpeg-rowtest1-source.tar.gz
+pwsh -NoProfile -File scripts/verify-photo-release.ps1 -Version 2.0.33 -PreviousVersion 2.0.32
+```
 
 ## Safe testing and rollback
 
