@@ -1,4 +1,4 @@
-# Lightbox cropping - unreleased validation checkpoint
+# Lightbox cropping - implementation validation checkpoint
 
 Approved design: retain the untouched original; create a `_crop.jpg` working version and independently regenerate its optional `_crop_BW.jpg` / `_crop_improved.jpg` versions. Original navigation remains one stop per source with an Original/Cropped display switch.
 
@@ -36,4 +36,4 @@ Browser runners can reuse the existing offline runtime via `PHOTOGOGO_PLAYWRIGHT
 
 See [the cropping guide](LIGHTBOX_CROPPING.md) for the UX and limitations. Original metadata is retained byte-for-byte in the untouched original; newly encoded crop outputs currently carry filesystem times rather than the complete EXIF/ICC metadata set. Fingerprints are local accidental-edit detection, not authentication.
 
-This checkpoint does **not** constitute a new Windows installer, merge/push, tag or Slack release. Package/version and publication work are a separate next step.
+This records the implementation checks before packaging. See [the 2.0.31 release validation](release-2.0.31-validation.md) and its separate publication receipt for final package, Git and Slack evidence; this source checkpoint alone is not proof of release.

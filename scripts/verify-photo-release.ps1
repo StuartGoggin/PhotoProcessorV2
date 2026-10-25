@@ -1,6 +1,6 @@
 param(
-    [string]$Version = '2.0.30',
-    [string]$PreviousVersion = '2.0.29'
+    [string]$Version = '2.0.31',
+    [string]$PreviousVersion = '2.0.30'
 )
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
