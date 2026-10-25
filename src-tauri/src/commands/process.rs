@@ -2155,6 +2155,10 @@ fn run_event_naming_task(
     request: ApplyEventNamingRequest,
     job_id: Option<String>,
 ) -> Result<ProcessResult, String> {
+    let root = super::naming_workflow::check_request_root(&staging_dir, &request)?;
+    let _naming_lease = super::naming_workflow::naming_lease(&root)?;
+    let _upload_lease = super::google_photos::event_naming_lease(&app)?;
+    super::naming_workflow::ensure_jobs_idle(&root, job_id.as_deref())?;
     let plans = build_event_naming_plans(&request)?;
     let total = plans.len();
     let task_label = task_name(&ProcessTask::ApplyEventNaming);
@@ -2238,6 +2242,7 @@ fn run_event_naming_task(
         }
 
         let renamed = loop {
+            super::naming_workflow::ensure_jobs_idle(&root, job_id.as_deref())?;
             match apply_event_naming_plan_once(plan) {
                 Ok(result) => break result,
                 Err(err) if is_retryable_windows_lock_error(&err) => {
@@ -2323,7 +2328,7 @@ fn run_event_naming_task(
 
         if let Some(job_id) = &job_id {
             if renamed.old_path == renamed.new_path {
-                append_process_job_log(job_id, format!("unchanged '{}'", renamed.old_path));
+                append_process_job_log(job_id, format!("saved event details '{}'", renamed.old_path));
             } else {
                 append_process_job_log(job_id, format!("renamed '{}' -> '{}'", renamed.old_path, renamed.new_path));
             }
@@ -2348,8 +2353,16 @@ fn run_event_naming_task(
         );
     }
 
-    let catalog = merge_event_naming_request_into_catalog(&app, &request)?;
-    let _ = catalog;
+    // Names and sidecars are already durable. A suggestions-library failure must
+    // not turn successfully applied folder changes into a misleading failed job.
+    if let Err(error) = merge_event_naming_request_into_catalog(&app, &request) {
+        let warning = format!("Folder changes completed, but recent descriptions could not be saved: {error}");
+        if let Some(id) = &job_id {
+            update_process_job(id, |job| job.errors.push(warning.clone()));
+            append_process_job_log(id, warning.clone());
+        }
+        let _ = append_app_log(&app, warning);
+    }
 
     if let Some(job_id) = &job_id {
         update_process_job(job_id, |job| {
@@ -3051,6 +3064,9 @@ pub fn start_event_naming_job(
     staging_dir: String,
     request: ApplyEventNamingRequest,
 ) -> Result<String, String> {
+    let root = super::naming_workflow::check_request_root(&staging_dir, &request)?;
+    super::naming_workflow::ensure_jobs_idle(&root, None)?;
+    build_event_naming_plans(&request)?;
     let job_id = next_process_job_id();
     let selected_count = if request.assignments.is_empty() {
         request.directories.len()

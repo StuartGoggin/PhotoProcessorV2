@@ -69,6 +69,11 @@ fn writer_lease(app: &AppHandle) -> Result<File, String> {
     file.try_lock_exclusive().map_err(|_| "Google Photos is busy signing in or running a job. Pause it and wait for its safe checkpoint before changing accounts or plans.")?;
     Ok(file)
 }
+/// Naming moves local source paths. Reuse the upload lease without reading any
+/// account or credential data, so an active uploader cannot race those moves.
+pub(crate) fn event_naming_lease(app: &AppHandle) -> Result<File, String> {
+    writer_lease(app).map_err(|_| "Google Photos is busy. Wait for its current operation to finish before renaming media folders.".into())
+}
 fn validate_id(id: &str) -> Result<(), String> {
     if id.len() != 43
         || !id

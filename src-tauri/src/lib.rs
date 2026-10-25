@@ -29,6 +29,7 @@ use commands::{
         apply_event_naming, list_event_day_directories, load_event_naming_catalog,
         prefill_event_naming_from_archive, save_event_naming_catalog, scan_event_naming_library,
     },
+    naming_workflow::{preview_event_naming, load_event_naming_library, save_event_naming_favourite, remove_event_naming_favourite},
     process::{
         abort_process_job, check_face_scan_environment, clear_finished_process_jobs,
         install_face_scan_deps, list_process_jobs, pause_process_job, resume_process_job,
@@ -117,6 +118,10 @@ pub fn run() {
             list_sd_cards,
             list_event_day_directories,
             load_event_naming_catalog,
+            preview_event_naming,
+            load_event_naming_library,
+            save_event_naming_favourite,
+            remove_event_naming_favourite,
             save_event_naming_catalog,
             scan_event_naming_library,
             prefill_event_naming_from_archive,
