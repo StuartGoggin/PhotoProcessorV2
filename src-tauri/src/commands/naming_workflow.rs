@@ -627,7 +627,7 @@ fn save_favourite(
         if let Some(existing) = library
             .favourites
             .iter_mut()
-            .find(|f| f.name.eq_ignore_ascii_case(&favourite.name))
+            .find(|f| f.name.to_lowercase() == favourite.name.to_lowercase())
         {
             if !replace_existing {
                 return Err(
@@ -663,7 +663,7 @@ pub fn remove_event_naming_favourite(
     update_library(&library_path(&app)?, |library| {
         library
             .favourites
-            .retain(|f| !f.name.eq_ignore_ascii_case(name.trim()));
+            .retain(|f| f.name.to_lowercase() != name.trim().to_lowercase());
         Ok(())
     })
 }
@@ -1057,6 +1057,43 @@ mod tests {
         fs::write(&path, b"{corrupt}").unwrap();
         assert!(save_favourite(&path, favourite, true).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"{corrupt}");
+    }
+    #[test]
+    fn naming_favourite_unicode_case_does_not_create_duplicate_library_entries() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("library.json");
+        let description = EventDescription {
+            event_group: "Équipe".into(),
+            ..Default::default()
+        };
+        save_favourite(
+            &path,
+            EventFavourite {
+                name: "Équipe rally".into(),
+                description: description.clone(),
+            },
+            false,
+        )
+        .unwrap();
+        assert!(save_favourite(
+            &path,
+            EventFavourite {
+                name: "équipe rally".into(),
+                description: description.clone()
+            },
+            false
+        )
+        .is_err());
+        save_favourite(
+            &path,
+            EventFavourite {
+                name: "équipe rally".into(),
+                description,
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(load_library(&path).unwrap().favourites.len(), 1);
     }
     #[test]
     fn naming_noop_metadata_only_edit_and_year_boundary_are_consistent() {

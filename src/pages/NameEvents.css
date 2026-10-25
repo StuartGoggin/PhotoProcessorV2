@@ -36,6 +36,9 @@
 }
 .name-events button {
   white-space: normal;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .name-events input[type=checkbox] {
   accent-color: #89b5ff;

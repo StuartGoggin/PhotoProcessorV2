@@ -52,3 +52,12 @@ Coverage includes exact date/title composition, cross-month and year boundaries,
 ## Integration boundary
 
 This feature changes the Name Events page and native naming commands, plus a narrow archive-transfer exclusion for internal naming work files. The only Google Photos change is a small lease adapter for folder naming; it does not alter upload selection, authentication, or failure diagnostics. Existing preview/processing/stabilisation engines are unchanged. Installer versioning and publication belong to the coordinated release after this feature is integrated.
+
+## Verified checkpoint — 26 October 2026
+
+- Feature implementation committed as `9bfa5f9`; released main through `a1cc122` (2.0.33) integrated into the feature branch in `8e6886a` without conflicts.
+- Twelve native naming tests passed on the combined source, including filesystem round-trip, rollback, stale-review rejection, Unicode favourite names, archive ambiguity and legacy compatibility.
+- Naming-rule tests and the real-page browser workflow passed, including 360 px, 736 px and desktop layouts, reload recovery, long favourite names and job completion. IPC was stubbed in the browser; filesystem behaviour was tested separately in Rust.
+- TypeScript and the Vite production build passed. Existing Browserslist-age and bundle-size advisories remain; there were no build errors.
+- Two inherited Google Photos test edits were preserved separately in the named Git stash `Inherited Google Photos test edits preserved before Name Events integration`. They were not included as new feature work or reapplied over the newer main implementation.
+- This checkpoint is source/build validation, not installer publication or a rename against a live photo collection. The feature remains on `SWG/name-events-workflow` for the coordinated release.

@@ -126,5 +126,10 @@ try {
   await showcase.getByRole("button",{name:"MGV teams",exact:true}).click();
   await showcase.getByRole("heading",{name:"Name Events",exact:true}).scrollIntoViewIfNeeded();
   await showcase.screenshot({path:"test-output/name-events/name-events.png",fullPage:true});
+  const stress = await browser.newPage({viewport:{width:360,height:800}});
+  await stress.addInitScript(() => { window.__eventCatalog = {eventTypes:[],peopleTags:[],groupTags:[],generalTags:[],recentEvents:[],favourites:[{name:"M".repeat(140),description:{eventGroup:"Mounted Games Victoria",eventType:"Teams",venue:"Ayr Hill",includePeriod:true,customName:null,peopleTags:[],groupTags:[],generalTags:[]}}]}; });
+  await stress.goto(url,{waitUntil:"domcontentloaded",timeout:45000});
+  await stress.getByRole("button",{name:"M".repeat(140),exact:true}).first().waitFor();
+  assert.equal(await stress.locator(".name-events").evaluate(node => node.scrollWidth > node.clientWidth),false,"Long favourite names must wrap inside a compact editor");
   console.log("PASS: multi-date/weekend review, legacy and archive wording, overwrite consent, failures, draft recovery, favourites, tags, single-flight Apply, completion and responsive layouts.");
 } finally { await browser?.close(); server.kill(); }
