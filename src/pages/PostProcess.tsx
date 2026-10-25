@@ -5,6 +5,7 @@ import type { ProcessScopeMode, ProcessTask, StabilizationMode, StabilizationStr
 import { useSettings } from "../hooks";
 import PhotoProcessPreview from "../components/PhotoProcessPreview";
 import { DEFAULT_BW, type BwParams } from "../types/photoProcess";
+import { loadPhotoProcessRecipe, savePhotoProcessRecipe } from "../utils/photoProcessRecipe";
 
 interface TaskConfig {
   label: string;
@@ -126,6 +127,7 @@ function Adjustment({ label, value, min, max, step = 0.05, onChange, hint }: {
 
 export default function PostProcess({ onOpenJobs }: PostProcessProps) {
   const { settings } = useSettings();
+  const [initialRecipe] = useState(loadPhotoProcessRecipe);
 
   const [queueingTask, setQueueingTask] = useState<ProcessTask | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -134,13 +136,14 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [selectedScope, setSelectedScope] = useState<string>("");
   const [scopeMode, setScopeMode] = useState<ProcessScopeMode>("entireStaging");
-  const [enhanceContrastLevel, setEnhanceContrastLevel] = useState(1.0);
-  const [enhanceSharpnessLevel, setEnhanceSharpnessLevel] = useState(0.5);
+  const [enhanceContrastLevel, setEnhanceContrastLevel] = useState(initialRecipe.enhanceContrastLevel);
+  const [enhanceSharpnessLevel, setEnhanceSharpnessLevel] = useState(initialRecipe.enhanceSharpnessLevel);
   const [stabilizationMode, setStabilizationMode] = useState<StabilizationMode>("edgeSafe");
   const [stabilizationStrength, setStabilizationStrength] = useState<StabilizationStrength>("balanced");
   const [preserveSourceBitrate, setPreserveSourceBitrate] = useState(true);
-  const [bwParams, setBwParams] = useState<BwParams>({ ...DEFAULT_BW });
+  const [bwParams, setBwParams] = useState<BwParams>(initialRecipe.bwParams);
   const [previewTask, setPreviewTask] = useState<ProcessTask | null>(null);
+  useEffect(() => { savePhotoProcessRecipe({ bwParams, enhanceContrastLevel, enhanceSharpnessLevel }); }, [bwParams, enhanceContrastLevel, enhanceSharpnessLevel]);
 
   const canQueue = Boolean(settings?.staging_dir);
   const effectiveScope = useMemo(() => {

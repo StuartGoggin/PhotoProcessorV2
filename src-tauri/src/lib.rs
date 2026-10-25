@@ -4,6 +4,7 @@ mod utils;
 use commands::{
     process_preview::{process_preview, process_preview_candidates},
     lightbox::read_lightbox_image,
+    lightbox_crop::{lightbox_crop_info, lightbox_apply_crop},
     video_snapshots::sessions::{snapshot_sessions_list, snapshot_session_get, snapshot_session_put, snapshot_session_set_deleted},
     video_snapshots::{snapshot_open, snapshot_frames, snapshot_photo_preview,
         snapshot_export, snapshot_cancel, snapshot_forget, snapshot_save_session, snapshot_load_session},
@@ -142,6 +143,8 @@ pub fn run() {
             rename_file,
             read_image_base64,
             read_lightbox_image,
+            lightbox_crop_info,
+            lightbox_apply_crop,
             read_image_thumbnail_base64,
             read_video_thumbnail_base64,
             read_video_hover_preview_base64,

@@ -7,6 +7,8 @@ const bundle = async path => {
 };
 const { lightboxCatalogue, neighborPaths, photoFolder, lightboxAbsolute } = await bundle("src/utils/lightboxCatalogue.ts");
 const { LightboxCache } = await bundle("src/utils/lightboxCache.ts");
+const { FULL_CROP, fitCropRatio, dragCrop, validCrop, cropPixelSize } = await bundle("src/utils/lightboxCrop.ts");
+const { normalizePhotoProcessRecipe } = await bundle("src/utils/photoProcessRecipe.ts");
 const file = (name, folder = "") => ({ name, path: folder ? `${folder}/${name}` : name, type: "file", size: 10 });
 const payload = { data: Buffer.from("compressed image bytes").toString("base64"), mime: "image/jpeg", width: 640, height: 480 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -51,6 +53,51 @@ test("regenerating a rated original prefers its exact current-stem comparison", 
   assert.equal(result.folders.get("").length,1);
   assert.equal(result.photos.get("one{Like o}.jpg").bw?.name,"one{Like o}_BW.jpg");
   assert.equal(result.photos.get("one{Like o}.jpg").improved?.name,"one{Like o}_improved.jpg");
+});
+
+test("crop versions attach to one original with their own independent comparisons, including rating changes", () => {
+  const result = lightboxCatalogue([file("shot{Like o}.JPEG"), file("shot_BW.jpg"), file("shot_improved.jpg"), file("shot_crop.jpg"), file("shot_crop_BW.jpg"), file("shot_crop_improved.jpg"), file("shot_crop.photogogo-crop.json")]);
+  assert.equal(result.folders.get("").length, 1);
+  const original = result.photos.get("shot{Like o}.JPEG");
+  assert.equal(original.bw.name, "shot_BW.jpg");
+  assert.equal(original.crop.original.name, "shot_crop.jpg");
+  assert.equal(original.crop.bw.name, "shot_crop_BW.jpg");
+  assert.equal(original.crop.improved.name, "shot_crop_improved.jpg");
+});
+
+test("orphan, ambiguous, cross-folder and crop-chain filenames are never hidden by guessed ownership", () => {
+  const result = lightboxCatalogue([file("one.jpg"), file("one.jpeg"), file("one_crop.jpg"), file("orphan_crop.jpg"), file("shot.jpg"), file("shot_crop.jpg"), file("shot_crop_crop.jpg"), { name: "day", path: "day", type: "dir", children: [file("one_crop.jpg", "day")] }]);
+  assert.equal(result.photos.has("one_crop.jpg"), true);
+  assert.equal(result.photos.has("orphan_crop.jpg"), true);
+  assert.equal(result.photos.has("shot_crop_crop.jpg"), true);
+  assert.equal(result.photos.has("day/one_crop.jpg"), true);
+  assert.equal(result.photos.get("shot.jpg").crop.original.name, "shot_crop.jpg");
+});
+
+test("all crop handles stay in bounds and fixed ratios use upright source-pixel aspect", () => {
+  const ratio = fitCropRatio(FULL_CROP, 16 / 9, 4000, 6000);
+  assert.ok(Math.abs(ratio.width * 4000 / (ratio.height * 6000) - 16 / 9) < 1e-10);
+  for (const handle of ["move", "nw", "n", "ne", "e", "se", "s", "sw", "w"]) {
+    for (const locked of [null, 3 / 2, 2 / 3, 1]) {
+      const start = fitCropRatio({ x: .1, y: .1, width: .8, height: .8 }, locked, 640, 480);
+      for (const dx of [-100, -.2, 0, .2, 100]) for (const dy of [-100, -.2, 0, .2, 100]) {
+        const crop = dragCrop(start, handle, dx, dy, locked, 640, 480);
+        assert.ok(validCrop(crop), `${handle}: ${JSON.stringify(crop)}`);
+        if (locked) assert.ok(Math.abs(crop.width * 640 / (crop.height * 480) - locked) < 1e-8);
+      }
+    }
+  }
+  assert.deepEqual(dragCrop(FULL_CROP, "nw", NaN, 0, null, 640, 480), FULL_CROP);
+  assert.deepEqual(cropPixelSize({ x: .123, y: .234, width: .567, height: .456 }, 640, 480), { width: 364, height: 220 });
+});
+
+test("persisted processing recipes reject malformed values and clamp supported bounds", () => {
+  const recipe = normalizePhotoProcessRecipe({ bwParams: { localContrast: NaN, sharpness: 30, midpoint: -1 }, enhanceContrastLevel: 99, enhanceSharpnessLevel: "oops" });
+  assert.equal(recipe.bwParams.localContrast, 1);
+  assert.equal(recipe.bwParams.sharpness, 1);
+  assert.equal(recipe.bwParams.midpoint, .25);
+  assert.equal(recipe.enhanceContrastLevel, 2);
+  assert.equal(recipe.enhanceSharpnessLevel, .5);
 });
 
 test("foreground reads coalesce; cached full-resolution data avoids repeated read", async () => {

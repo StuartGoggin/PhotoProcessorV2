@@ -12,6 +12,8 @@ Reads refuse files over 64 MiB or 100 megapixels. Full-resolution files are not 
 
 ## Tune before queuing
 
+For selected-photo composition, Photo Lightbox also offers [non-destructive cropping](LIGHTBOX_CROPPING.md): the original stays untouched, `_crop.jpg` becomes a separate working version, and optional `_crop_BW.jpg` / `_crop_improved.jpg` comparisons are generated from that crop. One Original/Cropped switch keeps navigation original-only.
+
 1. Choose entire staging, a selected folder recursively, or that folder only.
 2. Open **Preview before queuing** on a task. A sample original is selected from the first 1000 eligible files in that scope. Use **Choose photo/video** or **Another random photo/video**; narrow the scope to find other files.
 3. Adjust controls. The sample remains selected. Still previews debounce and serialize work; obsolete results are discarded.

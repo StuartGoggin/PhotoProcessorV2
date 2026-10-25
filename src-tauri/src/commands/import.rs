@@ -2468,7 +2468,7 @@ pub async fn start_import(
 ) -> Result<ImportResult, String> {
     let opts = options.unwrap_or_default();
 
-    async_runtime::spawn_blocking(move || run_import(app, source_dir, staging_dir, opts, None, None))
+    async_runtime::spawn_blocking(move || { let _lease=super::lightbox_crop::EditLease::begin()?; run_import(app, source_dir, staging_dir, opts, None, None) })
         .await
         .map_err(|e| format!("Import background task failed: {}", e))?
 }
@@ -2484,6 +2484,8 @@ pub async fn start_import_job(
     let identity_path = PathBuf::from(if opts.reprocess_existing { &staging_dir } else { &source_dir });
     let source_identity = async_runtime::spawn_blocking(move || super::import_devices::resolve(&identity_path))
         .await.map_err(|e| format!("Source identification failed: {e}"))??;
+    let _photo_edit_gate=super::lightbox_crop::PHOTO_EDIT_GATE.lock().map_err(|e|e.to_string())?;
+    if super::lightbox_crop::is_editing() { return Err("Wait for the current crop operation to finish before starting an import".into()); }
     let job_id = next_job_id();
     let log_file_path = import_job_log_path(&staging_dir, &job_id);
     let manifest_file_path = import_job_manifest_path(&staging_dir, &job_id);

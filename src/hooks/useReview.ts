@@ -24,6 +24,9 @@ export function useReview() {
   const [error, setError] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [stagingDir, setStagingDir] = useState("");
+  const [cropped, setCropped] = useState(false);
+  const [selectedPhoto, setSelectedPhoto] = useState<LightboxPhoto | null>(null);
+  const showingCrop = useRef(false);
   const root = useRef("");
   const catalogue = useRef(lightboxCatalogue([]));
   const selectedPath = useRef<string | null>(null);
@@ -42,18 +45,21 @@ export function useReview() {
     };
   }, []);
 
-  function show(photo: LightboxPhoto, direction: 1 | -1 = 1) {
+  function show(photo: LightboxPhoto, direction: 1 | -1 = 1, useCrop = false) {
     if (!mounted.current) return;
     const request = ++selectionRequest.current;
     const group = catalogue.current.folders.get(photoFolder(photo.node.path)) ?? [];
     const index = group.findIndex(item => item.node.path === photo.node.path);
-    const paths = photoPaths(photo).map(path => lightboxAbsolute(root.current, path));
+    const activeCrop = useCrop && !!photo.crop;
+    const version = activeCrop ? photo.crop! : photo;
+    const paths = photoPaths(photo, activeCrop).map(path => lightboxAbsolute(root.current, path));
     cache.current!.select(paths);
     selectedPath.current = photo.node.path;
+    showingCrop.current = activeCrop; setCropped(activeCrop); setSelectedPhoto(photo);
     setSelected(photo.node); setSiblings(group.map(item => item.node)); setSiblingIdx(Math.max(0, index));
     setZoom(1); setLoading(true); setError(""); setImages(emptyImages());
     const load = (node?: TreeNode) => node ? cache.current!.get(lightboxAbsolute(root.current, node.path)) : Promise.resolve(null);
-    void Promise.all([load(photo.original), load(photo.bw), load(photo.improved)]).then(([original, bw, improved]) => {
+    void Promise.all([load(version.original), load(version.bw), load(version.improved)]).then(([original, bw, improved]) => {
       if (request !== selectionRequest.current) return;
       setImages({ original, bw, improved }); setLoading(false);
       if (!original) setError(/\.(cr3|dng)$/i.test(photo.node.name)
@@ -63,7 +69,7 @@ export function useReview() {
     });
   }
 
-  function refreshTree(dir?: string) {
+  function refreshTree(dir?: string, preferCrop = showingCrop.current) {
     const target = dir ?? root.current;
     if (!target || !mounted.current) return;
     const request = ++treeRequest.current;
@@ -74,8 +80,8 @@ export function useReview() {
       catalogue.current = lightboxCatalogue(result?.children ?? []);
       setTree(catalogue.current.tree);
       const photo = selectedPath.current ? catalogue.current.photos.get(selectedPath.current) : undefined;
-      if (photo) show(photo);
-      else { selectedPath.current = null; setSelected(null); setSiblings([]); setSiblingIdx(0); }
+      if (photo) show(photo, 1, preferCrop);
+      else { selectedPath.current = null; setSelected(null); setSelectedPhoto(null); setSiblings([]); setSiblingIdx(0); }
     }).catch(reason => {
       if (request !== treeRequest.current) return;
       setError(`Could not refresh the Lightbox: ${String(reason)}`);
@@ -92,6 +98,11 @@ export function useReview() {
   function selectNode(node: TreeNode) {
     const photo = catalogue.current.photos.get(node.path);
     if (photo) show(photo);
+  }
+
+  function setCropVersion(useCrop: boolean) {
+    const photo = selectedPath.current ? catalogue.current.photos.get(selectedPath.current) : undefined;
+    if (photo) show(photo, 1, useCrop);
   }
 
   function navigate(direction: 1 | -1) {
@@ -134,9 +145,9 @@ export function useReview() {
 
   return {
     tree, selected, siblings, siblingIdx, images,
-    zoom, loading, error, renaming, stagingDir,
+    zoom, loading, error, renaming, stagingDir, cropped, selectedPhoto,
     trashed: selected ? isTrashed(selected.name) : false,
     stars: selected ? parseStars(selected.name) : 0,
-    refreshTree, selectNode, handleStars, handleTrash, navigate, setZoom,
+    refreshTree, selectNode, handleStars, handleTrash, navigate, setZoom, setCropVersion,
   };
 }

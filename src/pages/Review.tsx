@@ -1,17 +1,25 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useReview } from "../hooks";
 import { FileTree, ImagePanel, StarRating } from "../components";
+import LightboxCropEditor from "../components/LightboxCropEditor";
 
 export default function Review() {
   const {
     tree, selected, siblings, siblingIdx, images,
     zoom, loading, trashed, stars, error, renaming,
+    stagingDir, cropped, selectedPhoto, setCropVersion,
     refreshTree, selectNode, handleStars, handleTrash, navigate, setZoom,
   } = useReview();
+  const [cropOpen, setCropOpen] = useState(false);
+  const [cropMessage, setCropMessage] = useState("");
+  const editable = !!selected && /\.jpe?g$/i.test(selected.name) && !/_(crop|bw|improved)(?:\{[^}]+\})*\.jpe?g$/i.test(selected.name);
+  const shortcutsBlocked = (event: KeyboardEvent) => cropOpen || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || (event.target instanceof HTMLElement && !!event.target.closest("input, select, textarea, [contenteditable=true]"));
 
   // Keyboard navigation — stable handlers via the hook
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (shortcutsBlocked(e)) return;
+      if (e.key.toLowerCase() === "c" && editable && !loading && !renaming) { e.preventDefault(); setCropOpen(true); return; }
       if (e.key === "ArrowRight") navigate(1);
       else if (e.key === "ArrowLeft") navigate(-1);
       else if (e.key === "+" || e.key === "=") setZoom((z) => Math.min(5, z + 0.25));
@@ -20,11 +28,12 @@ export default function Review() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [navigate, setZoom]);
+  }, [navigate, setZoom, cropOpen, editable, loading, renaming]);
 
   // Separate effect for state-dependent key handlers (stars/trash)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (shortcutsBlocked(e)) return;
       if (e.key === "Delete") handleTrash();
       else if (e.key === "1") handleStars(1);
       else if (e.key === "2") handleStars(2);
@@ -89,6 +98,11 @@ export default function Review() {
 
           {selected && (
             <>
+              <button type="button" className="btn-secondary py-1 px-3 text-xs" disabled={!editable || loading || renaming} onClick={() => setCropOpen(true)} title={editable ? "Crop from the untouched original (C)" : "Cropping supports JPEG originals, not RAW/PNG or generated variants"}>Crop</button>
+              {selectedPhoto?.crop && <div role="group" aria-label="Photo version" className="flex gap-1">
+                <button type="button" className={`py-1 px-2 text-xs rounded ${!cropped ? "bg-cyan-900 text-cyan-100" : "btn-secondary"}`} aria-pressed={!cropped} onClick={() => setCropVersion(false)}>Original</button>
+                <button type="button" className={`py-1 px-2 text-xs rounded ${cropped ? "bg-cyan-900 text-cyan-100" : "btn-secondary"}`} aria-pressed={cropped} onClick={() => setCropVersion(true)}>Cropped</button>
+              </div>}
               <div className="ml-2" style={{ pointerEvents: renaming ? "none" : undefined }}>
                 <StarRating value={stars} onChange={handleStars} />
               </div>
@@ -112,6 +126,7 @@ export default function Review() {
         </div>
 
         {error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800">{error}</div>}
+        {cropMessage && <div role="status" className="px-4 py-2 text-xs text-cyan-100 bg-surface-800 flex gap-3 justify-between"><span>{cropMessage}</span><button type="button" aria-label="Dismiss crop result" onClick={() => setCropMessage("")}>×</button></div>}
         {/* 3-panel image display */}
         <div className="review-images flex-1 flex min-h-0">
           {loading ? (
@@ -119,7 +134,7 @@ export default function Review() {
           ) : (
             <>
               <div className="flex-1 border-r border-surface-700 min-w-0">
-                <ImagePanel src={images.original} label="Original" zoom={zoom} />
+                <ImagePanel src={images.original} label={cropped ? "Cropped" : "Original"} zoom={zoom} />
               </div>
               <div className="flex-1 border-r border-surface-700 min-w-0">
                 <ImagePanel src={images.bw} label="B&W" zoom={zoom} />
@@ -139,8 +154,13 @@ export default function Review() {
           <span>0 reset zoom</span>
           <span>Del trash</span>
           <span>1/2/3 stars</span>
+          <span>C crop · original untouched</span>
         </div>
       </div>
+      {cropOpen && selectedPhoto && <LightboxCropEditor stagingDir={stagingDir} photo={selectedPhoto} onClose={() => { setCropOpen(false); refreshTree(); }} onSaved={result => {
+        setCropOpen(false); refreshTree(undefined, true);
+        setCropMessage(`Saved crop (${result.width.toLocaleString()} × ${result.height.toLocaleString()} pixels). Original unchanged.${result.errors.length ? ` Regeneration needs attention: ${result.errors.join("; ")}` : " Cropped view is ready."}`);
+      }} />}
     </div>
   );
 }

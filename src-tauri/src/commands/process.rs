@@ -1132,7 +1132,9 @@ fn collect_mp4s(dir: &Path, recursive: bool) -> Vec<PathBuf> {
 
 pub(super) fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec<PathBuf> {
     match task {
-        ProcessTask::Focus | ProcessTask::Enhance | ProcessTask::Bw => collect_jpgs(dir, recursive),
+        // Managed crop names are stable family identities, not focus-rename targets.
+        ProcessTask::Focus => collect_jpgs(dir, recursive).into_iter().filter(|p| !(clean_photo_stem(p).ends_with("_crop") && p.with_extension("photogogo-crop.json").is_file())).collect(),
+        ProcessTask::Enhance | ProcessTask::Bw => collect_jpgs(dir, recursive),
         ProcessTask::RemoveFocus => collect_focus_marked_jpgs(dir, recursive),
         ProcessTask::RemoveEnhance => collect_named_outputs(dir, recursive, "_improved", "jpg"),
         ProcessTask::RemoveBw => collect_named_outputs(dir, recursive, "_BW", "jpg"),
@@ -2068,7 +2070,7 @@ pub async fn run_focus_detection(
     scope_dir: Option<String>,
     scope_mode: Option<ProcessScopeMode>,
 ) -> Result<ProcessResult, String> {
-    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, scope_dir, scope_mode, ProcessTask::Focus, None))
+    async_runtime::spawn_blocking(move || { let _lease=super::lightbox_crop::EditLease::begin()?; run_process_task(app, staging_dir, scope_dir, scope_mode, ProcessTask::Focus, None) })
         .await
         .map_err(|e| format!("Process background task failed: {}", e))?
 }
@@ -2080,7 +2082,7 @@ pub async fn run_enhancement(
     scope_dir: Option<String>,
     scope_mode: Option<ProcessScopeMode>,
 ) -> Result<ProcessResult, String> {
-    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, scope_dir, scope_mode, ProcessTask::Enhance, None))
+    async_runtime::spawn_blocking(move || { let _lease=super::lightbox_crop::EditLease::begin()?; run_process_task(app, staging_dir, scope_dir, scope_mode, ProcessTask::Enhance, None) })
         .await
         .map_err(|e| format!("Process background task failed: {}", e))?
 }
@@ -2092,7 +2094,7 @@ pub async fn run_bw_conversion(
     scope_dir: Option<String>,
     scope_mode: Option<ProcessScopeMode>,
 ) -> Result<ProcessResult, String> {
-    async_runtime::spawn_blocking(move || run_process_task(app, staging_dir, scope_dir, scope_mode, ProcessTask::Bw, None))
+    async_runtime::spawn_blocking(move || { let _lease=super::lightbox_crop::EditLease::begin()?; run_process_task(app, staging_dir, scope_dir, scope_mode, ProcessTask::Bw, None) })
         .await
         .map_err(|e| format!("Process background task failed: {}", e))?
 }
@@ -2642,6 +2644,8 @@ fn run_process_task(
                         let replaced_existing = out_path.exists();
                         super::photo_process::save_generated(&out_path, &DynamicImage::ImageRgb8(sharpened)).map_err(anyhow::Error::msg)?;
                         sync_file_metadata_from(path, &out_path, false).map_err(anyhow::Error::msg)?;
+                        { let _receipt_gate=super::lightbox_crop::PHOTO_EDIT_GATE.lock().map_err(|e|anyhow::anyhow!(e.to_string()))?;
+                          super::lightbox_crop::record_processed(path,None,Some(contrast_level),Some(sharpness_level)).map_err(anyhow::Error::msg)?; }
                         result_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = append_app_log(&app_clone, format!("process_enhance wrote='{}' replaced_existing={} contrast={:.2} sharpness={:.2}", out_path.display(), replaced_existing, contrast_level, sharpness_level));
                         if let Some(job_id) = &job_id_clone {
@@ -2665,6 +2669,8 @@ fn run_process_task(
                         let replaced_existing = out_path.exists();
                         super::photo_process::save_generated(&out_path, &DynamicImage::ImageLuma8(sharpened)).map_err(anyhow::Error::msg)?;
                         sync_file_metadata_from(path, &out_path, false).map_err(anyhow::Error::msg)?;
+                        { let _receipt_gate=super::lightbox_crop::PHOTO_EDIT_GATE.lock().map_err(|e|anyhow::anyhow!(e.to_string()))?;
+                          super::lightbox_crop::record_processed(path,Some(params),None,None).map_err(anyhow::Error::msg)?; }
                         result_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = append_app_log(&app_clone, format!("process_bw wrote='{}' replaced_existing={}", out_path.display(), replaced_existing));
                         if let Some(job_id) = &job_id_clone {
@@ -2890,6 +2896,9 @@ pub fn start_process_job(
         None
     };
 
+    // Crop publication and queue admission share a short scheduling seam.
+    let _photo_edit_gate = super::lightbox_crop::PHOTO_EDIT_GATE.lock().map_err(|e|e.to_string())?;
+    if super::lightbox_crop::is_editing() { return Err("Wait for the current crop operation to finish before queuing Photo Process work".into()); }
     let job_id = next_process_job_id();
     let job = ProcessJob {
         id: job_id.clone(),

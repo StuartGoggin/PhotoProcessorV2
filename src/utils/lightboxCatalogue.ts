@@ -1,6 +1,6 @@
 import type { TreeNode } from "../types";
 
-export interface LightboxPhoto { node: TreeNode; original: TreeNode; bw?: TreeNode; improved?: TreeNode }
+export interface LightboxPhoto { node: TreeNode; original: TreeNode; bw?: TreeNode; improved?: TreeNode; crop?: LightboxPhoto }
 const PHOTO = /\.(jpe?g|png|cr3|dng)$/i;
 const JPEG = /\.jpe?g$/i;
 const TAGS = /\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi;
@@ -51,9 +51,31 @@ export function lightboxCatalogue(nodes: TreeNode[]): { tree: TreeNode[]; photos
         const preferred = exact.length ? exact : matches;
         if (preferred.length === 1) entry[kind] = preferred[0];
       }
-      photos.set(entry.node.path, entry);
     }
-    folders.set(parent, entries);
+    // A crop is a separate working image but belongs to one original navigation
+    // entry. Never guess ownership for orphan names or ambiguous same-stem files.
+    const cropGroups = new Map<string, LightboxPhoto[]>();
+    for (const entry of entries) {
+      const clean = untag(stem(entry.node.name));
+      if (!JPEG.test(entry.node.name) || !/_crop$/i.test(clean)) continue;
+      const base = clean.replace(/_crop$/i, "");
+      if (/_crop$/i.test(base)) continue; // Never fold a crop-of-a-crop chain.
+      const rawBase = stem(entry.node.name).replace(/_crop(?=(?:\{[^}]+\})*$)/i, "");
+      const candidates = entries.filter(other => other !== entry && JPEG.test(other.node.name) && key(untag(stem(other.node.name))) === key(base));
+      const exact = candidates.filter(other => key(stem(other.node.name)) === key(rawBase));
+      const owners = exact.length ? exact : candidates;
+      if (owners.length !== 1) continue;
+      const group = cropGroups.get(owners[0].node.path) ?? [];
+      group.push(entry); cropGroups.set(owners[0].node.path, group);
+    }
+    const hiddenCrops = new Set<string>();
+    for (const entry of entries) {
+      const crops = cropGroups.get(entry.node.path) ?? [];
+      if (crops.length === 1) { entry.crop = crops[0]; hiddenCrops.add(crops[0].node.path); }
+    }
+    const originals = entries.filter(entry => !hiddenCrops.has(entry.node.path));
+    for (const entry of originals) photos.set(entry.node.path, entry);
+    folders.set(parent, originals);
     return children.flatMap(node => node.type === "dir"
       ? [{ ...node, children: visit(node.children ?? [], node.path) }]
       : photos.has(node.path) ? [node] : []);
@@ -65,8 +87,9 @@ export function photoFolder(path: string): string {
   const normalized = path.replace(/\\/g, "/");
   return normalized.includes("/") ? normalized.slice(0, normalized.lastIndexOf("/")) : "";
 }
-export function photoPaths(photo: LightboxPhoto): string[] {
-  return [photo.original, photo.bw, photo.improved].filter((node): node is TreeNode => !!node).map(node => node.path);
+export function photoPaths(photo: LightboxPhoto, cropped = false): string[] {
+  const version = cropped && photo.crop ? photo.crop : photo;
+  return [version.original, version.bw, version.improved].filter((node): node is TreeNode => !!node).map(node => node.path);
 }
 export function neighborPaths(photos: LightboxPhoto[], index: number, direction: 1 | -1): string[] {
   const neighbors = [index + direction, index - direction, index + direction * 2].map(at => photos[at]).filter((photo): photo is LightboxPhoto => !!photo);
