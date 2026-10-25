@@ -7,6 +7,7 @@ use tauri::AppHandle;
 use tauri::Manager;
 use walkdir::WalkDir;
 use crate::utils::rename_path_with_retry;
+use super::naming_workflow::{self, SavedEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +48,8 @@ pub struct EventDayDirectory {
     pub day: u32,
     pub date_key: String,
     pub has_custom_name: bool,
+    pub event: Option<SavedEvent>,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +68,14 @@ pub struct EventNamingAssignment {
     pub group_tags: Vec<String>,
     #[serde(default)]
     pub general_tags: Vec<String>,
+    #[serde(default)]
+    pub event: Option<SavedEvent>,
+    #[serde(default)]
+    pub expected_name: Option<String>,
+    #[serde(default)]
+    pub expected_event_hash: Option<String>,
+    #[serde(default)]
+    pub replace_existing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +92,8 @@ pub struct ApplyEventNamingRequest {
     pub general_tags: Vec<String>,
     #[serde(default)]
     pub assignments: Vec<EventNamingAssignment>,
+    #[serde(default)]
+    pub reviewed_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +113,7 @@ pub(crate) struct EventNamingPlan {
     pub old_name: String,
     pub new_name: String,
     pub day: u32,
+    pub reviewed: Option<naming_workflow::ReviewedEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -402,7 +416,7 @@ fn categorize_scanned_tag(tag: &str) -> &'static str {
     "general"
 }
 
-fn is_candidate_day_directory(root: &Path, path: &Path) -> Option<(u32, u32, u32)> {
+pub(crate) fn is_candidate_day_directory(root: &Path, path: &Path) -> Option<(u32, u32, u32)> {
     let relative = path.strip_prefix(root).ok()?;
     let components: Vec<String> = relative
         .components()
@@ -416,6 +430,7 @@ fn is_candidate_day_directory(root: &Path, path: &Path) -> Option<(u32, u32, u32
     let year = components[0].parse::<u32>().ok()?;
     let month = components[1].parse::<u32>().ok()?;
     let day = parse_day_prefix(&components[2])?;
+    chrono::NaiveDate::from_ymd_opt(i32::try_from(year).ok()?, month, day)?;
     Some((year, month, day))
 }
 
@@ -513,25 +528,22 @@ pub(crate) fn scan_catalog_entry(
     ))
 }
 
-fn matching_archive_day_directory(archive_root: &Path, year: u32, month: u32, day: u32) -> Option<PathBuf> {
+pub(crate) fn matching_archive_day_directory(archive_root: &Path, year: u32, month: u32, day: u32) -> Result<Option<PathBuf>, String> {
     let month_dir = archive_root.join(year.to_string()).join(format!("{:02}", month));
-    if !month_dir.exists() || !month_dir.is_dir() {
-        return None;
+    if !month_dir.try_exists().map_err(|e| format!("Cannot read archive month: {e}"))? {
+        return Ok(None);
     }
-
-    let mut candidates = fs::read_dir(month_dir)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().is_dir())
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let parsed_day = parse_day_prefix(&name)?;
-            (parsed_day == day).then_some(entry.path())
-        })
-        .collect::<Vec<_>>();
-
-    candidates.sort();
-    candidates.into_iter().next()
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(&month_dir).map_err(|e| format!("Cannot read archive month: {e}"))? {
+        let entry = entry.map_err(|e| format!("Could not read all archive date folders: {e}"))?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if parse_day_prefix(&name) == Some(day) && parse_archive_directory_for_prefill(&name).is_some() {
+            candidates.push(entry.path());
+        }
+    }
+    if candidates.len() > 1 { return Err(format!("More than one named archive folder matches {year:04}-{month:02}-{day:02}. Choose the correct description manually; no folders were changed.")); }
+    Ok(candidates.pop())
 }
 
 #[tauri::command]
@@ -539,14 +551,18 @@ pub fn prefill_event_naming_from_archive(
     app: AppHandle,
     staging_dir: String,
     archive_dir: String,
+    directories: Option<Vec<String>>,
 ) -> Result<PrefillEventNamingFromArchiveResult, String> {
     let staging_directories = list_event_day_directories(staging_dir)?;
     let archive_root = PathBuf::from(&archive_dir);
+    if !fs::metadata(&archive_root).map_err(|e| format!("Archive directory is unavailable: {e}"))?.is_dir() {
+        return Err("Archive path is not a directory.".into());
+    }
     let catalog = load_catalog_internal(&app).unwrap_or_default();
     let mut assignments = Vec::<EventNamingAssignment>::new();
 
-    for directory in staging_directories.into_iter().filter(|directory| !directory.has_custom_name) {
-        let Some(archive_match) = matching_archive_day_directory(&archive_root, directory.year, directory.month, directory.day) else {
+    for directory in staging_directories.into_iter().filter(|directory| !directory.has_custom_name && directories.as_ref().is_none_or(|selected| selected.contains(&directory.path))) {
+        let Some(archive_match) = matching_archive_day_directory(&archive_root, directory.year, directory.month, directory.day)? else {
             continue;
         };
 
@@ -577,6 +593,7 @@ pub fn prefill_event_naming_from_archive(
             people_tags,
             group_tags,
             general_tags,
+            event: None, expected_name: None, expected_event_hash: None, replace_existing: false,
         });
     }
 
@@ -640,6 +657,7 @@ pub(crate) fn build_event_naming_plans(
                 people_tags: request.people_tags.clone(),
                 group_tags: request.group_tags.clone(),
                 general_tags: request.general_tags.clone(),
+                event: None, expected_name: None, expected_event_hash: None, replace_existing: false,
             })
             .collect::<Vec<_>>()
     } else {
@@ -647,6 +665,11 @@ pub(crate) fn build_event_naming_plans(
     };
 
     for assignment in assignments {
+        let reviewed = match (&request.reviewed_root, &assignment.event) {
+            (Some(root), Some(_)) => Some(naming_workflow::reviewed_event(root, &assignment)?),
+            (None, None) => None,
+            _ => return Err("Review all selected dates before applying event names.".into()),
+        };
         let source_key = assignment.directory.to_ascii_lowercase();
         if !seen_sources.insert(source_key) {
             return Err(format!("Duplicate directory assignment: {}", assignment.directory));
@@ -680,6 +703,7 @@ pub(crate) fn build_event_naming_plans(
                 )
             });
 
+        naming_workflow::validate_name(&new_name)?;
         let parent = old_path
             .parent()
             .ok_or_else(|| format!("Directory has no parent: {}", old_path.display()))?;
@@ -700,6 +724,7 @@ pub(crate) fn build_event_naming_plans(
             old_name,
             new_name,
             day,
+            reviewed,
         });
     }
 
@@ -707,6 +732,9 @@ pub(crate) fn build_event_naming_plans(
 }
 
 pub(crate) fn apply_event_naming_plan(plan: &EventNamingPlan) -> Result<RenamedEventDirectory, String> {
+    if plan.reviewed.is_some() {
+        return apply_event_naming_plan_once(plan).map_err(|e| e.to_string());
+    }
     if plan.old_path != plan.new_path {
         rename_path_with_retry(&plan.old_path, &plan.new_path)?;
     }
@@ -721,7 +749,9 @@ pub(crate) fn apply_event_naming_plan(plan: &EventNamingPlan) -> Result<RenamedE
 }
 
 pub(crate) fn apply_event_naming_plan_once(plan: &EventNamingPlan) -> io::Result<RenamedEventDirectory> {
-    if plan.old_path != plan.new_path {
+    if let Some(reviewed) = &plan.reviewed {
+        naming_workflow::apply_reviewed_event(reviewed, &plan.old_path, &plan.new_path)?;
+    } else if plan.old_path != plan.new_path {
         fs::rename(&plan.old_path, &plan.new_path)?;
     }
 
@@ -738,6 +768,17 @@ pub(crate) fn merge_event_naming_request_into_catalog(
     app: &AppHandle,
     request: &ApplyEventNamingRequest,
 ) -> Result<EventNamingCatalog, String> {
+    if request.reviewed_root.is_some() {
+        let mut seen = HashSet::new();
+        for assignment in &request.assignments {
+            if let Some(event) = &assignment.event {
+                if seen.insert(serde_json::to_string(&event.description).map_err(|e| e.to_string())?) {
+                    naming_workflow::remember_event(app, &event.description)?;
+                }
+            }
+        }
+        return load_catalog_internal(app);
+    }
     let mut catalog = load_catalog_internal(app).unwrap_or_default();
     if request.assignments.is_empty() {
         catalog = merge_catalog_values(
@@ -789,23 +830,21 @@ pub fn scan_event_naming_library(app: AppHandle, root_dir: String) -> Result<Sca
 
 #[tauri::command]
 pub fn list_event_day_directories(staging_dir: String) -> Result<Vec<EventDayDirectory>, String> {
-    let root = PathBuf::from(&staging_dir);
-    if !root.exists() {
-        return Ok(vec![]);
-    }
+    let root = naming_workflow::checked_root(Path::new(&staging_dir))?;
 
     let mut out = Vec::<EventDayDirectory>::new();
     for entry in WalkDir::new(&root)
         .min_depth(3)
         .max_depth(3)
         .into_iter()
-        .filter_map(|entry| entry.ok())
     {
+        let entry = entry.map_err(|e| format!("Could not read all date folders: {e}"))?;
         if !entry.file_type().is_dir() {
             continue;
         }
 
         let path = entry.path().to_path_buf();
+        naming_workflow::reject_link(&path)?;
         let Some((year, month, day)) = is_candidate_day_directory(&root, &path) else {
             continue;
         };
@@ -819,6 +858,10 @@ pub fn list_event_day_directories(staging_dir: String) -> Result<Vec<EventDayDir
             None => continue,
         };
 
+        let (event, warning) = match naming_workflow::read_event(&path) {
+            Ok((event, _)) => (event, None),
+            Err(error) => (None, Some(error)),
+        };
         out.push(EventDayDirectory {
             path: path.to_string_lossy().to_string(),
             relative_path: relative,
@@ -828,6 +871,7 @@ pub fn list_event_day_directories(staging_dir: String) -> Result<Vec<EventDayDir
             day,
             date_key: format!("{:04}-{:02}-{:02}", year, month, day),
             has_custom_name: name != format!("{:02}", day),
+            event, warning,
         });
     }
 
@@ -840,9 +884,15 @@ pub fn apply_event_naming(
     app: AppHandle,
     request: ApplyEventNamingRequest,
 ) -> Result<ApplyEventNamingResult, String> {
+    let settings = super::settings::load_settings(app.clone())?;
+    let root = naming_workflow::check_request_root(&settings.staging_dir, &request)?;
+    let _lease = naming_workflow::naming_lease(&root)?;
+    let _upload_lease = super::google_photos::event_naming_lease(&app)?;
+    naming_workflow::ensure_jobs_idle(&root, None)?;
     let plans = build_event_naming_plans(&request)?;
     let mut renamed = Vec::<RenamedEventDirectory>::new();
     for plan in &plans {
+        naming_workflow::ensure_jobs_idle(&root, None)?;
         renamed.push(apply_event_naming_plan(plan)?);
     }
 

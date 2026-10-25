@@ -14,6 +14,7 @@ pub mod lightbox_crop;
 mod media_tools;
 pub mod metadata_tools;
 pub mod naming;
+pub mod naming_workflow;
 pub mod process;
 mod photo_process;
 pub mod process_preview;

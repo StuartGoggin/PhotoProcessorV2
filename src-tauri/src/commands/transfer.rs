@@ -147,7 +147,9 @@ fn should_skip_transfer_file(path: &Path) -> bool {
     // Skip by filename
     let skip_by_name = path.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| name == LEGACY_CHECKSUM_FILE_NAME || name == MASTER_HASH_TABLE_FILE)
+        .map(|name| name == LEGACY_CHECKSUM_FILE_NAME || name == MASTER_HASH_TABLE_FILE
+            || name == ".photogogo-naming.lock"
+            || (name.starts_with(".photogogo-event-") && name.ends_with(".tmp")))
         .unwrap_or(false);
     
     // Skip by extension (.hash, .md5, and .log files)
