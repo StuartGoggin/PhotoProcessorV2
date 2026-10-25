@@ -2,6 +2,12 @@
 
 A desktop photo management workflow app built with [Tauri](https://tauri.app/) (Rust backend) and React + TypeScript frontend.
 
+Development checkpoint: [paused subject-aware video finishing](docs/subject-finishing-resume.md).
+Its source is preserved separately; it is not part of the released application.
+
+Development checkpoint: [paused subject-aware video finishing](docs/subject-finishing-resume.md).
+Its source is preserved separately; it is not part of the released application.
+
 ## Features
 
 | Page | Description |
