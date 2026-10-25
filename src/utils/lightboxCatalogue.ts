@@ -47,7 +47,9 @@ export function lightboxCatalogue(nodes: TreeNode[]): { tree: TreeNode[]; photos
     for (const entry of entries) {
       for (const kind of ["bw", "improved"] as const) {
         const matches = comparisons.get(entry.node.path)?.[kind] ?? [];
-        if (matches.length === 1) entry[kind] = matches[0];
+        const exact = matches.filter(file => key(stem(file.name).replace(/_(bw|improved)(?=(?:\{[^}]+\})*$)/i, "")) === key(stem(entry.node.name)));
+        const preferred = exact.length ? exact : matches;
+        if (preferred.length === 1) entry[kind] = preferred[0];
       }
       photos.set(entry.node.path, entry);
     }

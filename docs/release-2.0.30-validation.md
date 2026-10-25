@@ -13,7 +13,7 @@ Usage, limits and regeneration guidance: [Photo Process and Lightbox](PHOTO_PROC
 ## Validation
 
 - Native library: **173 passed, 0 failed, 21 ignored**. The bounded synthetic video-preview smoke was then explicitly run and passed separately. Other opt-in media/GUI tests were not rerun as part of this release.
-- Lightbox: **9 focused checks** and **7 browser groups** passed.
+- Lightbox: **10 focused checks** and **7 browser groups** passed, including rating an original and regenerating comparison versions while older versions still exist.
 - Photo Process: **13 browser groups** passed, including 360px layout, exact queue/preview recipe, deferred slider/scope changes, retry and actual 100% geometry/scrolling.
 - Existing Studio browser regression passed at 360px-4K; **17 Studio model**, **13 snapshot** and **7 snapshot-session** checks passed.
 - TypeScript passed. Native gates include all eight orientations with asymmetric pixel fixtures, generated orientation tags, B&W independence, Off identity, monotone S-curve extremes, actual saved-JPEG/preview byte parity, read-only cleanup/source checks, canonical scope validation and failed publication preserving old output.

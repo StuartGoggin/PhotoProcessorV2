@@ -46,6 +46,13 @@ test("RAW + JPEG pairs associate processed versions with their JPEG original", (
   assert.equal(result.photos.get("shot.CR3").bw,undefined);
 });
 
+test("regenerating a rated original prefers its exact current-stem comparison", () => {
+  const result = lightboxCatalogue([file("one{Like o}.jpg"),file("one_BW.jpg"),file("one{Like o}_BW.jpg"),file("one_improved.jpg"),file("one{Like o}_improved.jpg")]);
+  assert.equal(result.folders.get("").length,1);
+  assert.equal(result.photos.get("one{Like o}.jpg").bw?.name,"one{Like o}_BW.jpg");
+  assert.equal(result.photos.get("one{Like o}.jpg").improved?.name,"one{Like o}_improved.jpg");
+});
+
 test("foreground reads coalesce; cached full-resolution data avoids repeated read", async () => {
   let reads = 0;
   const cache = new LightboxCache(async () => { reads++; return payload; });
