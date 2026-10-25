@@ -35,6 +35,18 @@ Browser runners accept `PHOTOGOGO_PLAYWRIGHT_PATH` for an existing offline runti
 
 The release receipt separately records Git refs, package hashes, extracted payload/upgrade identity checks and Slack read-back. Source test passes alone do not prove packaging/publication.
 
+### Package inspection
+
+Both x64 installers were built from application source commit `2c6e5b07962c4cd2513abff5b7851a8ce5c4777d`, build ID `20261025T034418463Z-2c6e5b07+local`. The `+local` suffix records the build-time Cargo manifest touch; no application-source differences remained after the build. Subsequent release-verifier/documentation changes do not alter the packaged application.
+
+`pwsh -NoProfile -File scripts/verify-photo-release.ps1` passed without installing either package. MSI ProductVersion is 2.0.30 and its UpgradeCode matches 2.0.29. Both packages contain the exact final application and 28 expected media/manifest payload hashes. Tauri's documented three-byte bundle-kind marker is the only permitted application difference (MSI / NSS versus standalone UNK); the rest of each binary must match the standalone SHA-256. Both packages are unsigned.
+
+- EXE: 24,538,984 bytes; SHA-256 `447D450FF9D929964246AFBEFAD6280FE126A12D2D8426F0749BDE80EF4265CB`.
+- MSI: 32,710,656 bytes; SHA-256 `57CA172A854BA019A89A270186FE3AFEE867B5407710E4A925ED6D098E58F8CB`.
+- Corresponding FFmpeg source archive: 49,570,807 bytes; SHA-256 `27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8`.
+
+Disk recovery removed only approved, reproducible obsolete test binaries and hash-verified copies of media executables from old package-inspection caches. User photos, projects, retained installers and reports were preserved.
+
 ## Acceptance and rollback
 
 Let active work finish, save projects/sessions and close PhotoGoGo normally before installing. This workflow does not install on the render PC, stop renders or modify user media. Windows packages remain unsigned; optional face runtime dependencies are not newly installed/updated.
