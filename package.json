@@ -1,9 +1,13 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.29",
+  "version": "2.0.30",
   "type": "module",
   "scripts": {
+    "test:lightbox": "node scripts/test-lightbox.mjs",
+    "test:lightbox:browser": "node scripts/test-lightbox-browser.mjs",
+    "test:photo-process:browser": "node scripts/test-photo-process-browser.mjs",
+    "test:photo-process:native": "pwsh -NoProfile -File scripts/test-photo-process.ps1 -VideoSmoke",
     "dev": "node scripts/start-dev.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",

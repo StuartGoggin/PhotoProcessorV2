@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { FileTree } from "../components";
 import type { ProcessScopeMode, ProcessTask, StabilizationMode, StabilizationStrength, TreeNode } from "../types";
 import { useSettings } from "../hooks";
+import PhotoProcessPreview from "../components/PhotoProcessPreview";
+import { DEFAULT_BW, type BwParams } from "../types/photoProcess";
 
 interface TaskConfig {
   label: string;
@@ -39,7 +41,7 @@ const TASKS: TaskConfig[] = [
   },
   {
     label: "B&W Conversion",
-    description: "CLAHE + sharpen in grayscale. Saves as _BW.jpg alongside originals.",
+    description: "Independent conversion from the original, with adjustable local contrast, sharpening and a gentle tonal S-curve. Saves as _BW.jpg with the original's displayed orientation.",
     color: "text-gray-300",
     runTaskId: "bw",
     removeTaskId: "remove_bw",
@@ -111,6 +113,17 @@ function resolveTaskAction(taskId: ProcessTask): { actionLabel: string; isCleanu
   return { actionLabel: taskId, isCleanup: false };
 }
 
+function Adjustment({ label, value, min, max, step = 0.05, onChange, hint }: {
+  label: string; value: number; min: number; max: number; step?: number;
+  onChange: (value: number) => void; hint: string;
+}) {
+  return <label className="block min-w-0 space-y-1">
+    <span className="flex justify-between gap-2 text-xs text-gray-300"><span>{label}</span><span className="text-cyan-200 tabular-nums">{value.toFixed(2)}</span></span>
+    <input type="range" aria-label={label} min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} className="w-full accent-cyan-400" />
+    <span className="block text-xs text-gray-500">{hint}</span>
+  </label>;
+}
+
 export default function PostProcess({ onOpenJobs }: PostProcessProps) {
   const { settings } = useSettings();
 
@@ -126,6 +139,8 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
   const [stabilizationMode, setStabilizationMode] = useState<StabilizationMode>("edgeSafe");
   const [stabilizationStrength, setStabilizationStrength] = useState<StabilizationStrength>("balanced");
   const [preserveSourceBitrate, setPreserveSourceBitrate] = useState(true);
+  const [bwParams, setBwParams] = useState<BwParams>({ ...DEFAULT_BW });
+  const [previewTask, setPreviewTask] = useState<ProcessTask | null>(null);
 
   const canQueue = Boolean(settings?.staging_dir);
   const effectiveScope = useMemo(() => {
@@ -199,10 +214,10 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <h2 className="text-2xl font-semibold text-white mb-2">Post Processing</h2>
+    <div className="p-3 sm:p-6 max-w-6xl mx-auto min-w-0">
+      <h2 className="text-2xl font-semibold text-white mb-2">Photo Process</h2>
       <p className="text-gray-400 text-sm mb-6">
-        Run analysis and enhancement operations on JPGs, plus stabilization jobs for MP4s, in the staging directory.
+        Preview the effect on an original, then queue the same settings for your selected scope. Photo outputs preserve the original's displayed orientation; originals are never overwritten.
       </p>
 
       {!canQueue && (
@@ -303,9 +318,15 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
           const isQueueingRemove = queueingTask === task.removeTaskId;
           const isEnhanceTask = task.runTaskId === "enhance";
           const isStabilizeTask = task.runTaskId === "stabilize";
+          const isBwTask = task.runTaskId === "bw";
+          const params = isEnhanceTask
+            ? { enhanceContrastLevel, enhanceSharpnessLevel }
+            : isStabilizeTask ? { stabilizationMode, stabilizationStrength, preserveSourceBitrate }
+            : isBwTask ? { bwParams } : {};
+          const previewActive = previewTask === task.runTaskId || previewTask === task.removeTaskId;
 
           return (
-            <div key={task.runTaskId} className="card space-y-4">
+            <section key={task.runTaskId} className="card space-y-4 min-w-0" aria-label={task.label}>
               <div className="space-y-1">
                 <h3 className={`font-medium ${task.color}`}>{task.label}</h3>
                 <p className="text-sm text-gray-400">{task.description}</p>
@@ -323,11 +344,11 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                       }}
                       className="text-xs px-2.5 py-1 bg-emerald-900/40 hover:bg-emerald-900/60 border border-emerald-700 text-emerald-200 rounded transition-colors"
                     >
-                      ✨ Best Practice
+                      Suggested preset
                     </button>
                   </div>
                   <p className="text-xs text-blue-300/70 bg-blue-900/20 rounded px-2 py-1.5">
-                    <strong>Best Practice</strong> applies contrast <strong>1.40x</strong> and sharpening <strong>0.75</strong> for excellent results. Adjust sliders below for custom settings.
+                    <strong>Suggested preset</strong> applies contrast <strong>1.40</strong> and sharpening <strong>0.75</strong>. Preview your own photo before queueing; stronger adjustments do not suit every image.
                   </p>
                   
                   <div className="space-y-2">
@@ -339,14 +360,15 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                     </div>
                     <input
                       type="range"
-                      min="0.5"
+                      aria-label="Enhancement contrast"
+                      min="0"
                       max="2.0"
                       step="0.1"
                       value={enhanceContrastLevel}
                       onChange={(e) => setEnhanceContrastLevel(parseFloat(e.target.value))}
                       className="w-full h-2 bg-surface-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
                     />
-                    <p className="text-xs text-gray-500">0.5 = subtle, 1.0 = standard, 1.4 = best practice, 2.0 = aggressive</p>
+                    <p className="text-xs text-gray-500">0 = off, 0.5 = subtle, 1.0 = standard, 1.4 = suggested preset, 2.0 = aggressive</p>
                   </div>
 
                   <div className="space-y-2">
@@ -358,6 +380,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                     </div>
                     <input
                       type="range"
+                      aria-label="Enhancement sharpening"
                       min="0.0"
                       max="1.0"
                       step="0.1"
@@ -365,10 +388,26 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                       onChange={(e) => setEnhanceSharpnessLevel(parseFloat(e.target.value))}
                       className="w-full h-2 bg-surface-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
                     />
-                    <p className="text-xs text-gray-500">0.0 = none, 0.3 = light, 0.5 = default, 0.75 = best practice, 1.0 = strong</p>
+                    <p className="text-xs text-gray-500">0.0 = none, 0.3 = light, 0.5 = default, 0.75 = suggested preset, 1.0 = strong</p>
                   </div>
                 </div>
               )}
+
+              {isBwTask && <div className="rounded-lg border border-surface-600 bg-surface-900/60 p-3 space-y-3">
+                <div className="flex justify-between items-center gap-2 flex-wrap">
+                  <h4 className="text-sm font-medium text-gray-100">B&W adjustments</h4>
+                  <button type="button" className="btn-secondary text-xs" onClick={() => setBwParams({ ...DEFAULT_BW })}>Reset B&W defaults</button>
+                </div>
+                <p className="text-xs text-gray-400">Always starts from the original—not Enhanced. Zero turns an adjustment off. S-curve controls gently deepen shadows and lift highlights without reversing tonal order.</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <Adjustment label="B&W local contrast" value={bwParams.localContrast} min={0} max={1} onChange={(value) => setBwParams((current) => ({ ...current, localContrast: value }))} hint="0 = off · 1 = standard local detail" />
+                  <Adjustment label="B&W sharpening" value={bwParams.sharpness} min={0} max={1} onChange={(value) => setBwParams((current) => ({ ...current, sharpness: value }))} hint="0 = off · 1 = strong; judge at 100%" />
+                  <Adjustment label="S-curve strength" value={bwParams.curveStrength} min={0} max={1} onChange={(value) => setBwParams((current) => ({ ...current, curveStrength: value }))} hint="0 = off · gentle default preserves event detail" />
+                  <Adjustment label="S-curve shadow depth" value={bwParams.shadowDepth} min={0} max={0.25} step={0.01} onChange={(value) => setBwParams((current) => ({ ...current, shadowDepth: value }))} hint="Darken the lower tones; keep shadow texture" />
+                  <Adjustment label="S-curve highlight lift" value={bwParams.highlightLift} min={0} max={0.25} step={0.01} onChange={(value) => setBwParams((current) => ({ ...current, highlightLift: value }))} hint="Brighten the upper tones; watch fine highlights" />
+                  <Adjustment label="S-curve midpoint" value={bwParams.midpoint} min={0.25} max={0.75} step={0.01} onChange={(value) => setBwParams((current) => ({ ...current, midpoint: value }))} hint="0.50 = balanced · tonal pivot, not an on/off amount" />
+                </div>
+              </div>}
 
               {isStabilizeTask && (
                 <div className="bg-cyan-950/30 border border-cyan-700/50 rounded-lg p-4 space-y-4">
@@ -445,26 +484,21 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                 </div>
               )}
 
+              <div className="flex gap-2 flex-wrap">
+                <button type="button" className="btn-secondary text-xs" disabled={!canQueue} aria-expanded={previewTask === task.runTaskId} onClick={() => setPreviewTask(previewTask === task.runTaskId ? null : task.runTaskId)}>Preview {task.label}</button>
+                <button type="button" className="btn-secondary text-xs" disabled={!canQueue} aria-expanded={previewTask === task.removeTaskId} onClick={() => setPreviewTask(previewTask === task.removeTaskId ? null : task.removeTaskId)}>Preview cleanup files</button>
+              </div>
+              {previewActive && settings?.staging_dir && <PhotoProcessPreview key={`${previewTask}-${effectiveScope}-${scopeMode}`} request={{ stagingDir: settings.staging_dir, scopeDir: effectiveScope, scopeMode, task: previewTask!, ...params }} />}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="rounded-lg border border-surface-600 bg-surface-900/60 px-3 py-3 space-y-3">
                   <div>
                     <div className="text-xs uppercase tracking-wide text-gray-400">Run Task</div>
-                    <p className="text-xs text-gray-500 mt-1">Queue this operation for the selected scope.</p>
+                    <p className="text-xs text-gray-500 mt-1 break-all">Apply these settings to every eligible original in: {effectiveScope || "Set staging in Settings"} · {scopeModeLabel}</p>
                   </div>
                   <button
                     className="btn-primary w-full md:w-auto"
-                    onClick={() => {
-                      const params = isEnhanceTask
-                        ? { enhanceContrastLevel, enhanceSharpnessLevel }
-                        : isStabilizeTask
-                          ? {
-                              stabilizationMode,
-                              stabilizationStrength,
-                              preserveSourceBitrate,
-                            }
-                          : undefined;
-                      void runTask(task.runTaskId, params);
-                    }}
+                    onClick={() => void runTask(task.runTaskId, params)}
                     disabled={queueingTask !== null || !canQueue}
                   >
                     {isQueueingRun ? "Queueing..." : "Queue Job"}
@@ -484,7 +518,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
                   </button>
                 </div>
               </div>
-            </div>
+            </section>
           );
         })}
       </div>

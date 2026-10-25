@@ -1,0 +1,199 @@
+import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+
+// Reuse an existing browser runtime for offline QA; never install a dependency.
+const { chromium } = await import(process.env.PHOTOGOGO_PLAYWRIGHT_PATH
+  ? pathToFileURL(process.env.PHOTOGOGO_PLAYWRIGHT_PATH).href : "playwright");
+const output = "test-output/lightbox-browser";
+await mkdir(output, { recursive: true });
+const url = process.env.LIGHTBOX_TEST_URL || "http://127.0.0.1:1461/lightbox-preview.html";
+const server = process.env.LIGHTBOX_TEST_URL ? null : spawn(process.execPath,
+  ["node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "1461", "--strictPort"],
+  { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+let serverLog = "", browser;
+server?.stdout.on("data", (data) => { serverLog += data; });
+server?.stderr.on("data", (data) => { serverLog += data; });
+const report = { complete: false, scope: "Real Photo Lightbox controls with deterministic synthetic JPEG image IPC; RAW-named fixture verifies association only, not RAW decoding; not a camera-photo throughput benchmark", checks: [] };
+const failures = [];
+
+async function newFixture(options = {}) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  page.setDefaultTimeout(10000);
+  page.on("pageerror", (error) => failures.push(error.message));
+  await page.addInitScript((initial) => Object.assign(window, initial), options);
+  await page.goto(url, { timeout: 45000, waitUntil: "domcontentloaded" });
+  await page.locator(".review-file-tree").getByText("01-rider.jpg", { exact: true }).waitFor();
+  return page;
+}
+const select = (page, name) => page.locator(".review-file-tree").getByText(name, { exact: true }).click();
+const readCount = (page) => page.evaluate(() => window.__lightboxReads.length);
+async function waitSettled(page) {
+  let previous = -1;
+  for (let attempt = 0; attempt < 35; attempt++) {
+    const current = await readCount(page);
+    if (current === previous && await page.evaluate(() => !window.__lightboxPending.length)) return current;
+    previous = current;
+    await delay(200);
+  }
+  throw new Error("Synthetic image reads did not settle");
+}
+async function displayed(page, label) {
+  const image = page.getByRole("img", { name: label, exact: true });
+  await image.waitFor();
+  return image.evaluate(async (node) => {
+    const response = await fetch(node.src);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    let text = "";
+    for (const byte of bytes) text += String.fromCharCode(byte);
+    return window.__lightboxPayloads.get(btoa(text));
+  });
+}
+async function expectImage(page, label, basename, generation) {
+  await page.waitForFunction(async ({ label, basename, generation }) => {
+    const image = [...document.querySelectorAll(".review-images img")].find((node) => node.alt === label);
+    if (!image) return false;
+    try {
+      const response = await fetch(image.src);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      let text = ""; for (const byte of bytes) text += String.fromCharCode(byte);
+      const payload = window.__lightboxPayloads.get(btoa(text));
+      return payload?.path.endsWith(`\\${basename}`) && (generation === undefined || payload.generation === generation);
+    } catch { return false; }
+  }, { label, basename, generation });
+}
+
+try {
+  if (server) {
+    let ready = false;
+    for (let attempt = 0; attempt < 80; attempt++) {
+      if (server.exitCode !== null) throw new Error(`Fixture server exited: ${serverLog}`);
+      try { if ((await fetch(url)).ok) { ready = true; break; } } catch { /* Starting. */ }
+      await delay(250);
+    }
+    assert.ok(ready, `Fixture server did not start: ${serverLog}`);
+  }
+  browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await newFixture();
+  const tree = page.locator(".review-file-tree");
+  for (const hidden of ["01-rider_improved.jpg", "01-rider_BW.jpg", "02-arena_improved.jpg", "02-arena_BW.jpg", "03-wide_improved.jpg", "03-wide_BW{trash}.jpg", "10-close_improved.jpg", "10-close_BW.jpg", "notes.txt", "camera.mp4"]) {
+    assert.equal(await tree.getByText(hidden, { exact: true }).count(), 0, `${hidden} is not another original in the tree`);
+  }
+  for (const visible of ["01-rider.jpg", "02-arena.CR3", "03-wide{Like oo}.PNG", "04-genuine_BW.jpg", "05-course_improved.jpg", "Session", "10-close.jpeg", "11-pan.jpg"]) {
+    assert.equal(await tree.getByText(visible, { exact: true }).count(), 1, `${visible} remains browseable`);
+  }
+  report.checks.push("Only originals and photo folders appear; orphan suffix-name originals are preserved");
+
+  const coldStarted = performance.now();
+  await select(page, "01-rider.jpg");
+  await expectImage(page, "Original", "01-rider.jpg");
+  report.syntheticColdDisplayMs = Math.round(performance.now() - coldStarted);
+  await expectImage(page, "B&W", "01-rider_BW.jpg");
+  await expectImage(page, "Enhanced", "01-rider_improved.jpg");
+  await page.getByText("1 / 5", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Previous original photo", exact: true }).isDisabled(), true);
+  await page.waitForFunction(() => window.__lightboxReads.some((entry) => entry.path.endsWith("\\02-arena.CR3")));
+  const warmed = await waitSettled(page);
+  const prepared = await page.evaluate(() => window.__lightboxReads.map((entry) => entry.path));
+  assert.ok(prepared.some((path) => path.endsWith("\\02-arena_improved.jpg")), "Upcoming comparison version is prepared too");
+  const warmStarted = performance.now();
+  await page.getByRole("button", { name: "Next original photo", exact: true }).click();
+  await expectImage(page, "Original", "02-arena.CR3");
+  report.syntheticCachedForwardDisplayMs = Math.round(performance.now() - warmStarted);
+  await expectImage(page, "Enhanced", "02-arena_improved.jpg");
+  await page.getByText("2 / 5", { exact: true }).waitFor();
+  await page.keyboard.press("ArrowLeft");
+  await expectImage(page, "Original", "01-rider.jpg");
+  const firstOriginalReads = await page.evaluate(() => window.__lightboxReads.filter((entry) => entry.path.endsWith("\\01-rider.jpg")).length);
+  const secondOriginalReads = await page.evaluate(() => window.__lightboxReads.filter((entry) => entry.path.endsWith("\\02-arena.CR3")).length);
+  assert.equal(firstOriginalReads, 1, "Back navigation reuses selected-photo cache");
+  assert.equal(secondOriginalReads, 1, "Forward navigation consumes prefetched photo without repeat native read");
+  report.warmReadCount = warmed;
+  report.checks.push("Root arrows/counter skip derivatives; read-ahead prepares comparison images and cached forward/back navigation avoids duplicate IPC");
+
+  await select(page, "03-wide{Like oo}.PNG");
+  await expectImage(page, "Original", "03-wide{Like oo}.PNG");
+  await expectImage(page, "B&W", "03-wide_BW{trash}.jpg");
+  await expectImage(page, "Enhanced", "03-wide_improved.jpg");
+  await page.getByText("3 / 5", { exact: true }).waitFor();
+  await select(page, "10-close.jpeg");
+  await expectImage(page, "Enhanced", "10-close_improved.jpg");
+  await page.getByText("1 / 2", { exact: true }).waitFor();
+  await page.keyboard.press("ArrowRight");
+  await expectImage(page, "Original", "11-pan.jpg");
+  await page.getByText("2 / 2", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Next original photo", exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole("img", { name: "B&W", exact: true }).count(), 0, "Missing derivative does not show the previous photo's B&W image");
+  report.checks.push("RAW/PNG/JPEG sources resolve .jpg comparisons and review tags; nested navigation stays within its original-only folder and absent variants clear");
+
+  await select(page, "01-rider.jpg");
+  await expectImage(page, "Original", "01-rider.jpg");
+  const beforeRefresh = await page.evaluate(() => window.__lightboxReads.filter((entry) => entry.path.endsWith("\\01-rider.jpg")).length);
+  await page.evaluate(() => { window.__lightboxGeneration++; });
+  await page.getByRole("button", { name: "Refresh photos", exact: true }).click();
+  await expectImage(page, "Original", "01-rider.jpg", 1);
+  assert.ok(await page.evaluate(() => window.__lightboxReads.filter((entry) => entry.path.endsWith("\\01-rider.jpg")).length) > beforeRefresh);
+  await page.keyboard.press("1");
+  await tree.getByText("01-rider{Like o}.jpg", { exact: true }).waitFor();
+  await expectImage(page, "Original", "01-rider{Like o}.jpg", 1);
+  await expectImage(page, "Enhanced", "01-rider_improved.jpg", 1);
+  assert.equal(await tree.getByText("01-rider_improved.jpg", { exact: true }).count(), 0, "Rating only original does not reveal unchanged generated sibling");
+  await page.keyboard.press("ArrowRight");
+  await expectImage(page, "Original", "02-arena.CR3");
+  await page.keyboard.press("ArrowLeft");
+  await expectImage(page, "Original", "01-rider{Like o}.jpg");
+  assert.equal(await page.evaluate(() => window.__lightboxRenames.length), 1);
+  assert.ok(await page.evaluate(() => window.__lightboxRevokedUrls.length) > 0, "Invalidated image Blob URLs are released");
+  report.checks.push("Refresh rereads changed pixels; rating rename refreshes selected path/navigation, preserves comparison association and releases cached URLs");
+  await page.screenshot({ path: `${output}/lightbox.png`, fullPage: true });
+
+  const stale = await newFixture({ __lightboxHold: ["01-rider_BW.jpg"] });
+  await select(stale, "01-rider.jpg");
+  await stale.waitForFunction(() => window.__lightboxPending.some((entry) => entry.path.endsWith("\\01-rider_BW.jpg")));
+  await select(stale, "05-course_improved.jpg");
+  await expectImage(stale, "Original", "05-course_improved.jpg");
+  await stale.evaluate(() => { window.__lightboxHold = []; window.__lightboxReleaseAll(); });
+  await waitSettled(stale);
+  assert.ok((await displayed(stale, "Original")).path.endsWith("\\05-course_improved.jpg"), "Late previous selection cannot overwrite new image");
+  await stale.getByText("5 / 5", { exact: true }).waitFor();
+  report.checks.push("Late old comparison read cannot overwrite a different requested original");
+
+  const priority = await newFixture({ __lightboxHold: ["02-arena.CR3"], __lightboxDelay: 30 });
+  await select(priority, "01-rider.jpg");
+  await expectImage(priority, "Original", "01-rider.jpg");
+  await priority.waitForFunction(() => window.__lightboxPending.some((entry) => entry.path.endsWith("\\02-arena.CR3")));
+  await select(priority, "05-course_improved.jpg");
+  await expectImage(priority, "Original", "05-course_improved.jpg");
+  assert.ok(await priority.evaluate(() => window.__lightboxPending.length) > 0, "Foreground selection completes while a speculative native read is still held");
+  await priority.evaluate(() => { window.__lightboxHold = []; window.__lightboxReleaseAll(); });
+  await waitSettled(priority);
+  report.checks.push("An uncached user selection is not queued behind a slow speculative neighbor");
+
+  const leaving = await newFixture({ __lightboxDeferRename: true });
+  await select(leaving, "01-rider.jpg");
+  await expectImage(leaving, "Original", "01-rider.jpg");
+  await waitSettled(leaving);
+  await leaving.keyboard.press("1");
+  await leaving.waitForFunction(() => !!window.__lightboxResolveRename);
+  const beforeLeaving = await leaving.evaluate(() => ({ trees: window.__lightboxTreeReads, images: window.__lightboxReads.length, revoked: window.__lightboxRevokedUrls.length }));
+  await leaving.evaluate(() => { window.__lightboxUnmount(); window.__lightboxResolveRename(); });
+  await delay(350); // Drain the resolved native promise; there should be no new work to await.
+  const afterLeaving = await leaving.evaluate(() => ({ trees: window.__lightboxTreeReads, images: window.__lightboxReads.length, revoked: window.__lightboxRevokedUrls.length }));
+  assert.equal(afterLeaving.trees, beforeLeaving.trees, "Completing a rename after leaving the page must not refresh the tree");
+  assert.equal(afterLeaving.images, beforeLeaving.images, "Completing a rename after leaving must not restart image reads");
+  assert.ok(afterLeaving.revoked > beforeLeaving.revoked, "Leaving releases image Blob URLs even while a rename is pending");
+  report.checks.push("Leaving during a delayed rating rename releases cached URLs and its eventual completion cannot restart tree or image reads");
+  await page.close(); await stale.close(); await priority.close(); await leaving.close();
+  assert.deepEqual(failures, [], "No browser runtime errors");
+  report.complete = true;
+  console.log(`Photo Lightbox: ${report.checks.length} browser regression groups passed`);
+} catch (error) {
+  report.error = String(error);
+  throw error;
+} finally {
+  await writeFile(`${output}/report.json`, JSON.stringify(report, null, 2));
+  await browser?.close();
+  server?.kill();
+}

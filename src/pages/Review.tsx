@@ -5,7 +5,7 @@ import { FileTree, ImagePanel, StarRating } from "../components";
 export default function Review() {
   const {
     tree, selected, siblings, siblingIdx, images,
-    zoom, loading, trashed, stars, stagingDir,
+    zoom, loading, trashed, stars, error, renaming,
     refreshTree, selectNode, handleStars, handleTrash, navigate, setZoom,
   } = useReview();
 
@@ -39,10 +39,12 @@ export default function Review() {
       {/* File tree panel */}
       <div className="review-file-tree w-56 min-h-0 flex-shrink-0 bg-surface-800 border-r border-surface-600 flex flex-col">
         <div className="px-3 py-2 border-b border-surface-600 flex items-center justify-between">
-          <span className="text-sm font-medium text-gray-300">Files</span>
+          <span className="text-sm font-medium text-gray-300" title="Original photos only; processed versions appear in the comparison panels">Original photos</span>
           <button
             className="text-xs text-gray-500 hover:text-gray-300"
             onClick={() => refreshTree()}
+            title="Refresh photos and reload comparison versions"
+            aria-label="Refresh photos"
           >
             ↺
           </button>
@@ -60,6 +62,7 @@ export default function Review() {
             <button
               className="btn-secondary py-1 px-2 text-xs"
               onClick={() => navigate(-1)}
+              aria-label="Previous original photo"
               disabled={siblingIdx <= 0}
             >
               ←
@@ -70,6 +73,7 @@ export default function Review() {
             <button
               className="btn-secondary py-1 px-2 text-xs"
               onClick={() => navigate(1)}
+              aria-label="Next original photo"
               disabled={siblingIdx >= siblings.length - 1}
             >
               →
@@ -85,7 +89,7 @@ export default function Review() {
 
           {selected && (
             <>
-              <div className="ml-2">
+              <div className="ml-2" style={{ pointerEvents: renaming ? "none" : undefined }}>
                 <StarRating value={stars} onChange={handleStars} />
               </div>
               <button
@@ -93,6 +97,7 @@ export default function Review() {
                   trashed ? "bg-red-700 text-white hover:bg-red-600" : "btn-secondary"
                 }`}
                 onClick={handleTrash}
+                disabled={renaming}
               >
                 {trashed ? "✗ Trashed" : "🗑 Trash"}
               </button>
@@ -106,6 +111,7 @@ export default function Review() {
           )}
         </div>
 
+        {error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800">{error}</div>}
         {/* 3-panel image display */}
         <div className="review-images flex-1 flex min-h-0">
           {loading ? (
@@ -128,6 +134,7 @@ export default function Review() {
         {/* Status bar */}
         <div className="flex-shrink-0 bg-surface-800 border-t border-surface-600 px-4 py-1.5 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-gray-500">
           <span>← → navigate</span>
+          <span>Originals only · bounded read-ahead</span>
           <span>+ − zoom</span>
           <span>0 reset zoom</span>
           <span>Del trash</span>

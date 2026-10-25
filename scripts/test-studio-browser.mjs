@@ -45,7 +45,17 @@ try {
       return originalInvoke(command, args);
     };
   });
-  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: /Video Studio/ }).click();
+  const mainNavigation = page.getByRole("navigation", { name: "Main navigation" });
+  assert.equal(await mainNavigation.getByRole("button", { name: /Photo Process$/ }).count(), 1);
+  assert.equal(await mainNavigation.getByRole("button", { name: /Photo Lightbox$/ }).count(), 1);
+  assert.equal(await mainNavigation.getByRole("button", { name: /Post Process$/ }).count(), 0);
+  assert.equal(await mainNavigation.getByRole("button", { name: /^🖼️\s+Review$/ }).count(), 0);
+  await mainNavigation.getByRole("button", { name: /Photo Process$/ }).click();
+  await page.getByRole("heading", { name: "Photo Process", exact: true }).waitFor();
+  await mainNavigation.getByRole("button", { name: /Photo Lightbox$/ }).click();
+  await page.locator(".review-layout").waitFor();
+  assert.equal(await mainNavigation.getByRole("button", { name: /Photo Lightbox$/ }).getAttribute("aria-current"), "page");
+  await mainNavigation.getByRole("button", { name: /Video Studio/ }).click();
   await page.getByRole("navigation", { name: "Video editing workflow" }).waitFor();
   const review = page.locator("#studio-review");
   const projectSettings = page.locator("#studio-project-settings");

@@ -10,13 +10,16 @@ Its source is preserved separately; it is not part of the released application.
 
 ## Features
 
+Photo workflow guide: [Photo Process previews and original-only Lightbox](docs/PHOTO_PROCESS_AND_LIGHTBOX.md).
+Release validation: [2.0.30](docs/release-2.0.30-validation.md).
+
 | Page | Description |
 |------|-------------|
 | **Import** | Copy photos from SD card to local staging, renamed by EXIF date |
-| **Post Process** | Focus detection, CLAHE enhancement, B&W conversion, MP4 stabilization, plus task-specific cleanup jobs for generated results |
+| **Photo Process** | Orientation-safe JPEG enhancement and adjustable B&W/S-curve, scoped before/after previews, focus analysis, short MP4 stabilization previews and cleanup dry runs |
 | **Video Studio** | Review/approve, arrange and export full clips with final-assembly opening titles, slow-motion recaps, stabilization and editable YouTube chapter descriptions |
 | **Video snapshots** | Browse original camera clips in both directions, select exact frames and save full-resolution photographs with optional adjustments |
-| **Review** | Browse staging folder, rate (stars) and mark photos for deletion |
+| **Photo Lightbox** | Browse originals with bounded read-ahead, compare B&W/Enhanced versions, rate and mark photos for deletion |
 | **Tidy Up** | Move `{trash}`-marked files to a `Trash/` subdirectory |
 | **Transfer** | Copy staging to archive (NAS), generate + verify MD5 checksums |
 | **Settings** | Configure source, staging, and archive directory paths |
@@ -251,7 +254,7 @@ Recovery-file errors are shown, and damaged files are preserved for investigatio
 Exports open in the system player.
 
 **Maximum throughput** uses the available logical CPU budget and up to four FFmpeg
-processes, shared with Post Process stabilization. **Balanced** leaves some CPU
+processes, shared with Photo Process stabilization. **Balanced** leaves some CPU
 headroom and uses fewer workers. Up to two projects dispatch work; CPU, estimated
 RAM, source/output resolution and output-drive reservations bound concurrency.
 CPU-heavy filters may not scale to every core, and I/O/verification can be the
@@ -280,7 +283,7 @@ modified; the final render loops and fades it to the edit duration while retaini
 the chosen original-clip audio level.
 
 Video Studio requires FFmpeg and ffprobe, with drawtext and vid.stab for titles
-and stabilisation. Existing Post Process folder jobs retain their behaviour.
+and stabilisation. Existing Photo Process folder jobs retain their behaviour.
 Soundtrack generation requires a local [LMMS](https://lmms.io/) installation.
 
 Tests: `npm run test:studio` and `cargo test --lib --manifest-path src-tauri/Cargo.toml video_studio`.
@@ -295,7 +298,7 @@ For native media tests, set `PHOTOGOGO_FFMPEG` to the FFmpeg executable.
 Run all Studio tests with `-- --include-ignored --nocapture --test-threads=1`.
 Set `PHOTOGOGO_LMMS` if LMMS is not installed at `C:/Program Files/LMMS/lmms.exe`. Set
 Video Studio requires FFmpeg and ffprobe, with drawtext for titles, deshake for
-Fast mode, and vid.stab for Quality mode. Post Process retains its two-pass method
+Fast mode, and vid.stab for Quality mode. Photo Process retains its two-pass method
 but shares the bounded CPU/RAM resource pool.
 
 Temporary RAM pressure leaves Studio work waiting instead of failing it. The live
@@ -365,7 +368,7 @@ then run `test-output/import-safety-tests.exe`. Create `test-output` first if ab
 
 ## Development
 
-Post Process MP4 stabilization and Studio Quality mode require `vidstabdetect` and
+Photo Process MP4 stabilization and Studio Quality mode require `vidstabdetect` and
 `vidstabtransform`; Studio Fast mode requires `deshake`. Running [run.ps1](run.ps1)
 bootstraps a repo-local Windows GPL build into `tools/ffmpeg/bin/ffmpeg.exe` and
 exports `PHOTOGOGO_FFMPEG`. Hardware encoders must pass an actual runtime probe.

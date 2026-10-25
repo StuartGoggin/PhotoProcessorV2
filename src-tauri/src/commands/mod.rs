@@ -9,9 +9,12 @@ mod import_devices;
 #[cfg(test)]
 mod import_integration_tests;
 pub mod logs;
+pub mod lightbox;
 mod media_tools;
 pub mod naming;
 pub mod process;
+mod photo_process;
+pub mod process_preview;
 pub mod settings;
 pub mod staging_tags;
 pub mod tidy;

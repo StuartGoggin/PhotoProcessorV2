@@ -25,6 +25,7 @@ use super::naming::{
 };
 use super::settings::load_settings;
 use super::faces;
+use super::photo_process::{BwParams, load_oriented, render_bw, render_enhanced};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessProgress {
@@ -439,6 +440,11 @@ fn enhance_params_store() -> &'static Mutex<HashMap<String, EnhanceParams>> {
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn bw_params_store() -> &'static Mutex<HashMap<String, BwParams>> {
+    static STORE: OnceLock<Mutex<HashMap<String, BwParams>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn stabilize_params_store() -> &'static Mutex<HashMap<String, StabilizeParams>> {
     static STORE: OnceLock<Mutex<HashMap<String, StabilizeParams>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -718,7 +724,7 @@ fn sobel_variance(gray: &GrayImage, x0: u32, y0: u32, w: u32, h: u32) -> f64 {
     mags.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / mags.len() as f64
 }
 
-fn focus_score(img: &DynamicImage) -> (f64, f64, f64) {
+pub(super) fn focus_score(img: &DynamicImage) -> (f64, f64, f64) {
     let gray = img.to_luma8();
     let w = gray.width();
     let h = gray.height();
@@ -752,7 +758,7 @@ fn focus_score(img: &DynamicImage) -> (f64, f64, f64) {
     (max_score, avg_score, focus_pct)
 }
 
-fn is_out_of_focus(max_score: f64, avg_score: f64, focus_pct: f64) -> bool {
+pub(super) fn is_out_of_focus(max_score: f64, avg_score: f64, focus_pct: f64) -> bool {
     max_score < 4.0 || (focus_pct < 10.0 && avg_score < 3.0)
 }
 
@@ -790,7 +796,7 @@ fn restore_blurry_filename(path: &Path) -> Option<PathBuf> {
     Some(path.parent().unwrap_or(Path::new(".")).join(restored_name))
 }
 
-fn apply_clahe_luma(gray: &GrayImage) -> GrayImage {
+pub(super) fn apply_clahe_luma(gray: &GrayImage) -> GrayImage {
     let w = gray.width();
     let h = gray.height();
     let tile_w = (w / 8).max(1);
@@ -875,7 +881,7 @@ fn apply_clahe_luma(gray: &GrayImage) -> GrayImage {
     out
 }
 
-fn unsharp_mask_rgb(img: &RgbImage, radius: f32, amount: f32) -> RgbImage {
+pub(super) fn unsharp_mask_rgb(img: &RgbImage, radius: f32, amount: f32) -> RgbImage {
     let w = img.width();
     let h = img.height();
     // Simple box blur approximation for speed
@@ -926,7 +932,7 @@ fn blur_rgb(img: &RgbImage, _radius: f32) -> RgbImage {
     out
 }
 
-fn unsharp_mask_gray(img: &GrayImage, radius: f32, amount: f32) -> GrayImage {
+pub(super) fn unsharp_mask_gray(img: &GrayImage, radius: f32, amount: f32) -> GrayImage {
     let blur = blur_gray(img, radius);
     let mut out = GrayImage::new(img.width(), img.height());
     for (x, y, px) in img.enumerate_pixels() {
@@ -962,7 +968,7 @@ fn blur_gray(img: &GrayImage, _radius: f32) -> GrayImage {
     out
 }
 
-fn enhance_rgb_clahe(rgb: &RgbImage) -> RgbImage {
+pub(super) fn enhance_rgb_clahe(rgb: &RgbImage) -> RgbImage {
     // Convert to YCbCr-like: enhance Y (luma) channel via CLAHE, keep chroma
     let w = rgb.width();
     let h = rgb.height();
@@ -981,11 +987,10 @@ fn enhance_rgb_clahe(rgb: &RgbImage) -> RgbImage {
     }
 
     let enhanced_y = apply_clahe_luma(&y_plane);
-    let sharpened_y = unsharp_mask_gray(&enhanced_y, 1.0, 0.5);
 
     let mut out = RgbImage::new(w, h);
     for (i, (x, y, _px)) in rgb.enumerate_pixels().enumerate() {
-        let luma = sharpened_y.get_pixel(x, y)[0] as f32;
+        let luma = enhanced_y.get_pixel(x, y)[0] as f32;
         let cb = cb_plane[i];
         let cr = cr_plane[i];
         let r = (luma + cr).clamp(0.0, 255.0) as u8;
@@ -1003,7 +1008,7 @@ fn collect_jpgs(dir: &Path, recursive: bool) -> Vec<PathBuf> {
         WalkDir::new(dir).max_depth(1)
     };
 
-    walker
+    let files: Vec<PathBuf> = walker
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
@@ -1017,15 +1022,30 @@ fn collect_jpgs(dir: &Path, recursive: bool) -> Vec<PathBuf> {
                 })
                 .unwrap_or(false)
         })
-        .filter(|p| {
-            // Skip already-processed files
-            let name = p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            !name.contains("_improved") && !name.contains("_BW") && !name.contains("{Out of Focus")
-        })
-        .collect()
+        .collect();
+    let stems: std::collections::HashSet<_> = files.iter().map(|path| (
+        path.parent().unwrap_or(Path::new("")).to_path_buf(), clean_photo_stem(path)
+    )).collect();
+    files.into_iter().filter(|path| {
+        let stem = clean_photo_stem(path);
+        let generated = ["_bw", "_improved"].iter().find_map(|suffix| stem.strip_suffix(suffix));
+        let is_variant = generated.map(|base| stems.contains(&(path.parent().unwrap_or(Path::new("")).to_path_buf(), base.to_string()))).unwrap_or(false);
+        !is_variant && !path.file_name().and_then(|name| name.to_str()).unwrap_or("").contains("{Out of Focus")
+    }).collect()
+}
+
+fn clean_photo_stem(path: &Path) -> String {
+    let mut name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+    let mut offset = 0;
+    while let Some(start) = name[offset..].find('{').map(|i| offset + i) {
+        let Some(end) = name[start..].find('}').map(|i| start + i + 1) else { break; };
+        let tag = name[start..end].to_ascii_lowercase();
+        let recognized = matches!(tag.as_str(), "{like o}" | "{like oo}" | "{like ooo}" | "{trash}")
+            || tag.strip_prefix("{out of focus ").and_then(|s| s.strip_suffix('}')).map(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())).unwrap_or(false);
+        if recognized { name.replace_range(start..end, ""); offset = start; } else { offset = end; }
+        if offset >= name.len() { break; }
+    }
+    name.to_lowercase()
 }
 
 fn collect_focus_marked_jpgs(dir: &Path, recursive: bool) -> Vec<PathBuf> {
@@ -1110,7 +1130,7 @@ fn collect_mp4s(dir: &Path, recursive: bool) -> Vec<PathBuf> {
         .collect()
 }
 
-fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec<PathBuf> {
+pub(super) fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec<PathBuf> {
     match task {
         ProcessTask::Focus | ProcessTask::Enhance | ProcessTask::Bw => collect_jpgs(dir, recursive),
         ProcessTask::RemoveFocus => collect_focus_marked_jpgs(dir, recursive),
@@ -1623,6 +1643,22 @@ fn run_ffmpeg_command(
     }
 }
 
+/// One filter recipe serves full jobs and the bounded preview sample.
+pub(super) fn stabilization_filters(mode: StabilizationMode, strength: StabilizationStrength, transform: &str) -> (String, String) {
+    let (step, shake, accuracy, smooth) = match strength {
+        StabilizationStrength::Gentle => (8,3,10,18),
+        StabilizationStrength::Balanced => (6,4,15,30),
+        StabilizationStrength::Strong => (4,6,15,48),
+    };
+    let (zoom, optzoom, speed) = match mode {
+        StabilizationMode::MaxFrame => (0.0,0,0.0),
+        StabilizationMode::EdgeSafe => (4.0,2,0.25),
+        StabilizationMode::AggressiveCrop => (8.0,2,0.4),
+    };
+    (format!("vidstabdetect=stepsize={step}:shakiness={shake}:accuracy={accuracy}:mincontrast=0.25:result={transform}"),
+     format!("vidstabtransform=input={transform}:smoothing={smooth}:zoom={zoom:.2}:optzoom={optzoom}:zoomspeed={speed:.2}:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0"))
+}
+
 fn stabilize_mp4(
     app: &AppHandle,
     path: &Path,
@@ -1687,33 +1723,7 @@ fn stabilize_mp4(
     let maxrate_bps = target_video_bitrate_bps.map(|bps| bps.saturating_mul(115) / 100);
     let bufsize_bps = target_video_bitrate_bps.map(|bps| bps.saturating_mul(2));
 
-    let (detect_stepsize, detect_shakiness, detect_accuracy, transform_smoothing) =
-        match stabilization_strength {
-            StabilizationStrength::Gentle => (8, 3, 10, 18),
-            StabilizationStrength::Balanced => (6, 4, 15, 30),
-            StabilizationStrength::Strong => (4, 6, 15, 48),
-        };
-
-    let detect_filter = format!(
-        "vidstabdetect=stepsize={}:shakiness={}:accuracy={}:mincontrast=0.25:result={}",
-        detect_stepsize,
-        detect_shakiness,
-        detect_accuracy,
-        transform_file_name
-    );
-    let (zoom, optzoom, zoomspeed) = match stabilization_mode {
-        StabilizationMode::MaxFrame => (0.0_f32, 0, 0.0_f32),
-        StabilizationMode::EdgeSafe => (4.0_f32, 2, 0.25_f32),
-        StabilizationMode::AggressiveCrop => (8.0_f32, 2, 0.4_f32),
-    };
-    let transform_filter = format!(
-        "vidstabtransform=input={}:smoothing={}:zoom={:.2}:optzoom={}:zoomspeed={:.2}:relative=1:crop=black:interpol=bicubic,unsharp=5:5:0.6:3:3:0.0",
-        transform_file_name,
-        transform_smoothing,
-        zoom,
-        optzoom,
-        zoomspeed
-    );
+    let (detect_filter, transform_filter) = stabilization_filters(stabilization_mode, stabilization_strength, &transform_file_name);
 
     let quality_mode = if preserve_source_bitrate {
         "preserve_source_bitrate"
@@ -2024,7 +2034,7 @@ fn done_hash(path: &Path) -> String {
     format!("{:x}", hasher.finish())
 }
 
-fn resolve_process_scope(staging_dir: &str, scope_dir: Option<String>, scope_mode: &ProcessScopeMode) -> Result<PathBuf, String> {
+pub(super) fn resolve_process_scope(staging_dir: &str, scope_dir: Option<String>, scope_mode: &ProcessScopeMode) -> Result<PathBuf, String> {
     let staging_root = PathBuf::from(staging_dir);
     let scope = match scope_mode {
         ProcessScopeMode::EntireStaging => staging_root.clone(),
@@ -2557,6 +2567,10 @@ fn run_process_task(
         stabilize_load_policy
             .map(|policy| policy.max_parallel_jobs)
             .unwrap_or(1)
+    } else if matches!(task, ProcessTask::Focus | ProcessTask::Enhance | ProcessTask::Bw) {
+        // Full-resolution decode/CLAHE intermediates dominate memory. Bound
+        // concurrent photos rather than oversubscribing 24+ huge images.
+        num_cpus().clamp(1, 2)
     } else {
         (num_cpus() * 2).max(4)
     };
@@ -2575,7 +2589,7 @@ fn run_process_task(
             let result = (|| -> anyhow::Result<()> {
                 match task_clone {
                     ProcessTask::Focus => {
-                        let img = image::open(path)?;
+                        let img = load_oriented(path).map_err(anyhow::Error::msg)?;
                         let (max_score, avg_score, focus_pct) = focus_score(&img);
                         if is_out_of_focus(max_score, avg_score, focus_pct) {
                             let n = ((10.0 - max_score).round() as u32).clamp(1, 10);
@@ -2606,8 +2620,7 @@ fn run_process_task(
                         }
                     }
                     ProcessTask::Enhance => {
-                        let img = image::open(path)?.into_rgb8();
-                        let enhanced = enhance_rgb_clahe(&img);
+                        let img = load_oriented(path).map_err(anyhow::Error::msg)?;
                         
                         // Retrieve enhancement parameters from job ID, or use defaults
                         let params = if let Some(job_id) = &job_id_clone {
@@ -2622,12 +2635,12 @@ fn run_process_task(
                         
                         let contrast_level = params.as_ref().map(|p| p.contrast_level).unwrap_or(1.0);
                         let sharpness_level = params.as_ref().map(|p| p.sharpness_level).unwrap_or(0.5);
-                        let sharpened = unsharp_mask_rgb(&enhanced, contrast_level, sharpness_level);
+                        let sharpened = render_enhanced(&img, contrast_level, sharpness_level);
                         
                         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                         let out_path = path.parent().unwrap_or(Path::new(".")).join(format!("{}_improved.jpg", stem));
                         let replaced_existing = out_path.exists();
-                        sharpened.save(&out_path)?;
+                        super::photo_process::save_generated(&out_path, &DynamicImage::ImageRgb8(sharpened)).map_err(anyhow::Error::msg)?;
                         sync_file_metadata_from(path, &out_path, false).map_err(anyhow::Error::msg)?;
                         result_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = append_app_log(&app_clone, format!("process_enhance wrote='{}' replaced_existing={} contrast={:.2} sharpness={:.2}", out_path.display(), replaced_existing, contrast_level, sharpness_level));
@@ -2644,18 +2657,18 @@ fn run_process_task(
                         }
                     }
                     ProcessTask::Bw => {
-                        let img = image::open(path)?.into_luma8();
-                        let clahe = apply_clahe_luma(&img);
-                        let sharpened = unsharp_mask_gray(&clahe, 1.0, 0.6);
+                        let img = load_oriented(path).map_err(anyhow::Error::msg)?;
+                        let params = job_id_clone.as_deref().and_then(|id| bw_params_store().lock().ok().and_then(|store| store.get(id).copied())).unwrap_or_default();
+                        let sharpened = render_bw(&img, &params);
                         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                         let out_path = path.parent().unwrap_or(Path::new(".")).join(format!("{}_BW.jpg", stem));
                         let replaced_existing = out_path.exists();
-                        sharpened.save(&out_path)?;
+                        super::photo_process::save_generated(&out_path, &DynamicImage::ImageLuma8(sharpened)).map_err(anyhow::Error::msg)?;
                         sync_file_metadata_from(path, &out_path, false).map_err(anyhow::Error::msg)?;
                         result_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = append_app_log(&app_clone, format!("process_bw wrote='{}' replaced_existing={}", out_path.display(), replaced_existing));
                         if let Some(job_id) = &job_id_clone {
-                            append_process_job_log(job_id, format!("bw '{}' -> '{}' (replaced_existing={})", path.display(), out_path.display(), replaced_existing));
+                            append_process_job_log(job_id, format!("bw original='{}' -> '{}' (replaced_existing={} recipe={:?})", path.display(), out_path.display(), replaced_existing, params));
                         }
                     }
                     ProcessTask::RemoveBw => {
@@ -2806,6 +2819,7 @@ pub fn start_process_job(
     task: String,
     enhance_contrast_level: Option<f32>,
     enhance_sharpness_level: Option<f32>,
+    bw_params: Option<BwParams>,
     stabilization_mode: Option<String>,
     stabilization_strength: Option<String>,
     preserve_source_bitrate: Option<bool>,
@@ -2828,6 +2842,11 @@ pub fn start_process_job(
         "transfer" | "verify_checksums" => return Err("Use start_transfer or verify_checksums commands directly".to_string()),
         _ => return Err(format!("Unknown process task: {}", task)),
     };
+
+    if let Some(params) = bw_params { params.validate()?; if !matches!(task_enum, ProcessTask::Bw) { return Err("B&W options are only supported for B&W jobs".into()); } }
+    for (name, value, max) in [("contrast", enhance_contrast_level, 2.0), ("sharpening", enhance_sharpness_level, 1.0)] {
+        if let Some(value) = value { if !value.is_finite() || value < 0.0 || value > max { return Err(format!("Enhancement {name} must be between 0 and {max}")); } }
+    }
 
     let parsed_stabilization_mode = match stabilization_mode.as_deref() {
         Some(raw) => Some(
@@ -2928,6 +2947,10 @@ pub fn start_process_job(
         jobs.insert(job_id.clone(), job);
     }
 
+    if matches!(task_enum, ProcessTask::Bw) {
+        bw_params_store().lock().map_err(|e| e.to_string())?.insert(job_id.clone(), bw_params.unwrap_or_default());
+    }
+
     // Store enhancement parameters if provided
     if enhance_contrast_level.is_some() || enhance_sharpness_level.is_some() {
         let params = EnhanceParams {
@@ -3004,6 +3027,7 @@ pub fn start_process_job(
         if let Ok(mut enhance_store) = enhance_params_store().lock() {
             enhance_store.remove(&job_id_for_status);
         }
+        if let Ok(mut bw_store) = bw_params_store().lock() { bw_store.remove(&job_id_for_status); }
         if let Ok(mut stabilize_store) = stabilize_params_store().lock() {
             stabilize_store.remove(&job_id_for_status);
         }
