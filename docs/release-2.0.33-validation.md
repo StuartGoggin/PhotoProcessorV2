@@ -147,3 +147,32 @@ publish plan simply to bypass verification or move the protected store to
 another Windows installation.
 
 See [the updated Google Photos guide](google-photos-transfer.md).
+
+## Git and Slack delivery
+
+GitHub references were read back after the atomic push:
+
+- Source/fixes branch `SWG/google-photos-test-fixes`:
+  `105eaf31c90d778f7c5eb0366f94265096e46f31`.
+- Release-receipt commit and peeled `v2.0.33`:
+  `1fc43fd8b1b6eaeb66bfea60047518c65ba8289a`.
+- Annotated tag object: `5b8d27ab4ad4ca147ba0c0d1e909aa2bf75d5eff`.
+
+On 26 October 2026 both installers and the testing instructions were delivered
+as replies to the user's existing GoggoVille **#swghermes** testing report,
+using the Personal connection. Each raw byte upload returned HTTP 200 and the
+exact inspected byte count. A subsequent thread read verified both attachment
+IDs/types and the full release instructions, hashes and acceptance limits:
+
+- [Setup EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792957046154039),
+  file `F0CBYFU9ATY`, 24,981,126 bytes uploaded.
+- [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792957055058439),
+  file `F0CBYFU13LN`, 33,349,632 bytes uploaded.
+- [Release notes and safe retry instructions](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792957092424799).
+- [Unchanged corresponding FFmpeg source](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419),
+  existing file `F0CBSHJGGNR`, still available in its earlier release thread.
+
+This delivery receipt is a documentation-only follow-up. It does not change the
+installer bytes or move the release tag. No deployment-PC installation, live
+Google upload/retry, account configuration change or user-media mutation was
+performed. The next live diagnostic step belongs to the user on their saved job.
