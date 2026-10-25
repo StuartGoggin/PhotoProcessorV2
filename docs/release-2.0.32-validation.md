@@ -80,3 +80,31 @@ to another Windows installation. No deployment-PC installation, render
 interruption, cloud upload or media modification is part of this release task.
 
 For usage, see [Google Photos setup and recovery](google-photos-transfer.md).
+
+## Git and Slack delivery
+
+Remote references were read back after an atomic push:
+
+- Feature branch `SWG/google-photos-transfer`:
+  `ce7411d97f975b4117f001c18c09f6f2bb966086`.
+- Release receipt commit, integrated `master` and peeled `v2.0.32`:
+  `235152767000cd66185758bb11e32b2dc93721e8`.
+- Annotated tag object: `540f35a1de198ab76ced623478801f334c926469`.
+
+On 25 October 2026, the EXE, MSI and release notes were delivered to GoggoVille
+**#swghermes** (`C0BDK1DDZTM`) using the Personal Slack connection. Raw byte
+uploads returned HTTP 200 and the exact byte counts above. The channel/thread
+was then read back to verify both attachment identities and the published
+preview, setup, validation and rollback qualifications.
+
+- [Release thread and setup EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792910880606929),
+  file `F0CBS3PE80K`.
+- [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792910916704789),
+  file `F0CC07J27PB`.
+- [Release notes and checksums](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792910923462789).
+- [Corresponding FFmpeg source archive](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419),
+  existing file `F0CBSHJGGNR`, verified present in the earlier release thread.
+
+This delivery receipt is a documentation-only follow-up to the fixed release
+tag. It does not change the installers or move the tag. No installation or
+live Google upload was performed.
