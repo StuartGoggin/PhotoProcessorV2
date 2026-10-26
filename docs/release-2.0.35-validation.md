@@ -46,8 +46,7 @@ The production TypeScript/Vite build passed. Existing large-chunk advisory
 remains non-failing. The warning-progress bar was visually checked and its
 computed amber fill asserted in the focused browser test.
 
-The remaining full native/frontend, installer inspection, source commit and
-publication receipts are recorded below after their gates finish. No live
+Source, installer inspection and publication receipts follow. No live
 Google requests, deployment installation or user-photo access are performed by
 the local regression tests.
 
@@ -96,3 +95,29 @@ replacement upload, reset the account/client or clear the receipts. If Google
 continues rejecting the Original, the correct outcome is four accepted, three
 verified and one verification warning. If its saved-ID check succeeds, all four
 can be verified and the job completes. Retain 2.0.34 for rollback.
+
+## Publication and read-back
+
+GitHub main and SWG/google-verification-recovery were atomically updated to
+463a0c5b897bb27c2ad690d1f69d6ae894b15719. Annotated tag v2.0.35 has object
+0746e6682bd6495ec18678d2dd26b39aff7d347f and peels to that receipt commit.
+All references were read back via git ls-remote. This final documentation-only
+delivery record follows the tag without changing application source or bytes.
+
+Both installers were delivered through the Personal connection to GoggoVille
+#swghermes (C0BDK1DDZTM), as a new top-level release post with an MSI reply.
+The exact length/SHA-256 was rechecked immediately before each upload.
+
+| Delivery | File ID | Message timestamp | Upload acknowledgement |
+| --- | --- | --- | --- |
+| EXE | F0CBW3LF069 | 1792974945.411589 | HTTP 200, OK - 71127895 |
+| MSI | F0CC39JA657 | 1792975064.298759 | HTTP 200, OK - 91968787 |
+
+Release post, 26 October 2026 11:35:45 AEDT:
+https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792974945411589.
+The complete thread was read back after both files were shared. It contains
+the expected filenames/IDs, MIME types, displayed sizes, SHA-256 values,
+source-companion link and same-saved-job testing instructions. This verifies
+the upload-byte acknowledgement and Slack attachment metadata; it is not a
+remote download/hash comparison. No deployment installation, live Google
+upload, credential reset or user-photo operation was performed here.
