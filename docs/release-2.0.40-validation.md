@@ -52,3 +52,17 @@ The unsigned Windows x64 EXE and MSI passed non-installing extraction. Their app
 Unchanged FFmpeg corresponding source: 49,570,807 bytes; SHA-256 27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8. [Existing source delivery](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419). Managed runtime licence/source materials remain included.
 
 Production TypeScript/Vite build passed. It reports the existing large-chunk/Browserslist-age notices; the native release build reports three existing unused-item warnings. No dependency updates or unrelated refactors were added to this release.
+
+## Verified GitHub and Slack delivery
+
+Installer-receipt commit f38ec894fa95ee0aac133b5d1e4ebf799933a854 was atomically pushed to GitHub master and SWG/lightbox-controls with annotated tag v2.0.40. Remote read-back confirmed both branch heads and the peeled tag at that commit. The built source remains d9a1c86af659e09afd24c0404e29fcd7f2bb952d; subsequent commits record receipts and delivery only. GitHub master was fast-forwarded; other chats' local master and subject-finishing worktrees were left untouched.
+
+Published to GoggoVille #swghermes (C0BDK1DDZTM), using the Personal connection:
+
+- EXE parent: 26 October 2026, 21:20:56 AEDT; timestamp 1793010056.876089; file F0CC4L40WRG. HTTP 200 acknowledged exactly 71,367,179 bytes. [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793010056876089).
+- Controller ZIP reply: 21:21:20 AEDT; timestamp 1793010080.139059; file F0CBPD6BX2B. HTTP 200 acknowledged exactly 117,705 bytes. [Setup guide and artwork](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793010080139059).
+- MSI reply: 21:21:36 AEDT; timestamp 1793010096.305149; file F0CBYJU435H. HTTP 200 acknowledged exactly 92,275,987 bytes. [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793010096305149).
+
+Exact local size and SHA-256 were checked immediately before uploading each artifact. Complete thread read-back confirmed the three file IDs/names, release and setup captions, testing instructions and checksums, with no pagination remaining. This is upload-receipt and attachment-metadata verification, not an independent download/hash comparison of Slack-hosted bytes. No duplicate release post was created.
+
+Deployment testing remains with Stuart: install either installer while no jobs are active, open Photo Lightbox → F1 → AJAZZ AKP03E, configure the vendor Hotkey actions and check the physical buttons/dials. This release task installed nothing on a user PC and changed no active jobs, user media, Google accounts, controller software or firmware. Version 2.0.39 remains available for rollback.
