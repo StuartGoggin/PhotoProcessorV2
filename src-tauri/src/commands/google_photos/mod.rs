@@ -207,6 +207,15 @@ fn enrich_history(app: &AppHandle, mut catalogue: Catalogue) -> Result<Catalogue
     }
     Ok(catalogue)
 }
+#[tauri::command]
+pub async fn google_photos_update_selection(
+    root: String, asset_id: String, relative_path: String,
+    selected: Option<bool>, favourite: Option<bool>,
+) -> Result<SelectionReceipt, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        store::set_selection_targeted(Path::new(&root), &asset_id, &relative_path, selected, favourite)
+    }).await.map_err(|_| "Photo curation task failed.")?
+}
 #[derive(Clone, Serialize, Deserialize)]
 struct FrozenPlan {
     plan: PlanPreview,

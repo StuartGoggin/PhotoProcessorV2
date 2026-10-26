@@ -31,3 +31,9 @@ Typing fields, select menus, the folder tree and modal editors retain their keyb
 The release includes controller artwork and a manual setup reference. Configure its six buttons as one/two/three stars plus next, trash plus next, select active plus next and skip. Dial 1 browses photos and presses V, dial 2 zooms and presses 0, and dial 3 changes the active panel and presses A.
 
 Use the vendor software's Hotkey action and keep PhotoGoGo foregrounded. Actual dial/press options depend on the installed AJAZZ software and must be checked on the device. The pack is a reference, not a verified vendor-import scene. Static button artwork does not provide live hardware-state feedback. The complete setup steps are in `public/controller/ajazz-akp03e/README.md`; `reference-keymap.json` and artwork are generated from the shared app keymap.
+
+## Responsive selection saving
+
+Google Photos checkboxes and favourites show your requested state immediately. Saving identifies changes awaiting native confirmation; further checkbox changes queue in order. A failed or unconfirmed save restores the confirmed flags and displays a scoped error. Changing a favourite does not clear a failed checkbox save. Retry the affected checkbox, or use Reload selections to read the confirmed disk state.
+
+Browsing, rating, trash, crop and refresh wait for pending selections. Select and next advances only after its own save succeeds. Transfer previews also wait for accepted selections and refuse to plan while a selection failure remains unresolved. Accepted writes continue if you leave Lightbox; return to that root to see a late failure. Keep PhotoGoGo open until Saving finishes: this small in-memory queue does not survive application shutdown.

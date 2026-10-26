@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { settleCuration } from "../utils/curationPersistence";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettings } from "../hooks";
 import type { GooglePhotoAlbumEdit, GooglePhotoMode, GooglePhotoPlanItem, GooglePhotoVariant, GooglePhotosPlan, GooglePhotosPlanRequest, GooglePhotosStatus } from "../types/googlePhotos";
@@ -121,6 +122,7 @@ export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string
   const metadataBusy = useRef(false);
   const mounted = useRef(true);
   const planGeneration = useRef(0);
+  const currentRoot = useRef(root); currentRoot.current = root;
   const pollBusy = useRef(false);
   const actionBusy = useRef(false);
   useEffect(() => { setRequest(defaultRequest(root)); setFraming("uncropped"); setPlan(null); ++planGeneration.current; }, [root]);
@@ -191,9 +193,14 @@ export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string
   async function preview() {
     const generation = ++planGeneration.current;
     await action("plan", async () => {
-      const result = await invoke<GooglePhotosPlan>("google_photos_plan", { request: { ...request, root } });
-      if (!mounted.current || generation !== planGeneration.current) return;
-      setPlan(result); setAlbumEdits(result.albums.map(album => ({ key: album.key, title: album.title, coverItemId: album.coverItemId || undefined }))); setPreviewAlbum(result.albums[0]?.key ?? null); setAccepted(false);
+      const current = () => mounted.current && generation === planGeneration.current && root === currentRoot.current;
+      try {
+        await settleCuration(root);
+        if (!current()) return;
+        const result = await invoke<GooglePhotosPlan>("google_photos_plan", { request: { ...request, root } });
+        if (!current()) return;
+        setPlan(result); setAlbumEdits(result.albums.map(album => ({ key: album.key, title: album.title, coverItemId: album.coverItemId || undefined }))); setPreviewAlbum(result.albums[0]?.key ?? null); setAccepted(false);
+      } catch (error) { if (current()) throw error; }
     });
   }
   async function publish() {

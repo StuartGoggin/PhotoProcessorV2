@@ -294,7 +294,7 @@ try {
   const selectionFailure = await newFixture({ __lightboxSelectionWriteError: "Synthetic protected curation write failure" });
   await select(selectionFailure, "01-rider.jpg"); await expectImage(selectionFailure, "Original", "01-rider.jpg");
   await selectionFailure.getByRole("checkbox", { name: "Upload Original to Google Photos", exact: true }).click();
-  await selectionFailure.getByRole("status").filter({ hasText: "Selection was not saved" }).waitFor();
+  await selectionFailure.getByRole("status").filter({ hasText: "Selection save was not confirmed" }).waitFor();
   assert.equal(await selectionFailure.getByRole("checkbox", { name: "Upload Original to Google Photos", exact: true }).isChecked(), false, "Failed curation cannot look successfully saved");
   await expectImage(selectionFailure, "Original", "01-rider.jpg");
   report.checks.push("Selection persistence failure remains visible without breaking image review or falsely checking a version");

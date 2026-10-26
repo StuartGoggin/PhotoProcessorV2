@@ -263,7 +263,7 @@ try {
   await group("Old-root pending saves cannot select, advance or flag a newly opened staging root", async () => {
     const page=await newFixture();await select(page);await page.evaluate(()=>window.__controlsDeferSelection=true);await page.keyboard.press("g");await waitWrites(page,"__controlsSelectionWrites",1);
     await page.evaluate(()=>window.__controlsSwitchRoot("E:\\Another shoot"));await tree(page).getByText("01-horse.jpg",{exact:true}).waitFor();
-    await tree(page).getByText("01-horse.jpg",{exact:true}).click();await ready(page,"01-horse.jpg","Original","E:\\Another shoot");
+    await tree(page).getByText("01-horse.jpg",{exact:true}).click();await expectImage(page,"Original","01-horse.jpg","E:\\Another shoot");
     await page.evaluate(()=>{window.__controlsDeferSelection=false;window.__controlsReleaseSelection();});await delay(120);
     await expectImage(page,"Original","01-horse.jpg","E:\\Another shoot");assert.deepEqual(await flags(page,"01-horse.jpg","E:\\Another shoot"),{selected:false,favourite:false});
     assert.deepEqual(await flags(page,"01-horse.jpg"),{selected:true,favourite:false});await page.close();

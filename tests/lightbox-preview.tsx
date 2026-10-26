@@ -80,12 +80,13 @@ fixture.__TAURI_INTERNALS__ = {
       if (fixture.__lightboxSelectionError) throw new Error(fixture.__lightboxSelectionError);
       return structuredClone(curation());
     }
-    if (command === "google_photos_set_selection") {
+    if (command === "google_photos_set_selection" || command === "google_photos_update_selection") {
       fixture.__lightboxSelectionWrites.push(args);
       if (fixture.__lightboxSelectionWriteError) throw new Error(fixture.__lightboxSelectionWriteError);
       if (fixture.__lightboxDeferSelection) await new Promise<void>(resolve => { fixture.__lightboxResolveSelection = resolve; });
       const prior = fixture.__lightboxSelections.get(args.assetId) ?? { selected: false, favourite: false };
       fixture.__lightboxSelections.set(args.assetId, { selected: args.selected ?? prior.selected, favourite: args.favourite ?? prior.favourite });
+      if (command === "google_photos_update_selection") return { assetId: args.assetId, relativePath: args.relativePath, ...fixture.__lightboxSelections.get(args.assetId), revision: fixture.__lightboxSelectionWrites.length };
       return structuredClone(curation());
     }
     if (command === "load_settings") return { staging_dir: "D:\\Synthetic photos", source_root: "", archive_dir: "", exiftool_dir: "" };

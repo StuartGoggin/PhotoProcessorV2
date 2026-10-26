@@ -5,7 +5,9 @@ import { createRoot } from "react-dom/client";
 import GooglePhotos from "../src/pages/GooglePhotos";
 import SettingsPage from "../src/pages/Settings";
 import "../src/styles.css";
+import { curationWriter } from "../src/utils/curationPersistence";
 const fixture = window as any;
+fixture.__enqueueCuration = () => { fixture.__pendingCuration = curationWriter.enqueue({ root: "D:\\Synthetic photos", assetId: "synthetic-selection", relativePath: "shot.jpg", selected: true }).catch(() => undefined); };
 fixture.__googleCalls = [];
 fixture.__googleStatus ??= { configured: true, connecting: false, account: { id: "personal-client:subject-1", email: "rider@example.test", displayName: "Synthetic Rider" }, clientIdHint: "…synthetic.apps.googleusercontent.com" };
 fixture.__metadataSavedSettings = [];
@@ -31,6 +33,12 @@ fixture.__TAURI_INTERNALS__ = {
   convertFileSrc: () => "",
   invoke: async (command: string, args: any = {}) => {
     fixture.__googleCalls.push({ command, args: structuredClone(args) });
+  if (command === "google_photos_update_selection") {
+    if (fixture.__deferCuration) await new Promise<void>(resolve => { fixture.__releaseCuration = resolve; });
+    if (fixture.__curationError) throw Error(fixture.__curationError);
+    fixture.__curationSaved = true;
+    return { assetId: args.assetId, relativePath: args.relativePath, selected: true, favourite: false, revision: 1 };
+  }
     if (command === "load_settings") return { staging_dir: "D:\\Synthetic photos", source_root: "", archive_dir: "", exiftool_dir: fixture.__metadataSavedOverride ?? "" };
     if (command === "save_settings") { fixture.__metadataSavedSettings.push(args.settings); return null; }
     if (command === "metadata_tool_status") {

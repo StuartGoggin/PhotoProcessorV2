@@ -60,14 +60,18 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",invoke:async(command:string,a
   }
   if(command==="google_photos_catalogue") {
     if(fixture.__controlsCatalogueError)throw Error(fixture.__controlsCatalogueError);
+    if(fixture.__controlsDeferCatalogue)await new Promise<void>(resolve=>{fixture.__controlsReleaseCatalogue=resolve;});
     return structuredClone(catalogue(args.root));
   }
-  if(command==="google_photos_set_selection") {
+  if(command==="google_photos_set_selection" || command==="google_photos_update_selection") {
     fixture.__controlsSelectionWrites.push(structuredClone(args));
+    const writeNumber=fixture.__controlsSelectionWrites.length;
     if(fixture.__controlsSelectionError)throw Error(fixture.__controlsSelectionError);
     if(fixture.__controlsDeferSelection)await new Promise<void>(resolve=>{fixture.__controlsReleaseSelection=resolve;});
+    if(fixture.__controlsFailSelectionAt?.includes(writeNumber))throw Error("Synthetic delayed selection failure");
     const lib=library(args.root);const previous=lib.flags.get(args.assetId)??{selected:false,favourite:false};
     lib.flags.set(args.assetId,{selected:args.selected??previous.selected,favourite:args.favourite??previous.favourite});
+    if(command==="google_photos_update_selection") return {assetId:args.assetId,relativePath:args.relativePath,...lib.flags.get(args.assetId),revision:writeNumber};
     return structuredClone(catalogue(args.root));
   }
   if(command==="read_lightbox_image") {

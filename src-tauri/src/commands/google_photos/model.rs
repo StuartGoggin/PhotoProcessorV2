@@ -13,6 +13,18 @@ pub enum PhotoVariant {
     CropEnhanced,
 }
 
+/// Acknowledges only durable local curation, without rescanning the library or
+/// disclosing/reloading account state and cloud history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionReceipt {
+    pub asset_id: String,
+    pub relative_path: String,
+    pub selected: bool,
+    pub favourite: bool,
+    pub revision: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PhotoAsset {

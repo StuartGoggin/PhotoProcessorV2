@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { settleCuration } from "../utils/curationPersistence";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ArchivePreferences, ArchivePreview, ArchiveRequest, ArchiveRuleMode, ArchiveVariantKey } from "../types/archiveTransfer";
 import { ARCHIVE_PREFERENCES_KEY, ARCHIVE_VARIANTS, archiveBytes, archiveKindLabel, archivePreset, readArchivePreferences } from "../utils/archiveTransfer";
@@ -48,9 +49,11 @@ export default function ArchiveSelectionPanel({ stagingDir, archiveDir, external
     const epoch = ++generation.current, requestedSignature = signature;
     pending.current = true; setBusy("preview"); onBusyChange(true); setPreview(null); setError("");
     try {
+      await settleCuration(stagingDir);
+      if (!alive.current || epoch !== generation.current || currentSignature.current !== requestedSignature) return;
       const value = await invoke<ArchivePreview>("preview_archive_transfer", { request });
       if (alive.current && epoch === generation.current && currentSignature.current === requestedSignature) { setPreview({ signature: requestedSignature, value }); setFilter("all"); setSearch(""); setPage(0); }
-    } catch (failure) { if (alive.current && epoch === generation.current) setError(String(failure)); }
+    } catch (failure) { if (alive.current && epoch === generation.current && currentSignature.current === requestedSignature) setError(String(failure)); }
     finally { pending.current = false; if (alive.current) { setBusy(null); onBusyChange(false); } }
   }
   async function queue() {

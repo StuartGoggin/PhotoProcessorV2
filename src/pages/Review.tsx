@@ -5,7 +5,6 @@ import LightboxCropEditor from "../components/LightboxCropEditor";
 import LightboxHelp from "../components/LightboxHelp";
 import LightboxVersionControls from "../components/LightboxVersionControls";
 import { useGooglePhotoCuration } from "../hooks/useGooglePhotoCuration";
-import { googlePhotoAssetForPath } from "../utils/googlePhotos";
 import { lightboxCommands, lightboxTypingTarget, matchLightboxCommand, shortcutFor, type LightboxCommandId } from "../utils/lightboxCommands";
 
 const emptyPan = () => [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
@@ -38,7 +37,7 @@ export default function Review() {
   const renderFrame = frameId(renderContext);
   const ready = !!renderFrame && visibleFrame === renderFrame && !loading && review.isReady();
   const renderedImages = [images.original, images.bw, images.improved];
-  const disabled = busy || renaming || !ready;
+  const disabled = busy || renaming || !ready || curation.saving;
   const editable = !!selected && /\.jpe?g$/i.test(selected.name) && !/_(crop|bw|improved)(?:\{[^}]+\})*\.jpe?g$/i.test(selected.name);
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
@@ -71,6 +70,11 @@ export default function Review() {
   async function execute(id: LightboxCommandId, desired?: boolean) {
     if (!alive.current || modal.current.crop || modal.current.help || actionBusy.current) return;
     if (id === "help") { modal.current.help = true; setHelpOpen(true); return; }
+    const selectionCommand = id.startsWith("select-") || id.startsWith("favourite-");
+    const inspection = id.startsWith("panel-") || id.startsWith("zoom-") || id.startsWith("pan-") || id === "fit";
+    if (curation.hasPending() && !selectionCommand && !inspection) {
+      setFeedback("Wait for the pending selections to finish saving before changing photos or files."); return;
+    }
     if (id === "previous" || id === "next") {
       setFeedback("");
       if (await review.navigate(id === "previous" ? -1 : 1)) focusReview();
@@ -124,7 +128,9 @@ export default function Review() {
     const mutating = id.startsWith("rate-") || id === "clear-rating" || id === "trash" || id === "trash-next"
       || id.startsWith("select-") || id.startsWith("favourite-");
     if (!mutating) return;
-    actionBusy.current = true; setBusy(true); setFeedback("");
+    const sequential = !selectionCommand || id === "select-active-next";
+    if (sequential) { actionBusy.current = true; setBusy(true); }
+    setFeedback("");
     try {
       let saved = false;
       if (id.startsWith("rate-")) saved = await review.handleStars(Number(id.split("-")[1]), id.endsWith("-next"));
@@ -133,10 +139,10 @@ export default function Review() {
       else {
         const index = id.includes("active") ? active.current : id.endsWith("original") ? 0 : id.endsWith("bw") ? 1 : 2;
         const node = nodes[index];
-        if (!node || curation.loading || curation.saving) {
+        if (!node || curation.loading) {
           setFeedback(node ? "Wait for this version's saved selections to load." : "That version is unavailable for this photo."); return;
         }
-        const asset = googlePhotoAssetForPath(curation.assets, node.path);
+        const asset = curation.assetForPath(node.path);
         if (!asset) { setFeedback("Saved selections are unavailable for that exact version. Retry selections."); return; }
         activateDuringSave(index);
         saved = await curation.update(asset, id.startsWith("favourite-")
@@ -144,14 +150,16 @@ export default function Review() {
           : { selected: id === "select-active-next" ? true : desired ?? !asset.selected });
         if (saved && id === "select-active-next") saved = await review.advanceFromContext(context);
       }
-      if (alive.current && review.getSnapshot()?.context.root === context.root) {
+      if (sequential && alive.current && review.isContextCurrent(context)) {
         setFeedback(saved ? "Saved" : "Review did not advance. Check the error or reload this photo before retrying.");
       }
     } catch (reason) {
       if (alive.current && review.getSnapshot()?.context.root === context.root) setFeedback("Review was not completed: " + String(reason));
     } finally {
-      actionBusy.current = false;
-      if (alive.current) setBusy(false);
+      if (sequential) {
+        actionBusy.current = false;
+        if (alive.current) setBusy(false);
+      }
     }
   }
   function activateDuringSave(index: number) { active.current = index; setActivePanel(index); }
@@ -179,10 +187,11 @@ export default function Review() {
     const label = index === 0 && cropped ? "Cropped" : index === 1 && cropped ? "Cropped B&W" : index === 2 && cropped ? "Cropped Enhanced" : panelNames[index];
     const selectIds = ["select-original", "select-bw", "select-enhanced"] as const;
     const favouriteIds = ["favourite-original", "favourite-bw", "favourite-enhanced"] as const;
+    const asset = curation.assetForPath(node.path);
     return <LightboxVersionControls label={label} shortcut={shortcutFor(selectIds[index])} favouriteShortcut={shortcutFor(favouriteIds[index])}
-      asset={googlePhotoAssetForPath(curation.assets, node.path) ?? null} loading={curation.loading} disabled={disabled}
-      saving={curation.saving} error={curation.error}
-      onSelected={value => void execute(selectIds[index], value)} onFavourite={value => void execute(favouriteIds[index], value)} />;
+      asset={asset ?? null} loading={curation.loading} disabled={busy || renaming || !ready}
+      saving={curation.pendingFor(asset?.id)} error={curation.errorFor(asset?.id)}
+      onSelected={value => void execute(selectIds[index], value)} onFavourite={() => void execute(favouriteIds[index])} />;
   }
 
   return <div className="review-layout flex h-full min-w-0">
@@ -192,16 +201,16 @@ export default function Review() {
         <button className="min-h-11 min-w-11 text-gray-400" disabled={busy || renaming} onClick={() => void execute("refresh")} title="Refresh photos (R)" aria-label="Refresh photos">↺</button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        <FileTree nodes={tree} keyboardNavigation disabled={busy || renaming} selected={selected?.path}
-          onSelect={node => { if (!actionBusy.current) void review.selectNode(node).then(shown => { if (shown) focusReview(); }); }} />
+        <FileTree nodes={tree} keyboardNavigation disabled={busy || renaming || curation.saving} selected={selected?.path}
+          onSelect={node => { if (!actionBusy.current && !curation.hasPending()) void review.selectNode(node).then(shown => { if (shown) focusReview(); }); }} />
       </div>
     </div>
     <div ref={reviewRoot} tabIndex={-1} aria-label="Photo Lightbox review" className="flex-1 flex flex-col min-w-0 outline-none">
       <div className="flex-shrink-0 bg-surface-800 border-b border-surface-600 px-3 py-2 flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-2">
-          <button className="btn-secondary min-h-11 min-w-11 text-sm" aria-label="Previous original photo" disabled={busy || renaming || siblingIdx <= 0} onClick={() => void execute("previous")} title="Previous original (←)">←</button>
+          <button className="btn-secondary min-h-11 min-w-11 text-sm" aria-label="Previous original photo" disabled={busy || renaming || curation.saving || siblingIdx <= 0} onClick={() => void execute("previous")} title="Previous original (←)">←</button>
           <span className="text-xs text-gray-400 tabular-nums">{siblings.length ? String(siblingIdx + 1) + " / " + siblings.length : "—"}</span>
-          <button className="btn-secondary min-h-11 min-w-11 text-sm" aria-label="Next original photo" disabled={busy || renaming || !siblings.length || siblingIdx >= siblings.length - 1} onClick={() => void execute("next")} title="Next original (→)">→</button>
+          <button className="btn-secondary min-h-11 min-w-11 text-sm" aria-label="Next original photo" disabled={busy || renaming || curation.saving || !siblings.length || siblingIdx >= siblings.length - 1} onClick={() => void execute("next")} title="Next original (→)">→</button>
         </div>
         <div className="flex items-center gap-1">
           {button("zoom-out", "−", !ready)}<span className="text-xs text-gray-400 w-10 text-center">{Math.round(zoom * 100)}%</span>{button("zoom-in", "+", !ready)}{button("fit", "Fit", !ready)}
@@ -220,10 +229,10 @@ export default function Review() {
       {selected && <div className="px-3 py-1.5 bg-surface-800 text-xs text-gray-400 flex flex-wrap items-center gap-2 border-b border-surface-700">
         <span className="truncate flex-1 min-w-0" title={selected.name}>{selected.name}</span>
         <span className="text-cyan-200">Active: {activePanel === 0 && cropped ? "Cropped" : panelNames[activePanel]}</span>
-        <span role="status" aria-live="polite" className={busy ? "text-amber-200" : "text-cyan-200"}>{busy ? "Saving decision…" : feedback || (ready ? "Ready to review" : "Loading photo…")}</span>
+        <span role="status" aria-live="polite" className={busy ? "text-amber-200" : "text-cyan-200"}>{busy ? "Saving decision…" : curation.saving ? "Saving selections… wait before closing" : feedback || (ready ? "Ready to review" : "Loading photo…")}</span>
       </div>}
       {error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800">{error}</div>}
-      {curation.error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800 flex items-center justify-between gap-3"><span>{curation.error} Photos remain available for review.</span><button className="btn-secondary min-h-11 px-2 text-xs" disabled={busy} onClick={() => void curation.refresh()}>Retry selections</button></div>}
+      {curation.error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800 flex items-center justify-between gap-3"><span>{curation.error} Photos remain available for review.</span><button className="btn-secondary min-h-11 px-2 text-xs" disabled={busy} onClick={() => void curation.refresh(true)}>Reload selections</button></div>}
       {curation.warnings.length > 0 && <details className="px-4 py-2 text-xs text-amber-200 bg-surface-800"><summary className="cursor-pointer">Upload selection notes ({curation.warnings.length})</summary><ul className="mt-1 ml-4 list-disc">{curation.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
       {cropMessage && <div role="status" className="px-4 py-2 text-xs text-cyan-100 bg-surface-800 flex gap-3 justify-between"><span>{cropMessage}</span><button type="button" aria-label="Dismiss crop result" onClick={() => setCropMessage("")}>×</button></div>}
       <div className="review-images flex-1 flex min-h-0">

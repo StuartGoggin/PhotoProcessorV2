@@ -1,6 +1,6 @@
 //! A portable local-curation sidecar is deliberately separate from encrypted
 //! Google documents. No account information is ever written beside photographs.
-use super::model::Catalogue;
+use super::model::{Catalogue, SelectionReceipt};
 use fs2::FileExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
@@ -178,7 +178,9 @@ fn lock(path: &Path) -> Result<File, String> {
         match file.try_lock_exclusive() {
             Ok(()) => return Ok(file),
             Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+                if (error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.raw_os_error() == fs2::lock_contended_error().raw_os_error())
+                    && Instant::now() < deadline =>
             {
                 std::thread::sleep(Duration::from_millis(15))
             }
@@ -310,6 +312,40 @@ pub fn set_selection(
         .parent()
         .ok_or("The selected photo has no parent directory.")?;
     let _lock = lock(&directory.join(".photogogo-curation.lock"))?;
+    write_selection(path, selected, favourite)?;
+    drop(_lock);
+    super::catalogue::scan(root)
+}
+
+/// Shallow validation preserves full-catalogue identity and association rules,
+/// but a click never walks other folders or reloads protected cloud history.
+pub fn set_selection_targeted(
+    root: &Path,
+    asset_id: &str,
+    relative_path: &str,
+    selected: Option<bool>,
+    favourite: Option<bool>,
+) -> Result<SelectionReceipt, String> {
+    if selected.is_none() && favourite.is_none() {
+        return Err("No selection change was requested.".into());
+    }
+    let path = super::catalogue::selection_path(root, relative_path)?;
+    let directory = path.parent().ok_or("The photo has no containing folder.")?;
+    let _lock = lock(&directory.join(".photogogo-curation.lock"))?;
+    let catalogue = super::catalogue::scan_selection(root, relative_path)?;
+    let asset = catalogue.assets.iter().find(|asset| asset.id == asset_id && Path::new(&asset.path) == path)
+        .ok_or("The exact photo is no longer present or is ambiguous. Refresh the Lightbox before changing its selection.")?;
+    if asset.warnings.iter().any(|warning| warning.starts_with("Multiple rating-tagged")) {
+        return Err("Resolve the duplicate rating-tagged photo names before selecting this version.".into());
+    }
+    let (flags, revision) = write_selection(&path, selected, favourite)?;
+    Ok(SelectionReceipt { asset_id: asset.id.clone(), relative_path: asset.relative_path.clone(),
+        selected: flags.selected, favourite: flags.favourite, revision })
+}
+
+// Caller owns the containing folder's curation lease through publication.
+fn write_selection(path: &Path, selected: Option<bool>, favourite: Option<bool>) -> Result<(CurationFlag, u64), String> {
+    let directory = path.parent().ok_or("The selected photo has no parent directory.")?;
     let mut curation = load_curation(directory)?;
     let key = super::catalogue::curation_key(path);
     let value = curation.entries.entry(key).or_default();
@@ -319,6 +355,7 @@ pub fn set_selection(
     if let Some(favourite) = favourite {
         value.favourite = favourite;
     }
+    let flags = value.clone();
     curation.revision = curation
         .revision
         .checked_add(1)
@@ -334,8 +371,7 @@ pub fn set_selection(
         return Err("Local photo curation exceeds its safety limit.".into());
     }
     atomic_write(&directory.join(CURATION_FILE), &bytes)?;
-    drop(_lock);
-    super::catalogue::scan(root)
+    Ok((flags, curation.revision))
 }
 
 #[cfg(test)]

@@ -5,7 +5,9 @@ import { createRoot } from "react-dom/client";
 import Transfer from "../src/pages/Transfer";
 import type { ArchivePreview, ArchivePreviewItem, ArchiveRequest } from "../src/types/archiveTransfer";
 import "../src/styles.css";
+import { curationWriter } from "../src/utils/curationPersistence";
 const fixture = window as any;
+fixture.__enqueueCuration = () => { fixture.__pendingCuration = curationWriter.enqueue({ root: "D:\\Stage", assetId: "synthetic-selection", relativePath: "shot.jpg", selected: true }).catch(() => undefined); };
 fixture.__archiveCalls = [];
 fixture.__archiveJobs = [];
 fixture.__archivePreviewSerial = 0;
@@ -30,6 +32,12 @@ function preview(request: ArchiveRequest): ArchivePreview {
 }
 fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) => {
   fixture.__archiveCalls.push({ command, args: structuredClone(args) });
+  if (command === "google_photos_update_selection") {
+    if (fixture.__deferCuration) await new Promise<void>(resolve => { fixture.__releaseCuration = resolve; });
+    if (fixture.__curationError) throw Error(fixture.__curationError);
+    fixture.__curationSaved = true;
+    return { assetId: args.assetId, relativePath: args.relativePath, selected: true, favourite: false, revision: 1 };
+  }
   if (command === "load_settings") return { staging_dir: "D:\\Stage", archive_dir: "E:\\Archive" };
   if (command === "list_import_jobs" || command === "studio_list_jobs") return [];
   if (command === "process_jobs_snapshot") return { jobs: structuredClone(fixture.__archiveJobs), warnings: [] };
@@ -50,4 +58,6 @@ fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) 
   if (["pause_process_job", "resume_process_job", "abort_process_job"].includes(command)) return true;
   throw new Error(`Unexpected archive fixture command: ${command}`);
 } };
-createRoot(document.getElementById("root")!).render(<div className="archive-fixture" style={{ height: "100%", overflow: "auto" }}><Transfer /></div>);
+const mountedRoot = createRoot(document.getElementById("root")!);
+fixture.__archiveUnmount = () => mountedRoot.unmount();
+mountedRoot.render(<div className="archive-fixture" style={{ height: "100%", overflow: "auto" }}><Transfer /></div>);

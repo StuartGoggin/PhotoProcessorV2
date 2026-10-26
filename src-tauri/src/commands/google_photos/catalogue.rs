@@ -228,6 +228,42 @@ pub(crate) fn scan_for_archive(root: &Path) -> Result<Catalogue, String> {
 }
 
 fn scan_with_types(root: &Path, archive: bool) -> Result<Catalogue, String> {
+    scan_scope(root, archive, None)
+}
+
+/// Resolve a single frontend-relative photo without accepting traversal, links
+/// or a path outside the original library root. No directory tree is scanned.
+pub(crate) fn selection_path(root: &Path, relative_path: &str) -> Result<PathBuf, String> {
+    if !root.is_absolute() || !root.is_dir() {
+        return Err("Choose an existing absolute photo folder.".into());
+    }
+    store::reject_link(root)?;
+    let root = root.canonicalize().map_err(|_| "Cannot resolve the photo folder.")?;
+    let relative = relative_path.replace('\\', "/");
+    if relative.is_empty() || relative.len() > 32_768 || relative.contains(':')
+        || relative.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || relative.split('/').count() > 32
+    {
+        return Err("Invalid relative photo path; refresh the Lightbox.".into());
+    }
+    let mut path = root.clone();
+    for part in relative.split('/') {
+        path.push(part);
+        store::reject_link(&path)?;
+    }
+    let path = path.canonicalize().map_err(|_| "The photo is no longer present; refresh the Lightbox.")?;
+    if !path.starts_with(&root) || !path.is_file() || !photo(&path) {
+        return Err("The selected photo is outside the library or unavailable.".into());
+    }
+    Ok(path)
+}
+
+pub(crate) fn scan_selection(root: &Path, relative_path: &str) -> Result<Catalogue, String> {
+    let path = selection_path(root, relative_path)?;
+    scan_scope(root, false, path.parent())
+}
+
+fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Catalogue, String> {
     if !root.is_absolute() || !root.is_dir() {
         return Err("Choose an existing absolute photo folder.".into());
     }
@@ -239,9 +275,12 @@ fn scan_with_types(root: &Path, archive: bool) -> Result<Catalogue, String> {
     let mut warnings = Vec::new();
     let mut count = 0usize;
     let mut photo_count = 0usize;
-    let mut walker = WalkDir::new(&root)
+    let scope = directory.unwrap_or(&root);
+    if !scope.starts_with(&root) { return Err("Photo folder is outside the library.".into()); }
+    store::reject_link(scope)?;
+    let mut walker = WalkDir::new(scope)
         .follow_links(false)
-        .max_depth(32)
+        .max_depth(if directory.is_some() { 1 } else { 32 })
         .into_iter();
     while let Some(entry) = walker.next() {
         count += 1;
@@ -723,3 +762,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "selection_tests.rs"]
+mod selection_tests;
