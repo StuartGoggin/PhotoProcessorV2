@@ -70,5 +70,33 @@ the application recovery policy; they do not prove Google's remote cause.
 
 ## Release receipts
 
-Packaging and publication receipts are pending; no installer delivery is claimed
-by this source-validation checkpoint.
+Source commit: b711da050a92881324ea1176207a9e808c2f6d5f.
+Build ID: 20261026T034108382Z-b711da05+local, retained exactly as emitted.
+The tracked tree was clean before and after the build; the literal +local marker
+is not rewritten or represented as a clean build stamp.
+
+Both Windows x64 test installers built successfully. Extraction without
+installation passed: application matches apart from Tauri's three-byte package
+marker; all 2205 metadata payload files match and the relocated private runtime
+executes without PATH; 27 managed FFmpeg files plus manifest match; MSI upgrade
+identity is unchanged from 2.0.36. Installers are unsigned.
+
+Inspection report: test-output/release-2.0.37-inspection-20261026T034806313Z/report.json.
+MSI UpgradeCode: {9CBA7A69-EDA0-5480-A421-9DC9AD265A65}.
+Standalone application SHA-256: A747A886D1792C38489D2890EBA0ED0252A8F64E637C969B70DE701168B8DC6C.
+
+- PhotoGoGoV2_2.0.37_x64_en-US.msi
+  Bytes: 92095763
+  SHA-256: 934BE10D30C413DAF06428B665C9EF9FE0DF296023640BD8DF86FBB53DEC15C6
+
+- PhotoGoGoV2_2.0.37_x64-setup.exe
+  Bytes: 71218127
+  SHA-256: A2B2BFF7BBC43AF5350B5B3432E1652A0444ED701D969DA2ABF9EBE63FBE5F4C
+
+Corresponding FFmpeg source: 49570807 bytes,
+SHA-256 27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8.
+The exact unchanged source companion is available in the existing
+[Slack source post](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419).
+Source/runtime licensing files are retained in the managed packages.
+
+Slack delivery receipts will be appended after publication and read-back.
