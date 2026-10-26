@@ -72,6 +72,12 @@ export interface GooglePhotosJob {
   done: number;
   total: number;
   uploaded: number;
+  /** Registration receipts accepted in this job, excluding reused/skipped items. */
+  accepted?: number;
+  /** Accepted receipts not yet verified; includes verificationNeedsAttention. */
+  awaitingVerification?: number;
+  /** Awaiting receipts whose last verification attempt has a saved error. */
+  verificationNeedsAttention?: number;
   skipped: number;
   failed: number;
   bytesDone: number;

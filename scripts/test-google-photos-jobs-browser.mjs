@@ -100,7 +100,7 @@ try {
   await page.evaluate(() => { window.__googleJobs[0].status = "needs_attention"; window.__googleJobs[0].uploaded = 0; window.__googleJobs[0].done = 0; window.__googleJobs[0].bytesDone = 15000; window.__googleJobs[0].errors = ["Registered media read-back unavailable; not confirmed successful."]; window.__diagnosticsError = true; });
   await jobs.getByRole("button", { name: "Refresh Google Photos jobs", exact: true }).click();
   await jobs.getByRole("group", { name: "Filter jobs", exact: true }).getByRole("button", { name: "Needs attention", exact: true }).click();
-  await card.getByText("0 confirmed uploads", { exact: false }).waitFor();
+  await card.getByText("Verified: 0", { exact: true }).waitFor();
   await card.getByText("Bytes transferred (not confirmed uploads):", { exact: false }).waitFor();
   await card.getByRole("button", { name: "View diagnostics", exact: true }).click();
   await card.getByRole("status").filter({ hasText: "Diagnostics could not be loaded" }).waitFor();

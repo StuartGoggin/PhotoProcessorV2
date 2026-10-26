@@ -192,6 +192,33 @@ Unresolved jobs retain their prepared bytes for safe recovery. Those copies
 are local photo data, not cloud downloads; include them in your PC's normal
 privacy/storage policy.
 
+## Upload acceptance and verification
+
+Jobs and Transfer show **Accepted by Google** when a media registration receipt
+has been saved, and **Verified** only after PhotoGoGo successfully reads that
+same media ID back and checks its reported dimensions. These are different
+checkpoints. Transferred bytes and the processed-photo bar do not prove that
+every photo has passed verification.
+
+If Google rejects an individual read-back result with `INVALID_ARGUMENT`,
+PhotoGoGo continues checking other registered photos. A dimension mismatch
+also remains a per-photo warning. Account, HTTP, network and quota failures
+stop further requests; rate-limit recovery keeps its waiting period.
+
+Use **Retry safe remaining work** or **Resume** on the existing saved job.
+Registered photos are checked by their saved IDs before any new uploads or
+album changes. They are never uploaded or registered again to bypass a failed
+verification check. This read-back can work with the original photo folder
+offline. Unverified receipts stay in **Needs attention**, with their own
+diagnostics; PhotoGoGo does not silently mark them verified. No manual override
+or additional Google permissions are introduced.
+
+After installing 2.0.35, retry the existing four-photo pilot. If Google still
+rejects the Original, expect **4 accepted, 3 verified, 1 verification needs
+attention**, while the fourth photo is now checked. If that Original's
+read-back succeeds, the job can finish with all four verified. The precise
+Google-side cause of its earlier rejection remains unconfirmed.
+
 ## Disconnect and stored data
 
 **Disconnect** can forget this installation's credentials only, or also revoke

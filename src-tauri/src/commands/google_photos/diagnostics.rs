@@ -106,22 +106,26 @@ pub fn note(
     }
 }
 pub fn finish(job: &mut Job, error: &str, stopped: bool) {
+    let outcome = if stopped {
+        Outcome::Paused
+    } else {
+        Outcome::Failed
+    };
+    let (rpc_code, http_status, reason) = error_codes(error);
+    if job.diagnostics.last().is_some_and(|last| {
+        last.outcome == outcome
+            && last.rpc_code == rpc_code
+            && last.http_status == http_status
+            && last.reason == reason
+    }) {
+        return;
+    }
     let (stage, item) = job
         .diagnostics
         .last()
         .map(|last| (last.stage, last.item))
         .unwrap_or((Stage::Job, None));
-    note(
-        job,
-        stage,
-        item,
-        if stopped {
-            Outcome::Paused
-        } else {
-            Outcome::Failed
-        },
-        Some(error),
-    );
+    note(job, stage, item, outcome, Some(error));
 }
 pub fn rate_limited(error: &str) -> bool {
     let (rpc, http, reason) = error_codes(error);
@@ -182,7 +186,9 @@ fn explain(rpc: Option<i64>, http: Option<u16>, reason: Option<&str>) -> String 
 
 pub fn report(job: &Job) -> String {
     let summary = job.summary();
+    let confirmation = format!("Accepted by Google: {}; verified by read-back: {}; awaiting verification: {}; verification needs attention: {}\n", summary.accepted, summary.uploaded, summary.awaiting_verification, summary.verification_needs_attention);
     let mut text = format!("PhotoGoGo {} — Google Photos diagnostics\nCreated: {}\nStatus: {}\nConfirmed uploaded: {}; skipped: {}; need attention: {}; total: {}\nBytes transferred: {} / {} (byte transfer is not confirmation of upload success)\n\n", env!("CARGO_PKG_VERSION"), time(&job.plan.created_at), known_state(&job.status), summary.uploaded, summary.skipped, summary.failed, summary.total, summary.bytes_done, summary.total_bytes);
+    text.push_str(&confirmation);
     text.push_str("Privacy: filenames, local paths, account details, album/media IDs, credentials, upload tokens, session URLs and raw Google response messages are omitted. Photo numbers refer to this saved job's reviewed order.\n\nPhoto checkpoints (first 200):\n");
     for (index, item) in job.items.iter().enumerate().take(200) {
         let variant = job

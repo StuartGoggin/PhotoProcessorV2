@@ -125,6 +125,31 @@ pub struct Registration {
     pub result: Result<Media, String>,
 }
 
+/// Only a rejected singleton result may allow other saved IDs to be checked.
+/// Failed requests, permissions, quota and malformed responses stop the worker.
+#[derive(Debug)]
+pub enum ReadbackError {
+    ItemRejected(String),
+    RequestFailed(String),
+}
+impl std::fmt::Display for ReadbackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ItemRejected(message) | Self::RequestFailed(message) => f.write_str(message),
+        }
+    }
+}
+impl From<String> for ReadbackError {
+    fn from(message: String) -> Self {
+        Self::RequestFailed(message)
+    }
+}
+impl From<&str> for ReadbackError {
+    fn from(message: &str) -> Self {
+        Self::RequestFailed(message.into())
+    }
+}
+
 pub trait GoogleApi {
     fn create_album(&mut self, title: &str) -> Result<Album, String>;
     fn list_albums(&mut self) -> Result<Vec<Album>, String>;
@@ -142,7 +167,7 @@ pub trait GoogleApi {
         album: &str,
         items: &[(String, String)],
     ) -> Result<Vec<Registration>, String>;
-    fn verify(&mut self, ids: &[String]) -> Result<Vec<Media>, String>;
+    fn verify(&mut self, ids: &[String]) -> Result<Vec<Media>, ReadbackError>;
     fn cover(&mut self, album: &str, media: &str) -> Result<(), String>;
     fn update_title(&mut self, album: &str, title: &str) -> Result<Album, String>;
 }
@@ -395,7 +420,7 @@ fn registrations(value: &Value, items: &[(String, String)]) -> Result<Vec<Regist
     }
     Ok(output)
 }
-fn verification(value: &Value, ids: &[String]) -> Result<Vec<Media>, String> {
+fn verification(value: &Value, ids: &[String]) -> Result<Vec<Media>, ReadbackError> {
     let expected: HashSet<&str> = ids.iter().map(String::as_str).collect();
     if expected.len() != ids.len() {
         return Err("Media verification identifiers are duplicated.".into());
@@ -414,7 +439,12 @@ fn verification(value: &Value, ids: &[String]) -> Result<Vec<Media>, String> {
             Some(code) => code.as_i64().ok_or("Google media read-back returned an invalid status code. No registered receipt was discarded.")?,
         };
         if code != 0 {
-            return Err(rpc_error("media read-back", code));
+            let message = rpc_error("media read-back", code);
+            return Err(if ids.len() == 1 && code == 3 {
+                ReadbackError::ItemRejected(message)
+            } else {
+                ReadbackError::RequestFailed(message)
+            });
         }
         let item = media(&result["mediaItem"])?;
         if !expected.contains(item.id.as_str()) || !seen.insert(item.id.clone()) {
@@ -574,7 +604,7 @@ impl GoogleApi for LiveGoogle<'_> {
         let value = json_response_at(oauth::client()?.post(format!("{BASE}/mediaItems:batchCreate")).bearer_auth(self.token()?).json(&json!({"albumId":album_id,"newMediaItems":items.iter().map(|(token,name)| json!({"simpleMediaItem":{"uploadToken":token,"fileName":name}})).collect::<Vec<_>>()})).send().map_err(|_| "Media registration response was lost. Retry uses the same prepared bytes, never a new album.")?, "media registration")?;
         registrations(&value, items)
     }
-    fn verify(&mut self, ids: &[String]) -> Result<Vec<Media>, String> {
+    fn verify(&mut self, ids: &[String]) -> Result<Vec<Media>, ReadbackError> {
         if ids.is_empty() || ids.len() > 50 {
             return Err("Invalid media verification batch.".into());
         }
@@ -802,10 +832,37 @@ mod tests {
         }
     }
     #[test]
+    fn readback_only_single_photo_invalid_argument_is_continuable() {
+        for code in [3, 7, 8, 16, 14] {
+            let error = verification(
+                &json!({"mediaItemResults":[{"status":{"code":code}}]}),
+                &["media-a".into()],
+            )
+            .err()
+            .unwrap();
+            assert_eq!(matches!(error, ReadbackError::ItemRejected(_)), code == 3);
+        }
+        assert!(matches!(
+            verification(
+                &json!({"mediaItemResults":[{"status":{"code":3}},{"mediaItem":{"id":"media-b"}}]}),
+                &["media-a".into(), "media-b".into()]
+            ),
+            Err(ReadbackError::RequestFailed(_))
+        ));
+        assert!(matches!(
+            ReadbackError::from(http_error(
+                400,
+                &json!({"error":{"status":"INVALID_ARGUMENT"}}),
+                "media read-back"
+            )),
+            ReadbackError::RequestFailed(_)
+        ));
+    }
+    #[test]
     fn readback_diagnostics_preserve_status_and_safe_next_step_not_response_content() {
         let ids = vec!["media-a".into()];
         let value = json!({"mediaItemResults":[{"status":{"code":5,"message":"private response with bearer secret-fixture and https://example.invalid/private?token=fixture"}}]});
-        let error = verification(&value, &ids).err().unwrap();
+        let error = verification(&value, &ids).err().unwrap().to_string();
         assert!(
             error.contains("NOT_FOUND"),
             "Missing actionable status in: {error}"
@@ -863,8 +920,8 @@ mod tests {
         )
         .err()
         .unwrap();
-        assert!(malformed.contains("invalid status code"));
-        assert!(!malformed.contains("private-status-fixture"));
+        assert!(malformed.to_string().contains("invalid status code"));
+        assert!(!malformed.to_string().contains("private-status-fixture"));
     }
     #[test]
     fn pagination_is_bounded_even_when_pages_are_empty() {

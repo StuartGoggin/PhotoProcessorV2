@@ -130,6 +130,8 @@ struct FakeGoogle {
     partial_registration_once: bool,
     fail_verify_once: bool,
     verify_error_once: Option<String>,
+    verify_error_on_call: Option<(usize, ReadbackError)>,
+    pause_after_verify: Option<(usize, Arc<AtomicBool>)>,
     begin_granularity: Option<u64>,
     query_error_once: Option<String>,
     pause_after_first_chunk: Option<Arc<AtomicBool>>,
@@ -244,10 +246,28 @@ impl GoogleApi for FakeGoogle {
             })
             .collect())
     }
-    fn verify(&mut self, ids: &[String]) -> Result<Vec<Media>, String> {
+    fn verify(&mut self, ids: &[String]) -> Result<Vec<Media>, ReadbackError> {
         self.verifies += 1;
+        if self
+            .pause_after_verify
+            .as_ref()
+            .is_some_and(|(call, _)| *call == self.verifies)
+        {
+            self.pause_after_verify
+                .take()
+                .unwrap()
+                .1
+                .store(true, Ordering::Relaxed);
+        }
+        if self
+            .verify_error_on_call
+            .as_ref()
+            .is_some_and(|(call, _)| *call == self.verifies)
+        {
+            return Err(self.verify_error_on_call.take().unwrap().1);
+        }
         if let Some(error) = self.verify_error_once.take() {
-            return Err(error);
+            return Err(error.into());
         }
         if self.fail_verify_once {
             self.fail_verify_once = false;
@@ -258,7 +278,7 @@ impl GoogleApi for FakeGoogle {
                 self.registered
                     .get(id)
                     .cloned()
-                    .ok_or_else(|| "Unknown fake media ID".into())
+                    .ok_or_else(|| ReadbackError::RequestFailed("Unknown fake media ID".into()))
             })
             .collect()
     }
@@ -266,6 +286,245 @@ impl GoogleApi for FakeGoogle {
         self.covers += 1;
         Ok(())
     }
+}
+
+#[test]
+fn rejected_third_readback_still_verifies_fourth_and_resumes_without_uploading_again() {
+    let mut fixture = Fixture::new(4);
+    let stop = AtomicBool::new(false);
+    let mut api = FakeGoogle {
+        verify_error_on_call: Some((
+            3,
+            ReadbackError::ItemRejected(
+                "Google media read-back failed: INVALID_ARGUMENT (code 3).".into(),
+            ),
+        )),
+        ..Default::default()
+    };
+    let error = fixture.drive(&mut api, &stop).unwrap_err();
+    finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+    fixture.reload();
+    assert_eq!(fixture.job.status, "needs_attention");
+    assert!(fixture.job.items.iter().all(|item| item.media.is_some()));
+    assert_eq!(fixture.job.items[2].state, "registered");
+    assert!(fixture.job.items[2].error.is_some());
+    assert_eq!(
+        fixture.job.items[3].state, "verified",
+        "one rejected read-back must not prevent verification of a healthy registered sibling"
+    );
+    assert_eq!(api.verifies, 4);
+    let summary = fixture.job.summary();
+    assert_eq!(
+        (
+            summary.accepted,
+            summary.uploaded,
+            summary.awaiting_verification,
+            summary.verification_needs_attention
+        ),
+        (4, 3, 1, 1)
+    );
+    let report = diagnostics::report(&fixture.job);
+    assert_eq!(
+        report
+            .lines()
+            .filter(|line| line.contains("Read back registered media | Failed | photo 3"))
+            .count(),
+        1
+    );
+    assert!(!report.lines().any(|line| line.contains("Failed | photo 4")));
+    let receipts: Vec<_> = fixture
+        .job
+        .items
+        .iter()
+        .map(|item| item.media.as_ref().unwrap().id.clone())
+        .collect();
+    // Saved-ID recovery must not depend on an original media drive staying online.
+    fs::rename(&fixture.photos, fixture.directory.join("offline-photos")).unwrap();
+    fixture.drive(&mut api, &stop).unwrap();
+    fixture.reload();
+    assert_eq!(fixture.job.status, "completed");
+    assert!(fixture
+        .job
+        .items
+        .iter()
+        .all(|item| item.state == "verified" && item.error.is_none()));
+    assert_eq!(
+        fixture
+            .job
+            .items
+            .iter()
+            .map(|item| item.media.as_ref().unwrap().id.clone())
+            .collect::<Vec<_>>(),
+        receipts
+    );
+    assert_eq!(api.albums_created, 1);
+    assert_eq!(api.registrations, 1);
+    assert_eq!(api.begins, 4);
+    assert_eq!(api.verifies, 5);
+}
+
+#[test]
+fn persistent_item_rejection_retains_receipts_and_never_reuploads_on_retry() {
+    let mut fixture = Fixture::new(4);
+    let stop = AtomicBool::new(false);
+    let mut api = FakeGoogle {
+        verify_error_on_call: Some((
+            3,
+            ReadbackError::ItemRejected(
+                "Google media read-back failed: INVALID_ARGUMENT (code 3).".into(),
+            ),
+        )),
+        ..Default::default()
+    };
+    for attempt in 0..3 {
+        if attempt > 0 {
+            api.verify_error_on_call = Some((
+                api.verifies + 1,
+                ReadbackError::ItemRejected(
+                    "Google media read-back failed: INVALID_ARGUMENT (code 3).".into(),
+                ),
+            ));
+        }
+        let error = fixture.drive(&mut api, &stop).unwrap_err();
+        finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+        fixture.reload();
+        assert_eq!(fixture.job.status, "needs_attention");
+        assert_eq!(fixture.job.summary().uploaded, 3);
+        assert_eq!(fixture.job.summary().accepted, 4);
+        assert_eq!(fixture.job.summary().verification_needs_attention, 1);
+        assert_eq!(api.begins, 4);
+        assert_eq!(api.registrations, 1);
+        assert_eq!(api.albums_created, 1);
+        assert_eq!(
+            fixture
+                .store
+                .load::<Vec<LedgerEntry>>("ledger")
+                .unwrap()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(fixture.workspace.read_dir().unwrap().count(), 1);
+    }
+    assert_eq!(
+        api.verifies, 6,
+        "only the rejected saved ID is retried, once per attempt"
+    );
+}
+
+#[test]
+fn request_auth_quota_and_network_errors_stop_readback_without_losing_receipts() {
+    for error in [
+        "Google media read-back failed (HTTP 400; INVALID_ARGUMENT).",
+        "Google media read-back failed: PERMISSION_DENIED (code 7).",
+        "Google media read-back failed: UNAUTHENTICATED (code 16).",
+        "Google media read-back failed (HTTP 429).",
+        "Google media read-back failed: RESOURCE_EXHAUSTED (code 8).",
+        "Could not verify Google media: transport interrupted.",
+    ] {
+        let mut fixture = Fixture::new(4);
+        let stop = AtomicBool::new(false);
+        let mut api = FakeGoogle {
+            verify_error_on_call: Some((3, ReadbackError::RequestFailed(error.into()))),
+            ..Default::default()
+        };
+        let returned = fixture.drive(&mut api, &stop).unwrap_err();
+        finish_error(&fixture.store, &mut fixture.job, returned, false).unwrap();
+        fixture.reload();
+        assert_eq!(
+            api.verifies, 3,
+            "global failure must stop additional requests: {error}"
+        );
+        assert_eq!(fixture.job.summary().accepted, 4);
+        assert_eq!(fixture.job.summary().uploaded, 2);
+        assert_eq!(fixture.job.items[3].state, "registered");
+        assert!(fixture.job.items.iter().all(|item| item.media.is_some()));
+        if error.contains("429") || error.contains("code 8") {
+            assert!(fixture.job.retry_after >= chrono::Utc::now().timestamp() + 29);
+        }
+    }
+}
+
+#[test]
+fn completed_legacy_job_with_unverified_receipt_recovers_to_attention() {
+    let mut fixture = Fixture::new(1);
+    fixture.job.items[0].media = Some(FakeGoogle::media_for("legacy"));
+    fixture.job.items[0].state = "registered".into();
+    fixture.job.status = "completed".into();
+    fixture.job.recover();
+    assert_eq!(fixture.job.status, "needs_attention");
+    assert_eq!(fixture.job.summary().accepted, 1);
+    assert_eq!(fixture.job.summary().uploaded, 0);
+}
+
+#[test]
+fn byte_progress_uses_actual_prepared_size_instead_of_original_estimate() {
+    let mut fixture = Fixture::new(1);
+    let stop = AtomicBool::new(false);
+    fixture.drive(&mut FakeGoogle::default(), &stop).unwrap();
+    fixture.job.plan.items[0].bytes -= 9;
+    fixture.job.plan.total_bytes -= 9;
+    let summary = fixture.job.summary();
+    assert_eq!(summary.bytes_done, summary.total_bytes);
+    assert_eq!(
+        summary.total_bytes,
+        fixture.job.items[0].prepared.as_ref().unwrap().bytes
+    );
+    fixture.job.items[0].state = "skipped".into();
+    assert_eq!(fixture.job.summary().total_bytes, 0);
+    fixture.job.items[0].state = "blocked".into();
+    assert_eq!(fixture.job.summary().total_bytes, 0);
+}
+
+#[test]
+fn rejected_saved_id_does_not_block_later_album_receipt_verification() {
+    let mut fixture = Fixture::new(4);
+    let stop = AtomicBool::new(false);
+    let mut api = FakeGoogle::default();
+    fixture.drive(&mut api, &stop).unwrap();
+    let mut other = fixture.job.albums[0].clone();
+    other.key = "other-album".into();
+    other.id = Some("other-album-id".into());
+    fixture.job.plan.items[3].album_key = other.key.clone();
+    fixture.job.albums.push(other);
+    fixture.job.items[2].state = "registered".into();
+    fixture.job.items[3].state = "registered".into();
+    api.verify_error_on_call = Some((
+        5,
+        ReadbackError::ItemRejected(
+            "Google media read-back failed: INVALID_ARGUMENT (code 3).".into(),
+        ),
+    ));
+    let error = fixture.drive(&mut api, &stop).unwrap_err();
+    finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+    assert_eq!(api.verifies, 6);
+    assert_eq!(fixture.job.items[2].state, "registered");
+    assert_eq!(fixture.job.items[3].state, "verified");
+    assert_eq!(api.albums_created, 1);
+    assert_eq!(api.registrations, 1);
+    assert_eq!(api.begins, 4);
+}
+
+#[test]
+fn pausing_during_readback_stops_before_next_photo_and_preserves_receipts() {
+    let mut fixture = Fixture::new(4);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut api = FakeGoogle {
+        pause_after_verify: Some((2, stop.clone())),
+        ..Default::default()
+    };
+    let error = fixture.drive(&mut api, &stop).unwrap_err();
+    finish_error(&fixture.store, &mut fixture.job, error, true).unwrap();
+    fixture.reload();
+    assert_eq!(fixture.job.status, "paused");
+    assert_eq!(api.verifies, 2);
+    assert_eq!(fixture.job.summary().accepted, 4);
+    assert_eq!(fixture.job.summary().uploaded, 2);
+    stop.store(false, Ordering::Relaxed);
+    fixture.drive(&mut api, &stop).unwrap();
+    assert_eq!(fixture.job.status, "completed");
+    assert_eq!(api.begins, 4);
+    assert_eq!(api.registrations, 1);
 }
 
 #[test]

@@ -5,7 +5,7 @@ use super::{
     metadata::{self, Prepared},
     model::*,
     store::GoogleStore,
-    transport::{Album, GoogleApi, Media, Session},
+    transport::{Album, GoogleApi, Media, ReadbackError, Session},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -77,6 +77,9 @@ pub struct JobSummary {
     pub done: usize,
     pub total: usize,
     pub uploaded: usize,
+    pub accepted: usize,
+    pub awaiting_verification: usize,
+    pub verification_needs_attention: usize,
     pub skipped: usize,
     pub failed: usize,
     pub bytes_done: u64,
@@ -192,6 +195,25 @@ impl Job {
     pub fn summary(&self) -> JobSummary {
         let uploaded = self.items.iter().filter(|p| p.state == "verified").count();
         let skipped = self.items.iter().filter(|p| p.state == "skipped").count();
+        let accepted = self
+            .items
+            .iter()
+            .filter(|p| p.media.is_some() && p.state != "skipped")
+            .count();
+        let awaiting_verification = self
+            .items
+            .iter()
+            .filter(|p| p.media.is_some() && !matches!(p.state.as_str(), "verified" | "skipped"))
+            .count();
+        let verification_needs_attention = self
+            .items
+            .iter()
+            .filter(|p| {
+                p.media.is_some()
+                    && !matches!(p.state.as_str(), "verified" | "skipped")
+                    && p.error.is_some()
+            })
+            .count();
         let failed = self
             .items
             .iter()
@@ -210,6 +232,9 @@ impl Job {
             done: uploaded + skipped + failed,
             total: self.items.len(),
             uploaded,
+            accepted,
+            awaiting_verification,
+            verification_needs_attention,
             skipped,
             failed,
             bytes_done: self
@@ -223,7 +248,22 @@ impl Job {
                     }
                 })
                 .sum(),
-            total_bytes: self.plan.total_bytes,
+            total_bytes: self
+                .items
+                .iter()
+                .zip(&self.plan.items)
+                .map(|(progress, item)| {
+                    if matches!(progress.state.as_str(), "skipped" | "blocked") {
+                        0
+                    } else {
+                        progress
+                            .prepared
+                            .as_ref()
+                            .map(|v| v.bytes)
+                            .unwrap_or(item.bytes)
+                    }
+                })
+                .sum(),
             current_file: self
                 .items
                 .iter()
@@ -255,6 +295,14 @@ impl Job {
     pub fn recover(&mut self) {
         if self.status == "running" {
             self.status = "paused".into();
+        }
+        if matches!(self.status.as_str(), "completed" | "completed_with_errors")
+            && self
+                .items
+                .iter()
+                .any(|p| p.media.is_some() && !matches!(p.state.as_str(), "verified" | "skipped"))
+        {
+            self.status = "needs_attention".into();
         }
         for album in &mut self.albums {
             if album.state == "creating" {
@@ -330,7 +378,7 @@ fn verify_item(
     job: &mut Job,
     index: usize,
     api: &mut dyn GoogleApi,
-) -> Result<(), String> {
+) -> Result<(), ReadbackError> {
     let id = job.items[index]
         .media
         .as_ref()
@@ -349,7 +397,7 @@ fn verify_item(
         if !((result.width == prepared.width as u64 && result.height == prepared.height as u64)
             || (result.width == prepared.height as u64 && result.height == prepared.width as u64))
         {
-            return Err("Google's reported photo dimensions differ from the full-resolution upload. Needs review; not marked successful.".into());
+            return Err(ReadbackError::ItemRejected("Google's reported photo dimensions differ from the full-resolution upload. Needs review; not marked successful.".into()));
         }
         }
         Ok(result)
@@ -359,13 +407,13 @@ fn verify_item(
         Err(error) => {
             // Keep the registered receipt and checkpoint. Retry must verify the
             // same ID, never turn a read-back failure into another byte upload.
-            job.items[index].error = Some(error.clone());
+            job.items[index].error = Some(error.to_string());
             diagnostics::note(
                 job,
                 Stage::VerifyMedia,
                 Some(index),
                 Outcome::Failed,
-                Some(&error),
+                Some(&error.to_string()),
             );
             job.save(store)?;
             return Err(error);
@@ -387,6 +435,49 @@ fn verify_item(
     // are removed, and only inside the current job workspace.
     Ok(())
 }
+fn verify_receipts(
+    store: &GoogleStore,
+    job: &mut Job,
+    indices: &[usize],
+    api: &mut dyn GoogleApi,
+    workspace: &Path,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    for &index in indices {
+        if job.items[index].media.is_none() || job.items[index].state == "skipped" {
+            continue;
+        }
+        stop_requested(stop)?;
+        if job.items[index].state == "verified" {
+            remember(store, job, index)?;
+            cleanup_copy(job, index, workspace)?;
+            continue;
+        }
+        match verify_item(store, job, index, api) {
+            Ok(()) => cleanup_copy(job, index, workspace)?,
+            Err(ReadbackError::ItemRejected(error)) => {
+                if !job.errors.contains(&error) {
+                    job.errors.push(error);
+                }
+                job.save(store)?;
+            }
+            Err(ReadbackError::RequestFailed(error)) => return Err(error),
+        }
+    }
+    let remaining = job
+        .items
+        .iter()
+        .filter(|p| p.media.is_some() && !matches!(p.state.as_str(), "verified" | "skipped"))
+        .count();
+    if remaining > 0 {
+        let error = format!("Google accepted these photos, but {remaining} registered photo(s) still need verification. Review the existing album and use Resume/Retry on this saved job; its media receipts are retained and will not be uploaded again.");
+        // Aggregation belongs to the job, never to the last healthy sibling.
+        diagnostics::note(job, Stage::Job, None, Outcome::Failed, Some(&error));
+        job.save(store)?;
+        return Err(error);
+    }
+    Ok(())
+}
 fn upload_item(
     store: &GoogleStore,
     job: &mut Job,
@@ -396,6 +487,9 @@ fn upload_item(
     exiftool: &str,
     stop: &AtomicBool,
 ) -> Result<(), String> {
+    if job.items[index].media.is_some() {
+        return Err("This photo already has a Google registration receipt. Resume must verify its saved ID, never upload or register it again.".into());
+    }
     let item = job.plan.items[index].clone();
     let root = Path::new(&job.plan.root)
         .canonicalize()
@@ -623,13 +717,27 @@ pub fn drive(
     }
     job.status = "running".into();
     job.errors.clear();
+    job.save(store)?;
+    // Retry every saved ID across albums before source access or new writes.
+    let registered: Vec<_> = (0..job.items.len())
+        .filter(|i| job.items[*i].media.is_some())
+        .collect();
+    verify_receipts(store, job, &registered, api, workspace, stop)?;
     diagnostics::note(job, Stage::Preflight, None, Outcome::Started, None);
     job.save(store)?;
     // Recheck immutable local evidence before the FIRST external write, not
     // after creating an album that may otherwise end up empty.
-    let root = Path::new(&job.plan.root)
-        .canonicalize()
-        .map_err(|_| "The reviewed photo folder is unavailable.")?;
+    let root = if job.items.iter().any(|p| {
+        p.media.is_none() && !matches!(p.state.as_str(), "verified" | "skipped" | "blocked")
+    }) {
+        Some(
+            Path::new(&job.plan.root)
+                .canonicalize()
+                .map_err(|_| "The reviewed photo folder is unavailable.")?,
+        )
+    } else {
+        None
+    };
     if job.plan.items.iter().enumerate().any(|(i, item)| {
         !matches!(
             job.items[i].state.as_str(),
@@ -649,7 +757,11 @@ pub fn drive(
             continue;
         }
         stop_requested(stop)?;
-        scope(item, &root)?;
+        scope(
+            item,
+            root.as_deref()
+                .ok_or("The reviewed photo folder is unavailable.")?,
+        )?;
         metadata::validate_item(item)?;
         if metadata::hash_file(Path::new(&item.path))? != item.source_sha256 {
             return Err("Photo changed since this plan was reviewed. Create a fresh plan; no changed bytes were uploaded.".into());
@@ -736,20 +848,17 @@ pub fn drive(
         for index in &indices {
             if job.items[*index].state == "verified" {
                 remember(store, job, *index)?;
-            } else if job.items[*index].media.is_some() && job.items[*index].state != "skipped" {
-                stop_requested(stop)?;
-                verify_item(store, job, *index, api)?;
-                cleanup_copy(job, *index, workspace)?;
             }
         }
         let pending: Vec<_> = indices
             .iter()
             .copied()
             .filter(|i| {
-                !matches!(
-                    job.items[*i].state.as_str(),
-                    "verified" | "skipped" | "blocked"
-                )
+                job.items[*i].media.is_none()
+                    && !matches!(
+                        job.items[*i].state.as_str(),
+                        "verified" | "skipped" | "blocked"
+                    )
             })
             .collect();
         // Eight files bounds prepared-copy disk use (<=1.6GB worst case) and
@@ -821,13 +930,7 @@ pub fn drive(
                 }
                 job.save(store)?;
             }
-            for index in batch {
-                if job.items[*index].media.is_some() {
-                    stop_requested(stop)?;
-                    verify_item(store, job, *index, api)?;
-                    cleanup_copy(job, *index, workspace)?;
-                }
-            }
+            verify_receipts(store, job, batch, api, workspace, stop)?;
             if let Some((index, error)) = failure {
                 // Successful siblings were verified after registration. Restore
                 // the actual failure context before the outer job error handler
@@ -864,6 +967,16 @@ pub fn drive(
             diagnostics::note(job, Stage::AlbumCover, None, Outcome::Succeeded, None);
             job.save(store)?;
         }
+    }
+    complete(store, job)
+}
+fn complete(store: &GoogleStore, job: &mut Job) -> Result<(), String> {
+    if job
+        .items
+        .iter()
+        .any(|p| p.media.is_some() && !matches!(p.state.as_str(), "verified" | "skipped"))
+    {
+        return Err("Registered Google photos still need verification. Resume the saved job; no registered photo will be uploaded again.".into());
     }
     job.status = if job
         .items
