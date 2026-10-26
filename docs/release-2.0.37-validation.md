@@ -99,4 +99,28 @@ The exact unchanged source companion is available in the existing
 [Slack source post](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419).
 Source/runtime licensing files are retained in the managed packages.
 
-Slack delivery receipts will be appended after publication and read-back.
+Delivered to GoggoVille #swghermes and read back successfully:
+
+- EXE parent post: 26 October 2026, 14:53:54 AEDT, timestamp
+  1792986834.616289. File F0CCWLV38AU, 71,218,127 bytes sent; HTTP 200
+  acknowledgement confirmed the exact byte count.
+  [Release post](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792986834616289).
+- MSI thread reply: 26 October 2026, 14:56:38 AEDT, timestamp
+  1792986998.134959. File F0CC0B20NHL, 92,095,763 bytes sent; HTTP 200
+  acknowledgement confirmed the exact byte count.
+  [MSI reply](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792986998134959).
+- Both local files were checked against the recorded size and SHA-256 immediately
+  before sending. The complete shared thread was read back, confirming both
+  file IDs/names, attachment metadata, instructions and checksum captions.
+  This is not an independent download/hash comparison of Slack-hosted binaries.
+- The first EXE connection sent zero bytes and failed; a bounded IPv4 retry
+  succeeded. No duplicate release post or visible duplicate upload was created.
+- The validated source and installer receipt commit were atomically pushed to
+  master and SWG/google-core-jobs. Annotated tag v2.0.37 peels to
+  37d1363931a861fe1fa25b3fd00775ed343708a6; the built code remains b711da0.
+  This final delivery note changes documentation only.
+
+Deployment check for Stuart: install either package, then Retry the existing
+saved Google Photos job once. If its valid acceptance receipt still cannot be
+read back, it should finish in History with verification warnings. The app was
+not installed on the render PC and the real-account result is not claimed here.
