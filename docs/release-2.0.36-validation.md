@@ -71,6 +71,43 @@ The canonical core browser runner replaces the obsolete standalone-tracker
 fixture. Legacy Jobs/verification runner names delegate to that same suite;
 their repeated execution is not counted as additional unique coverage.
 
+## Build and installer receipts
+
+Application/source commit: 4e71d72aca405784aac0e92f0b956829da392a3b.
+Displayed build ID: 20261026T021359608Z-4e71d72a+local. Keep this literal stamp
+when checking an installed test. The working tree was clean before and after
+packaging; the normalized Cargo.toml blob matches the recorded source commit
+(2fff884d898c79c3b0c950125811c2a59cbfe63c). The conservative +local marker
+emitted during Tauri's build is retained, not rewritten as a clean stamp.
+
+Production TypeScript/Vite compilation and optimized native packaging passed.
+Existing large-chunk and unused-code advisories remain non-failing. No new
+dependencies, media runtime, metadata bundle or source companion was introduced.
+
+Both packages passed non-installing extraction inspection: application bytes
+match the standalone build, allowing only Tauri's documented three-byte bundle
+marker; each metadata tree contains all 2,205 exact files and executes after
+relocation with PATH empty; managed FFmpeg's 27 payload files and manifest match.
+MSI version is 2.0.36, and upgrade identity remains
+{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}, matching 2.0.35.
+
+| Package | Bytes | SHA-256 |
+| --- | ---: | --- |
+| PhotoGoGoV2_2.0.36_x64-setup.exe | 71,160,797 | 279F47638AF8FDCBE45EE76F59DB38405296331EC5330F46B6FE8C8B781D4A99 |
+| PhotoGoGoV2_2.0.36_x64_en-US.msi | 92,030,227 | F1D9989DD20BAB7AFA21662EBB6C24B702E50B9C449FA752E743B52AB8C1FC35 |
+
+Both are unsigned test installers. Standalone application SHA-256:
+A712F3BFA70AD41427B524390670E008CE15DE78D1B117CDCED285F9769677BA.
+Inspection receipt:
+test-output/release-2.0.36-inspection-20261026T022233237Z/report.json.
+Build log: test-output/google-core-jobs/release-build.log.
+
+The unchanged FFmpeg source archive remains 49,570,807 bytes, SHA-256
+27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8.
+Its existing #swghermes companion is
+https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419.
+Pinned ExifTool/Perl sources, recipe and notices remain inside both installers.
+
 ## Acceptance on the test PC
 
 Install over 2.0.35 on the same Windows account. Open Jobs; older saved Google
