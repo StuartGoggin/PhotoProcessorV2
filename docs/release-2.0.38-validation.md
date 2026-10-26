@@ -83,4 +83,27 @@ SHA-256 27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8.
 [Existing source delivery](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419).
 The managed runtimes retain their licence/source materials.
 
-Slack publication and read-back receipts pending.
+Published to GoggoVille #swghermes and read back:
+
+- EXE: 26 October 2026, 17:26:47 AEDT, timestamp 1792996007.654089,
+  file F0CC50UEXDF, HTTP 200 acknowledgement for exactly 71,159,488 bytes.
+  [Release post](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792996007654089).
+- MSI: 26 October 2026, 17:30:20 AEDT, timestamp 1792996220.722019,
+  file F0CCXEUKF32, HTTP 200 acknowledgement for exactly 92,050,707 bytes.
+  [MSI reply](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792996220722019).
+- Both local artifacts were checked against exact size and SHA-256 immediately
+  before sending. Full thread read-back confirmed both attachment IDs/names,
+  metadata, instructions and checksum captions. This is not an independent
+  download/hash comparison of Slack-hosted binary files.
+- Two curl connection attempts sent zero bytes. Windows' system HTTP client
+  delivered both files using normal TLS and the signed upload URLs. No duplicate
+  release post or visible duplicate attachment was created.
+- Installer receipt commit b882a7c6f210ffe7614019d148d47c6281095fac was
+  atomically pushed to master and SWG/google-core-jobs and tagged v2.0.38.
+  The built source is still 8b364ee; this delivery note changes documentation only.
+
+Remaining deployment check: Stuart installs either installer and uses the
+existing saved job. Retry under Needs attention, or Restore to History from
+Archived followed by explicit Recheck. No live Google account upload, render-PC
+installation, user-photo mutation or active-render interruption was performed
+by this task.
