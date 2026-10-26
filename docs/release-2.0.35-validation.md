@@ -51,6 +51,43 @@ publication receipts are recorded below after their gates finish. No live
 Google requests, deployment installation or user-photo access are performed by
 the local regression tests.
 
+## Build and package receipts
+
+Application/source commit: 189835998ecf90fee30489ba16060d59b5e68b47.
+Remote main was rechecked at e179d98 before publication; it remains the parent
+baseline. No application changes were made during packaging.
+
+Displayed build ID: 20261026T002349711Z-18983599+local. Preserve that literal
+stamp when comparing installed tests. The working tree was clean before and
+after the build; the normalized Cargo.toml blob on disk matches the source
+commit (0c806fdb1055c2eeed137e592354bbf051b48be8). The conservative +local
+marker emitted during Tauri's build is not rewritten or claimed clean.
+
+Both packages were extracted without installation and passed application-byte
+comparison, allowing only Tauri's documented three-byte bundle marker. Each
+contains the exact 2,205-file metadata closure, whose relocated runtime ran
+with PATH empty, and the pinned managed FFmpeg payload. Both are unsigned test
+installers. MSI version is 2.0.35 and upgrade identity remains
+{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}, matching 2.0.34.
+
+| Package | Bytes | SHA-256 |
+| --- | ---: | --- |
+| PhotoGoGoV2_2.0.35_x64-setup.exe | 71,127,895 | 599EF65E9B4BAF64D88528AEAF43793D62513200EF1C9A8CF66B062981C13D54 |
+| PhotoGoGoV2_2.0.35_x64_en-US.msi | 91,968,787 | 8D119CC3EDC4A3AE48BEE5837CBDC972AFA7E48EF83C96179813FC0A1CA379D6 |
+
+Standalone application SHA-256:
+DD5C781F9009EF5F7ADA4E4D7470C4F1F347D2040C0E59EB5849799E16D3700B.
+Inspection receipt:
+test-output/release-2.0.35-inspection-20261026T003126913Z/report.json.
+Full build log: test-output/google-verification-recovery/release-build.log.
+
+Bundled media and metadata resources/dependencies are unchanged from 2.0.34.
+The FFmpeg corresponding-source archive remains 49,570,807 bytes, SHA-256
+27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8.
+Its existing #swghermes source-companion post was read back successfully:
+https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419.
+Complete pinned ExifTool/Perl sources and notices remain inside both installers.
+
 ## User acceptance
 
 Install this update over 2.0.34 on the same Windows account/PC. Open the existing
