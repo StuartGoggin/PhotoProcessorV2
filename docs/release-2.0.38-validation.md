@@ -58,4 +58,29 @@ parent's final test execution. No live account operations or user media used.
 
 ## Release receipts
 
-Pending final validation, packaging, Git and Slack read-back.
+Built source: 8b364eeb1545739e5df0a8435e5f884333f3add3.
+Build ID: 20261026T061149624Z-8b364eeb+local, retained as emitted. Tracked tree
+was clean before and after build; this does not rewrite the literal +local stamp.
+
+Both unsigned Windows x64 installers built and passed extraction without
+installation. Application bytes match the standalone executable apart from the
+three-byte Tauri package marker; 2205 exact metadata files match and the relocated
+runtime executes without PATH. The managed FFmpeg payloads and manifest match.
+MSI UpgradeCode remains {9CBA7A69-EDA0-5480-A421-9DC9AD265A65}, unchanged from 2.0.37.
+Inspection: test-output/release-2.0.38-inspection-20261026T061830678Z/report.json.
+Standalone application SHA-256: 3A49A0D612D764AAA611A11A4B6BB5377965346FE01530DD379A53A442E34253.
+
+- PhotoGoGoV2_2.0.38_x64_en-US.msi
+  Bytes: 92050707
+  SHA-256: 37C12443B9FB3B9C1B9CF163BA5CACD66A50A98DC183EB588FBE778A7952C75E
+
+- PhotoGoGoV2_2.0.38_x64-setup.exe
+  Bytes: 71159488
+  SHA-256: 9B952FDDF067EA4843A053F62254F0FE961BBF534E61A0A8F1B5E415EA008FDA
+
+Unchanged FFmpeg corresponding source: 49570807 bytes,
+SHA-256 27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8.
+[Existing source delivery](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419).
+The managed runtimes retain their licence/source materials.
+
+Slack publication and read-back receipts pending.
