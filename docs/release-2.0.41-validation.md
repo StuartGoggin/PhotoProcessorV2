@@ -55,3 +55,16 @@ Both unsigned Windows x64 installers passed extraction without installation. The
 Unchanged FFmpeg corresponding source: 49,570,807 bytes; SHA-256 27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8. [Existing source delivery](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419). Managed runtime licence/source materials remain included.
 
 Production TypeScript/Vite and optimized Rust builds passed. Existing Browserslist-age/bundle-size notices and three unused-item native warnings remain; no dependency updates or unrelated refactors were added.
+
+## Verified GitHub and Slack delivery
+
+Installer-receipt commit c0ccf83b7e024f09c2bd759168593e6451f151b7 was atomically pushed to GitHub master and SWG/lightbox-selection-latency with annotated tag v2.0.41. Remote read-back confirmed both heads and the peeled tag at that commit. Built application source is f3acf541a4e4c1e2607c8cdc209dd1cb24c1795a; later commits record receipts/delivery only. Other chats' local master and subject-finishing worktrees were left untouched.
+
+Published to GoggoVille #swghermes (C0BDK1DDZTM), using the Personal connection:
+
+- EXE parent: 27 October 2026, 08:54:32 AEDT; timestamp 1793051672.059299; file F0CCF27U5HA. HTTP 200 acknowledged exactly 71,373,324 bytes. [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793051672059299).
+- MSI reply: 08:54:54 AEDT; timestamp 1793051694.764739; file F0CC54F4KDZ. HTTP 200 acknowledged exactly 92,300,563 bytes. [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793051694764739).
+
+Local size and SHA-256 were rechecked immediately before each upload. Complete thread read-back confirmed both file IDs/names, captions, checksums, testing instructions and pending-save limitation, with no pagination remaining. This verifies upload receipts and Slack attachment metadata, not an independent download/hash comparison of Slack-hosted bytes. No duplicate release post was created.
+
+Install either package when no PhotoGoGo jobs are active. The 2.0.40 installer remains for rollback. No user-PC installation, user-media processing, Google account upload, active-job interruption or controller/driver changes were performed by this release task.
