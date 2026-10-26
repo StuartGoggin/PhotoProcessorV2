@@ -1,9 +1,11 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.38",
+  "version": "2.0.39",
   "type": "module",
   "scripts": {
+    "test:archive:browser": "node scripts/test-archive-transfer-browser.mjs",
+    "test:archive:native": "pwsh -NoProfile -File scripts/test-archive-transfer.ps1",
     "test:google-photos": "node scripts/test-google-photos.mjs",
     "test:google-photos:browser": "node scripts/test-google-photos-browser.mjs",
     "test:google-photos:jobs:browser": "node scripts/test-google-photos-jobs-browser.mjs",

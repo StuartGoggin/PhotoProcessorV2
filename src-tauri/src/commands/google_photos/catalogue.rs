@@ -218,6 +218,16 @@ fn event(path: &Path) -> (String, Option<String>) {
 }
 
 pub fn scan(root: &Path) -> Result<Catalogue, String> {
+    scan_with_types(root, false)
+}
+
+// Archive selection also preserves camera RAW formats that cannot be uploaded
+// through Google Photos. Family/rating/curation semantics remain shared.
+pub(crate) fn scan_for_archive(root: &Path) -> Result<Catalogue, String> {
+    scan_with_types(root, true)
+}
+
+fn scan_with_types(root: &Path, archive: bool) -> Result<Catalogue, String> {
     if !root.is_absolute() || !root.is_dir() {
         return Err("Choose an existing absolute photo folder.".into());
     }
@@ -248,6 +258,13 @@ pub fn scan(root: &Path) -> Result<Catalogue, String> {
                 continue;
             }
         };
+        if archive && entry.depth() > 0 && entry.file_type().is_dir() {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if name.starts_with(".photogogo") || name == "_transfer_manifests" || name.ends_with(".partial") {
+                walker.skip_current_dir();
+                continue;
+            }
+        }
         if entry.file_type().is_symlink() || store::reject_link(entry.path()).is_err() {
             if entry.file_type().is_dir() {
                 walker.skip_current_dir();
@@ -256,7 +273,8 @@ pub fn scan(root: &Path) -> Result<Catalogue, String> {
                 .push("A symbolic link or reparse point was excluded from the photo scope.".into());
             continue;
         }
-        if !entry.file_type().is_file() || !photo(entry.path()) {
+        let archive_raw = archive && matches!(extension(entry.path()).as_str(), "cr2"|"nef"|"arw"|"raf"|"orf"|"rw2");
+        if !entry.file_type().is_file() || !(photo(entry.path()) || archive_raw) {
             continue;
         }
         if store::reject_link(entry.path()).is_err() {

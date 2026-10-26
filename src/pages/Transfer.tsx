@@ -4,6 +4,7 @@ import type { ProcessJob } from "../types";
 import { useJobsMonitor, useSettings } from "../hooks";
 import { ProgressBar } from "../components";
 import { getProcessAttemptLabel, getProcessResultLabel } from "../utils";
+import ArchiveSelectionPanel from "../components/ArchiveSelectionPanel";
 
 const PHASE_LABELS: Record<string, string> = {
   transfer_copy: "Copying files to archive",
@@ -102,30 +103,6 @@ export default function Transfer() {
       setError("Checksum verification was aborted.");
     }
   }, [processJobs, queuedVerifyJobId]);
-
-  async function startTransfer() {
-    if (!settings?.staging_dir || !settings?.archive_dir) {
-      setError("Staging and Archive directories must be configured in Settings.");
-      return;
-    }
-
-    setQueueingTransfer(true);
-    setError(null);
-    setMessage(null);
-
-    try {
-      const jobId = await invoke<string>("start_transfer", {
-        stagingDir: settings.staging_dir,
-        archiveDir: settings.archive_dir,
-      });
-      setQueuedTransferJobId(jobId);
-      setMessage(`Queued transfer job ${jobId}. Progress will appear here and in Jobs.`);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setQueueingTransfer(false);
-    }
-  }
 
   async function verifyChecksums() {
     if (!settings?.archive_dir) {
@@ -275,11 +252,11 @@ export default function Transfer() {
   }
 
   return (
-    <div className="p-6 max-w-3xl mx-auto space-y-6">
+    <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-5">
       <div>
         <h2 className="text-2xl font-semibold text-white mb-2">Transfer to Archive</h2>
         <p className="text-gray-400 text-sm">
-          Queue a transfer job to copy the staging directory to the NAS archive, write a checksum manifest for that transfer, and append new file hashes to the master server checksums file without rewriting its existing contents. Verification runs as a separate job against the latest transfer manifest, with fallback to the legacy root checksums file.
+          Choose originals and generated versions, review exactly what will be copied, then queue a verified archive transfer. PhotoGoGo metadata remains with your staged library. Existing archive files are retained.
         </p>
       </div>
 
@@ -301,24 +278,24 @@ export default function Transfer() {
       )}
 
       {error && (
-        <div className="bg-red-900/40 border border-red-700 rounded-lg px-4 py-3 text-red-300 text-sm">
+        <div role="alert" className="bg-red-900/40 border border-red-700 rounded-lg px-4 py-3 text-red-300 text-sm">
           {error}
         </div>
       )}
 
       {message && (
-        <div className="bg-emerald-900/30 border border-emerald-700 rounded-lg px-4 py-3 text-emerald-200 text-sm">
+        <div role="status" className="bg-emerald-900/30 border border-emerald-700 rounded-lg px-4 py-3 text-emerald-200 text-sm">
           {message}
         </div>
       )}
 
-      <div className="flex gap-3 flex-wrap">
-        <button className="btn-primary" onClick={startTransfer} disabled={queueingTransfer || queueingVerify}>
-          {queueingTransfer ? "Queueing Transfer..." : "Queue Transfer Job"}
-        </button>
+      <ArchiveSelectionPanel stagingDir={settings?.staging_dir ?? ""} archiveDir={settings?.archive_dir ?? ""} externalBusy={queueingVerify} onBusyChange={setQueueingTransfer} onQueued={jobId => { setQueuedTransferJobId(jobId); setError(null); setMessage(`Queued transfer job ${jobId}. Progress appears here and in Jobs. Generate a new preview before another transfer.`); }} />
+
+      <div className="flex gap-3 items-center flex-wrap">
         <button className="btn-secondary" onClick={verifyChecksums} disabled={queueingTransfer || queueingVerify}>
           {queueingVerify ? "Queueing Verify..." : "Queue Verify Job"}
         </button>
+        <span className="text-xs text-gray-400">Independently verify the latest transfer’s checksum manifest.</span>
       </div>
 
       <div className="space-y-6">

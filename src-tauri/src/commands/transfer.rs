@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
-use walkdir::WalkDir;
+
+use super::archive_plan::{self, FrozenPlan};
 
 use crate::commands::process::{
     append_process_job_log, next_process_job_id, now_string, process_jobs_store,
@@ -30,6 +31,25 @@ const TRANSFER_MANIFEST_DIR_NAME: &str = "_transfer_manifests";
 const MASTER_HASH_TABLE_FILE: &str = "master_hashes.md5";
 const MASTER_HASH_FLUSH_EVERY_COPIES: u64 = 250;
 
+#[cfg(test)]
+mod archive_transfer_tests {
+    use super::*;
+    #[test]
+    fn conflicting_names_are_copied_while_confirmed_duplicates_are_not() {
+        assert!(FileTransferStatus::ToTransfer.requires_copy());
+        assert!(FileTransferStatus::Renamed.requires_copy());
+        assert!(!FileTransferStatus::Deduplicated.requires_copy());
+    }
+    #[test]
+    fn invalid_hashes_and_escaped_manifest_paths_are_rejected() {
+        assert!(parse_checksum_line("bad  horse.jpg").is_none());
+        for path in ["../escape.jpg", "C:\\private.jpg", "/private.jpg", "a:stream"] {
+            assert!(parse_checksum_line(&format!("{}  {path}", "0".repeat(32))).is_none());
+        }
+        assert_eq!(parse_checksum_line(&format!("{}  event/horse.jpg", "A".repeat(32))),Some(("event/horse.jpg".into(),"a".repeat(32))));
+    }
+}
+
 #[derive(Debug, Clone)]
 struct FileTransferInfo {
     source_path: PathBuf,
@@ -43,6 +63,12 @@ enum FileTransferStatus {
     ToTransfer,
     Deduplicated,
     Renamed,
+}
+
+impl FileTransferStatus {
+    fn requires_copy(&self) -> bool {
+        matches!(self, Self::ToTransfer | Self::Renamed)
+    }
 }
 
 /// Server-side hash table for efficient lookups
@@ -138,33 +164,6 @@ fn update_transfer_status_line(
     }
 }
 
-fn is_transfer_manifest_path(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == TRANSFER_MANIFEST_DIR_NAME)
-}
-
-fn should_skip_transfer_file(path: &Path) -> bool {
-    // Skip by filename
-    let skip_by_name = path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name == LEGACY_CHECKSUM_FILE_NAME || name == MASTER_HASH_TABLE_FILE
-            || name == ".photogogo-naming.lock"
-            || (name.starts_with(".photogogo-event-") && name.ends_with(".tmp")))
-        .unwrap_or(false);
-    
-    // Skip by extension (.hash, .md5, and .log files)
-    let skip_by_extension = path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            ext.eq_ignore_ascii_case("hash")
-                || ext.eq_ignore_ascii_case("md5")
-                || ext.eq_ignore_ascii_case("log")
-        })
-        .unwrap_or(false);
-    
-    skip_by_name || skip_by_extension || is_transfer_manifest_path(path)
-}
-
 fn transfer_manifest_dir(archive: &Path) -> PathBuf {
     archive.join(TRANSFER_MANIFEST_DIR_NAME)
 }
@@ -183,6 +182,7 @@ fn build_transfer_output_path(
     extension: &str,
     job_id: Option<&str>,
 ) -> Result<PathBuf, String> {
+    archive_plan::safe_destination(archive, TRANSFER_MANIFEST_DIR_NAME)?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -200,6 +200,7 @@ fn build_transfer_verification_report_path(archive: &Path, job_id: Option<&str>)
 }
 
 fn latest_transfer_manifest_path(archive: &Path) -> Result<Option<PathBuf>, String> {
+    archive_plan::safe_destination(archive, TRANSFER_MANIFEST_DIR_NAME)?;
     let manifest_dir = transfer_manifest_dir(archive);
     if !manifest_dir.exists() {
         return Ok(None);
@@ -229,16 +230,17 @@ fn resolve_master_hash_table_path(archive: &Path) -> PathBuf {
 
 fn resolve_checksum_manifest_path(archive: &Path) -> Result<PathBuf, String> {
     // For backward compatibility, try to find transfer manifests or master hash table
-    if let Some(manifest_path) = latest_transfer_manifest_path(archive).ok().flatten() {
+    if let Some(manifest_path) = latest_transfer_manifest_path(archive)? {
+        archive_plan::reject_link(&manifest_path)?;
         return Ok(manifest_path);
     }
 
-    let master_path = resolve_master_hash_table_path(archive);
+    let master_path = archive_plan::safe_destination(archive, MASTER_HASH_TABLE_FILE)?;
     if master_path.exists() {
         return Ok(master_path);
     }
 
-    let legacy_path = archive.join(LEGACY_CHECKSUM_FILE_NAME);
+    let legacy_path = archive_plan::safe_destination(archive, LEGACY_CHECKSUM_FILE_NAME)?;
     if legacy_path.exists() {
         return Ok(legacy_path);
     }
@@ -259,168 +261,15 @@ fn parse_checksum_line(line: &str) -> Option<(String, String)> {
 
     let hash = parts[0].trim();
     let relative_path = parts[1].trim();
-    if hash.is_empty() || relative_path.is_empty() {
+    if !is_valid_md5_hex(hash) || archive_plan::relative_path(relative_path).is_err() {
         return None;
     }
 
-    Some((relative_path.to_string(), hash.to_string()))
-}
-
-fn md5_sidecar_path(file_path: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.md5", file_path.to_string_lossy()))
+    Some((relative_path.replace('\\', "/"), hash.to_ascii_lowercase()))
 }
 
 fn is_valid_md5_hex(value: &str) -> bool {
     value.len() == 32 && value.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-fn read_md5_hash_from_sidecar(sidecar_path: &Path, expected_filename: Option<&str>) -> Option<String> {
-    let content = fs::read_to_string(sidecar_path).ok()?;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let mut parts = trimmed.split_whitespace();
-        let hash = parts.next()?;
-        if !is_valid_md5_hex(hash) {
-            continue;
-        }
-
-        if let Some(expected) = expected_filename {
-            if let Some(named) = parts.next() {
-                let named_file = Path::new(named)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(named);
-                if !named_file.eq_ignore_ascii_case(expected) {
-                    continue;
-                }
-            }
-        }
-
-        return Some(hash.to_lowercase());
-    }
-
-    None
-}
-
-fn read_md5_sidecar_for_file(file_path: &Path) -> Option<String> {
-    let expected_filename = file_path.file_name().and_then(|n| n.to_str());
-    read_md5_hash_from_sidecar(&md5_sidecar_path(file_path), expected_filename)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LocalHashSource {
-    Sidecar,
-    Manifest,
-    Computed,
-}
-
-impl LocalHashSource {
-    fn as_str(self) -> &'static str {
-        match self {
-            LocalHashSource::Sidecar => "sidecar",
-            LocalHashSource::Manifest => "manifest",
-            LocalHashSource::Computed => "computed",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct LocalMd5Index {
-    hashes_by_media_path: HashMap<PathBuf, String>,
-    sidecar_file_count: usize,
-    manifest_file_count: usize,
-    manifest_entry_count: usize,
-}
-
-fn load_local_md5_index(root: &Path) -> LocalMd5Index {
-    let mut index = LocalMd5Index::default();
-    if !root.exists() {
-        return index;
-    }
-
-    for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let path = entry.path();
-        let is_md5 = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("md5"))
-            .unwrap_or(false);
-        if !is_md5 {
-            continue;
-        }
-
-        let media_path = path.with_extension("");
-        if media_path.exists() {
-            let expected_filename = media_path.file_name().and_then(|n| n.to_str());
-            if let Some(hash) = read_md5_hash_from_sidecar(path, expected_filename) {
-                index.sidecar_file_count += 1;
-                index
-                    .hashes_by_media_path
-                    .entry(media_path)
-                    .or_insert(hash);
-                continue;
-            }
-        }
-
-        let content = match fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-
-        let mut entries_added = 0usize;
-        for line in content.lines() {
-            let Some((relative_path, hash)) = parse_checksum_line(line) else {
-                continue;
-            };
-
-            let media_path = path
-                .parent()
-                .map(|parent| parent.join(&relative_path))
-                .unwrap_or_else(|| PathBuf::from(&relative_path));
-            if !media_path.exists() {
-                continue;
-            }
-
-            index
-                .hashes_by_media_path
-                .entry(media_path)
-                .or_insert(hash);
-            entries_added += 1;
-        }
-
-        if entries_added > 0 {
-            index.manifest_file_count += 1;
-            index.manifest_entry_count += entries_added;
-        }
-    }
-
-    index
-}
-
-fn md5_for_file_prefer_local_index(
-    file_path: &Path,
-    local_md5_index: &LocalMd5Index,
-) -> Result<(String, LocalHashSource), String> {
-    if let Some(hash) = read_md5_sidecar_for_file(file_path) {
-        return Ok((hash, LocalHashSource::Sidecar));
-    }
-
-    if let Some(hash) = local_md5_index.hashes_by_media_path.get(file_path) {
-        return Ok((hash.clone(), LocalHashSource::Manifest));
-    }
-
-    compute_md5(file_path)
-        .map(|hash| (hash, LocalHashSource::Computed))
-        .map_err(|e| e.to_string())
 }
 
 /// Atomically updates master hash table by writing to temp file and moving
@@ -428,6 +277,8 @@ fn atomic_update_master_hash_table(
     archive: &Path,
     new_entries: &[(String, String)], // (rel_path, hash)
 ) -> Result<usize, String> {
+    archive_plan::safe_destination(archive, MASTER_HASH_TABLE_FILE)?;
+    archive_plan::safe_destination(archive, "master_hashes.md5.tmp")?;
     let master_path = resolve_master_hash_table_path(archive);
     
     // Load existing table
@@ -494,6 +345,8 @@ fn atomic_update_master_hash_table(
         upserts: &[(String, String)],     // (rel_path, hash)
         remove_paths: &[String],
     ) -> Result<(usize, usize), String> {
+        archive_plan::safe_destination(archive, MASTER_HASH_TABLE_FILE)?;
+        archive_plan::safe_destination(archive, "master_hashes.md5.tmp")?;
         let master_path = resolve_master_hash_table_path(archive);
 
         let mut all_entries = HashMap::<String, String>::new();
@@ -555,16 +408,6 @@ fn atomic_update_master_hash_table(
         Ok((added_count, removed_count))
     }
 
-fn collect_all_files(dir: &Path) -> Vec<PathBuf> {
-    WalkDir::new(dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.into_path())
-        .filter(|path| !should_skip_transfer_file(path))
-        .collect()
-}
-
 fn get_unique_destination(base: &PathBuf) -> PathBuf {
     if !base.exists() {
         return base.clone();
@@ -597,17 +440,22 @@ fn get_unique_destination(base: &PathBuf) -> PathBuf {
 }
 
 #[tauri::command]
-pub fn start_transfer(
+pub async fn preview_archive_transfer(request: archive_plan::Request) -> Result<archive_plan::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || archive_plan::preview(request))
+        .await.map_err(|_| "Archive preview task failed.".to_string())?
+}
+
+#[tauri::command]
+pub async fn start_transfer(
     app: AppHandle,
     staging_dir: String,
     archive_dir: String,
+    preview_id: Option<String>,
 ) -> Result<String, String> {
-    let staging = PathBuf::from(&staging_dir);
-    let archive = PathBuf::from(&archive_dir);
-
-    if !staging.exists() {
-        return Err(format!("Staging dir does not exist: {}", staging_dir));
-    }
+    let id = preview_id.ok_or("Preview the archive selection before queuing a transfer.")?;
+    let (stage_for_plan, archive_for_plan) = (staging_dir.clone(), archive_dir.clone());
+    let plan = tauri::async_runtime::spawn_blocking(move || archive_plan::take(&id, &stage_for_plan, &archive_for_plan))
+        .await.map_err(|_| "Archive preview validation failed.".to_string())??;
 
     let job_id = next_process_job_id();
     let managed = super::process_runtime::register(super::process_runtime::Kind::PhotoProcess, &job_id)?;
@@ -615,7 +463,7 @@ pub fn start_transfer(
         id: job_id.clone(),
         task: ProcessTask::Transfer,
         staging_dir: staging_dir.clone(),
-        scope_dir: staging_dir.clone(),
+        scope_dir: plan.preview.scope_dir.clone(),
         scope_mode: ProcessScopeMode::FolderRecursive,
         archive_dir: Some(archive_dir.clone()),
         speed_mbps: None,
@@ -676,7 +524,7 @@ pub fn start_transfer(
     tauri::async_runtime::spawn(async move {
         let result = tauri::async_runtime::spawn_blocking(move || {
             let _managed = managed;
-            run_transfer_task(app_clone, staging, archive, Some(job_id_for_task))
+            run_transfer_task(app_clone, Arc::new(plan), Some(job_id_for_task))
         }).await;
 
         match result {
@@ -713,7 +561,7 @@ pub fn verify_checksums(
     app: AppHandle,
     archive_dir: String,
 ) -> Result<String, String> {
-    let archive = PathBuf::from(&archive_dir);
+    let archive = archive_plan::resolve(Path::new(&archive_dir))?;
     let checksum_path = resolve_checksum_manifest_path(&archive)?;
 
     let job_id = next_process_job_id();
@@ -819,14 +667,28 @@ pub fn verify_checksums(
 
 fn run_transfer_task(
     app: AppHandle,
-    staging: PathBuf,
-    archive: PathBuf,
+    plan: Arc<FrozenPlan>,
     job_id: Option<String>,
 ) -> Result<TransferResult, String> {
+    plan.revalidate()?;
+    let staging = plan.staging.clone();
+    let archive = plan.archive.clone();
     fs::create_dir_all(&archive).map_err(|e| e.to_string())?;
+    archive_plan::reject_link(&archive)?;
+    // One writer per archive across app instances, including index maintenance.
+    let lock_path = archive_plan::safe_destination(&archive, ".photogogo-archive.lock")?;
+    let archive_lease = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+        .open(lock_path).map_err(|e| e.to_string())?;
+    fs2::FileExt::try_lock_exclusive(&archive_lease).map_err(|_| "Another transfer is writing this archive. Wait for it to finish.".to_string())?;
+    archive_plan::safe_destination(&archive, MASTER_HASH_TABLE_FILE)?;
+    archive_plan::safe_destination(&archive, TRANSFER_MANIFEST_DIR_NAME)?;
+    let manifest_dir = transfer_manifest_dir(&archive);
+    fs::create_dir_all(&manifest_dir).map_err(|e| e.to_string())?;
+    archive_plan::safe_destination(&archive, TRANSFER_MANIFEST_DIR_NAME)?;
+    let receipt = build_transfer_output_path(&archive, "archive-selection", "json", job_id.as_deref())?;
+    plan.write_receipt(&receipt)?;
 
-    let files = collect_all_files(&staging);
-    let local_md5_index = Arc::new(load_local_md5_index(&staging));
+    let files = plan.files.clone();
     let mut overall_errors = Vec::new();
     let total_files = files.len();
 
@@ -853,14 +715,12 @@ fn run_transfer_task(
             job.transfer_indexed_added_count = Some(0);
         });
         append_process_job_log(jid, format!("TRANSFER_START: staging_dir=[absolute='{}'] archive_dir=[absolute='{}']", staging_canonical.display(), archive_canonical.display()));
+        append_process_job_log(jid, format!("ARCHIVE_SELECTION: preview={} scope='{}' {}", plan.preview.id, plan.preview.scope_dir, plan.policy_description()?));
         append_process_job_log(
             jid,
             format!(
-                "local hash sources: sidecar_files={} manifest_files={} manifest_entries={} fallback_compute_pending={}",
-                local_md5_index.sidecar_file_count,
-                local_md5_index.manifest_file_count,
-                local_md5_index.manifest_entry_count,
-                total_files.saturating_sub(local_md5_index.hashes_by_media_path.len())
+                "reviewed archive plan: included={} excluded={} bytes={}; fresh source hashes required; legacy sidecars are not trusted",
+                total_files, plan.preview.summary.excluded_count, plan.preview.summary.included_bytes
             ),
         );
         if files.is_empty() {
@@ -910,12 +770,10 @@ fn run_transfer_task(
     let app_clone = app.clone();
     let job_id_clone = job_id.clone();
     let done_clone = done_count.clone();
-    let sidecar_hits_clone = sidecar_hits_count.clone();
-    let manifest_hits_clone = manifest_hits_count.clone();
     let computed_hashes_clone = computed_hashes_count.clone();
     let compute_errors_clone = compute_errors.clone();
     let file_hashes_clone = file_hashes.clone();
-    let local_md5_index_clone = local_md5_index.clone();
+    let hash_plan = plan.clone();
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_cpus())
@@ -930,40 +788,25 @@ fn run_transfer_task(
 
             let file_name_str = src.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
 
-            match md5_for_file_prefer_local_index(src, local_md5_index_clone.as_ref()) {
-                Ok((hash, source)) => {
+            match hash_plan.hash_source(src) {
+                Ok(hash) => {
                     file_hashes_clone.lock().unwrap().insert(src.clone(), hash);
                     let done = done_clone.fetch_add(1, Ordering::Relaxed) + 1;
-                    let sidecar_hits = if matches!(source, LocalHashSource::Sidecar) {
-                        sidecar_hits_clone.fetch_add(1, Ordering::Relaxed) + 1
-                    } else {
-                        sidecar_hits_clone.load(Ordering::Relaxed)
-                    };
-                    let manifest_hits = if matches!(source, LocalHashSource::Manifest) {
-                        manifest_hits_clone.fetch_add(1, Ordering::Relaxed) + 1
-                    } else {
-                        manifest_hits_clone.load(Ordering::Relaxed)
-                    };
-                    let computed_hashes = if matches!(source, LocalHashSource::Computed) {
-                        computed_hashes_clone.fetch_add(1, Ordering::Relaxed) + 1
-                    } else {
-                        computed_hashes_clone.load(Ordering::Relaxed)
-                    };
+                    let computed_hashes = computed_hashes_clone.fetch_add(1, Ordering::Relaxed) + 1;
 
                     if let Some(ref jid) = job_id_clone {
                         append_process_job_log(
                             jid,
                             format!(
-                                "  local-hash source={} file='{}'",
-                                source.as_str(),
+                                "  local-hash source=computed file='{}'",
                                 file_name_str
                             ),
                         );
                         update_process_job(jid, |job| {
                             job.done = done as usize;
                             job.transfer_local_processed_count = Some(done as usize);
-                            job.transfer_local_sidecar_hits_count = Some(sidecar_hits as usize);
-                            job.transfer_local_manifest_hits_count = Some(manifest_hits as usize);
+                            job.transfer_local_sidecar_hits_count = Some(0);
+                            job.transfer_local_manifest_hits_count = Some(0);
                             job.transfer_local_hash_computed_count = Some(computed_hashes as usize);
                             job.current_file = file_name_str.clone();
                         });
@@ -1045,12 +888,17 @@ fn run_transfer_task(
     let job_id_verify = job_id.clone();
     let staging_verify = staging.clone();
     let archive_verify = archive.clone();
+    let verify_plan = plan.clone();
     let hash_backfill_entries_verify = hash_backfill_entries.clone();
     let stale_hash_paths_verify = stale_hash_paths.clone();
 
     pool.install(|| {
         files.par_iter().for_each(|src| {
             if wait_if_process_paused_or_aborted(job_id_verify.as_deref()) {
+                return;
+            }
+            if let Err(error) = verify_plan.check_source(src) {
+                verify_errors.lock().unwrap().push(error);
                 return;
             }
 
@@ -1106,7 +954,10 @@ fn run_transfer_task(
                 }
 
                 for server_path in server_paths {
-                    let server_file_path = archive_verify.join(server_path);
+                    let server_file_path = match archive_plan::safe_destination(&archive_verify, server_path) {
+                        Ok(path) => path,
+                        Err(error) => {verify_errors.lock().unwrap().push(error); continue;}
+                    };
                     if !server_file_path.exists() {
                         stale_hash_paths_verify.lock().unwrap().push(server_path.clone());
                         if let Some(ref jid) = job_id_verify {
@@ -1221,7 +1072,10 @@ fn run_transfer_task(
 
             // STEP 2: Destination conflict / transfer planning
             if !resolved {
-                let dest_base = archive_verify.join(&rel_path);
+                let dest_base = match archive_plan::safe_destination(&archive_verify, &rel_path) {
+                    Ok(path) => path,
+                    Err(error) => {verify_errors.lock().unwrap().push(error); return;}
+                };
                 if dest_base.exists() {
                     if let Some(ref jid) = job_id_verify {
                         append_process_job_log(
@@ -1393,7 +1247,7 @@ fn run_transfer_task(
     let renamed_count = renamed_counter.load(Ordering::Relaxed) as usize;
     let verification_report = verification_report.lock().unwrap().clone();
 
-    let to_transfer_count = transfer_plan.iter().filter(|f| matches!(f.status, FileTransferStatus::ToTransfer)).count();
+    let to_transfer_count = transfer_plan.iter().filter(|f| f.status.requires_copy()).count();
 
     if let Some(ref jid) = job_id {
         append_process_job_log(
@@ -1462,6 +1316,7 @@ fn run_transfer_task(
     let pending_hash_updates_clone = pending_hash_updates.clone();
     let index_flush_lock_clone = index_flush_lock.clone();
     let indexed_added_total_clone = indexed_added_total.clone();
+    let copy_plan = plan.clone();
 
     let pool2 = rayon::ThreadPoolBuilder::new()
         .num_threads(num_cpus())
@@ -1474,7 +1329,7 @@ fn run_transfer_task(
                 return;
             }
 
-            if !matches!(file_info.status, FileTransferStatus::ToTransfer) {
+            if !file_info.status.requires_copy() {
                 return; // Skip non-transfer files
             }
 
@@ -1483,7 +1338,14 @@ fn run_transfer_task(
                 .unwrap_or("")
                 .to_string();
 
-            // Create destination directory
+            let relative = match file_info.destination_path.strip_prefix(&archive_for_copy) {
+                Ok(path) => path.to_string_lossy().replace('\\', "/"),
+                Err(_) => {copy_errors_clone.lock().unwrap().push("Archive destination escaped its root.".into()); return;}
+            };
+            if let Err(error) = archive_plan::safe_destination(&archive_for_copy, &relative) {
+                copy_errors_clone.lock().unwrap().push(error); return;
+            }
+            // Create destination directory only after containment/reparse checks.
             if let Some(parent) = file_info.destination_path.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
                     let parent_canonical = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
@@ -1496,8 +1358,11 @@ fn run_transfer_task(
                 }
             }
 
-            // Copy file
-            match fs::copy(&file_info.source_path, &file_info.destination_path) {
+            // Verify a private same-filesystem copy, then publish without replacing
+            // any destination, including one that appeared after conflict planning.
+            match copy_plan.copy_verified(&file_info.source_path, &file_info.destination_path, &file_info.local_hash, || {
+                if wait_if_process_paused_or_aborted(job_id_clone.as_deref()) {Err("Archive transfer aborted before publication.".into())} else {Ok(())}
+            }) {
                 Ok(bytes) => {
                     bytes_clone.fetch_add(bytes, Ordering::Relaxed);
                     let rel_dest_path = file_info
@@ -1873,23 +1738,18 @@ fn run_verify_task(
     checksum_path: PathBuf,
     job_id: Option<String>,
 ) -> Result<TransferResult, String> {
-    let archive = PathBuf::from(&archive_dir);
+    let archive = archive_plan::resolve(Path::new(&archive_dir))?;
+    let relative_manifest = checksum_path.strip_prefix(&archive).map_err(|_| "Checksum manifest escaped its archive.")?;
+    archive_plan::safe_destination(&archive, &relative_manifest.to_string_lossy().replace('\\', "/"))?;
     let content = fs::read_to_string(&checksum_path).map_err(|e| e.to_string())?;
     let entries: Vec<(String, PathBuf)> = content
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(2, "  ").collect();
-            if parts.len() == 2 {
-                Some((
-                    parts[0].to_string(),
-                    archive.join(parts[1].trim()),
-                ))
-            } else {
-                None
-            }
+        .map(|line| {
+            let (relative, hash) = parse_checksum_line(line).ok_or("Checksum manifest contains an invalid hash or unsafe path.")?;
+            Ok((hash, archive_plan::safe_destination(&archive, &relative)?))
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
 
     let total = entries.len();
 
@@ -1946,6 +1806,8 @@ fn run_verify_task(
             let file_name_str = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
 
             let result = (|| -> anyhow::Result<()> {
+                let relative = path.strip_prefix(&archive).map_err(|e| anyhow::anyhow!(e))?;
+                archive_plan::safe_destination(&archive, &relative.to_string_lossy().replace('\\', "/")).map_err(anyhow::Error::msg)?;
                 if !path.exists() {
                     anyhow::bail!("File not found: {}", path.display());
                 }

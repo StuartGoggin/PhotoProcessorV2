@@ -24,6 +24,7 @@ pub mod settings;
 pub mod staging_tags;
 pub mod tidy;
 pub mod transfer;
+mod archive_plan;
 pub mod google_photos;
 pub mod video_studio;
 pub mod video_snapshots;

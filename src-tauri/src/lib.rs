@@ -44,7 +44,7 @@ use commands::{
         write_staging_tags_to_metadata,
     },
     tidy::collect_trash,
-    transfer::{start_transfer, verify_checksums},
+    transfer::{preview_archive_transfer, start_transfer, verify_checksums},
     video_studio::{
         studio_ai_music_direction, studio_ai_review, studio_control_job, studio_create_music_midi,
         studio_frame, studio_inspect, studio_list_jobs, studio_load_project, studio_open_lmms, studio_audio_preview, studio_graphics_preview,
@@ -158,6 +158,7 @@ pub fn run() {
             process_job_open_album,
             process_job_reconcile_album,
             // Transfer
+            preview_archive_transfer,
             start_transfer,
             verify_checksums,
             // Tidy
