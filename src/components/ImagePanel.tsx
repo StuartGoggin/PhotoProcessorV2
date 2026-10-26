@@ -9,9 +9,13 @@ interface ImagePanelProps {
   panY?: number;
   /** Actions are separate from the image so selecting a version never starts a pan. */
   headerAction?: React.ReactNode;
+  active?: boolean;
+  onActivate?: () => void;
+  resetKey?: number;
+  onReady?: () => void;
 }
 
-export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, headerAction }: ImagePanelProps) {
+export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, headerAction, active, onActivate, resetKey, onReady }: ImagePanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [localPanX, setLocalPanX] = useState(0);
@@ -22,7 +26,8 @@ export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, h
   useEffect(() => {
     setLocalPanX(0);
     setLocalPanY(0);
-  }, [src]);
+    setDragging(false);
+  }, [src, resetKey]);
 
   const effectivePanX = panX + localPanX;
   const effectivePanY = panY + localPanY;
@@ -47,10 +52,14 @@ export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, h
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="relative flex flex-col h-full min-h-0"
+      role={active === undefined ? undefined : "group"} aria-label={active === undefined ? undefined : `${label ?? "Photo"} image panel`}
+      tabIndex={active === undefined ? undefined : 0} onFocusCapture={onActivate} onPointerDownCapture={onActivate}
+      data-active={active === undefined ? undefined : active}>
+      {active && <span aria-hidden="true" className="pointer-events-none absolute inset-0 z-10 border-2 border-cyan-400" />}
       {label && (
         <div className="flex-shrink-0 flex flex-wrap items-center justify-between gap-1 text-xs text-gray-400 px-2 py-1 border-b border-surface-600 bg-surface-800">
-          <span>{label}</span>
+          <span className={active ? "font-semibold text-cyan-200" : undefined}>{label}{active && <span className="ml-2 text-[10px] font-normal uppercase tracking-wide">Active</span>}</span>
           {headerAction}
         </div>
       )}
@@ -69,6 +78,7 @@ export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, h
             src={src}
             alt={label}
             draggable={false}
+            onLoad={onReady}
             style={{
               transform: `scale(${zoom}) translate(${effectivePanX / zoom}px, ${effectivePanY / zoom}px)`,
               transformOrigin: "center center",

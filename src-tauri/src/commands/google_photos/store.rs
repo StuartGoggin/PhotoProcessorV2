@@ -285,7 +285,7 @@ pub(crate) fn load_curation(directory: &Path) -> Result<Curation, String> {
 pub fn set_selection(
     root: &Path,
     asset_id: &str,
-    selected: bool,
+    selected: Option<bool>,
     favourite: Option<bool>,
 ) -> Result<Catalogue, String> {
     let catalogue = super::catalogue::scan(root)?;
@@ -313,7 +313,9 @@ pub fn set_selection(
     let mut curation = load_curation(directory)?;
     let key = super::catalogue::curation_key(path);
     let value = curation.entries.entry(key).or_default();
-    value.selected = selected;
+    if let Some(selected) = selected {
+        value.selected = selected;
+    }
     if let Some(favourite) = favourite {
         value.favourite = favourite;
     }

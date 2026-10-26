@@ -1,6 +1,6 @@
 //! Commands for file-level operations used by the Review page.
 
-use crate::utils::{base64_encode, rename_path_with_retry};
+use crate::utils::base64_encode;
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use exif::{In, Tag};
 use image::codecs::jpeg::JpegEncoder;
@@ -708,15 +708,46 @@ pub fn prewarm_staging_timeline_cache(staging_dir: String) -> Result<usize, Stri
     Ok(items.len())
 }
 
-/// Rename a file in-place, returning the new absolute path.
+/// A rating/trash tag may change a basename, never replace another photograph.
 #[tauri::command]
 pub async fn rename_file(old_path: String, new_name: String) -> Result<String, String> {
-    let old = PathBuf::from(&old_path);
-    let parent = old.parent().ok_or("No parent directory")?;
-    let new = parent.join(&new_name);
-    rename_path_with_retry(&old, &new)?;
-    Ok(new.to_string_lossy().into_owned())
+    tauri::async_runtime::spawn_blocking(move || rename_review_file(Path::new(&old_path), &new_name))
+        .await.map_err(|_| "The photo rename task failed; refresh before retrying.".to_string())?
 }
+
+fn rename_review_file(old: &Path, new_name: &str) -> Result<String, String> {
+    use std::path::Component;
+    if new_name.is_empty() || new_name.contains(['/', '\\', ':', '\0', '\n', '\r'])
+        || !matches!(Path::new(new_name).components().next(), Some(Component::Normal(_)))
+        || Path::new(new_name).components().count() != 1 {
+        return Err("A photo name must be one filename inside its existing folder.".into());
+    }
+    let old = super::archive_plan::resolve(old)?;
+    if !fs::metadata(&old).map_err(|e| e.to_string())?.is_file() {
+        return Err("Choose a regular photo file to review.".into());
+    }
+    let new = old.parent().ok_or("No photo parent directory")?.join(new_name);
+    if old == new { return Ok(old.to_string_lossy().into_owned()); }
+    for attempt in 0..8 {
+        match super::import_safety::rename_new(&old, &new) {
+            Ok(()) => return Ok(new.to_string_lossy().into_owned()),
+            Err(error) => {
+                if new.try_exists().map_err(|e| e.to_string())? {
+                    return Err("Another photo already has that rating/trash filename. Both files were preserved; resolve the duplicate before retrying.".into());
+                }
+                if attempt == 7 || !crate::utils::is_retryable_windows_lock_error(&error) {
+                    return Err(crate::utils::format_rename_error(&old, &new, &error));
+                }
+                std::thread::sleep(Duration::from_millis(120 * (attempt + 1)));
+            }
+        }
+    }
+    Err("The photo could not be renamed; refresh before retrying.".into())
+}
+
+#[cfg(test)]
+#[path = "files_lightbox_rename_tests.rs"]
+mod lightbox_rename_tests;
 
 /// Read a file and return its contents as a Base64-encoded string.
 #[tauri::command]

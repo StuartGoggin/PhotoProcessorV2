@@ -178,7 +178,7 @@ pub async fn google_photos_set_selection(
     app: AppHandle,
     root: String,
     asset_id: String,
-    selected: bool,
+    selected: Option<bool>,
     favourite: Option<bool>,
 ) -> Result<Catalogue, String> {
     tauri::async_runtime::spawn_blocking(move || {

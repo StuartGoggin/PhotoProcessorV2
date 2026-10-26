@@ -84,7 +84,8 @@ fixture.__TAURI_INTERNALS__ = {
       fixture.__lightboxSelectionWrites.push(args);
       if (fixture.__lightboxSelectionWriteError) throw new Error(fixture.__lightboxSelectionWriteError);
       if (fixture.__lightboxDeferSelection) await new Promise<void>(resolve => { fixture.__lightboxResolveSelection = resolve; });
-      fixture.__lightboxSelections.set(args.assetId, { selected: args.selected, favourite: args.favourite });
+      const prior = fixture.__lightboxSelections.get(args.assetId) ?? { selected: false, favourite: false };
+      fixture.__lightboxSelections.set(args.assetId, { selected: args.selected ?? prior.selected, favourite: args.favourite ?? prior.favourite });
       return structuredClone(curation());
     }
     if (command === "load_settings") return { staging_dir: "D:\\Synthetic photos", source_root: "", archive_dir: "", exiftool_dir: "" };

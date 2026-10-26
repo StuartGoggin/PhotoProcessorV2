@@ -262,6 +262,11 @@ pub(super) fn matches_content(
     Ok(hash(path)? == expected_hash)
 }
 
+/// Narrow reuse for reviewed filename tags. Never replaces an existing target.
+pub(super) fn rename_new(source: &Path, destination: &Path) -> std::io::Result<()> {
+    publish_new(source, destination)
+}
+
 #[cfg(windows)]
 fn publish_new(source: &Path, destination: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;

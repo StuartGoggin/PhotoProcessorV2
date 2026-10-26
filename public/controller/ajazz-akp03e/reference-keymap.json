@@ -1,0 +1,443 @@
+{
+  "format": "photogogo-controller-reference-v1",
+  "vendorImportProfile": false,
+  "model": "AJAZZ AKP03E",
+  "scope": "PhotoGoGo foreground; Photo Lightbox open",
+  "buttons": [
+    {
+      "row": 1,
+      "column": 1,
+      "commandId": "rate-1-next",
+      "keys": "Shift+1",
+      "icon": "one-star-next.png"
+    },
+    {
+      "row": 1,
+      "column": 2,
+      "commandId": "rate-2-next",
+      "keys": "Shift+2",
+      "icon": "two-stars-next.png"
+    },
+    {
+      "row": 1,
+      "column": 3,
+      "commandId": "rate-3-next",
+      "keys": "Shift+3",
+      "icon": "three-stars-next.png"
+    },
+    {
+      "row": 2,
+      "column": 1,
+      "commandId": "trash-next",
+      "keys": "X",
+      "icon": "trash-next.png"
+    },
+    {
+      "row": 2,
+      "column": 2,
+      "commandId": "select-active-next",
+      "keys": "G",
+      "icon": "select-next.png"
+    },
+    {
+      "row": 2,
+      "column": 3,
+      "commandId": "next",
+      "keys": "→",
+      "icon": "skip.png"
+    }
+  ],
+  "dials": [
+    {
+      "number": 1,
+      "left": "previous",
+      "right": "next",
+      "press": "crop-version",
+      "bindings": {
+        "left": "←",
+        "right": "→",
+        "press": "V"
+      }
+    },
+    {
+      "number": 2,
+      "left": "zoom-out",
+      "right": "zoom-in",
+      "press": "fit",
+      "bindings": {
+        "left": "−",
+        "right": "+ / =",
+        "press": "0"
+      }
+    },
+    {
+      "number": 3,
+      "left": "panel-previous",
+      "right": "panel-next",
+      "press": "select-active",
+      "bindings": {
+        "left": "[",
+        "right": "]",
+        "press": "A"
+      }
+    }
+  ],
+  "commands": [
+    {
+      "id": "previous",
+      "label": "Previous original photo",
+      "group": "Browse",
+      "keys": [
+        "←"
+      ]
+    },
+    {
+      "id": "next",
+      "label": "Next original photo / skip",
+      "group": "Browse",
+      "keys": [
+        "→"
+      ]
+    },
+    {
+      "id": "first",
+      "label": "First photo in this folder",
+      "group": "Browse",
+      "keys": [
+        "Home"
+      ]
+    },
+    {
+      "id": "last",
+      "label": "Last photo in this folder",
+      "group": "Browse",
+      "keys": [
+        "End"
+      ]
+    },
+    {
+      "id": "rate-1",
+      "label": "Set one star",
+      "group": "Review",
+      "keys": [
+        "1"
+      ]
+    },
+    {
+      "id": "rate-2",
+      "label": "Set two stars",
+      "group": "Review",
+      "keys": [
+        "2"
+      ]
+    },
+    {
+      "id": "rate-3",
+      "label": "Set three stars",
+      "group": "Review",
+      "keys": [
+        "3"
+      ]
+    },
+    {
+      "id": "clear-rating",
+      "label": "Clear the star rating",
+      "group": "Review",
+      "keys": [
+        "Backspace"
+      ]
+    },
+    {
+      "id": "rate-1-next",
+      "label": "Set one star, save and next",
+      "group": "Quick review",
+      "keys": [
+        "Shift+1"
+      ]
+    },
+    {
+      "id": "rate-2-next",
+      "label": "Set two stars, save and next",
+      "group": "Quick review",
+      "keys": [
+        "Shift+2"
+      ]
+    },
+    {
+      "id": "rate-3-next",
+      "label": "Set three stars, save and next",
+      "group": "Quick review",
+      "keys": [
+        "Shift+3"
+      ]
+    },
+    {
+      "id": "trash",
+      "label": "Mark / unmark trash (no file deletion)",
+      "group": "Review",
+      "keys": [
+        "Delete"
+      ]
+    },
+    {
+      "id": "trash-next",
+      "label": "Mark trash, save and next",
+      "group": "Quick review",
+      "keys": [
+        "X"
+      ]
+    },
+    {
+      "id": "select-original",
+      "label": "Toggle Original Google Photos selection (Cropped in cropped view)",
+      "group": "Version selections",
+      "keys": [
+        "Q"
+      ]
+    },
+    {
+      "id": "select-bw",
+      "label": "Toggle B&W Google Photos selection",
+      "group": "Version selections",
+      "keys": [
+        "W"
+      ]
+    },
+    {
+      "id": "select-enhanced",
+      "label": "Toggle Enhanced Google Photos selection",
+      "group": "Version selections",
+      "keys": [
+        "E"
+      ]
+    },
+    {
+      "id": "favourite-original",
+      "label": "Toggle Original favourite (Cropped in cropped view)",
+      "group": "Version selections",
+      "keys": [
+        "Shift+Q"
+      ]
+    },
+    {
+      "id": "favourite-bw",
+      "label": "Toggle B&W favourite",
+      "group": "Version selections",
+      "keys": [
+        "Shift+W"
+      ]
+    },
+    {
+      "id": "favourite-enhanced",
+      "label": "Toggle Enhanced favourite",
+      "group": "Version selections",
+      "keys": [
+        "Shift+E"
+      ]
+    },
+    {
+      "id": "panel-previous",
+      "label": "Previous available image panel",
+      "group": "Inspect",
+      "keys": [
+        "["
+      ]
+    },
+    {
+      "id": "panel-next",
+      "label": "Next available image panel",
+      "group": "Inspect",
+      "keys": [
+        "]"
+      ]
+    },
+    {
+      "id": "select-active",
+      "label": "Toggle the active panel's Google Photos selection",
+      "group": "Version selections",
+      "keys": [
+        "A"
+      ]
+    },
+    {
+      "id": "select-active-next",
+      "label": "Select the active version, save and next",
+      "group": "Quick review",
+      "keys": [
+        "G"
+      ]
+    },
+    {
+      "id": "zoom-in",
+      "label": "Zoom in",
+      "group": "Inspect",
+      "keys": [
+        "+",
+        "="
+      ]
+    },
+    {
+      "id": "zoom-out",
+      "label": "Zoom out",
+      "group": "Inspect",
+      "keys": [
+        "−"
+      ]
+    },
+    {
+      "id": "fit",
+      "label": "Fit image / reset zoom and pan",
+      "group": "Inspect",
+      "keys": [
+        "0"
+      ]
+    },
+    {
+      "id": "pan-left",
+      "label": "Pan the active zoomed image left",
+      "group": "Inspect",
+      "keys": [
+        "Shift+←"
+      ]
+    },
+    {
+      "id": "pan-right",
+      "label": "Pan the active zoomed image right",
+      "group": "Inspect",
+      "keys": [
+        "Shift+→"
+      ]
+    },
+    {
+      "id": "pan-up",
+      "label": "Pan the active zoomed image up",
+      "group": "Inspect",
+      "keys": [
+        "Shift+↑"
+      ]
+    },
+    {
+      "id": "pan-down",
+      "label": "Pan the active zoomed image down",
+      "group": "Inspect",
+      "keys": [
+        "Shift+↓"
+      ]
+    },
+    {
+      "id": "crop",
+      "label": "Open crop editor for this JPEG original",
+      "group": "Editing",
+      "keys": [
+        "C"
+      ]
+    },
+    {
+      "id": "crop-version",
+      "label": "Switch Original / Cropped view",
+      "group": "Editing",
+      "keys": [
+        "V"
+      ]
+    },
+    {
+      "id": "refresh",
+      "label": "Refresh photos and saved selections",
+      "group": "Browse",
+      "keys": [
+        "R"
+      ]
+    },
+    {
+      "id": "help",
+      "label": "Keyboard & Controller Help",
+      "group": "Help",
+      "keys": [
+        "F1",
+        "?"
+      ]
+    },
+    {
+      "id": "crop-apply",
+      "label": "Apply crop and regenerate chosen versions",
+      "group": "Crop editor",
+      "keys": [
+        "Ctrl+Enter"
+      ]
+    },
+    {
+      "id": "crop-close",
+      "label": "Cancel / close crop editor",
+      "group": "Crop editor",
+      "keys": [
+        "Escape"
+      ]
+    },
+    {
+      "id": "crop-reset",
+      "label": "Reset full frame",
+      "group": "Crop editor",
+      "keys": [
+        "R"
+      ]
+    },
+    {
+      "id": "crop-orientation",
+      "label": "Switch portrait / landscape for a fixed ratio",
+      "group": "Crop editor",
+      "keys": [
+        "V"
+      ]
+    },
+    {
+      "id": "crop-bw",
+      "label": "Toggle regeneration of cropped B&W",
+      "group": "Crop editor",
+      "keys": [
+        "Q"
+      ]
+    },
+    {
+      "id": "crop-enhanced",
+      "label": "Toggle regeneration of cropped Enhanced",
+      "group": "Crop editor",
+      "keys": [
+        "E"
+      ]
+    },
+    {
+      "id": "crop-nudge",
+      "label": "Move focused crop handle by one source pixel",
+      "group": "Crop editor",
+      "keys": [
+        "Arrow keys"
+      ]
+    },
+    {
+      "id": "crop-nudge-fast",
+      "label": "Move focused crop handle by ten source pixels",
+      "group": "Crop editor",
+      "keys": [
+        "Shift+Arrow keys"
+      ]
+    },
+    {
+      "id": "crop-focus",
+      "label": "Move between crop handles and editing controls",
+      "group": "Crop editor",
+      "keys": [
+        "Tab",
+        "Shift+Tab"
+      ]
+    },
+    {
+      "id": "crop-help",
+      "label": "Show crop keyboard help",
+      "group": "Crop editor",
+      "keys": [
+        "F1",
+        "?"
+      ]
+    }
+  ]
+}

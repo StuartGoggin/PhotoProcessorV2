@@ -4,6 +4,7 @@ import type { LightboxPhoto } from "../utils/lightboxCatalogue";
 import { cropPixelSize, dragCrop, fitCropRatio, FULL_CROP, validCrop, type CropHandle } from "../utils/lightboxCrop";
 import { loadPhotoProcessRecipe, savePhotoProcessRecipe, type PhotoProcessRecipe } from "../utils/photoProcessRecipe";
 import type { CropRect, LightboxCropInfo, LightboxCropResult } from "../types/lightboxCrop";
+import { lightboxCropCommands, lightboxTypingTarget, matchLightboxCropCommand, shortcutFor } from "../utils/lightboxCommands";
 
 interface Props {
   stagingDir: string; photo: LightboxPhoto;
@@ -56,6 +57,9 @@ export default function LightboxCropEditor({ stagingDir, photo, onClose, onSaved
   const drag = useRef<{ pointer: number; x: number; y: number; start: CropRect; handle: CropHandle } | null>(null);
   const ratioFrame = useRef<CropRect>({ ...FULL_CROP });
   const applyRef = useRef<() => void>(() => {});
+  const closeRef = useRef(onClose); closeRef.current = onClose;
+  const cropHelp = useRef<HTMLDetailsElement>(null);
+  const actionsRef = useRef<Record<string, () => void>>({});
 
   async function load() {
     const request = ++loadRequest.current;
@@ -87,9 +91,15 @@ export default function LightboxCropEditor({ stagingDir, photo, onClose, onSaved
     const previouslyFocused = document.activeElement as HTMLElement | null;
     dialog.current?.focus();
     function key(event: KeyboardEvent) {
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (!busyRef.current) onClose(); }
-      else if (event.key === "Enter" && event.target !== cancel.current && !(event.target instanceof HTMLSelectElement) && !(event.target instanceof HTMLElement && event.target.closest("summary"))) { event.preventDefault(); event.stopPropagation(); applyRef.current(); }
-      else if (event.key === "Tab") {
+      const action = matchLightboxCropCommand(event);
+      if (action && (["crop-close", "crop-help", "crop-apply"].includes(action) || !lightboxTypingTarget(event.target))) {
+        event.preventDefault(); event.stopPropagation();
+        if (busyRef.current) return;
+        if (action === "crop-close") closeRef.current();
+        else if (action === "crop-apply") applyRef.current();
+        else if (action === "crop-help" && cropHelp.current) {cropHelp.current.open = !cropHelp.current.open; cropHelp.current.scrollIntoView({ block: "nearest" }); cropHelp.current.querySelector<HTMLElement>("summary")?.focus();}
+        else actionsRef.current[action]?.();
+      } else if (event.key === "Tab") {
         const focusable = [...(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [tabindex="0"]') ?? [])].filter(node => node.getClientRects().length);
         const first = focusable[0], last = focusable[focusable.length - 1];
         if (event.shiftKey && (document.activeElement === first || !dialog.current?.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
@@ -98,7 +108,7 @@ export default function LightboxCropEditor({ stagingDir, photo, onClose, onSaved
     }
     window.addEventListener("keydown", key, true);
     return () => { window.removeEventListener("keydown", key, true); previouslyFocused?.focus(); };
-  }, [onClose]);
+  }, []);
 
   function ratioFor(name = ratioName, vertical = portrait): number | null {
     if (!info || name === "Free") return null;
@@ -113,6 +123,16 @@ export default function LightboxCropEditor({ stagingDir, photo, onClose, onSaved
     // shrinking an already ratio-cropped rectangle on each portrait/landscape flip.
     if (info) setCrop(fitCropRatio(ratioFrame.current, ratioFor(name, vertical), info.width, info.height));
   }
+  function resetFullFrame() {
+    if (loading || busyRef.current) return;
+    ratioFrame.current = { ...FULL_CROP }; setCrop({ ...FULL_CROP }); setRatioName("Free");
+  }
+  actionsRef.current = {
+    "crop-reset": resetFullFrame,
+    "crop-orientation": () => {if (!loading && !busyRef.current && !["Free", "Original", "Square"].includes(ratioName)) chooseRatio(ratioName, !portrait);},
+    "crop-bw": () => {if (!loading && !busyRef.current) setBw(value => !value);},
+    "crop-enhanced": () => {if (!loading && !busyRef.current) setEnhanced(value => !value);},
+  };
   function begin(event: React.PointerEvent, handle: CropHandle) {
     if (busy || loading || !info || event.button !== 0) return;
     event.preventDefault(); event.stopPropagation();
@@ -159,7 +179,7 @@ export default function LightboxCropEditor({ stagingDir, photo, onClose, onSaved
   return <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="crop-heading" tabIndex={-1} className="fixed inset-0 z-50 flex flex-col bg-surface-900 text-gray-200 outline-none" data-testid="lightbox-crop-editor">
     <header className="flex-shrink-0 border-b border-surface-600 p-3 sm:px-5 flex items-center justify-between gap-3">
       <div className="min-w-0"><h2 id="crop-heading" className="text-lg font-semibold text-white">Crop photo</h2><p className="text-xs text-gray-400 truncate">{photo.original.name} · Original stays untouched</p></div>
-      <button ref={cancel} type="button" className="btn-secondary text-xs" onClick={onClose} disabled={busy}>Cancel</button>
+      <button ref={cancel} type="button" className="btn-secondary text-xs min-h-11" onClick={onClose} disabled={busy}>Cancel <kbd aria-hidden="true" className="ml-2 text-gray-400">{shortcutFor("crop-close")}</kbd></button>
     </header>
     <div className="flex-1 min-h-0 flex flex-col lg:flex-row">
       <div ref={area} className="relative flex-1 min-h-48 min-w-0 overflow-hidden bg-black flex items-center justify-center">
@@ -177,21 +197,22 @@ export default function LightboxCropEditor({ stagingDir, photo, onClose, onSaved
         <section className="space-y-3"><h3 className="text-sm font-medium text-white">Composition</h3><label className="block text-xs text-gray-400">Aspect ratio<select aria-label="Crop aspect ratio" value={ratioName} onChange={event => chooseRatio(event.target.value)} disabled={loading || busy} className="w-full mt-1 bg-surface-800 border border-surface-600 rounded-lg p-2 text-gray-100">{ratioOptions.map(name => <option key={name}>{name}</option>)}</select></label>
           {ratioName !== "Free" && ratioName !== "Original" && ratioName !== "Square" && <button type="button" className="btn-secondary text-xs w-full" disabled={busy} onClick={() => chooseRatio(ratioName, !portrait)}>Switch to {portrait ? "landscape" : "portrait"}</button>}
           <div className="rounded-lg border border-surface-600 p-2 text-xs space-y-1"><div aria-live="polite" className="text-cyan-200 tabular-nums" data-testid="crop-output-dimensions">{outputWidth.toLocaleString()} × {outputHeight.toLocaleString()} pixels</div><div className="text-gray-400">Full source pixels · no upscaling · JPEG quality 95</div></div>
-          <button type="button" className="btn-secondary text-xs" disabled={loading || busy} onClick={() => { ratioFrame.current = { ...FULL_CROP }; setCrop({ ...FULL_CROP }); setRatioName("Free"); }}>Reset full frame</button>
+          <button type="button" className="btn-secondary text-xs min-h-11" disabled={loading || busy} onClick={resetFullFrame}>Reset full frame <kbd aria-hidden="true" className="ml-2 text-gray-400">{shortcutFor("crop-reset")}</kbd></button>
           <p className="text-xs text-gray-400">Drag corners or edges. Drag inside to move. Focus a handle and use arrow keys for 1-pixel changes (Shift: 10 pixels).</p>
         </section>
-        <section className="space-y-3 border-t border-surface-600 pt-3"><h3 className="text-sm font-medium text-white">Regenerate from this crop</h3><label className="flex gap-2 text-sm items-center"><input type="checkbox" checked={bw} disabled={busy} onChange={event => setBw(event.target.checked)} />B&W crop version</label><label className="flex gap-2 text-sm items-center"><input type="checkbox" checked={enhanced} disabled={busy} onChange={event => setEnhanced(event.target.checked)} />Enhanced crop version</label><p className="text-xs text-gray-400">Both start independently from the new crop. Existing original B&W/Enhanced files stay unchanged. Unchecked previous crop versions are cleared when the crop changes.</p>
+        <section className="space-y-3 border-t border-surface-600 pt-3"><h3 className="text-sm font-medium text-white">Regenerate from this crop</h3><label className="flex gap-3 text-sm items-center min-h-11 rounded-lg border border-surface-600 px-2 cursor-pointer"><input className="w-6 h-6 accent-cyan-400 shrink-0" type="checkbox" checked={bw} disabled={busy || loading} onChange={event => setBw(event.target.checked)} />B&W crop version <kbd className="ml-auto text-xs text-gray-400">{shortcutFor("crop-bw")}</kbd></label><label className="flex gap-3 text-sm items-center min-h-11 rounded-lg border border-surface-600 px-2 cursor-pointer"><input className="w-6 h-6 accent-cyan-400 shrink-0" type="checkbox" checked={enhanced} disabled={busy || loading} onChange={event => setEnhanced(event.target.checked)} />Enhanced crop version <kbd className="ml-auto text-xs text-gray-400">{shortcutFor("crop-enhanced")}</kbd></label><p className="text-xs text-gray-400">Both start independently from the new crop. Existing original B&W/Enhanced files stay unchanged. Unchecked previous crop versions are cleared when the crop changes.</p>
           <details><summary className="text-xs text-cyan-200 cursor-pointer">Current Photo Process settings</summary><p className="text-xs text-gray-400 my-2">Uses your current saved settings, not a reconstruction of an older output's recipe. Changes here also become your Photo Process defaults.</p><div className="space-y-3">
             {adjustment("Crop enhancement contrast", recipe.enhanceContrastLevel, 0, 2, value => setRecipe(current => ({ ...current, enhanceContrastLevel: value })))}
             {adjustment("Crop enhancement sharpening", recipe.enhanceSharpnessLevel, 0, 1, value => setRecipe(current => ({ ...current, enhanceSharpnessLevel: value })))}
             {([ ["localContrast", "Crop B&W local contrast", 0, 1], ["sharpness", "Crop B&W sharpening", 0, 1], ["curveStrength", "Crop S-curve strength", 0, 1], ["shadowDepth", "Crop S-curve shadow depth", 0, .25], ["highlightLift", "Crop S-curve highlight lift", 0, .25], ["midpoint", "Crop S-curve midpoint", .25, .75] ] as const).map(([key, label, min, max]) => <div key={key}>{adjustment(label, recipe.bwParams[key], min, max, value => setRecipe(current => ({ ...current, bwParams: { ...current.bwParams, [key]: value } })), .01)}</div>)}
           </div></details>
         </section>
+        <details ref={cropHelp} className="rounded-lg border border-surface-600 p-3 text-xs text-gray-300"><summary className="cursor-pointer text-cyan-200">Crop keyboard help <kbd className="ml-2">F1 / ?</kbd></summary><dl className="mt-3 space-y-2">{lightboxCropCommands.map(command => <div key={command.id}><dt className="font-medium text-gray-200">{command.label}</dt><dd className="text-gray-400">{command.keys.join(" / ")}</dd></div>)}</dl><p className="mt-3 text-gray-400">Tab reaches each handle and setting. Space toggles a focused checkbox; Enter activates a focused button. Main Lightbox rating and selection shortcuts are suspended here.</p></details>
       </aside>
     </div>
     <footer className="flex-shrink-0 border-t border-surface-600 p-3 sm:px-5 space-y-2">
       {error && <div role="alert" className="text-sm text-amber-200 whitespace-pre-wrap break-words">{error}<button type="button" className="btn-secondary text-xs ml-3" disabled={busy || loading} onClick={() => { void load(); }}>Reload original and reset selection</button></div>}
-      <div className="flex items-center justify-between gap-3 flex-wrap"><p className="text-xs text-gray-400">Saves <strong className="text-gray-200">_crop.jpg</strong> beside the original. Re-editing always starts from the untouched original.</p><button type="button" className="btn-primary text-sm" disabled={loading || busy || !info || !source} onClick={() => { void apply(); }}>{busy ? "Saving crop and regenerating…" : "Apply crop & regenerate"}</button></div>
+      <div className="flex items-center justify-between gap-3 flex-wrap"><p className="text-xs text-gray-400">Saves <strong className="text-gray-200">_crop.jpg</strong> beside the original. Re-editing always starts from the untouched original.</p><button type="button" className="btn-primary text-sm min-h-11" aria-label="Apply crop & regenerate" aria-busy={busy} disabled={loading || busy || !info || !source} onClick={() => { void apply(); }}>{busy ? "Saving crop and regenerating…" : <>Apply crop &amp; regenerate <kbd aria-hidden="true" className="ml-2 text-xs">{shortcutFor("crop-apply")}</kbd></>}</button></div>
     </footer>
   </div>;
 }

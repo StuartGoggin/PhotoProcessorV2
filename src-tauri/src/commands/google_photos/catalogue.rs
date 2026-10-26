@@ -587,7 +587,7 @@ mod tests {
             .iter()
             .find(|a| a.variant == PhotoVariant::Bw)
             .unwrap();
-        store::set_selection(&root, &bw.id, true, Some(true)).unwrap();
+        store::set_selection(&root, &bw.id, Some(true), Some(true)).unwrap();
         fs::rename(root.join("shot_BW.jpg"), root.join("shot_BW{Like o}.jpg")).unwrap();
         fs::write(
             root.join("shot_BW{Like o}.jpg"),
@@ -614,10 +614,24 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn partial_curation_changes_preserve_the_other_flag() {
+        let root = fixture(&["shot.jpg"]);
+        let initial = scan(&root).unwrap();
+        let id = &initial.assets[0].id;
+        store::set_selection(&root, id, Some(true), None).unwrap();
+        let favourite_only = store::set_selection(&root, id, None, Some(true)).unwrap();
+        assert!(favourite_only.assets[0].selected && favourite_only.assets[0].favourite);
+        let selection_only = store::set_selection(&root, id, Some(false), None).unwrap();
+        assert!(!selection_only.assets[0].selected && selection_only.assets[0].favourite);
+        let favourite_off = store::set_selection(&root, id, None, Some(false)).unwrap();
+        assert!(!favourite_off.assets[0].selected && !favourite_off.assets[0].favourite);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn folder_move_keeps_portable_curation_but_not_cloud_identity() {
         let root = fixture(&["old/shot.jpg"]);
         let before = scan(&root).unwrap();
-        store::set_selection(&root, &before.assets[0].id, true, None).unwrap();
+        store::set_selection(&root, &before.assets[0].id, Some(true), None).unwrap();
         fs::rename(root.join("old"), root.join("new")).unwrap();
         let after = scan(&root).unwrap();
         assert!(after.assets[0].selected);
@@ -698,7 +712,7 @@ mod tests {
             b"corrupt, preserve this",
         )
         .unwrap();
-        assert!(store::set_selection(&root, &first.assets[0].id, true, None).is_err());
+        assert!(store::set_selection(&root, &first.assets[0].id, Some(true), None).is_err());
         assert_eq!(
             fs::read(root.join(".photogogo-curation.json")).unwrap(),
             b"corrupt, preserve this"
