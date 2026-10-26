@@ -40,6 +40,8 @@ pub(super) fn history_eligible(job: &Job) -> bool {
 }
 pub(super) fn project(job: &Job, account_id: Option<&str>) -> ProcessJob {
     let mut summary = job.summary();
+    summary.history_hidden = job.history_hidden && history_eligible(job);
+    summary.can_open_album = account_id == Some(job.plan.account_id.as_str());
     let status = match job.status.as_str() {
         "queued" => ProcessJobStatus::Queued,
         "running" => ProcessJobStatus::Running,
@@ -69,7 +71,7 @@ pub(super) fn project(job: &Job, account_id: Option<&str>) -> ProcessJob {
     let phase = match job.status.as_str() {
         "paused" => "Paused at a safe checkpoint".into(),
         "aborted" | "cancelled" => "Stopped; registered receipts retained".into(),
-        "needs_attention" => "Verification or upload needs attention".into(),
+        "needs_attention" => format!("{} needs attention", diagnostics::attention_phase(job)),
         "completed_with_warnings" => "Completed with verification warnings".into(),
         _ => diagnostics::phase(job),
     };
@@ -167,9 +169,7 @@ pub(super) fn stored_jobs(
             if !active.contains(&job.plan.id) && can_recover {
                 job.recover();
             }
-            if job.history_hidden && history_eligible(&job) {
-                continue;
-            }
+
             let mut row = project(&job, account_id);
             let (stop, abort) = process_runtime::stop_state(&job.plan.id);
             row.pause_requested = stop && !abort;
@@ -186,6 +186,9 @@ pub(super) fn stored_jobs(
 }
 pub(super) fn stale_jobs(mut jobs: Vec<ProcessJob>, warning: &str) -> Vec<ProcessJob> {
     for job in &mut jobs {
+        if let Some(summary) = job.google_photos.as_mut() {
+            summary.can_open_album = false;
+        }
         job.can_continue = Some(false);
         job.control_blocked_reason = Some(warning.into());
         job.persistence_error = Some(warning.into());
@@ -266,4 +269,18 @@ pub(super) fn archive_store(store: &super::store::GoogleStore) -> Result<usize, 
         }
     }
     Ok(count)
+}
+
+pub(super) fn restore_store(store: &super::store::GoogleStore, id: &str) -> Result<bool, String> {
+    super::validate_id(id)?;
+    let mut job: Job = store
+        .load(&format!("job_{id}"))?
+        .ok_or("Saved upload was not found.")?;
+    if job.plan.id != id {
+        return Err("Saved upload identity is inconsistent.".into());
+    }
+    let changed = job.history_hidden;
+    job.history_hidden = false;
+    job.save(store)?;
+    Ok(changed)
 }

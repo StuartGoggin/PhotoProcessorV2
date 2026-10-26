@@ -175,7 +175,7 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
     const target = processJobs.find(job => job.id === focusJobId);
     if (!target) return;
     focusedOnce.current = focusJobId;
-    setView(matchesJobsView(target, "attention") ? "attention" : matchesJobsView(target, "active") ? "active" : "history");
+    setView(matchesJobsView(target, "archived") ? "archived" : matchesJobsView(target, "attention") ? "attention" : matchesJobsView(target, "active") ? "active" : "history");
     const timer = window.setTimeout(() => document.getElementById(`process-job-${focusJobId}`)?.scrollIntoView({ block: "center" }), 0);
     return () => window.clearTimeout(timer);
   }, [focusJobId, processJobs]);
@@ -262,6 +262,7 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
         <button className="btn-secondary" onClick={() => void loadJobs()} disabled={loading}>
           Refresh
         </button>
+        {view === "archived" && <p className="text-xs text-gray-400">Archived Google Photos uploads retain their receipts. Restore to History before explicitly rechecking; restoring starts no cloud work.</p>}
         {view === "history" && <button className="btn-secondary" onClick={clearFinished} disabled={loading}>Clear finished import / process history</button>}
         <label className="flex items-center gap-2 text-sm text-gray-300 ml-2">
           <input type="checkbox" className="h-4 w-4" checked={tail} onChange={(e) => setTail(e.target.checked)} />
@@ -517,7 +518,7 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
                       </div>
                       <div className="flex items-center gap-2 flex-wrap justify-end">
                         <div className={`text-xs px-2 py-1 rounded-full border capitalize ${PROCESS_STATUS_STYLES[job.status]}`}>{job.status === "completed_with_warnings" && job.task === "googlePhotos" ? "Completed with verification warnings" : job.status.replace(/_/g, " ")}</div>
-                        <ProcessJobControls job={job} onChanged={() => loadJobs(false)} />
+                        <ProcessJobControls job={job} onChanged={() => loadJobs(false)} onRestored={() => setView("history")} />
                       </div>
                     </div>
 

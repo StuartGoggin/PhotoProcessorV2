@@ -67,7 +67,7 @@ test("attention includes partial failures and lost checkpoints even during execu
   assert.equal(matchesJobsView({ status: "running", errors: ["partial failure"] }, "active"), true);
 });
 test("mixed-family counts distinguish recoverable interruption from active", () => {
-  assert.deepEqual(countJobs([importJob("running"), importJob("completed"), studioJob("interrupted"), studioJob("paused")]), { active: 2, attention: 1, history: 2 });
+  assert.deepEqual(countJobs([importJob("running"), importJob("completed"), studioJob("interrupted"), studioJob("paused")]), { active: 2, attention: 1, history: 2, archived: 0 });
 });
 
 test("Google execution phases are active and failed or unverified attempts need attention", () => {
@@ -168,3 +168,5 @@ test("completed warning jobs stay in History without concealing genuine errors",
   assert.equal(jobNeedsAttention({ ...job, errors: ["Actual upload failure"] }), true);
   assert.equal(jobNeedsAttention({ ...job, persistenceError: "Protected store unavailable" }), true);
 });
+
+test("archived uploads are recoverable without ordinary history or attention counts", () => { const job={status:"completed_with_warnings",googlePhotos:{historyHidden:true}}; assert.equal(matchesJobsView(job,"history"),false);assert.equal(matchesJobsView(job,"archived"),true);assert.equal(jobNeedsAttention(job),false);assert.deepEqual(countJobs([job]),{active:0,attention:0,history:0,archived:1}); });

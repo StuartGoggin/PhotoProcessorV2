@@ -17,6 +17,8 @@ use std::{
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ItemProgress {
+    #[serde(default)]
+    pub readback_rejected: bool,
     pub id: String,
     pub state: String,
     pub prepared: Option<Prepared>,
@@ -87,6 +89,8 @@ pub struct JobSummary {
     pub awaiting_verification: usize,
     pub verification_needs_attention: usize,
     pub readback_unavailable: usize,
+    pub history_hidden: bool,
+    pub can_open_album: bool,
     pub skipped: usize,
     pub failed: usize,
     pub bytes_done: u64,
@@ -287,6 +291,8 @@ impl Job {
             awaiting_verification,
             verification_needs_attention,
             readback_unavailable,
+            history_hidden: false,
+            can_open_album: false,
             skipped,
             failed,
             bytes_done: self
@@ -348,6 +354,11 @@ impl Job {
         store.save(&format!("job_{}", self.plan.id), self)
     }
     pub fn recover(&mut self) {
+        for item in &mut self.items {
+            if item.error.as_deref() == Some(DIMENSION_MISMATCH) {
+                item.readback_rejected = true;
+            }
+        }
         if matches!(self.status.as_str(), "queued" | "running") {
             self.status = "paused".into();
         }
@@ -391,7 +402,79 @@ fn scope(item: &PlanItem, root: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn remember(store: &GoogleStore, job: &Job, index: usize) -> Result<(), String> {
+const DIMENSION_MISMATCH: &str = "Google's reported photo dimensions differ from the full-resolution upload. Needs review; not marked successful.";
+
+/// Reconcile durable negative job evidence after an interrupted ledger write.
+/// Older rejected jobs remain conservative until their own successful recheck.
+pub(super) fn effective_ledger(store: &GoogleStore) -> Result<Vec<LedgerEntry>, String> {
+    let mut entries: Vec<LedgerEntry> = store.load("ledger")?.unwrap_or_default();
+    let mut rejected = std::collections::HashSet::new();
+    for entry in &entries {
+        if entry.readback_rejected {
+            rejected.insert((entry.account_id.clone(), entry.media_item_id.clone()));
+        }
+    }
+    for key in store.keys("job_")? {
+        if let Some(job) = store.load::<Job>(&key)? {
+            for (index, item) in job.items.iter().enumerate() {
+                if item.readback_rejected || item.error.as_deref() == Some(DIMENSION_MISMATCH) {
+                    if let Some(media) = &item.media {
+                        rejected.insert((job.plan.account_id.clone(), media.id.clone()));
+                        if !entries.iter().any(|r| {
+                            r.account_id == job.plan.account_id && r.media_item_id == media.id
+                        }) {
+                            let mut entry = ledger_entry(&job, index, false)?;
+                            entry.readback_rejected = true;
+                            entry.readback_verified = false;
+                            entries.push(entry);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for entry in &mut entries {
+        if rejected.contains(&(entry.account_id.clone(), entry.media_item_id.clone())) {
+            entry.readback_rejected = true;
+            entry.readback_verified = false;
+        }
+    }
+    Ok(entries)
+}
+fn ledger_entry(job: &Job, index: usize, verified: bool) -> Result<LedgerEntry, String> {
+    let item = &job.plan.items[index];
+    let p = &job.items[index];
+    let album = job
+        .albums
+        .iter()
+        .find(|a| a.key == item.album_key)
+        .ok_or("Job album is missing.")?;
+    let media = p.media.as_ref().ok_or("Google media receipt is missing.")?;
+    Ok(LedgerEntry {
+        account_id: job.plan.account_id.clone(),
+        asset_id: item.id.clone(),
+        source_sha256: item.source_sha256.clone(),
+        original_sha256: item.original_sha256.clone(),
+        metadata_recipe: 1,
+        prepared_sha256: p
+            .prepared
+            .as_ref()
+            .map(|p| p.sha256.clone())
+            .unwrap_or_default(),
+        strip_gps: item.strip_gps,
+        album_key: item.album_key.clone(),
+        album_id: album.id.clone().ok_or("Album receipt is missing.")?,
+        media_item_id: media.id.clone(),
+        readback_verified: verified && !p.readback_rejected,
+        readback_rejected: p.readback_rejected,
+    })
+}
+fn remember(
+    store: &GoogleStore,
+    job: &Job,
+    index: usize,
+    fresh_readback: bool,
+) -> Result<(), String> {
     let item = &job.plan.items[index];
     let p = &job.items[index];
     let album = job
@@ -402,7 +485,17 @@ fn remember(store: &GoogleStore, job: &Job, index: usize) -> Result<(), String> 
     let media = p.media.as_ref().ok_or("Google media receipt is missing.")?;
     let mut entries: Vec<LedgerEntry> = store.load("ledger")?.unwrap_or_default();
     let verified = matches!(p.state.as_str(), "verified" | "skipped");
-    if !verified && !usable_registration(p) {
+    if fresh_readback && verified && !p.readback_rejected {
+        // Clear propagated negatives for this exact Google object. Other jobs'
+        // own unresolved contradictions are re-applied by effective_ledger().
+        // Do not promote those other rows to dimension-verified evidence.
+        for entry in &mut entries {
+            if entry.account_id == job.plan.account_id && entry.media_item_id == media.id {
+                entry.readback_rejected = false;
+            }
+        }
+    }
+    if !verified && !usable_registration(p) && !p.readback_rejected {
         return Err(
             "Registration evidence is incomplete; receipt was not recorded as accepted.".into(),
         );
@@ -417,30 +510,17 @@ fn remember(store: &GoogleStore, job: &Job, index: usize) -> Result<(), String> 
             && r.strip_gps == item.strip_gps
             && r.media_item_id == media.id
     }) {
-        if verified && !entry.readback_verified {
+        if p.readback_rejected {
+            entry.readback_rejected = true;
+            entry.readback_verified = false;
+            store.save("ledger", &entries)?;
+        } else if fresh_readback && verified {
             entry.readback_verified = true;
             entry.readback_rejected = false;
             store.save("ledger", &entries)?;
         }
     } else {
-        entries.push(LedgerEntry {
-            account_id: job.plan.account_id.clone(),
-            asset_id: item.id.clone(),
-            source_sha256: item.source_sha256.clone(),
-            original_sha256: item.original_sha256.clone(),
-            metadata_recipe: 1,
-            prepared_sha256: p
-                .prepared
-                .as_ref()
-                .map(|p| p.sha256.clone())
-                .unwrap_or_default(),
-            strip_gps: item.strip_gps,
-            album_key: item.album_key.clone(),
-            album_id: album.id.clone().ok_or("Album receipt is missing.")?,
-            media_item_id: media.id.clone(),
-            readback_verified: verified,
-            readback_rejected: false,
-        });
+        entries.push(ledger_entry(job, index, verified)?);
         store.save("ledger", &entries)?;
     }
     Ok(())
@@ -460,6 +540,9 @@ fn usable_registration(progress: &ItemProgress) -> bool {
     }
 }
 pub(super) fn resolved_receipt(progress: &ItemProgress) -> bool {
+    if progress.readback_rejected {
+        return false;
+    }
     match progress.state.as_str() {
         "verified" | "skipped" | "skipped_unverified" => progress.media.is_some(),
         "accepted_unverified" => usable_registration(progress),
@@ -477,21 +560,27 @@ fn rejected_receipt(
         .as_ref()
         .ok_or("Missing media receipt.")?
         .id;
-    let mut entries: Vec<LedgerEntry> = store.load("ledger")?.unwrap_or_default();
-    let mut found = false;
-    for entry in &mut entries {
-        if entry.account_id == job.plan.account_id && &entry.media_item_id == id {
-            if reject {
+    if reject {
+        // Upsert a rejected receipt even on the first read, before the failed checkpoint.
+        remember(store, job, index, false)?;
+        let mut entries: Vec<LedgerEntry> = store.load("ledger")?.unwrap_or_default();
+        for entry in &mut entries {
+            if entry.account_id == job.plan.account_id && &entry.media_item_id == id {
                 entry.readback_rejected = true;
                 entry.readback_verified = false;
             }
-            found |= entry.readback_rejected;
         }
-    }
-    if reject && found {
         store.save("ledger", &entries)?;
+        return Ok(true);
     }
-    Ok(found)
+    Ok(job.items[index].readback_rejected
+        || store
+            .load::<Vec<LedgerEntry>>("ledger")?
+            .unwrap_or_default()
+            .iter()
+            .any(|r| {
+                r.account_id == job.plan.account_id && &r.media_item_id == id && r.readback_rejected
+            }))
 }
 fn verify_item(
     store: &GoogleStore,
@@ -509,15 +598,14 @@ fn verify_item(
     job.save(store)?;
     let verified = api.verify(std::slice::from_ref(&id)).and_then(|results| {
         let result = results
-        .into_iter()
-        .find(|m| m.id == id)
-        .ok_or("Google did not confirm the registered media ID.")?;
+            .into_iter()
+            .find(|m| m.id == id)
+            .ok_or("Google did not confirm the registered media ID.")?;
         if let Some(prepared) = &job.items[index].prepared {
-        // Google reports display dimensions; portrait EXIF may swap raw pixels.
-        if !dimensions_match(&result, prepared)
-        {
-            return Err(ReadbackError::ItemRejected("Google's reported photo dimensions differ from the full-resolution upload. Needs review; not marked successful.".into()));
-        }
+            // Google reports display dimensions; portrait EXIF may swap raw pixels.
+            if !dimensions_match(&result, prepared) {
+                return Err(ReadbackError::ItemRejected(DIMENSION_MISMATCH.into()));
+            }
         }
         Ok(result)
     });
@@ -526,6 +614,14 @@ fn verify_item(
         Err(error) => {
             // Keep the registered receipt and checkpoint. Retry must verify the
             // same ID, never turn a read-back failure into another byte upload.
+            if matches!(error, ReadbackError::ItemRejected(_)) {
+                job.items[index].readback_rejected = true;
+                if let Err(write_error) = rejected_receipt(store, job, index, true) {
+                    job.items[index].error = Some(DIMENSION_MISMATCH.into());
+                    job.save(store)?;
+                    return Err(write_error.into());
+                }
+            }
             let unavailable = matches!(error, ReadbackError::Unavailable(_))
                 && usable_registration(&job.items[index])
                 && !rejected_receipt(store, job, index, false)?;
@@ -553,6 +649,7 @@ fn verify_item(
         }
     };
     job.items[index].media = Some(result);
+    job.items[index].readback_rejected = false;
     job.items[index].state = "verified".into();
     job.items[index].error = None;
     diagnostics::note(
@@ -563,7 +660,7 @@ fn verify_item(
         None,
     );
     job.save(store)?;
-    remember(store, job, index)?;
+    remember(store, job, index, true)?;
     // Only copies whose exact prepared bytes are no longer needed for recovery
     // are removed, and only inside the current job workspace.
     Ok(())
@@ -577,17 +674,24 @@ fn verify_receipts(
     stop: &AtomicBool,
 ) -> Result<(), String> {
     for &index in indices {
-        if job.items[index].media.is_none()
-            || matches!(
-                job.items[index].state.as_str(),
-                "skipped" | "skipped_unverified"
-            )
-        {
+        if job.items[index].media.is_none() {
             continue;
         }
         stop_requested(stop)?;
-        if job.items[index].state == "verified" {
-            remember(store, job, index)?;
+        let rejected = rejected_receipt(store, job, index, false)?;
+        if matches!(
+            job.items[index].state.as_str(),
+            "skipped" | "skipped_unverified"
+        ) {
+            if rejected {
+                diagnostics::note(job, Stage::VerifyMedia, Some(index), Outcome::Failed, None);
+                job.save(store)?;
+                return Err("A reused receipt has newer dimension rejection evidence. Restore and recheck its original upload in History or Archived; its saved dimensions are required.".into());
+            }
+            continue;
+        }
+        if job.items[index].state == "verified" && !rejected {
+            remember(store, job, index, false)?;
             cleanup_copy(job, index, workspace)?;
             continue;
         }
@@ -601,7 +705,7 @@ fn verify_receipts(
                 // Keep a distinct warning, never promote it to read-back verified.
                 job.items[index].error = None;
                 job.save(store)?;
-                remember(store, job, index)?;
+                remember(store, job, index, false)?;
                 cleanup_copy(job, index, workspace)?;
             }
             Err(ReadbackError::Unavailable(error)) => return Err(error),
@@ -873,6 +977,14 @@ pub fn drive(
     job.finished_at = None;
     job.errors.clear();
     job.save(store)?;
+    // Reconcile once per drive under the writer lease; never rescan job history per photo.
+    let raw: Vec<LedgerEntry> = store.load("ledger")?.unwrap_or_default();
+    let reconciled = effective_ledger(store)?;
+    if serde_json::to_vec(&raw).map_err(|_| "Cannot inspect receipt evidence.")?
+        != serde_json::to_vec(&reconciled).map_err(|_| "Cannot inspect receipt evidence.")?
+    {
+        store.save("ledger", &reconciled)?;
+    }
     // Retry every saved ID across albums before source access or new writes.
     let registered: Vec<_> = (0..job.items.len())
         .filter(|i| job.items[*i].media.is_some())
@@ -1002,7 +1114,7 @@ pub fn drive(
         // Resume successful registrations by read-back, not by adding media again.
         for index in &indices {
             if job.items[*index].state == "verified" {
-                remember(store, job, *index)?;
+                remember(store, job, *index, false)?;
             }
         }
         let pending: Vec<_> = indices

@@ -319,3 +319,12 @@ mod tests {
         assert!(!rate_limited("(code 5)"));
     }
 }
+
+pub(super) fn attention_phase(job: &Job) -> String {
+    job.diagnostics
+        .iter()
+        .rev()
+        .find(|e| e.stage != Stage::Job && e.outcome == Outcome::Failed)
+        .map(|e| e.stage.label().to_string())
+        .unwrap_or_else(|| "Upload recovery".into())
+}

@@ -112,7 +112,7 @@ export default function StudioJobs({
         resume the saved request to reuse verified clips and finish that original sequence. Later additions are not included; use Create updated final video in Studio for the current edit.
       </p>
       {view === undefined && <div className="flex flex-wrap gap-2" role="group" aria-label="Filter Studio jobs">
-        {JOBS_VIEWS.map((item) => <button key={item.id} className={`btn-secondary text-xs ${selectedView === item.id ? "ring-1 ring-cyan-400 text-white" : item.id === "attention" && counts.attention ? "text-amber-200" : ""}`} aria-pressed={selectedView === item.id} onClick={() => setLocalView(item.id)}>{item.label} ({counts[item.id]})</button>)}
+        {JOBS_VIEWS.filter(item => item.id !== "archived").map((item) => <button key={item.id} className={`btn-secondary text-xs ${selectedView === item.id ? "ring-1 ring-cyan-400 text-white" : item.id === "attention" && counts.attention ? "text-amber-200" : ""}`} aria-pressed={selectedView === item.id} onClick={() => setLocalView(item.id)}>{item.label} ({counts[item.id]})</button>)}
       </div>}
       {(error || fetchError) && (
         <p role="alert" className="text-red-400">

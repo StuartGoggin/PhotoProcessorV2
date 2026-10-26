@@ -15,6 +15,152 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn fresh_original_recheck_clears_propagated_album_rejections() {
+    let mut f = Fixture::new(1);
+    let mut api = FakeGoogle::default();
+    f.drive(&mut api, &AtomicBool::new(false)).unwrap();
+    let mut second = f.job.clone();
+    second.plan.id = "second-album-job".into();
+    second.albums[0].id = Some("second-album".into());
+    second.items[0].state = "registered".into();
+    api.verify_error_on_call = Some((2, ReadbackError::ItemRejected(DIMENSION_MISMATCH.into())));
+    assert!(drive(
+        &f.store,
+        &mut second,
+        &mut api,
+        &f.workspace,
+        "",
+        &AtomicBool::new(false)
+    )
+    .is_err());
+    let ledger: Vec<LedgerEntry> = f.store.load("ledger").unwrap().unwrap();
+    assert_eq!(ledger.len(), 2);
+    assert!(ledger.iter().all(|r| r.readback_rejected));
+    drive(
+        &f.store,
+        &mut second,
+        &mut api,
+        &f.workspace,
+        "",
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let ledger = effective_ledger(&f.store).unwrap();
+    assert!(ledger.iter().all(|r| !r.readback_rejected));
+    assert_eq!(ledger.iter().filter(|r| r.readback_verified).count(), 1);
+    assert_eq!(api.begins, 1);
+    assert_eq!(api.registrations, 1);
+}
+
+#[test]
+fn interrupted_ledger_write_reconstructs_legacy_negative_job_evidence() {
+    let mut f = Fixture::new(1);
+    let mut api = FakeGoogle {
+        verify_error_on_call: Some((1, ReadbackError::ItemRejected(DIMENSION_MISMATCH.into()))),
+        ..Default::default()
+    };
+    let error = f.drive(&mut api, &AtomicBool::new(false)).unwrap_err();
+    finish_error(&f.store, &mut f.job, error, false).unwrap();
+    // Simulate an absent ledger and a 2.0.37 checkpoint without the new flag.
+    f.store.remove("ledger").unwrap();
+    f.job.items[0].readback_rejected = false;
+    f.job.items[0].error = Some(DIMENSION_MISMATCH.into());
+    f.job.save(&f.store).unwrap();
+    let ledger = effective_ledger(&f.store).unwrap();
+    assert_eq!(ledger.len(), 1);
+    assert!(ledger[0].readback_rejected);
+    f.reload();
+    api.verify_error_on_call = Some((
+        api.verifies + 1,
+        ReadbackError::Unavailable("INVALID_ARGUMENT (code 3).".into()),
+    ));
+    assert!(f.drive(&mut api, &AtomicBool::new(false)).is_err());
+    assert!(f.job.items[0].readback_rejected);
+    assert_eq!(api.begins, 1);
+}
+
+#[test]
+fn newer_rejection_blocks_both_reused_receipt_states_without_dimensions() {
+    let mut f = Fixture::new(1);
+    let mut api = FakeGoogle::default();
+    f.drive(&mut api, &AtomicBool::new(false)).unwrap();
+    let mut ledger: Vec<LedgerEntry> = f.store.load("ledger").unwrap().unwrap();
+    ledger[0].readback_rejected = true;
+    ledger[0].readback_verified = false;
+    f.store.save("ledger", &ledger).unwrap();
+    for state in ["skipped", "skipped_unverified"] {
+        f.job.status = "paused".into();
+        f.job.items[0].state = state.into();
+        f.job.items[0].prepared = None;
+        assert!(f.drive(&mut api, &AtomicBool::new(false)).is_err());
+        assert_eq!(
+            api.verifies, 1,
+            "inherited receipt has no dimensions; original job must recheck"
+        );
+        assert_eq!(api.begins, 1);
+    }
+}
+
+#[test]
+fn first_dimension_rejection_survives_restart_then_unavailable_readback() {
+    let mut f = Fixture::new(1);
+    let mut api = FakeGoogle { verify_error_on_call: Some((1, ReadbackError::ItemRejected("Google's reported photo dimensions differ from the full-resolution upload. Needs review; not marked successful.".into()))), ..Default::default() };
+    let error = f.drive(&mut api, &AtomicBool::new(false)).unwrap_err();
+    finish_error(&f.store, &mut f.job, error, false).unwrap();
+    f.reload();
+    api.verify_error_on_call = Some((
+        api.verifies + 1,
+        ReadbackError::Unavailable("INVALID_ARGUMENT (code 3).".into()),
+    ));
+    assert!(
+        f.drive(&mut api, &AtomicBool::new(false)).is_err(),
+        "a genuine mismatch must not become warning completion"
+    );
+    assert_eq!(api.begins, 1);
+    assert_eq!(api.registrations, 1);
+}
+
+#[test]
+fn older_verified_checkpoint_cannot_clear_newer_job_rejection() {
+    let mut f = Fixture::new(2);
+    let mut api = FakeGoogle {
+        verify_error_on_call: Some((
+            2,
+            ReadbackError::RequestFailed("Network interrupted".into()),
+        )),
+        ..Default::default()
+    };
+    let error = f.drive(&mut api, &AtomicBool::new(false)).unwrap_err();
+    finish_error(&f.store, &mut f.job, error, false).unwrap();
+    f.reload();
+    assert_eq!(f.job.items[0].state, "verified");
+    let mut newer = f.job.clone();
+    newer.plan.id = "newer-job".into();
+    newer.items[0].state = "registered".into();
+    api.verify_error_on_call = Some((3, ReadbackError::ItemRejected("Google's reported photo dimensions differ from the full-resolution upload. Needs review; not marked successful.".into())));
+    assert!(drive(
+        &f.store,
+        &mut newer,
+        &mut api,
+        &f.workspace,
+        "",
+        &AtomicBool::new(false)
+    )
+    .is_err());
+    api.verify_error_on_call = Some((
+        api.verifies + 1,
+        ReadbackError::Unavailable("INVALID_ARGUMENT (code 3).".into()),
+    ));
+    assert!(
+        f.drive(&mut api, &AtomicBool::new(false)).is_err(),
+        "stale verified state must force a fresh read before clearing rejection"
+    );
+    let ledger: Vec<LedgerEntry> = f.store.load("ledger").unwrap().unwrap();
+    assert!(ledger.iter().any(|r| r.readback_rejected));
+    assert_eq!(api.begins, 2);
+}
+
+#[test]
 fn accepted_receipt_readback_rejection_completes_with_warning_and_survives_restart() {
     let mut fixture = Fixture::core(10);
     let mut api = FakeGoogle {
@@ -320,11 +466,15 @@ fn core_jobs_history_archives_only_resolved_jobs_and_keeps_receipts_and_ledger()
         .unwrap(),
         serde_json::to_string(&ledger).unwrap()
     );
-    assert!(
-        super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true)
-            .unwrap()
-            .is_empty()
-    );
+    let archived = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true).unwrap();
+    assert_eq!(archived.len(), 1);
+    assert!(archived[0].google_photos.as_ref().unwrap().history_hidden);
+    let saved = serde_json::to_value(&fixture.job).unwrap();
+    assert!(super::super::core_jobs::restore_store(&fixture.store, &fixture.job.plan.id).unwrap());
+    fixture.reload();
+    let mut expected = saved;
+    expected["history_hidden"] = serde_json::json!(false);
+    assert_eq!(serde_json::to_value(&fixture.job).unwrap(), expected);
     // Even an older hidden record must reappear if a receipt needs attention.
     fixture.job.items[0].state = "registered".into();
     fixture.job.save(&fixture.store).unwrap();
@@ -871,7 +1021,7 @@ fn persistent_item_rejection_retains_receipts_and_never_reuploads_on_retry() {
                 .unwrap()
                 .unwrap()
                 .len(),
-            3
+            4
         );
         assert_eq!(fixture.workspace.read_dir().unwrap().count(), 1);
     }

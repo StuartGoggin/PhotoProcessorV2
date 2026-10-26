@@ -23,8 +23,9 @@ fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) 
   if (command === "process_job_albums") return [{ id: "app-album", title: "Synthetic event", productUrl: "https://photos.google.com/lr/album/synthetic" }];
   if (command === "process_job_open_album") return true;
   if (command === "process_job_reconcile_album") { fixture.__coreJob.googlePhotos.albums[0].state = "ready"; fixture.__coreJob.status = "paused"; fixture.__coreJob.googlePhotos.status = "paused"; return true; }
+  if (command === "restore_process_job_history") { fixture.__coreJob.googlePhotos.historyHidden = false; return true; }
   if (command === "clear_finished_import_jobs") return 0;
-  if (command === "clear_finished_process_jobs") { const count = fixture.__coreJobs.filter((job: any) => ["completed", "completed_with_warnings"].includes(job.status)).length; fixture.__coreJobs = fixture.__coreJobs.filter((job: any) => !["completed", "completed_with_warnings"].includes(job.status)); return count; }
+  if (command === "clear_finished_process_jobs") { let count=0; for (const job of fixture.__coreJobs) if (["completed", "completed_with_warnings"].includes(job.status) && !job.googlePhotos?.historyHidden) { job.googlePhotos.historyHidden=true; count++; } return count; }
   if (command.startsWith("google_photos_")) throw new Error(`Forbidden separate Google management command: ${command}`);
   throw new Error(`Unexpected core Jobs fixture command: ${command}`);
 } };

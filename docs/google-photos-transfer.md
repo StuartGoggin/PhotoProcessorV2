@@ -148,7 +148,7 @@ automatically with their original IDs. Failures appear under **Needs attention**
 Standard Pause, Resume, Abort and Retry controls dispatch through the core job
 interface. Google receipt counts, album recovery and sanitized diagnostics are
 task-specific details inside that same job. **Clear finished** hides only fully
-resolved completed Google entries from history; it never deletes the encrypted
+resolved completed Google entries into **Archived**; it never deletes the encrypted
 checkpoint, successful receipts, duplicate ledger or album mapping. Pending,
 failed, paused, stopped and uncertain uploads remain visible and recoverable.
 
@@ -236,8 +236,8 @@ For an existing 2.0.36 job, install 2.0.37 and choose **Jobs → Needs attention
 Retry** once. Saved IDs are checked before source access or new uploads, so an
 accepted Original is not uploaded again. If its valid registration is still
 unreadable, the job finishes with a warning in **History**. The latest four-photo
-pilot has two reused photos; expect **2 accepted this attempt, 1 verified this
-attempt, 2 skipped, 1 read-back unavailable**, if Google's response is unchanged.
+pilot has two reused photos; expect **2 accepted in this job, 1 read-back verified in this
+job, 2 reused receipts, 1 read-back unavailable**, if Google's response is unchanged.
 
 Open the album to review. **Recheck verification** is optional for photos accepted
 by that saved job, checks the same IDs once per deliberate attempt, and can run
@@ -250,6 +250,33 @@ ledger. There is no manual mark-verified override or remote checksum claim.
 
 References: [upload and duplicate behaviour](https://developers.google.com/photos/library/guides/upload-media),
 [app-created read scope](https://developers.google.com/photos/library/reference/rest/v1/mediaItems/batchGet).
+
+## Archived uploads and receipt recovery (2.0.38)
+
+**Jobs → Archived** contains finished Google Photos uploads moved by Clear
+finished. Select **Restore to History** to reveal an upload again. This changes
+only local visibility and starts no Google requests; it works without reconnecting
+that account. Reconnect the original account/client before cloud actions, then
+choose **Recheck verification** explicitly if the restored upload has warnings.
+
+If the current job reused an older accepted receipt, its expected dimensions
+remain with the original saved upload. Find that original upload in History or
+Archived and recheck there. The newer job does not claim to verify inherited
+photos without that evidence. Restoring is not verification.
+
+The counters are **Selected photos**, **Reused receipts**, **Accepted in this
+job** and **Read-back verified in this job**. They describe the saved job's
+lifetime, including its retries, not Google album totals or a fresh retry alone.
+Opening an album remains available during a retry delay for the same account;
+changing accounts or losing protected-store access still blocks album actions.
+
+A genuine dimension contradiction is retained on its original saved photo and
+in the receipt ledger, including a mismatch on the first read-back. Older saved
+verified/reused checkpoints cannot clear newer rejection evidence. An original
+job that recorded a mismatch needs its own fresh dimension-validated read-back.
+Other unresolved original jobs remain conservative. An interrupted ledger update
+is reconciled from retained job evidence before planning or new cloud writes.
+No new uploads are used to work around a saved verification failure.
 
 ## Disconnect and stored data
 

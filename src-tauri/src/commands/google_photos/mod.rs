@@ -193,7 +193,7 @@ fn enrich_history(app: &AppHandle, mut catalogue: Catalogue) -> Result<Catalogue
     let history = (|| {
         let store = protected(app)?;
         let account = oauth::account(&store)?;
-        let ledger: Vec<LedgerEntry> = store.load("ledger")?.unwrap_or_default();
+        let ledger: Vec<LedgerEntry> = engine::effective_ledger(&store)?;
         Ok::<_, String>((account, ledger))
     })();
     match history {
@@ -220,7 +220,7 @@ pub async fn google_photos_plan(
         let _lease = writer_lease(&app)?; let store = protected(&app)?;
         let account = oauth::account(&store)?.ok_or("Connect the intended Google account before preparing an upload plan.")?;
         let catalogue = catalogue::scan(Path::new(&request.root))?;
-        let context = PlanContext { id: oauth::random_id()?, account_id: account.id, account_email: account.email, ledger: store.load("ledger")?.unwrap_or_default(), albums: store.load("albums")?.unwrap_or_default() };
+        let context = PlanContext { id: oauth::random_id()?, account_id: account.id, account_email: account.email, ledger: engine::effective_ledger(&store)?, albums: store.load("albums")?.unwrap_or_default() };
         let mut result = plan::build(&catalogue, &request, &context)?;
         let settings = super::settings::load_settings(app.clone())?;
         let tool_available = if result.items.iter().any(|i| metadata::needs_tool(i)) { metadata::check_tool(&settings.exiftool_dir) } else { true };
@@ -335,7 +335,7 @@ pub async fn google_photos_start(
         same_account(&store, &frozen.plan.account_id)?;
         if !acknowledge_warnings { return Err("Review the exact account, album names, photo versions, storage/privacy choices and warnings before publishing.".into()); }
         if !frozen.plan.items.iter().any(|i| matches!(i.status, PlanItemStatus::Ready | PlanItemStatus::Changed | PlanItemStatus::AlreadyUploaded)) { return Err("There are no uploadable photos in this plan. Resolve its blocked items first.".into()); }
-        let ledger: Vec<LedgerEntry> = store.load("ledger")?.unwrap_or_default();
+        let ledger: Vec<LedgerEntry> = engine::effective_ledger(&store)?;
         let mut job = Job::new(frozen.plan, albums, frozen.original_hashes, &ledger)?; job.status = "queued".into(); job.save(&store)?; let summary = job.summary(); spawn_worker(app, job, lease)?; Ok(summary)
     }).await.map_err(|_| "Could not start Google upload task.")?
 }
@@ -385,6 +385,7 @@ pub async fn google_photos_control(
         let mut job = load_job(&store, &job_id)?;
         same_account(&store, &job.plan.account_id)?;
         job.recover();
+        if job.history_hidden && core_jobs::history_eligible(&job) { return Err("Restore this upload to History before explicitly rechecking.".into()); }
         if job.status == "completed" {
             return Err(
                 "This job already completed; create a new plan for changed or additional photos."
@@ -532,4 +533,8 @@ pub async fn google_photos_thumbnail(
     })
     .await
     .map_err(|_| "Photo thumbnail task failed.")?
+}
+
+pub(crate) async fn restore_history(app: AppHandle, job_id: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || { validate_id(&job_id)?; let _lease=writer_lease(&app)?; let store=protected(&app)?; let result=core_jobs::restore_store(&store, &job_id); core_jobs::invalidate(); result }).await.map_err(|_| "Could not restore saved history visibility.")?
 }

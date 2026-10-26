@@ -98,3 +98,11 @@ pub async fn process_job_reconcile_album(
 ) -> Result<(), String> {
     google_photos::google_photos_reconcile(app, job_id, album_key, album_id).await
 }
+
+#[tauri::command]
+pub async fn restore_process_job_history(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if !google_photos::is_job_id(&job_id) {
+        return Err("Only saved Google Photos history can be restored.".into());
+    }
+    google_photos::restore_history(app, job_id).await
+}

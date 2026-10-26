@@ -80,6 +80,8 @@ export interface GooglePhotosJob {
   verificationNeedsAttention?: number;
   /** Accepted receipts whose additional read-back is unavailable. Not failures or verified photos. */
   readbackUnavailable?: number;
+  historyHidden?: boolean;
+  canOpenAlbum?: boolean;
   skipped: number;
   failed: number;
   bytesDone: number;

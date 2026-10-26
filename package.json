@@ -1,7 +1,7 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.37",
+  "version": "2.0.38",
   "type": "module",
   "scripts": {
     "test:google-photos": "node scripts/test-google-photos.mjs",
