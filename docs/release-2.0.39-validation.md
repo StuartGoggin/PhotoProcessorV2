@@ -28,3 +28,23 @@ The previous 2.0.38 EXE and MSI remain available. No staging metadata migration 
 ## Deployment check
 
 Install either Windows x64 package, then open Transfer → Transfer to Archive. Preview a small event with a rated/unrated original, a trash-marked original and one Google-selected B&W. Confirm the included/excluded reasons before queueing. Check the core transfer job and run Queue Verify Job. Staging should retain its metadata. The archive should contain the selected media and its own `_transfer_manifests` records, with library metadata absent unless explicitly enabled.
+
+## Installer receipts
+
+Built source: 3d616ff2c662b2c17df8fae99842cb981fb4eec0.
+Build ID: 20261026T085302443Z-3d616ff2+local, retained exactly as emitted. Both normal and release-user Git views were clean during the build; the literal +local stamp is not rewritten.
+Inspection: test-output/release-2.0.39-inspection-20261026T090116626Z/report.json.
+Standalone application SHA-256: 95FBDBF07BCEF544BAD4161CBF29F744D59F63D52E2A866C04F6E54E79AB1646.
+
+- EXE: PhotoGoGoV2_2.0.39_x64-setup.exe; 71,238,203 bytes.
+  SHA-256: B8AD1F9E8A5C187B95F05D77B4153453C9C91E7755B493BF28928EF2706A10AC.
+- MSI: PhotoGoGoV2_2.0.39_x64_en-US.msi; 92,128,531 bytes.
+  SHA-256: 54FD16E2A004F002B6DBA53DBCC60E15D9FB6A36E1192327A194BC7B82AF1879.
+
+Both unsigned Windows x64 packages passed extraction without installation. Application bytes match the standalone executable apart from the expected three-byte Tauri bundle marker. All 2,205 metadata runtime files and the managed FFmpeg payload/manifest match; the relocated metadata runtime executes without PATH.
+MSI UpgradeCode: {9CBA7A69-EDA0-5480-A421-9DC9AD265A65}, unchanged from 2.0.38.
+
+Unchanged FFmpeg corresponding source: 49,570,807 bytes; SHA-256 27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8.
+[Existing source delivery](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419). Managed runtime licence/source materials remain included.
+
+The fresh 2.0.39 archive browser regression run passed all ten groups after the version bump. Functional native code is unchanged from the implementation validated by the 308-test suite. No installation, live NAS copy, Google account upload or user-photo mutation was performed by this release task.
