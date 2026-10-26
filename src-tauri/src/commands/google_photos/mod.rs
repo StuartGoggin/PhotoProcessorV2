@@ -2,13 +2,16 @@
 //! Only this module owns cloud credentials, immutable plans and resumable jobs.
 mod catalogue;
 mod diagnostics;
-mod engine;
+pub(crate) mod engine;
+mod core_jobs;
+pub(crate) use core_jobs::{snapshot as job_snapshot, archive_finished as archive_finished_jobs};
 mod metadata;
 pub mod model;
 mod oauth;
 mod plan;
 mod store;
 mod transport;
+pub(crate) use transport::Album as CoreAlbum;
 mod vault;
 
 use engine::{AlbumEdit, Job, JobSummary};
@@ -19,7 +22,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
     },
 };
 use tauri::{AppHandle, Manager};
@@ -27,14 +30,6 @@ use transport::{Album, GoogleApi, LiveGoogle};
 
 static ACCOUNT_GATE: Mutex<()> = Mutex::new(());
 static CONNECTING: AtomicBool = AtomicBool::new(false);
-struct Worker {
-    id: String,
-    stop: Arc<AtomicBool>,
-}
-static WORKER: OnceLock<Mutex<Option<Worker>>> = OnceLock::new();
-fn worker() -> &'static Mutex<Option<Worker>> {
-    WORKER.get_or_init(|| Mutex::new(None))
-}
 fn workspace(app: &AppHandle) -> Result<PathBuf, String> {
     let path = app
         .path()
@@ -86,6 +81,7 @@ fn validate_id(id: &str) -> Result<(), String> {
         Ok(())
     }
 }
+pub(crate) fn is_job_id(id: &str) -> bool { validate_id(id).is_ok() }
 fn load_job(store: &store::GoogleStore, id: &str) -> Result<Job, String> {
     validate_id(id)?;
     store
@@ -126,7 +122,9 @@ pub async fn google_photos_configure(app: AppHandle, config_path: String) -> Res
             .try_lock()
             .map_err(|_| "Google sign-in is already in progress.")?;
         let _lease = writer_lease(&app)?;
-        oauth::import_config(&protected(&app)?, Path::new(&config_path))
+        let result = oauth::import_config(&protected(&app)?, Path::new(&config_path));
+        core_jobs::invalidate();
+        result
     })
     .await
     .map_err(|_| "OAuth configuration task failed.")?
@@ -143,6 +141,7 @@ pub async fn google_photos_connect(app: AppHandle) -> Result<oauth::Account, Str
         impl Drop for Reset {
             fn drop(&mut self) {
                 CONNECTING.store(false, Ordering::Relaxed);
+                core_jobs::invalidate();
             }
         }
         let _reset = Reset;
@@ -158,7 +157,9 @@ pub async fn google_photos_disconnect(app: AppHandle, revoke: bool) -> Result<()
             .try_lock()
             .map_err(|_| "Wait for sign-in to finish before disconnecting.")?;
         let _lease = writer_lease(&app)?;
-        oauth::disconnect(&protected(&app)?, revoke)
+        let result = oauth::disconnect(&protected(&app)?, revoke);
+        core_jobs::invalidate();
+        result
     })
     .await
     .map_err(|_| "Google disconnect task failed.")?
@@ -241,32 +242,36 @@ pub async fn google_photos_plan(
     }).await.map_err(|_| "Upload planning task failed; no Google writes occurred.")?
 }
 fn spawn_worker(app: AppHandle, mut job: Job, lease: File) -> Result<(), String> {
-    let stop = Arc::new(AtomicBool::new(false));
-    {
-        let mut guard = worker().lock().map_err(|_| "Upload worker lock failed.")?;
-        if guard.is_some() {
-            return Err("Another upload job is active.".into());
-        }
-        *guard = Some(Worker {
-            id: job.plan.id.clone(),
-            stop: stop.clone(),
-        });
-    }
+    let managed = super::process_runtime::register(super::process_runtime::Kind::GooglePhotos, &job.plan.id)?;
+    let control = managed.control.clone();
+    job.status = "queued".into();
+    job.finished_at = None;
+    job.save(&protected(&app)?)?;
+    let job_id = job.plan.id.clone();
+    let app_for_failure = app.clone();
+    core_jobs::invalidate();
     let result = std::thread::Builder::new()
         .name("google-photos-export".into())
         .spawn(move || {
             let _lease = lease;
+            let _managed = managed;
             struct Clear;
             impl Drop for Clear {
                 fn drop(&mut self) {
-                    if let Ok(mut guard) = worker().lock() {
-                        *guard = None;
-                    }
+                    core_jobs::invalidate();
                 }
             }
             let _clear = Clear;
             let result = (|| {
                 let store = protected(&app)?;
+                job.status = "running".into();
+                if job.started_at.is_none() { job.started_at = Some(chrono::Utc::now().to_rfc3339()); }
+                job.save(&store)?;
+                if control.stop.load(Ordering::Relaxed) {
+                    engine::finish_error(&store, &mut job, "Stopped before further account or upload work.".into(), true)?;
+                    if control.abort.load(Ordering::Relaxed) { job.status = "aborted".into(); job.finished_at = Some(chrono::Utc::now().to_rfc3339()); job.save(&store)?; }
+                    return Ok::<(), String>(());
+                }
                 diagnostics::note(&mut job, diagnostics::Stage::Account, None, diagnostics::Outcome::Started, None);
                 job.save(&store)?;
                 same_account(&store, &job.plan.account_id)?;
@@ -284,9 +289,14 @@ fn spawn_worker(app: AppHandle, mut job: Job, lease: File) -> Result<(), String>
                     &mut api,
                     &path,
                     &settings.exiftool_dir,
-                    &stop,
+                    &control.stop,
                 ) {
-                    engine::finish_error(&store, &mut job, error, stop.load(Ordering::Relaxed))?;
+                    engine::finish_error(&store, &mut job, error, control.stop.load(Ordering::Relaxed))?;
+                }
+                if control.abort.load(Ordering::Relaxed) && job.status == "paused" {
+                    job.status = "aborted".into();
+                    job.finished_at = Some(chrono::Utc::now().to_rfc3339());
+                    job.save(&store)?;
                 }
                 Ok::<(), String>(())
             })();
@@ -297,10 +307,17 @@ fn spawn_worker(app: AppHandle, mut job: Job, lease: File) -> Result<(), String>
             }
         });
     if result.is_err() {
-        if let Ok(mut guard) = worker().lock() {
-            *guard = None;
+        // A failed spawn drops the moved OS lease before returning. Reacquire
+        // admission before touching state another process may already resume.
+        if let Ok(_lease) = writer_lease(&app_for_failure) {
+            if let Ok(store) = protected(&app_for_failure) {
+                if let Ok(mut saved) = load_job(&store, &job_id) {
+                    if matches!(saved.status.as_str(), "queued" | "running") { saved.recover(); let _ = saved.save(&store); }
+                }
+            }
         }
-        return Err("Could not start upload worker. The durable job remains paused.".into());
+        core_jobs::invalidate();
+        return Err("Could not start upload worker. The job remains saved and recoverable through the core Jobs tracker.".into());
     }
     Ok(())
 }
@@ -319,33 +336,15 @@ pub async fn google_photos_start(
         if !acknowledge_warnings { return Err("Review the exact account, album names, photo versions, storage/privacy choices and warnings before publishing.".into()); }
         if !frozen.plan.items.iter().any(|i| matches!(i.status, PlanItemStatus::Ready | PlanItemStatus::Changed | PlanItemStatus::AlreadyUploaded)) { return Err("There are no uploadable photos in this plan. Resolve its blocked items first.".into()); }
         let ledger: Vec<LedgerEntry> = store.load("ledger")?.unwrap_or_default();
-        let job = Job::new(frozen.plan, albums, frozen.original_hashes, &ledger)?; job.save(&store)?; let summary = job.summary(); spawn_worker(app, job, lease)?; Ok(summary)
+        let mut job = Job::new(frozen.plan, albums, frozen.original_hashes, &ledger)?; job.status = "queued".into(); job.save(&store)?; let summary = job.summary(); spawn_worker(app, job, lease)?; Ok(summary)
     }).await.map_err(|_| "Could not start Google upload task.")?
 }
 #[tauri::command]
 pub fn google_photos_list_jobs(app: AppHandle) -> Result<Vec<JobSummary>, String> {
-    let store = protected(&app)?;
-    let active = worker()
-        .lock()
-        .map_err(|_| "Upload worker lock failed.")?
-        .as_ref()
-        .map(|w| w.id.clone());
-    let idle_lease = if active.is_none() {
-        writer_lease(&app).ok()
-    } else {
-        None
-    };
-    let mut jobs = Vec::new();
-    for key in store.keys("job_")? {
-        if let Some(mut job) = store.load::<Job>(&key)? {
-            if active.as_deref() != Some(&job.plan.id) && idle_lease.is_some() {
-                job.recover();
-            }
-            jobs.push(job.summary());
-        }
-    }
-    jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    Ok(jobs)
+    // Compatibility only: one snapshot provider, no second tracker or poller.
+    let (jobs, warnings) = core_jobs::snapshot(&app);
+    if !warnings.is_empty() { return Err(warnings.join(" ")); }
+    Ok(jobs.into_iter().filter_map(|job| job.google_photos).collect())
 }
 #[tauri::command]
 pub async fn google_photos_job_diagnostics(app: AppHandle, job_id: String) -> Result<String, String> {
@@ -362,13 +361,19 @@ pub async fn google_photos_control(
     action: String,
 ) -> Result<(), String> {
     validate_id(&job_id)?;
-    if action == "pause" {
-        let guard = worker().lock().map_err(|_| "Upload worker lock failed.")?;
-        if let Some(active) = guard.as_ref().filter(|w| w.id == job_id) {
-            active.stop.store(true, Ordering::Relaxed);
-        } else if writer_lease(&app).is_err() {
-            return Err("This upload runs in another PhotoGoGo process. Pause it in the window where it was started.".into());
+    core_jobs::invalidate();
+    if matches!(action.as_str(), "pause" | "abort") {
+        if !super::process_runtime::request_stop(&job_id, action == "abort")? {
+            let _lease = writer_lease(&app).map_err(|_| "This upload runs in another PhotoGoGo process. Stop it in the window where it was started.")?;
+            let store = protected(&app)?;
+            let mut job = load_job(&store, &job_id)?;
+            job.recover();
+            if !matches!(job.status.as_str(), "completed" | "completed_with_errors") {
+                job.status = if action == "abort" { "aborted" } else { "paused" }.into();
+                job.save(&store)?;
+            }
         }
+        core_jobs::invalidate();
         return Ok(());
     }
     if !matches!(action.as_str(), "resume" | "retry") {
@@ -393,6 +398,16 @@ pub async fn google_photos_control(
     })
     .await
     .map_err(|_| "Could not resume Google upload task.")?
+}
+
+pub(crate) async fn job_albums(app: AppHandle, job_id: String) -> Result<Vec<Album>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lease = writer_lease(&app)?;
+        let store = protected(&app)?;
+        let job = load_job(&store, &job_id)?;
+        same_account(&store, &job.plan.account_id)?;
+        LiveGoogle { store: &store, account_id: &job.plan.account_id }.list_albums()
+    }).await.map_err(|_| "Could not list this job's recovery albums.")?
 }
 #[tauri::command]
 pub async fn google_photos_albums(app: AppHandle) -> Result<Vec<Album>, String> {
@@ -444,7 +459,9 @@ pub async fn google_photos_reconcile(
         job.status = "paused".into();
         job.errors.clear();
         job.save(&store)?;
-        engine::save_album_mapping(&store, &job, index)
+        let result = engine::save_album_mapping(&store, &job, index);
+        core_jobs::invalidate();
+        result
     })
     .await
     .map_err(|_| "Album reconciliation task failed.")?

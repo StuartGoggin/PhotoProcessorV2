@@ -213,16 +213,13 @@ try {
   assert.equal(start.albums[0].title, "Horse event — curated selection"); assert.equal(start.albums[0].coverItemId, "first-enhanced");
   assert.equal("items" in start, false, "Start submits immutable plan identity and allowed album edits only");
   await page.evaluate(() => window.__googleResolveStart());
-  await page.getByText("Upload job saved.", { exact: false }).waitFor();
-  await page.getByRole("button", { name: "Pause", exact: true }).click();
-  await page.getByRole("button", { name: "Resume", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Resume", exact: true }).click();
-  await page.getByRole("button", { name: "Pause", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Open Horse event — curated selection ↗", exact: true }).click();
-  assert.equal((await calls(page, "google_photos_open_album"))[0].args.albumKey, "horse-24");
-  assert.deepEqual((await calls(page, "google_photos_control")).map(call => call.args.action), ["pause", "resume"]);
+  await page.getByText("Upload job saved in Jobs.", { exact: false }).waitFor();
+  await page.getByRole("button", { name: "View job", exact: true }).click();
+  assert.equal(await page.evaluate(() => window.__viewedGoogleJob), "S".repeat(43));
+  assert.equal(await page.getByRole("heading", { name: "Upload jobs", exact: true }).count(), 0);
+  assert.equal((await calls(page, "google_photos_list_jobs")).length, 0, "Transfer has no second job tracker or management poll");
   await page.waitForFunction(() => window.__googleRevokedUrls.length > 0);
-  report.checks.push("Frozen-plan publication is single-flight, album edits locked while saving; native-backed jobs pause/resume, open album and discard preview object URLs");
+  report.checks.push("Frozen-plan publication is single-flight, album edits lock while saving, View job navigates to the saved core ID and no separate tracker/poll remains");
 
   await page.getByRole("radio", { name: /Choose versions for this upload/ }).check();
   await page.getByRole("checkbox", { name: "Enhanced", exact: true }).check();
@@ -246,7 +243,7 @@ try {
 
   await consent(page).check();
   await page.evaluate(() => { window.__googleStatus.account = { id: "same-email-other-client:subject-1", email: "rider@example.test", displayName: "Same email, different OAuth app" }; });
-  await page.getByRole("button", { name: "Refresh jobs", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh account", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "connected account has changed" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Publish 3 photos", exact: true }).isDisabled(), true, "Opaque account ID protects same-email different-app plans");
   await page.getByRole("button", { name: "Disconnect", exact: true }).click();
@@ -279,18 +276,6 @@ try {
   assert.equal((await calls(signedOut, "google_photos_configure"))[0].args.configPath, "D:\\private-config\\desktop-client.json");
   assert.deepEqual((await calls(signedOut, "google_photos_connect"))[0].args, {}, "Browser OAuth starts natively without credentials in IPC");
   report.checks.push("Disconnected first-use setup imports a local desktop-client file and starts native browser OAuth; missing setup disables connection");
-
-  const unknown = await fixture({ __googleJobs: [{ id: "interrupted-job", accountId: "personal-client:subject-1", accountEmail: "rider@example.test", createdAt: "2026-10-25T07:00:00Z", status: "needs_attention", done: 0, total: 1, uploaded: 0, skipped: 0, failed: 0, bytesDone: 0, totalBytes: 1234, currentFile: "", errors: ["Previous album-create result is unknown"], albums: [{ key: "recover-key", title: "Horse event — 24 October 2026", state: "creation_outcome_unknown" }] }] });
-  await unknown.getByRole("button", { name: "Choose existing app-created album", exact: true }).click();
-  const recovery = unknown.getByRole("combobox", { name: "Recover album recover-key", exact: true });
-  assert.equal(await recovery.inputValue(), "", "Album recovery never guesses from matching title");
-  assert.equal(await unknown.getByRole("button", { name: "Associate selected album", exact: true }).isDisabled(), true);
-  await recovery.selectOption("verified-app-album-1234");
-  await unknown.getByRole("button", { name: "Associate selected album", exact: true }).click();
-  assert.deepEqual((await calls(unknown, "google_photos_reconcile"))[0].args, { jobId: "interrupted-job", albumKey: "recover-key", albumId: "verified-app-album-1234" });
-  await unknown.getByRole("button", { name: "Resume", exact: true }).waitFor();
-  assert.equal((await calls(unknown, "google_photos_start")).length, 0); assert.equal((await calls(unknown, "google_photos_control")).length, 0, "Reconcile does not automatically upload/resume");
-  report.checks.push("Lost album-create response has an explicit app-created-album chooser with no title match, no auto-resume and no upload mutation");
 
   const coverOnly = await fixture({ __googleAlreadyUploadedOnly: true });
   await coverOnly.getByRole("combobox", { name: "Album destination", exact: true }).selectOption("continue");

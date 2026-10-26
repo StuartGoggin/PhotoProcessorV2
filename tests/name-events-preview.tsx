@@ -35,6 +35,8 @@ fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) 
         }
         if (command === "list_process_jobs")
             return structuredClone(fixture.__eventJobs);
+        if (command === "process_jobs_snapshot")
+            return { jobs: structuredClone(fixture.__eventJobs), warnings: [] };
         if (["list_import_jobs", "studio_list_jobs", "google_photos_list_jobs"].includes(command))
             return [];
         if (command === "preview_event_naming") {

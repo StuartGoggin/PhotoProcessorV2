@@ -8,7 +8,6 @@ import "../src/styles.css";
 const fixture = window as any;
 fixture.__googleCalls = [];
 fixture.__googleStatus ??= { configured: true, connecting: false, account: { id: "personal-client:subject-1", email: "rider@example.test", displayName: "Synthetic Rider" }, clientIdHint: "…synthetic.apps.googleusercontent.com" };
-fixture.__googleJobs ??= [];
 fixture.__metadataSavedSettings = [];
 fixture.__googleThumbnailActive = 0;
 fixture.__googleThumbnailMax = 0;
@@ -41,7 +40,6 @@ fixture.__TAURI_INTERNALS__ = {
         : { ready: true, source: "bundled", version: "13.50", path: "C:\\PhotoGoGo\\resources\\metadata\\exiftool.exe", message: "Bundled ExifTool is ready." });
     }
     if (command === "google_photos_status") { if (fixture.__googleStatusError) throw new Error("Synthetic unavailable status"); return structuredClone(fixture.__googleStatus); }
-    if (command === "google_photos_list_jobs") return structuredClone(fixture.__googleJobs);
     if (command === "plugin:dialog|open") return fixture.__googleDialogPath ?? "D:\\private-config\\desktop-client.json";
     if (command === "google_photos_configure") { fixture.__googleStatus.configured = true; return null; }
     if (command === "google_photos_connect") { fixture.__googleStatus.account = { id: "personal-client:subject-1", email: "rider@example.test", displayName: "Synthetic Rider" }; return null; }
@@ -67,18 +65,8 @@ fixture.__TAURI_INTERNALS__ = {
     if (command === "google_photos_start") {
       if (fixture.__googleStartDelay) await new Promise<void>(resolve => { fixture.__googleResolveStart = resolve; });
       if (fixture.__googleStartError) throw new Error(fixture.__googleStartError);
-      fixture.__googleJobs.push({ id: "saved-job-1", status: "running", accountId: fixture.__googleStatus.account.id, accountEmail: fixture.__googleStatus.account.email, createdAt: "2026-10-25T07:00:00Z", total: 4, done: 1, uploaded: 1, skipped: 1, failed: 0, bytesDone: 18123456, totalBytes: 51370368, currentFile: "rider_improved.jpg", albums: args.albums.map((album: any) => ({ key: album.key, title: album.title, productUrl: "https://photos.google.com/lr/album/synthetic", state: "created" })), errors: [] });
-      return "saved-job-1";
+      return "S".repeat(43);
     }
-    if (command === "google_photos_control") {
-      const job = fixture.__googleJobs.find((job: any) => job.id === args.jobId);
-      job.status = args.action === "pause" ? "paused" : "running";
-      return true;
-    }
-    if (command === "google_photos_open_album") return null;
-    if (command === "google_photos_job_diagnostics") return `Synthetic Google Photos job ${args.jobId}\nConfirmed uploads: 1\nNo credentials, protected paths or raw logs are included.`;
-    if (command === "google_photos_albums") return [{ id: "verified-app-album-1234", title: "Horse event — 24 October 2026", productUrl: "https://photos.google.com/lr/album/synthetic" }];
-    if (command === "google_photos_reconcile") { const job = fixture.__googleJobs.find((job: any) => job.id === args.jobId); job.albums.find((album: any) => album.key === args.albumKey).state = "created"; job.status = "paused"; return true; }
     throw new Error(`Unexpected Google Photos fixture command: ${command}`);
   },
 };
@@ -86,4 +74,4 @@ document.getElementById("root")!.style.height = "100%";
 document.getElementById("root")!.style.overflow = "auto";
 const root = createRoot(document.getElementById("root")!);
 fixture.__googleUnmount = () => root.unmount();
-root.render(<React.StrictMode>{new URLSearchParams(location.search).get("page") === "settings" ? <SettingsPage /> : <GooglePhotos />}</React.StrictMode>);
+root.render(<React.StrictMode>{new URLSearchParams(location.search).get("page") === "settings" ? <SettingsPage /> : <GooglePhotos onViewJob={jobId => { fixture.__viewedGoogleJob = jobId; }} />}</React.StrictMode>);

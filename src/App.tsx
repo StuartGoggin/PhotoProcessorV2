@@ -41,17 +41,21 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(() => readPanelSize(APP_SIDEBAR_PREFS_KEY, 208, 180, 420));
   const [menuOpen, setMenuOpen] = useState(false);
   const [jobsView, setJobsView] = useState<JobsView>("active");
+  const [focusedJobId, setFocusedJobId] = useState<string | null>(null);
   const [jobsNavigation, setJobsNavigation] = useState(0);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
-  const { importJobs, processJobs, studioJobs, googlePhotosJobs, googlePhotosAccount, googlePhotosError, refreshGooglePhotos, loading, error } = useJobsMonitor(true, 500, true);
+  const monitor = useJobsMonitor(true, 500);
+  const { importJobs, processJobs, studioJobs, refresh, loading, error } = monitor;
   function openJobs(view: JobsView = "active") {
+    setFocusedJobId(null);
     setJobsView(view);
     setJobsNavigation((value) => value + 1);
     setPage("jobs");
     setMenuOpen(false);
   }
+  function openJob(jobId: string) { openJobs("active"); setFocusedJobId(jobId); }
 
   useEffect(() => {
     try {
@@ -108,11 +112,11 @@ export default function App() {
     videosnapshots: null,
     nameevents: <NameEvents />,
     cleanup: <Cleanup />,
-    jobs: <Jobs key={jobsNavigation} initialView={jobsView} googlePhotos={{ jobs: googlePhotosJobs, account: googlePhotosAccount, error: googlePhotosError, refresh: refreshGooglePhotos }} />,
+    jobs: <Jobs key={jobsNavigation} initialView={jobsView} monitor={monitor} focusJobId={focusedJobId} />,
     postprocess: <PostProcess onOpenJobs={() => openJobs()} />,
     review: <Review />,
     transfer: <Transfer />,
-    googlephotos: <GooglePhotos />,
+    googlephotos: <GooglePhotos onViewJob={openJob} />,
     faceidentify: <FaceIdentify onOpenJobs={() => openJobs()} />,
     settings: <Settings />,
     logs: <Logs />,
@@ -187,7 +191,7 @@ export default function App() {
       </div>
 
       {/* Jobs panel (bottom frame) */}
-      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} googlePhotosJobs={googlePhotosJobs} googlePhotosAccount={googlePhotosAccount} googlePhotosError={googlePhotosError} refreshGooglePhotos={refreshGooglePhotos} loading={loading} error={error} onOpenJobs={openJobs} preferCollapsed={page === "videostudio" || page === "videosnapshots"} />
+      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} refresh={refresh} loading={loading} error={error} onOpenJobs={openJobs} preferCollapsed={page === "videostudio" || page === "videosnapshots"} />
     </div>
   );
 }

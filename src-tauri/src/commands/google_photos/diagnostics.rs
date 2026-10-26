@@ -22,7 +22,7 @@ pub enum Stage {
     Job,
 }
 impl Stage {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Account => "Check account",
             Self::Preflight => "Check local sources",
@@ -149,6 +149,7 @@ fn known_state(value: &str) -> &str {
         | "blocked"
         | "failed"
         | "paused"
+        | "aborted"
         | "running"
         | "completed"
         | "completed_with_errors"
@@ -259,6 +260,13 @@ pub fn report(job: &Job) -> String {
     }
     text.push_str("\nRecovery: use this saved job's Resume/Retry action after reviewing the error. Registered media is read back again rather than re-uploaded. Never change OAuth client/account or create a fresh job just to bypass verification. No remote checksum verification is claimed.\n");
     text
+}
+
+pub(super) fn phase(job: &Job) -> String {
+    job.diagnostics
+        .last()
+        .map(|event| event.stage.label().to_string())
+        .unwrap_or_else(|| "Google Photos upload".into())
 }
 
 #[cfg(test)]

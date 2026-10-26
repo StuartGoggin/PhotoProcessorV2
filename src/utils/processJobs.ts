@@ -8,6 +8,8 @@ export function getProcessAttemptLabel(task: ProcessJob["task"]): string {
       return "Local Processed";
     case "verify_checksums":
       return "Checked";
+    case "googlePhotos":
+      return "Processed";
     default:
       return "Processed";
   }
@@ -38,6 +40,8 @@ export function getProcessResultLabel(task: ProcessJob["task"]): string {
     case "transfer":
       return "Uploaded";
     case "verify_checksums":
+      return "Verified";
+    case "googlePhotos":
       return "Verified";
     default:
       return "Result";

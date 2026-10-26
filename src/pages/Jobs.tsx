@@ -3,9 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
 import { ProgressBar } from "../components";
 import StudioJobs from "../components/StudioJobs";
-import GooglePhotoJobCard from "../components/GooglePhotoJobCard";
-import { useGooglePhotoJobs } from "../hooks/useJobsMonitor";
-import type { GooglePhotosJob, GooglePhotosStatus } from "../types/googlePhotos";
+import GooglePhotoJobDetails from "../components/GooglePhotoJobDetails";
+import ProcessJobControls from "../components/ProcessJobControls";
+import { useJobsMonitor, type JobsMonitorResult } from "../hooks/useJobsMonitor";
 import ImportSchedulingStatus, { ImportJobSchedulingStatus } from "../components/ImportSchedulingStatus";
 import { formatImportRate } from "../utils/importScheduling";
 import { getProcessAttemptLabel, getProcessResultLabel, getProcessResultToken } from "../utils";
@@ -31,6 +31,7 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   verify_checksums: "Verify Checksums",
   scan_faces: "Face Library Scan",
   search_person_videos: "Search Person Videos",
+  googlePhotos: "Google Photos",
 };
 
 const PROCESS_SCOPE_LABELS: Record<ProcessJob["scopeMode"], string> = {
@@ -58,6 +59,7 @@ const PROCESS_STATUS_STYLES: Record<ProcessJob["status"], string> = {
   aborted: "bg-red-900/30 border-red-700 text-red-200",
   completed: "bg-surface-700 border-surface-500 text-gray-200",
   failed: "bg-red-900/50 border-red-600 text-red-200",
+  needs_attention: "bg-amber-900/40 border-amber-700 text-amber-200",
 };
 
 function toEpoch(value: string): number {
@@ -80,22 +82,11 @@ function summarizeLabels(values: string[]): Array<{ label: string; count: number
     .map(([label, count]) => ({ label, count }));
 }
 
-export interface GooglePhotosJobsSnapshot {
-  jobs: GooglePhotosJob[];
-  account: GooglePhotosStatus["account"];
-  error: string | null;
-  refresh: () => Promise<void>;
-}
-export default function Jobs({ initialView = "active", googlePhotos }: { initialView?: JobsView; googlePhotos?: GooglePhotosJobsSnapshot }) {
-  const fallbackGoogle = useGooglePhotoJobs(!googlePhotos);
-  const googleJobs = googlePhotos?.jobs ?? fallbackGoogle.googlePhotosJobs;
-  const googleAccount = googlePhotos ? googlePhotos.account : fallbackGoogle.googlePhotosAccount;
-  const googleError = googlePhotos ? googlePhotos.error : fallbackGoogle.googlePhotosError;
-  const refreshGoogle = googlePhotos?.refresh ?? fallbackGoogle.refreshGooglePhotos;
-  const [googleBusy, setGoogleBusy] = useState("");
-  const googleActionPending = useRef(false);
-  const [googleMessage, setGoogleMessage] = useState("");
-  const [googleActionError, setGoogleActionError] = useState("");
+export default function Jobs({ initialView = "active", monitor, focusJobId }: { initialView?: JobsView; monitor?: JobsMonitorResult; focusJobId?: string | null }) {
+  const fallback = useJobsMonitor(!monitor, 1000);
+  const snapshot = monitor ?? fallback;
+  const latest = useRef(snapshot); latest.current = snapshot;
+  const focusedOnce = useRef<string | null>(null);
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [processJobs, setProcessJobs] = useState<ProcessJob[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -105,29 +96,15 @@ export default function Jobs({ initialView = "active", googlePhotos }: { initial
   useEffect(() => setView(initialView), [initialView]);
   const [expandedProcessLogs, setExpandedProcessLogs] = useState<Record<string, boolean>>({});
 
-  async function googleAction(name: string, action: () => Promise<unknown>, success = "") {
-    if (googleActionPending.current) return;
-    googleActionPending.current = true; setGoogleBusy(name); setGoogleActionError(""); setGoogleMessage("");
-    try { await action(); setGoogleMessage(success); await refreshGoogle(); }
-    catch (error) { setGoogleActionError(String(error)); }
-    finally { googleActionPending.current = false; setGoogleBusy(""); }
-  }
-  async function googleControl(job: GooglePhotosJob, action: "pause" | "resume" | "retry") {
-    if (action !== "pause" && googleAccount?.id !== job.accountId) { setGoogleActionError("Reconnect the original Google account and OAuth client before continuing this job."); return; }
-    await googleAction(`${action}-${job.id}`, () => invoke("google_photos_control", { jobId: job.id, action }));
-  }
-
   async function loadJobs(showLoading = true) {
     // Keep automatic refreshes quiet; initial/manual refreshes still give feedback.
     if (showLoading) setLoading(true);
     try {
-      const [importData, processData] = await Promise.all([
-        invoke<ImportJob[]>("list_import_jobs"),
-        invoke<ProcessJob[]>("list_process_jobs"),
-      ]);
-      setImportJobs(importData);
-      setProcessJobs(processData);
-      setError(null);
+      await latest.current.refresh();
+      const refreshed = latest.current.getSnapshot();
+      setImportJobs(refreshed.importJobs);
+      setProcessJobs(refreshed.processJobs);
+      setError(refreshed.error);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -187,47 +164,20 @@ export default function Jobs({ initialView = "active", googlePhotos }: { initial
     }
   }
 
-  async function pauseProcessJob(jobId: string) {
-    setError(null);
-    try {
-      await invoke<boolean>("pause_process_job", { jobId });
-      await loadJobs();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  async function resumeProcessJob(jobId: string) {
-    setError(null);
-    try {
-      await invoke<boolean>("resume_process_job", { jobId });
-      await loadJobs();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  async function abortProcessJob(jobId: string) {
-    setError(null);
-    try {
-      await invoke<boolean>("abort_process_job", { jobId });
-      await loadJobs();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  useEffect(() => {
-    loadJobs();
-  }, []);
-
   useEffect(() => {
     if (!tail) return;
-    const timer = window.setInterval(() => {
-      void loadJobs(false);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [tail]);
+    setImportJobs(snapshot.importJobs); setProcessJobs(snapshot.processJobs);
+    setError(snapshot.error); setLoading(snapshot.loading);
+  }, [tail, snapshot.importJobs, snapshot.processJobs, snapshot.error, snapshot.loading]);
+  useEffect(() => {
+    if (!focusJobId || focusedOnce.current === focusJobId) return;
+    const target = processJobs.find(job => job.id === focusJobId);
+    if (!target) return;
+    focusedOnce.current = focusJobId;
+    setView(matchesJobsView(target, "attention") ? "attention" : matchesJobsView(target, "active") ? "active" : "history");
+    const timer = window.setTimeout(() => document.getElementById(`process-job-${focusJobId}`)?.scrollIntoView({ block: "center" }), 0);
+    return () => window.clearTimeout(timer);
+  }, [focusJobId, processJobs]);
 
   const processCounts = countJobs(processJobs);
   const filteredImportJobs = importJobs.filter((job) => matchesJobsView(job, view));
@@ -323,16 +273,6 @@ export default function Jobs({ initialView = "active", googlePhotos }: { initial
           {error}
         </div>
       )}
-
-      <section aria-label="Google Photos upload jobs" className="space-y-3 mb-6">
-        <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm uppercase tracking-wide text-gray-400">Google Photos jobs</h3><button className="btn-secondary" onClick={() => void refreshGoogle()}>Refresh Google Photos jobs</button></div>
-        <p className="text-xs text-gray-400">Saved upload attempts and recovery remain available here. Clearing import/process history never removes Google Photos receipts or albums.</p>
-        {googleError && <p role="alert" className="text-sm text-amber-200">{googleError}</p>}
-        {googleActionError && <p role="alert" className="text-sm text-red-300">{googleActionError}</p>}
-        {googleMessage && <p role="status" className="text-sm text-emerald-200">{googleMessage}</p>}
-        {[...googleJobs].sort((a,b) => b.createdAt.localeCompare(a.createdAt)).filter(job => matchesJobsView(job, view)).map(job => <GooglePhotoJobCard key={job.id} job={job} account={googleAccount} busy={!!googleBusy} run={googleAction} control={googleControl} />)}
-        {!googleJobs.some(job => matchesJobsView(job, view)) && <p className="text-sm text-gray-400">No Google Photos jobs in this view.</p>}
-      </section>
 
       <div className="card mb-6">
         <StudioJobs view={view} />
@@ -437,7 +377,7 @@ export default function Jobs({ initialView = "active", googlePhotos }: { initial
             <section className="space-y-3">
               <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div>
-                  <h3 className="text-sm uppercase tracking-wide text-gray-400">Post-Process Jobs</h3>
+                  <h3 className="text-sm uppercase tracking-wide text-gray-400">Process Jobs</h3>
                   <p className="text-xs text-gray-500 mt-1">Newest first. Filter by status to focus on active or problem jobs.</p>
                 </div>
               </div>
@@ -456,7 +396,7 @@ export default function Jobs({ initialView = "active", googlePhotos }: { initial
                   <div className="text-lg font-semibold text-red-200">{processCounts.attention}</div>
                 </div>
                 <div className="rounded-lg border border-surface-600 bg-surface-800 px-3 py-2">
-                  <div className="text-xs text-gray-400">Finished</div>
+                  <div className="text-xs text-gray-400">History</div>
                   <div className="text-lg font-semibold text-gray-200">{processCounts.history}</div>
                 </div>
               </div>
@@ -519,7 +459,7 @@ export default function Jobs({ initialView = "active", googlePhotos }: { initial
               )}
 
               {filteredProcessJobs.length === 0 && (
-                <div className="card text-sm text-gray-400">No post-process jobs match the selected filter.</div>
+                <div className="card text-sm text-gray-400">No process jobs match the selected filter.</div>
               )}
 
               {filteredProcessJobs.map((job) => {
@@ -549,7 +489,7 @@ export default function Jobs({ initialView = "active", googlePhotos }: { initial
                     : null;
 
                 return (
-                  <div key={job.id} className={`card space-y-3 ${job.status === "running" ? "ring-1 ring-emerald-700/40" : ""}`}>
+                  <div key={job.id} id={`process-job-${job.id}`} role="article" aria-label={`Process job ${job.id}`} className={`card space-y-3 ${job.status === "running" ? "ring-1 ring-emerald-700/40" : ""}`}>
                     <div className="job-card-header flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <div className="text-sm text-gray-100 font-medium">{PROCESS_TASK_LABELS[job.task] ?? job.task}</div>
@@ -575,25 +515,12 @@ export default function Jobs({ initialView = "active", googlePhotos }: { initial
                         <div className="text-xs text-gray-500 mt-1 break-all">Job ID: {job.id}</div>
                       </div>
                       <div className="flex items-center gap-2 flex-wrap justify-end">
-                        <div className={`text-xs px-2 py-1 rounded-full border capitalize ${PROCESS_STATUS_STYLES[job.status]}`}>{job.status}</div>
-                        {(job.status === "running" || job.status === "queued") && (
-                          <button className="btn-secondary" onClick={() => pauseProcessJob(job.id)}>
-                            Pause
-                          </button>
-                        )}
-                        {job.status === "paused" && (
-                          <button className="btn-secondary" onClick={() => resumeProcessJob(job.id)}>
-                            Resume
-                          </button>
-                        )}
-                        {(job.status === "running" || job.status === "paused" || job.status === "queued") && (
-                          <button className="btn-danger" onClick={() => abortProcessJob(job.id)}>
-                            Abort
-                          </button>
-                        )}
+                        <div className={`text-xs px-2 py-1 rounded-full border capitalize ${PROCESS_STATUS_STYLES[job.status]}`}>{job.status.replace(/_/g, " ")}</div>
+                        <ProcessJobControls job={job} onChanged={() => loadJobs(false)} />
                       </div>
                     </div>
 
+                    {job.task === "googlePhotos" && <GooglePhotoJobDetails job={job} onChanged={() => loadJobs(false)} />}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-400">
                       <div>Staging: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
                       <div>Scope mode: <span className="text-gray-200">{PROCESS_SCOPE_LABELS[job.scopeMode] ?? job.scopeMode}</span></div>

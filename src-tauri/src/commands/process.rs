@@ -60,6 +60,7 @@ pub enum ProcessTask {
     VerifyChecksums,
     ScanFaces,
     SearchPersonVideos,
+    GooglePhotos,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +80,8 @@ pub enum ProcessJobStatus {
     Aborted,
     Completed,
     Failed,
+    #[serde(rename = "needs_attention")]
+    NeedsAttention,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +149,14 @@ pub struct ProcessJob {
     pub status_line: String,  // Single line that updates in-place
     pub pause_requested: bool,
     pub abort_requested: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_photos: Option<super::google_photos::engine::JobSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_continue: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_blocked_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistence_error: Option<String>,
 }
 
 fn run_archive_naming_scan_task(
@@ -615,23 +626,32 @@ fn is_process_paused_or_aborted(job_id: Option<&str>) -> bool {
 }
 
 #[tauri::command]
-pub fn list_process_jobs() -> Result<Vec<ProcessJob>, String> {
-    let jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
-    let mut out: Vec<ProcessJob> = jobs.values().cloned().collect();
-    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    Ok(out)
+pub fn list_process_jobs(app: AppHandle) -> Result<Vec<ProcessJob>, String> {
+    Ok(super::process_jobs::snapshot(&app)?.jobs)
+}
+pub(crate) fn list_local_process_jobs() -> Result<Vec<ProcessJob>, String> {
+    Ok(process_jobs_store().lock().map_err(|e| e.to_string())?.values().cloned().collect())
 }
 
 #[tauri::command]
-pub fn clear_finished_process_jobs() -> Result<usize, String> {
+pub fn clear_finished_process_jobs(app: AppHandle) -> Result<usize, String> {
+    let archived = super::google_photos::archive_finished_jobs(&app);
     let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
     let before = jobs.len();
     jobs.retain(|_, job| !matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted));
-    Ok(before.saturating_sub(jobs.len()))
+    let local_cleared = before.saturating_sub(jobs.len());
+    match archived {
+        Ok(archived) => Ok(local_cleared + archived),
+        Err(_) => Err(format!("Cleared {local_cleared} local finished jobs, but Google Photos history could not be updated. Its upload checkpoints and receipts were retained. Review the saved-job warning before retrying.")),
+    }
 }
 
 #[tauri::command]
-pub fn pause_process_job(job_id: String) -> Result<bool, String> {
+pub async fn pause_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::google_photos::is_job_id(&job_id) {
+        super::google_photos::google_photos_control(app, job_id, "pause".into()).await?;
+        return Ok(true);
+    }
     let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
     let Some(job) = jobs.get_mut(&job_id) else { return Ok(false); };
     if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
@@ -645,7 +665,11 @@ pub fn pause_process_job(job_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn resume_process_job(job_id: String) -> Result<bool, String> {
+pub async fn resume_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::google_photos::is_job_id(&job_id) {
+        super::google_photos::google_photos_control(app, job_id, "resume".into()).await?;
+        return Ok(true);
+    }
     let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
     let Some(job) = jobs.get_mut(&job_id) else { return Ok(false); };
     if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
@@ -658,7 +682,11 @@ pub fn resume_process_job(job_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn abort_process_job(job_id: String) -> Result<bool, String> {
+pub async fn abort_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::google_photos::is_job_id(&job_id) {
+        super::google_photos::google_photos_control(app, job_id, "abort".into()).await?;
+        return Ok(true);
+    }
     let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
     let Some(job) = jobs.get_mut(&job_id) else { return Ok(false); };
     if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
@@ -1142,7 +1170,7 @@ pub(super) fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: b
         ProcessTask::RemoveStabilize => collect_named_outputs(dir, recursive, "_stabilized", "mp4"),
         ProcessTask::ScanArchiveNaming | ProcessTask::ApplyEventNaming => vec![],
         ProcessTask::Transfer | ProcessTask::VerifyChecksums => vec![],
-        ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos => vec![],
+        ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos => vec![],
     }
 }
 
@@ -2127,6 +2155,7 @@ fn task_name(task: &ProcessTask) -> &'static str {
         ProcessTask::VerifyChecksums => "verify_checksums",
         ProcessTask::ScanFaces => "scan_faces",
         ProcessTask::SearchPersonVideos => "search_person_videos",
+        ProcessTask::GooglePhotos => "google_photos",
     }
 }
 
@@ -2146,6 +2175,7 @@ fn task_result_label(task: &ProcessTask) -> &'static str {
         ProcessTask::VerifyChecksums => "verified",
         ProcessTask::ScanFaces => "faces_detected",
         ProcessTask::SearchPersonVideos => "videos_found",
+        ProcessTask::GooglePhotos => "verified",
     }
 }
 
@@ -2733,7 +2763,7 @@ fn run_process_task(
                     ProcessTask::ScanArchiveNaming => {}
                     ProcessTask::ApplyEventNaming => {}
                     ProcessTask::Transfer | ProcessTask::VerifyChecksums => {}
-                    ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos => {}
+                    ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos => {}
                 }
                 Ok(())
             })();
@@ -2913,6 +2943,7 @@ pub fn start_process_job(
     let _photo_edit_gate = super::lightbox_crop::PHOTO_EDIT_GATE.lock().map_err(|e|e.to_string())?;
     if super::lightbox_crop::is_editing() { return Err("Wait for the current crop operation to finish before queuing Photo Process work".into()); }
     let job_id = next_process_job_id();
+    let managed = super::process_runtime::register(super::process_runtime::Kind::PhotoProcess, &job_id)?;
     let job = ProcessJob {
         id: job_id.clone(),
         task: task_enum.clone(),
@@ -2962,6 +2993,7 @@ pub fn start_process_job(
         status_line: String::new(),
         pause_requested: false,
         abort_requested: false,
+        google_photos: None, can_continue: None, control_blocked_reason: None, persistence_error: None,
     };
 
     {
@@ -3017,6 +3049,7 @@ pub fn start_process_job(
     let app_for_status = app.clone();
     async_runtime::spawn(async move {
         let result = async_runtime::spawn_blocking(move || {
+            let _managed = managed;
             run_process_task(app_for_task, staging_dir, scope_dir, scope_mode, task_for_worker, Some(job_id_for_task))
         })
         .await;
@@ -3068,6 +3101,7 @@ pub fn start_event_naming_job(
     super::naming_workflow::ensure_jobs_idle(&root, None)?;
     build_event_naming_plans(&request)?;
     let job_id = next_process_job_id();
+    let managed = super::process_runtime::register(super::process_runtime::Kind::PhotoProcess, &job_id)?;
     let selected_count = if request.assignments.is_empty() {
         request.directories.len()
     } else {
@@ -3123,6 +3157,7 @@ pub fn start_event_naming_job(
         status_line: String::new(),
         pause_requested: false,
         abort_requested: false,
+        google_photos: None, can_continue: None, control_blocked_reason: None, persistence_error: None,
     };
 
     {
@@ -3143,6 +3178,7 @@ pub fn start_event_naming_job(
 
     async_runtime::spawn(async move {
         let result = async_runtime::spawn_blocking(move || {
+            let _managed = managed;
             run_process_task(
                 app_for_task,
                 staging_dir_for_task,

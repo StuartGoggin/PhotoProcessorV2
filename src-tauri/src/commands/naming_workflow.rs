@@ -689,7 +689,7 @@ fn overlaps(root: &Path, other: &str) -> bool {
 pub(crate) fn ensure_jobs_idle(root: &Path, own_job: Option<&str>) -> Result<(), String> {
     use super::{
         import::{list_import_jobs, ImportJobStatus},
-        process::{list_process_jobs, ProcessJobStatus},
+        process::ProcessJobStatus,
     };
     for job in list_import_jobs()? {
         if matches!(
@@ -700,7 +700,7 @@ pub(crate) fn ensure_jobs_idle(root: &Path, own_job: Option<&str>) -> Result<(),
             return Err("An import is using these folders. Finish or stop it in Jobs, then review event names again.".into());
         }
     }
-    for job in list_process_jobs()? {
+    for job in super::process::list_local_process_jobs()? {
         if Some(job.id.as_str()) != own_job
             && matches!(
                 job.status,

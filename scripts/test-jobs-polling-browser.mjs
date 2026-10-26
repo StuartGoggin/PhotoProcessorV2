@@ -31,7 +31,7 @@ try {
     window.__flickerMaxPending = {};
     window.__flickerCalls = {};
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-      if (['list_import_jobs', 'list_process_jobs', 'studio_list_jobs'].includes(command)) {
+      if (['list_import_jobs', 'process_jobs_snapshot', 'studio_list_jobs'].includes(command)) {
         window.__flickerCalls[command] = (window.__flickerCalls[command] || 0) + 1;
         window.__flickerPending[command] = (window.__flickerPending[command] || 0) + 1;
         window.__flickerMaxPending[command] = Math.max(window.__flickerMaxPending[command] || 0, window.__flickerPending[command]);

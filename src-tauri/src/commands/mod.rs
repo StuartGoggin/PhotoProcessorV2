@@ -16,6 +16,8 @@ pub mod metadata_tools;
 pub mod naming;
 pub mod naming_workflow;
 pub mod process;
+mod process_runtime;
+pub mod process_jobs;
 mod photo_process;
 pub mod process_preview;
 pub mod settings;

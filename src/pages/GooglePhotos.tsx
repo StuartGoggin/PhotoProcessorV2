@@ -2,9 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettings } from "../hooks";
-import type { GooglePhotoAlbumEdit, GooglePhotoMode, GooglePhotoPlanItem, GooglePhotoVariant, GooglePhotosJob, GooglePhotosPlan, GooglePhotosPlanRequest, GooglePhotosStatus } from "../types/googlePhotos";
+import type { GooglePhotoAlbumEdit, GooglePhotoMode, GooglePhotoPlanItem, GooglePhotoVariant, GooglePhotosPlan, GooglePhotosPlanRequest, GooglePhotosStatus } from "../types/googlePhotos";
 import { GOOGLE_PHOTO_VARIANTS, googlePhotoCounts, googlePhotoSize, googlePhotoVariantLabel } from "../utils/googlePhotos";
-import GooglePhotoJobCard from "../components/GooglePhotoJobCard";
 import { METADATA_TOOL_SOURCES, type MetadataToolStatus } from "../types/metadataTool";
 import "./GooglePhotos.css";
 
@@ -99,12 +98,12 @@ function AlbumReview({ planId, items, edit, disabled, expanded, onToggle, onChan
   </div>;
 }
 
-export default function GooglePhotos() {
+export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string) => void }) {
   const { settings, error: settingsError } = useSettings();
   const root = settings?.staging_dir ?? "";
   const [status, setStatus] = useState<GooglePhotosStatus>(emptyStatus);
   const [statusLoaded, setStatusLoaded] = useState(false);
-  const [jobs, setJobs] = useState<GooglePhotosJob[]>([]);
+  const [lastJobId, setLastJobId] = useState<string | null>(null);
   const [request, setRequest] = useState<GooglePhotosPlanRequest>(defaultRequest(""));
   const [framing, setFraming] = useState<PhotoFraming>("uncropped");
   const [plan, setPlan] = useState<GooglePhotosPlan | null>(null);
@@ -129,21 +128,22 @@ export default function GooglePhotos() {
   const refresh = useCallback(async () => {
     if (pollBusy.current) return;
     pollBusy.current = true;
-    const results = await Promise.allSettled([
-      invoke<GooglePhotosStatus>("google_photos_status"), invoke<GooglePhotosJob[]>("google_photos_list_jobs"),
-    ]);
+    const results = await Promise.allSettled([invoke<GooglePhotosStatus>("google_photos_status")]);
     if (mounted.current) {
       if (results[0].status === "fulfilled") { setStatus(results[0].value); setStatusLoaded(true); }
-      if (results[1].status === "fulfilled") setJobs(results[1].value);
       setPollError(results.some(result => result.status === "rejected") ? "Google Photos status could not be refreshed. Local work is unaffected; retry to get current cloud status." : "");
     }
     pollBusy.current = false;
   }, []);
   useEffect(() => {
     mounted.current = true; void refresh();
-    const interval = window.setInterval(() => void refresh(), 2500);
-    return () => { mounted.current = false; window.clearInterval(interval); ++planGeneration.current; };
+    return () => { mounted.current = false; ++planGeneration.current; };
   }, [refresh]);
+  useEffect(() => {
+    if (!status.connecting) return;
+    const interval = window.setInterval(() => void refresh(), 2500);
+    return () => window.clearInterval(interval);
+  }, [refresh, status.connecting]);
 
   const checkMetadataTool = useCallback(async () => {
     if (metadataBusy.current) return;
@@ -200,12 +200,9 @@ export default function GooglePhotos() {
     if (!plan || !accepted) return;
     const planId = plan.id;
     await action("start", async () => {
-      await invoke("google_photos_start", { planId, albums: albumEdits, acknowledgeWarnings: accepted });
-      if (mounted.current) { setPlan(null); setAccepted(false); }
-    }, "Upload job saved. Progress and album links appear below; local photos and Lightbox selections are unchanged.");
-  }
-  async function control(job: GooglePhotosJob, actionName: "pause" | "resume" | "retry") {
-    await action(`${actionName}-${job.id}`, () => invoke("google_photos_control", { jobId: job.id, action: actionName }));
+      const jobId = await invoke<string>("google_photos_start", { planId, albums: albumEdits, acknowledgeWarnings: accepted });
+      if (mounted.current) { setLastJobId(jobId); setPlan(null); setAccepted(false); }
+    }, "Upload job saved in Jobs. Local photos and Lightbox selections are unchanged.");
   }
   const counts = useMemo(() => googlePhotoCounts(plan?.items ?? []), [plan]);
   const reviewedVersions = useMemo(() => GOOGLE_PHOTO_VARIANTS.map(variant => ({ ...variant, count: plan?.items.filter(item => item.variant === variant.id).length ?? 0 })).filter(variant => variant.count > 0), [plan]);
@@ -227,7 +224,7 @@ export default function GooglePhotos() {
     <section className="gp-section" aria-labelledby="gp-account-heading"><h3 id="gp-account-heading"><span className="gp-step" aria-hidden="true">1</span>Your Google account</h3>
       <div className="gp-row gp-between">
         <div className="gp-account"><span className="gp-account-icon" aria-hidden="true">{status.account ? "✓" : "G"}</span><div>{status.account ? <><strong>{status.account.email}</strong><p className="gp-muted">{status.account.displayName} · album history is isolated to this account</p></> : <><strong>{statusLoaded ? "Not connected" : "Checking connection…"}</strong><p className="gp-muted">Sign in using your normal browser. Passwords never pass through PhotoGoGo.</p></>}</div></div>
-        <div className="gp-row gp-actions"><button className="btn-secondary" disabled={!!busy || !!status.account || status.connecting} onClick={() => void configure()}>Import OAuth setup</button>{status.account ? <button className="btn-secondary" disabled={!!busy} onClick={() => setDisconnectOpen(value => !value)}>Disconnect</button> : <button className="btn-primary" disabled={!status.configured || !!busy || status.connecting} onClick={() => void action("connect", () => invoke("google_photos_connect"))}>{status.connecting || busy === "connect" ? "Waiting for browser sign-in…" : "Connect Google Photos"}</button>}</div>
+        <div className="gp-row gp-actions"><button className="btn-secondary" disabled={!!busy} onClick={() => void refresh()}>Refresh account</button><button className="btn-secondary" disabled={!!busy || !!status.account || status.connecting} onClick={() => void configure()}>Import OAuth setup</button>{status.account ? <button className="btn-secondary" disabled={!!busy} onClick={() => setDisconnectOpen(value => !value)}>Disconnect</button> : <button className="btn-primary" disabled={!status.configured || !!busy || status.connecting} onClick={() => void action("connect", () => invoke("google_photos_connect"))}>{status.connecting || busy === "connect" ? "Waiting for browser sign-in…" : "Connect Google Photos"}</button>}</div>
       </div>
       {status.configured && <p className="gp-muted" style={{ marginTop: 8 }}>Desktop OAuth setup configured{status.clientIdHint ? ` · ${status.clientIdHint}` : ""}. Refresh tokens and upload sessions are kept in protected native storage, not browser storage.</p>}
       {status.error && <div className="gp-note" role="status">{status.error}</div>}
@@ -266,9 +263,6 @@ export default function GooglePhotos() {
       {counts.ready === 0 && <p className="gp-muted mt-2">{albumOnlyEdit ? "Only the reviewed existing album title/cover will change; already-uploaded photos are not uploaded again." : "Nothing new is ready to upload. Change your selection, resolve the reported checks, or edit the title/cover of an existing app-created album."}</p>}
     </section>}
 
-    <section className="gp-section" aria-labelledby="gp-jobs-heading"><div className="gp-row gp-between"><h3 id="gp-jobs-heading">Upload jobs</h3><button className="btn-secondary text-xs" disabled={!!busy} onClick={() => void refresh()}>Refresh jobs</button></div><p className="gp-muted">Jobs are saved natively and recover after restart. Pause stops further network work at a safe point. Retry keeps successful receipts and retries only work that can safely continue.</p>
-      {!jobs.length && <div className="gp-offline mt-3">No Google Photos upload jobs yet. Your first reviewed publish plan will appear here.</div>}
-      {[...jobs].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(job => <GooglePhotoJobCard key={job.id} job={job} account={status.account} busy={!!busy} run={action} control={control} />)}
-    </section>
+    {lastJobId && <div className="gp-section"><p className="gp-muted">This upload is a normal process job. Progress, controls, receipt details and recovery are in Jobs.</p><button className="btn-primary mt-2" onClick={() => onViewJob?.(lastJobId)}>View job</button></div>}
   </div>;
 }

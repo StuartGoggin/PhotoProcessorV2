@@ -13,6 +13,235 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn core_jobs_project_one_authoritative_upload_with_safe_counts_and_log() {
+    let mut fixture = Fixture::core(4);
+    let mut api = FakeGoogle { verify_error_on_call: Some((3, ReadbackError::ItemRejected("Google media read-back failed: INVALID_ARGUMENT (code 3). bearer fixture-secret private@example.test".into()))), ..Default::default() };
+    let error = fixture
+        .drive(&mut api, &AtomicBool::new(false))
+        .unwrap_err();
+    finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+    let row = super::super::core_jobs::project(&fixture.job, Some(&fixture.job.plan.account_id));
+    assert_eq!(row.id, fixture.job.plan.id);
+    assert!(matches!(
+        row.task,
+        crate::commands::process::ProcessTask::GooglePhotos
+    ));
+    assert!(matches!(
+        row.status,
+        crate::commands::process::ProcessJobStatus::NeedsAttention
+    ));
+    assert_eq!(row.can_continue, Some(true));
+    assert_eq!(row.result_count, 3);
+    let details = row.google_photos.as_ref().unwrap();
+    assert_eq!(
+        (
+            details.accepted,
+            details.uploaded,
+            details.awaiting_verification
+        ),
+        (4, 3, 1)
+    );
+    assert!(row.logs.join("\n").contains("INVALID_ARGUMENT (code 3)"));
+    let wire = serde_json::to_string(&row).unwrap();
+    for secret in [
+        "fixture-secret",
+        "private@example.test",
+        "test-session",
+        "media-token",
+    ] {
+        assert!(!wire.contains(secret));
+    }
+    assert!(wire.contains("\"task\":\"googlePhotos\""));
+    assert!(wire.contains("\"status\":\"needs_attention\""));
+    assert!(
+        !crate::commands::process::process_jobs_store()
+            .lock()
+            .unwrap()
+            .contains_key(&row.id),
+        "a durable upload must never be mirrored into a second mutable core state"
+    );
+}
+
+#[test]
+fn core_jobs_history_archives_only_resolved_jobs_and_keeps_receipts_and_ledger() {
+    let mut fixture = Fixture::core(1);
+    fixture
+        .drive(&mut FakeGoogle::default(), &AtomicBool::new(false))
+        .unwrap();
+    let ledger = fixture
+        .store
+        .load::<Vec<LedgerEntry>>("ledger")
+        .unwrap()
+        .unwrap();
+    let receipt = fixture.job.items[0].media.as_ref().unwrap().id.clone();
+    assert_eq!(
+        super::super::core_jobs::archive_store(&fixture.store).unwrap(),
+        1
+    );
+    fixture.reload();
+    assert!(fixture.job.history_hidden);
+    assert_eq!(fixture.job.items[0].media.as_ref().unwrap().id, receipt);
+    assert_eq!(
+        serde_json::to_string(
+            &fixture
+                .store
+                .load::<Vec<LedgerEntry>>("ledger")
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_string(&ledger).unwrap()
+    );
+    assert!(
+        super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true)
+            .unwrap()
+            .is_empty()
+    );
+    // Even an older hidden record must reappear if a receipt needs attention.
+    fixture.job.items[0].state = "registered".into();
+    fixture.job.save(&fixture.store).unwrap();
+    let rows = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(
+        rows[0].status,
+        crate::commands::process::ProcessJobStatus::NeedsAttention
+    ));
+    assert_eq!(rows[0].google_photos.as_ref().unwrap().accepted, 1);
+}
+
+#[test]
+fn core_jobs_pending_stopped_failed_and_uncertain_uploads_cannot_be_hidden() {
+    let mut fixture = Fixture::core(1);
+    fixture
+        .drive(&mut FakeGoogle::default(), &AtomicBool::new(false))
+        .unwrap();
+    let finished = fixture.job.clone();
+    for state in [
+        "running",
+        "paused",
+        "aborted",
+        "needs_attention",
+        "completed_with_errors",
+        "failed",
+    ] {
+        fixture.job = finished.clone();
+        fixture.job.status = state.into();
+        fixture.job.save(&fixture.store).unwrap();
+        assert_eq!(
+            super::super::core_jobs::archive_store(&fixture.store).unwrap(),
+            0,
+            "{state}"
+        );
+        assert!(
+            !fixture
+                .store
+                .load::<Job>(&format!("job_{}", fixture.job.plan.id))
+                .unwrap()
+                .unwrap()
+                .history_hidden
+        );
+    }
+    fixture.job = finished;
+    fixture.job.albums[0].state = "creation_outcome_unknown".into();
+    assert!(!super::super::core_jobs::history_eligible(&fixture.job));
+    fixture.job.albums[0].state = "ready".into();
+    fixture.job.items[0].state = "blocked".into();
+    assert!(!super::super::core_jobs::history_eligible(&fixture.job));
+}
+
+#[test]
+fn core_jobs_account_backoff_and_stale_state_disable_continuation() {
+    let fixture = Fixture::core(1);
+    let account = fixture.job.plan.account_id.clone();
+    assert_eq!(
+        super::super::core_jobs::project(&fixture.job, None).can_continue,
+        Some(false)
+    );
+    assert_eq!(
+        super::super::core_jobs::project(&fixture.job, Some("other-client-account")).can_continue,
+        Some(false)
+    );
+    let mut delayed = fixture.job.clone();
+    delayed.retry_after = chrono::Utc::now().timestamp() + 30;
+    assert_eq!(
+        super::super::core_jobs::project(&delayed, Some(&account)).can_continue,
+        Some(false)
+    );
+    let valid = super::super::core_jobs::project(&fixture.job, Some(&account));
+    assert_eq!(valid.can_continue, Some(true));
+    let stale = super::super::core_jobs::stale_jobs(vec![valid], "Saved state unavailable");
+    assert_eq!(stale[0].id, fixture.job.plan.id);
+    assert_eq!(stale[0].can_continue, Some(false));
+    assert!(stale[0].persistence_error.is_some());
+    fixture
+        .store
+        .save(
+            &format!("job_{}", fixture.job.plan.id),
+            &vec!["invalid document shape"],
+        )
+        .unwrap();
+    assert!(
+        super::super::core_jobs::stored_jobs(&fixture.store, Some(&account), &[], true).is_err()
+    );
+    assert!(super::super::core_jobs::archive_store(&fixture.store).is_err());
+}
+
+#[test]
+fn core_jobs_restart_recovery_respects_other_process_lease_and_old_saves() {
+    let mut fixture = Fixture::core(1);
+    for state in ["queued", "running"] {
+        fixture.job.status = state.into();
+        fixture.job.save(&fixture.store).unwrap();
+        let rows = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], false).unwrap();
+        assert!(!matches!(
+            rows[0].status,
+            crate::commands::process::ProcessJobStatus::Paused
+        ));
+        let rows = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true).unwrap();
+        assert!(matches!(
+            rows[0].status,
+            crate::commands::process::ProcessJobStatus::Paused
+        ));
+    }
+    let mut legacy = serde_json::to_value(&fixture.job).unwrap();
+    for field in ["history_hidden", "started_at", "finished_at"] {
+        legacy.as_object_mut().unwrap().remove(field);
+    }
+    let old: Job = serde_json::from_value(legacy).unwrap();
+    assert!(!old.history_hidden);
+    assert!(old.started_at.is_none() && old.finished_at.is_none());
+    assert_eq!(old.plan.id, fixture.job.plan.id);
+}
+
+#[test]
+fn core_jobs_order_mixed_local_and_cloud_times_chronologically() {
+    let fixture = Fixture::core(1);
+    let mut older = super::super::core_jobs::project(&fixture.job, None);
+    older.id = "old-google".into();
+    older.created_at = "2026-01-01T00:00:00Z".into();
+    let mut newer = older.clone();
+    newer.id = "new-local".into();
+    let local_time = chrono::DateTime::parse_from_rfc3339("2026-01-01T01:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Local);
+    newer.created_at = local_time.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+    let mut jobs = vec![older, newer];
+    crate::commands::process_jobs::sort_jobs(&mut jobs);
+    assert_eq!(jobs[0].id, "new-local");
+}
+
+#[test]
+fn core_jobs_reject_foreign_id_namespaces_without_resetting_saved_records() {
+    let fixture = Fixture::new(1);
+    fixture.job.save(&fixture.store).unwrap();
+    assert!(super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true).is_err());
+    assert!(super::super::core_jobs::archive_store(&fixture.store).is_err());
+    assert!(fixture.store.load::<Job>("job_test-job").unwrap().is_some());
+    assert!(!crate::commands::google_photos::is_job_id("process-job-1"));
+    assert!(crate::commands::google_photos::is_job_id(&"G".repeat(43)));
+}
 struct TestSealer;
 impl Sealer for TestSealer {
     fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String> {
@@ -37,6 +266,11 @@ struct Fixture {
     source_bytes: Vec<Vec<u8>>,
 }
 impl Fixture {
+    fn core(count: usize) -> Self {
+        let mut fixture = Self::new(count);
+        fixture.job.plan.id = "G".repeat(43);
+        fixture
+    }
     fn new(count: usize) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "pgg-google-engine-{}-{}",
@@ -101,7 +335,11 @@ impl Fixture {
         }
     }
     fn reload(&mut self) {
-        self.job = self.store.load("job_test-job").unwrap().unwrap();
+        self.job = self
+            .store
+            .load(&format!("job_{}", self.job.plan.id))
+            .unwrap()
+            .unwrap();
     }
     fn drive(&mut self, api: &mut FakeGoogle, stop: &AtomicBool) -> Result<(), String> {
         drive(&self.store, &mut self.job, api, &self.workspace, "", stop)

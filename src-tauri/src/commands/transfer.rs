@@ -610,6 +610,7 @@ pub fn start_transfer(
     }
 
     let job_id = next_process_job_id();
+    let managed = super::process_runtime::register(super::process_runtime::Kind::PhotoProcess, &job_id)?;
     let job = ProcessJob {
         id: job_id.clone(),
         task: ProcessTask::Transfer,
@@ -659,6 +660,7 @@ pub fn start_transfer(
         status_line: String::new(),
         pause_requested: false,
         abort_requested: false,
+        google_photos: None, can_continue: None, control_blocked_reason: None, persistence_error: None,
     };
 
     {
@@ -673,6 +675,7 @@ pub fn start_transfer(
 
     tauri::async_runtime::spawn(async move {
         let result = tauri::async_runtime::spawn_blocking(move || {
+            let _managed = managed;
             run_transfer_task(app_clone, staging, archive, Some(job_id_for_task))
         }).await;
 
@@ -714,6 +717,7 @@ pub fn verify_checksums(
     let checksum_path = resolve_checksum_manifest_path(&archive)?;
 
     let job_id = next_process_job_id();
+    let managed = super::process_runtime::register(super::process_runtime::Kind::PhotoProcess, &job_id)?;
     let job = ProcessJob {
         id: job_id.clone(),
         task: ProcessTask::VerifyChecksums,
@@ -763,6 +767,7 @@ pub fn verify_checksums(
         status_line: String::new(),
         pause_requested: false,
         abort_requested: false,
+        google_photos: None, can_continue: None, control_blocked_reason: None, persistence_error: None,
     };
 
     {
@@ -779,6 +784,7 @@ pub fn verify_checksums(
 
     tauri::async_runtime::spawn(async move {
         let result = tauri::async_runtime::spawn_blocking(move || {
+            let _managed = managed;
             run_verify_task(app_clone, archive_clone, checksum_path_clone, Some(job_id_for_task))
         }).await;
 

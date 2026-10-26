@@ -139,11 +139,24 @@ the controlled pilot must also inspect capture dates, orientation and colour.
 
 ## Pause, restart and recovery
 
-Google Photos uploads appear in the normal **Jobs** page and background Jobs
-panel as well as on the Transfer page. Failed uploads appear under **Needs
-attention**. Resume/retry and album recovery use the same native saved job on
-every screen. The generic **Clear finished** action does not erase Google Photos
-jobs, successful receipts or album history.
+Google Photos uploads use the core **Process Jobs** architecture, the normal
+**Jobs** page, job tiles, console and background Jobs panel. The Transfer page
+configures/reviews a publish plan, starts it, and provides **View job**; it has
+no separate upload tracker or management poll. Existing saved jobs appear
+automatically with their original IDs. Failures appear under **Needs attention**.
+
+Standard Pause, Resume, Abort and Retry controls dispatch through the core job
+interface. Google receipt counts, album recovery and sanitized diagnostics are
+task-specific details inside that same job. **Clear finished** hides only fully
+resolved completed Google entries from history; it never deletes the encrypted
+checkpoint, successful receipts, duplicate ledger or album mapping. Pending,
+failed, paused, stopped and uncertain uploads remain visible and recoverable.
+
+Google upload checkpoints remain encrypted and authoritative. They are not
+copied into the in-memory local-job store. The shared worker registry contains
+only task identity and cooperative stop handles. A protected-store problem
+leaves local Photo Process jobs usable, shows a warning, and disables continuation
+from a stale upload view. Safe stop requests remain available for active work.
 
 **View diagnostics** displays a local, sanitised report; **Copy diagnostics**
 copies it for support. Neither action contacts Google or starts a retry. The
@@ -172,6 +185,11 @@ confirmed byte offset. A known expired byte session can restart using the exact
 same prepared file without recreating its album. Retry retains successful media
 receipts and verifies registered photos rather than adding them again.
 
+Abort also stops at a safe checkpoint, retains upload receipts and prepared
+bytes, and allows explicit Retry of that same job. Neither Pause nor Abort
+deletes remote photos or albums. A stop request is not shown as a completed stop
+until the executor has saved its checkpoint.
+
 A lost **album creation** response is different: Google provides no documented
 idempotency key for that operation. The job stops with an uncertain outcome.
 Use **Choose existing app-created album**, inspect the exact account and album,
@@ -194,7 +212,7 @@ privacy/storage policy.
 
 ## Upload acceptance and verification
 
-Jobs and Transfer show **Accepted by Google** when a media registration receipt
+Job details show **Accepted by Google** when a media registration receipt
 has been saved, and **Verified** only after PhotoGoGo successfully reads that
 same media ID back and checks its reported dimensions. These are different
 checkpoints. Transferred bytes and the processed-photo bar do not prove that
@@ -213,7 +231,8 @@ offline. Unverified receipts stay in **Needs attention**, with their own
 diagnostics; PhotoGoGo does not silently mark them verified. No manual override
 or additional Google permissions are introduced.
 
-After installing 2.0.35, retry the existing four-photo pilot. If Google still
+After installing the current build, retry the existing four-photo pilot in
+**Jobs → Needs attention**. If Google still
 rejects the Original, expect **4 accepted, 3 verified, 1 verification needs
 attention**, while the fourth photo is now checked. If that Original's
 read-back succeeds, the job can finish with all four verified. The precise

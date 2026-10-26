@@ -29,6 +29,7 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   verify_checksums: "Verify Checksums",
   scan_faces: "Scan Faces",
   search_person_videos: "Search Person",
+  googlePhotos: "Google Photos",
 };
 
 const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {
@@ -56,6 +57,7 @@ const STATUS_COLORS: Record<Job["status"], { bg: string; text: string; border: s
   aborted: { bg: "bg-red-950", text: "text-red-200", border: "border-red-700" },
   completed: { bg: "bg-surface-800", text: "text-emerald-300", border: "border-surface-600" },
   failed: { bg: "bg-red-950", text: "text-red-300", border: "border-red-600" },
+  needs_attention: { bg: "bg-amber-950", text: "text-amber-200", border: "border-amber-700" },
 };
 
 function pct(done: number, total: number): number {
@@ -88,7 +90,9 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
   const importJob = !isProcessJob(job) ? job : null;
   const title = processJob ? PROCESS_TASK_LABELS[processJob.task] : "Import";
   const detail = processJob
-    ? processJob.task === "scan_archive_naming"
+    ? processJob.task === "googlePhotos"
+      ? processJob.googlePhotos?.albums.map(album => album.title).join(" · ") || "Protected Google Photos job"
+      : processJob.task === "scan_archive_naming"
       ? "Archive library"
       : processJob.task === "apply_event_naming"
         ? "Queued rename"
@@ -191,7 +195,7 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
         <div className="flex items-center gap-2 flex-shrink-0">
           {job.status === "completed" && <span className="text-emerald-400 text-lg">✓</span>}
           <div className={`text-xs px-2 py-1 rounded-full capitalize whitespace-nowrap font-medium ${colors.text}`}>
-            {job.status === "completed" ? "Done" : job.status}
+            {job.status === "completed" ? "Done" : job.status.replace(/_/g, " ")}
           </div>
         </div>
       </div>

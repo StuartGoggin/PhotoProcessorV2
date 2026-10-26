@@ -37,6 +37,7 @@ use commands::{
         run_bw_conversion, run_enhancement, run_focus_detection, run_video_stabilization,
         start_event_naming_job, start_process_job,
     },
+    process_jobs::{process_jobs_snapshot, retry_process_job, process_job_diagnostics, process_job_albums, process_job_open_album, process_job_reconcile_album},
     settings::{load_settings, save_settings},
     staging_tags::{
         apply_staging_tags, load_staging_tags, set_file_staging_tags,
@@ -149,6 +150,12 @@ pub fn run() {
             pause_process_job,
             resume_process_job,
             abort_process_job,
+            process_jobs_snapshot,
+            retry_process_job,
+            process_job_diagnostics,
+            process_job_albums,
+            process_job_open_album,
+            process_job_reconcile_album,
             // Transfer
             start_transfer,
             verify_checksums,

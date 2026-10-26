@@ -3,6 +3,8 @@ import type { ImportJob, ProcessJob } from "../types";
 import { getProcessAttemptLabel, getProcessResultLabel } from "../utils";
 import { ImportJobSchedulingStatus } from "./ImportSchedulingStatus";
 import { formatImportRate } from "../utils/importScheduling";
+import GooglePhotoJobDetails from "./GooglePhotoJobDetails";
+import ProcessJobControls from "./ProcessJobControls";
 
 type Job = ImportJob | ProcessJob;
 
@@ -37,6 +39,7 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   verify_checksums: "Verify Checksums",
   scan_faces: "Face Library Scan",
   search_person_videos: "Search Person Videos",
+  googlePhotos: "Google Photos",
 };
 
 const PROCESS_PHASE_LABELS: Record<string, string> = {
@@ -51,9 +54,10 @@ const PROCESS_PHASE_LABELS: Record<string, string> = {
 interface JobConsoleProps {
   job: Job | null;
   onClose?: () => void;
+  onChanged?: () => Promise<void>;
 }
 
-export default function JobConsole({ job, onClose }: JobConsoleProps) {
+export default function JobConsole({ job, onClose, onChanged }: JobConsoleProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-scroll to bottom as logs grow
@@ -201,10 +205,11 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
               job.status === "running" ? "bg-emerald-900/40 text-emerald-200 border border-emerald-700" :
               job.status === "completed" ? "bg-emerald-900/40 text-emerald-300 border border-emerald-700" :
               job.status === "failed" ? "bg-red-900/40 text-red-300 border border-red-700" :
+              job.status === "needs_attention" ? "bg-amber-900/40 text-amber-200 border border-amber-700" :
               job.status === "paused" ? "bg-amber-900/40 text-amber-200 border border-amber-700" :
               "bg-surface-700 text-gray-300 border border-surface-600"
             }`}>
-              {job.status === "completed" ? "Done" : job.status}
+              {job.status === "completed" ? "Done" : job.status.replace(/_/g, " ")}
             </div>
             <button
               onClick={onClose}
@@ -217,6 +222,7 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
           </div>
         </div>
 
+        {processJob && <div className="my-2"><ProcessJobControls key={processJob.id} job={processJob} onChanged={onChanged} /></div>}
         {/* Quick stats */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
           <div className="bg-surface-800 rounded px-2 py-1.5">
@@ -253,6 +259,7 @@ export default function JobConsole({ job, onClose }: JobConsoleProps) {
             </div>
           </div>
         </div>
+        {processJob?.task === "googlePhotos" && <div className="mt-3"><GooglePhotoJobDetails key={processJob.id} job={processJob} onChanged={onChanged} /></div>}
         {isFaceScanJob && (
           <div className="mt-2 space-y-2">
             <div className="grid grid-cols-3 gap-2 text-xs">

@@ -1,3 +1,4 @@
+import type { GooglePhotosJob } from "./googlePhotos";
 /**
  * API types — mirror the Rust structs exposed via Tauri commands/events.
  * Keep in sync with src-tauri/src/commands/*.rs
@@ -173,7 +174,7 @@ export interface ProcessResult {
   errors: string[];
 }
 
-export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums" | "scan_faces" | "search_person_videos";
+export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums" | "scan_faces" | "search_person_videos" | "googlePhotos";
 
 export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly";
 
@@ -181,11 +182,16 @@ export type StabilizationMode = "maxFrame" | "edgeSafe" | "aggressiveCrop";
 
 export type StabilizationStrength = "gentle" | "balanced" | "strong";
 
-export type ProcessJobStatus = "queued" | "running" | "paused" | "aborted" | "completed" | "failed";
+export type ProcessJobStatus = "queued" | "running" | "paused" | "aborted" | "completed" | "failed" | "needs_attention";
 
 export interface ProcessJob {
   id: string;
   task: ProcessTask;
+  /** Native projection of protected receipts, never a second mutable job. */
+  googlePhotos?: GooglePhotosJob;
+  canContinue?: boolean;
+  controlBlockedReason?: string | null;
+  persistenceError?: string | null;
   stagingDir: string;
   scopeDir: string;
   scopeMode: ProcessScopeMode;
@@ -234,6 +240,8 @@ export interface ProcessJob {
   pauseRequested: boolean;
   abortRequested: boolean;
 }
+
+export interface ProcessJobsSnapshot { jobs: ProcessJob[]; warnings: string[] }
 
 export interface FaceScanWorkerProgress {
   workerId: number;

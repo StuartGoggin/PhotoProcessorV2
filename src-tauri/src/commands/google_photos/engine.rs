@@ -50,6 +50,12 @@ pub struct Job {
     pub original_hashes: Vec<(String, String)>,
     #[serde(default)]
     pub diagnostics: Vec<diagnostics::Event>,
+    #[serde(default)]
+    pub history_hidden: bool,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub finished_at: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,7 +64,7 @@ pub struct AlbumEdit {
     pub title: String,
     pub cover_item_id: Option<String>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobAlbum {
     key: String,
@@ -66,7 +72,7 @@ pub struct JobAlbum {
     product_url: String,
     state: String,
 }
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobSummary {
     pub id: String,
@@ -190,6 +196,9 @@ impl Job {
             retry_after: 0,
             original_hashes,
             diagnostics: Vec::new(),
+            history_hidden: false,
+            started_at: None,
+            finished_at: None,
         })
     }
     pub fn summary(&self) -> JobSummary {
@@ -293,7 +302,7 @@ impl Job {
         store.save(&format!("job_{}", self.plan.id), self)
     }
     pub fn recover(&mut self) {
-        if self.status == "running" {
+        if matches!(self.status.as_str(), "queued" | "running") {
             self.status = "paused".into();
         }
         if matches!(self.status.as_str(), "completed" | "completed_with_errors")
@@ -716,6 +725,10 @@ pub fn drive(
         return Err("An album creation outcome is unknown. Choose the actual app-created album in recovery before resuming; no duplicate album will be created.".into());
     }
     job.status = "running".into();
+    if job.started_at.is_none() {
+        job.started_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+    job.finished_at = None;
     job.errors.clear();
     job.save(store)?;
     // Retry every saved ID across albums before source access or new writes.
@@ -989,6 +1002,7 @@ fn complete(store: &GoogleStore, job: &mut Job) -> Result<(), String> {
     }
     .into();
     diagnostics::note(job, Stage::Job, None, Outcome::Succeeded, None);
+    job.finished_at = Some(chrono::Utc::now().to_rfc3339());
     job.save(store)
 }
 fn cleanup_copy(job: &Job, index: usize, workspace: &Path) -> Result<(), String> {
@@ -1022,6 +1036,11 @@ pub fn finish_error(
     stopped: bool,
 ) -> Result<(), String> {
     job.status = if stopped { "paused" } else { "needs_attention" }.into();
+    job.finished_at = if stopped {
+        None
+    } else {
+        Some(chrono::Utc::now().to_rfc3339())
+    };
     diagnostics::finish(job, &error, stopped);
     if diagnostics::rate_limited(&error) {
         job.retry_after = chrono::Utc::now().timestamp() + 30;
