@@ -33,3 +33,22 @@ No user media, Google account, active render, installed controller configuration
 Install either the EXE or MSI when PhotoGoGo has no active jobs. Test on a small event: select each version, try a favourite, rate/save/next, mark trash/save/next and reopen help. Configure AKP03E Hotkey actions using the guide, then check one button and all three dial directions/presses against the on-screen target. Avoid timed multi-action macros; the app owns save-and-next acknowledgement.
 
 The 2.0.39 installers remain available for rollback. This release uses the existing metadata format and preserves prior selection flags. It does not rename or delete files merely by installing. Managed FFmpeg and metadata runtimes are unchanged. Installer, GitHub and Slack receipts follow packaging.
+
+## Installer receipts
+
+Built source: d9a1c86af659e09afd24c0404e29fcd7f2bb952d.
+Build ID: 20261026T100855273Z-d9a1c86a+local, retained exactly as emitted. The working tree was clean before and after the build; the literal +local stamp is not rewritten.
+Inspection: test-output/release-2.0.40-inspection-20261026T101645916Z/report.json.
+Standalone application: 28,492,288 bytes; SHA-256 CEBB166ADE2211A7417777BD600044E75C0C6A5DAFF68C75A84B5C267218BE1C.
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| PhotoGoGoV2_2.0.40_x64-setup.exe | 71,367,179 | E43DA89D6722D267FF1B9EE83EE8F6A557550D8C7B44C57208C11A0B569B5721 |
+| PhotoGoGoV2_2.0.40_x64_en-US.msi | 92,275,987 | DD4B1BCB746E7BE7682BE160DE37AA858B21C906714DD70476C9A019D03F2798 |
+| PhotoGoGo-2.0.40-AKP03E-controls.zip | 117,705 | 90E949CE10902438ABE0FF4D80331857D5AA3D857BE1132C6005ED96F4F244F4 |
+
+The unsigned Windows x64 EXE and MSI passed non-installing extraction. Their application bytes match the standalone executable apart from the expected three-byte Tauri bundle marker. Both exact 2,205-file metadata runtime closures passed validation and execution after relocation without PATH; managed media and source manifests match. MSI UpgradeCode {9CBA7A69-EDA0-5480-A421-9DC9AD265A65} is unchanged from 2.0.39. The production frontend contains all 14 controller assets with source-matching hashes. The controller ZIP was opened and its guide checked against the committed guide.
+
+Unchanged FFmpeg corresponding source: 49,570,807 bytes; SHA-256 27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8. [Existing source delivery](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419). Managed runtime licence/source materials remain included.
+
+Production TypeScript/Vite build passed. It reports the existing large-chunk/Browserslist-age notices; the native release build reports three existing unused-item warnings. No dependency updates or unrelated refactors were added to this release.
