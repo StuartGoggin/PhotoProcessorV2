@@ -37,3 +37,21 @@ Keep PhotoGoGo open until Saving finishes. Accepted queue entries survive leavin
 No dependency, metadata schema, credentials, upload-job architecture, controller hotkey or driver changes. Existing selections and the 2.0.40 controller map remain compatible. The 2.0.40 installers remain available for rollback. No user photos, live Google accounts or render-PC settings were changed in validation.
 Final browser paint measurement: 40.4ms (two-animation-frame observation with native acknowledgement deliberately withheld).
 Native harness SHA-256: 4CFC12B2502BCD1D8123F39CFE528F2361023F0191CBC2F8E3F5E65E19FA8B95.
+
+## Installer receipts
+
+Built source: f3acf541a4e4c1e2607c8cdc209dd1cb24c1795a.
+Build ID: 20261026T214254709Z-f3acf541+local, retained exactly as emitted. The working tree was clean before and after building the committed source; the literal +local stamp is not rewritten.
+Inspection: test-output/release-2.0.41-inspection-20261026T215156269Z/report.json.
+Standalone application: 28,494,848 bytes; SHA-256 9CBBB8667F777BC4944279C431558EB989449C5431B3578250645685F7ED1C04.
+
+- EXE: PhotoGoGoV2_2.0.41_x64-setup.exe; 71,373,324 bytes.
+  SHA-256: EF35B1E74AF17B428148C3701B26B91C8D0DFC5C177FBBE18B5C286DC448A019.
+- MSI: PhotoGoGoV2_2.0.41_x64_en-US.msi; 92,300,563 bytes.
+  SHA-256: 85B85AD9C01B4707231B1C3C9BF1B5A413E4EA4CF404D0723AECD0AA326C5E7F.
+
+Both unsigned Windows x64 installers passed extraction without installation. Their application payloads match the standalone build after normalizing only the expected three-byte Tauri bundle marker. Both exact 2,205-file metadata runtime closures validated and executed after relocation without PATH; managed media, source archive and manifests match. MSI UpgradeCode {9CBA7A69-EDA0-5480-A421-9DC9AD265A65} is unchanged from 2.0.40. The production frontend includes the targeted save command, 2.0.41 version and built source markers.
+
+Unchanged FFmpeg corresponding source: 49,570,807 bytes; SHA-256 27F7CD21A21E661314D76FE4689F7E4D92B0C0E13BC101376E8443E10EEC8FD8. [Existing source delivery](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419). Managed runtime licence/source materials remain included.
+
+Production TypeScript/Vite and optimized Rust builds passed. Existing Browserslist-age/bundle-size notices and three unused-item native warnings remain; no dependency updates or unrelated refactors were added.
