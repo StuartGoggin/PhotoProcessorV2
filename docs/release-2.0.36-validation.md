@@ -42,8 +42,7 @@ a temporary sealed store and a deterministic Google service adapter. They make
 no live Google upload or account changes.
 
 The first complete native run passed 278 tests with 23 existing opt-in cases
-ignored. Final post-review native and browser results, source commit, installer
-inspection and verified publication receipts follow after their gates finish.
+ignored. Final post-review results, build and publication receipts follow.
 
 Final native validation: **279 passed, zero failed, 23 existing opt-in tests
 ignored**, including ownership-aware worker cleanup and queued/running recovery.
@@ -122,3 +121,33 @@ Google-side INVALID_ARGUMENT cause is still unconfirmed; this architecture
 change does not bypass verification or claim the live pilot is fully resolved.
 Keep 2.0.35 installers for rollback. No installation on deployment PCs or edits
 to user media are performed by this release validation.
+
+## Publication and delivery read-back
+
+GitHub main and SWG/google-core-jobs were atomically updated to
+4f611eb7e8e4d684752a4107a4c7f47d7b2d828d. Annotated tag v2.0.36 has object
+51b083e7b0a91559dbe5ae33aade2957ccc2d0db and peels to that installer-receipt
+commit. The references were read back with git ls-remote. This final
+documentation-only delivery commit follows the tag; application files remain
+identical to source commit 4e71d72.
+
+Both installers were uploaded through the Personal connection into GoggoVille
+#swghermes (C0BDK1DDZTM). Exact local lengths/SHA-256 values were rechecked
+immediately before each upload; each returned the full byte acknowledgement.
+
+| Delivery | File ID | Message timestamp | Upload acknowledgement |
+| --- | --- | --- | --- |
+| EXE | F0CBZUUH8K0 | 1792981616.602289 | HTTP 200, OK - 71160797 |
+| MSI | F0CBZV4DZL6 | 1792981771.231849 | HTTP 200, OK - 92030227 |
+
+New top-level release post, 26 October 2026 13:26:56 AEDT:
+https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792981616602289.
+The MSI is the reply in that thread. After sharing both files, the complete
+thread was read back. It contains the correct filenames/IDs, MIME types,
+displayed sizes, both SHA-256 values, source-companion link, core Jobs workflow,
+existing-job recovery steps and the separate unresolved Google verification
+boundary. This confirms upload-byte acknowledgements and Slack attachment
+metadata, not an independent remote download/hash comparison.
+
+No deployment installation, live Google upload, credential reset, render
+interruption or user-photo operation was performed here.
