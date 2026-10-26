@@ -48,3 +48,18 @@ Unchanged FFmpeg corresponding source: 49,570,807 bytes; SHA-256 27F7CD21A21E661
 [Existing source delivery](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1792900657737419). Managed runtime licence/source materials remain included.
 
 The fresh 2.0.39 archive browser regression run passed all ten groups after the version bump. Functional native code is unchanged from the implementation validated by the 308-test suite. No installation, live NAS copy, Google account upload or user-photo mutation was performed by this release task.
+
+## Verified GitHub and Slack delivery
+
+The installer-receipt commit c34d330df59747c048c5d80f5d6bd58c90468f0e was atomically pushed to GitHub master and SWG/selective-archive, with annotated tag v2.0.39. Remote read-back confirmed both branch heads and the peeled tag at that commit. The built source remains 3d616ff2c662b2c17df8fae99842cb981fb4eec0; subsequent commits record delivery evidence only. Another chat's older local master checkout was left untouched.
+
+Published to GoggoVille #swghermes (C0BDK1DDZTM) using the Personal connection:
+
+- EXE: 26 October 2026, 20:06:14 AEDT; timestamp 1793005574.718539; file F0CC42M06CA. Windows HTTP upload acknowledged HTTP 200 and exactly 71,238,203 bytes.
+  [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793005574718539).
+- MSI reply: 26 October 2026, 20:08:56 AEDT; timestamp 1793005736.922239; file F0CBYTA3QVB. Windows HTTP upload acknowledged HTTP 200 and exactly 92,128,531 bytes.
+  [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793005736922239).
+
+Exact local size and SHA-256 were checked immediately before each upload. Complete thread read-back confirmed both file IDs/names, captions, checksums and testing instructions, with no pagination remaining. This is receipt/attachment metadata verification, not an independent download/hash comparison of Slack-hosted bytes. No duplicate release post or file was created.
+
+Deployment testing remains with Stuart: install either package when the app has no active jobs, preview a small event and run transfer plus verification. No user-PC installation, active-job interruption or live NAS archive transfer was performed by this task.
