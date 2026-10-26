@@ -205,11 +205,11 @@ export default function JobConsole({ job, onClose, onChanged }: JobConsoleProps)
               job.status === "running" ? "bg-emerald-900/40 text-emerald-200 border border-emerald-700" :
               job.status === "completed" ? "bg-emerald-900/40 text-emerald-300 border border-emerald-700" :
               job.status === "failed" ? "bg-red-900/40 text-red-300 border border-red-700" :
-              job.status === "needs_attention" ? "bg-amber-900/40 text-amber-200 border border-amber-700" :
+              ["needs_attention", "completed_with_warnings"].includes(job.status) ? "bg-amber-900/40 text-amber-200 border border-amber-700" :
               job.status === "paused" ? "bg-amber-900/40 text-amber-200 border border-amber-700" :
               "bg-surface-700 text-gray-300 border border-surface-600"
             }`}>
-              {job.status === "completed" ? "Done" : job.status.replace(/_/g, " ")}
+              {job.status === "completed" ? "Done" : job.status === "completed_with_warnings" && processJob?.task === "googlePhotos" ? "Completed with verification warnings" : job.status.replace(/_/g, " ")}
             </div>
             <button
               onClick={onClose}

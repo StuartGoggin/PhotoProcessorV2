@@ -212,31 +212,44 @@ privacy/storage policy.
 
 ## Upload acceptance and verification
 
-Job details show **Accepted by Google** when a media registration receipt
-has been saved, and **Verified** only after PhotoGoGo successfully reads that
-same media ID back and checks its reported dimensions. These are different
-checkpoints. Transferred bytes and the processed-photo bar do not prove that
-every photo has passed verification.
+Job details show **Accepted by Google** after saving a successful registration
+receipt, and **Verified** only after reading that same ID back and checking its
+display dimensions. Transferred bytes alone prove neither checkpoint.
 
-If Google rejects an individual read-back result with `INVALID_ARGUMENT`,
-PhotoGoGo continues checking other registered photos. A dimension mismatch
-also remains a per-photo warning. Account, HTTP, network and quota failures
-stop further requests; rate-limit recovery keeps its waiting period.
+From 2.0.37, a singleton per-photo read-back `INVALID_ARGUMENT` result can
+finish as **Completed with verification warnings** when the saved registration
+metadata matches the full-resolution prepared photo (including swapped portrait
+EXIF dimensions). The photo is **accepted, read-back unavailable**; it is never
+silently promoted to verified. Remaining photos and later batches continue.
 
-Use **Retry safe remaining work** or **Resume** on the existing saved job.
-Registered photos are checked by their saved IDs before any new uploads or
-album changes. They are never uploaded or registered again to bypass a failed
-verification check. This read-back can work with the original photo folder
-offline. Unverified receipts stay in **Needs attention**, with their own
-diagnostics; PhotoGoGo does not silently mark them verified. No manual override
-or additional Google permissions are introduced.
+Google documents that identical uploaded bytes may return an existing media ID,
+while Library API reads are restricted to app-created media. Previously uploaded
+Originals can fit this pattern, but the generic error alone does not establish
+Google's exact reason. No extra permissions, modified images or replacement
+albums are used to bypass it.
 
-After installing the current build, retry the existing four-photo pilot in
-**Jobs → Needs attention**. If Google still
-rejects the Original, expect **4 accepted, 3 verified, 1 verification needs
-attention**, while the fourth photo is now checked. If that Original's
-read-back succeeds, the job can finish with all four verified. The precise
-Google-side cause of its earlier rejection remains unconfirmed.
+Missing or different registration dimensions cannot use this warning path.
+Read-back dimension mismatches, malformed/ambiguous receipts, HTTP, account,
+network and quota failures still require attention; rate limits keep their delay.
+
+For an existing 2.0.36 job, install 2.0.37 and choose **Jobs → Needs attention →
+Retry** once. Saved IDs are checked before source access or new uploads, so an
+accepted Original is not uploaded again. If its valid registration is still
+unreadable, the job finishes with a warning in **History**. The latest four-photo
+pilot has two reused photos; expect **2 accepted this attempt, 1 verified this
+attempt, 2 skipped, 1 read-back unavailable**, if Google's response is unchanged.
+
+Open the album to review. **Recheck verification** is optional for photos accepted
+by that saved job, checks the same IDs once per deliberate attempt, and can run
+with the original drive offline. A later successful read-back upgrades the saved
+evidence. Future plans reuse unchanged accepted photos only for the same account,
+album, original/source hashes, metadata recipe and GPS policy; they retain any
+read-back warning. Older verified receipts remain compatible. Clear finished
+hides completed warning history without deleting receipts or the duplicate
+ledger. There is no manual mark-verified override or remote checksum claim.
+
+References: [upload and duplicate behaviour](https://developers.google.com/photos/library/guides/upload-media),
+[app-created read scope](https://developers.google.com/photos/library/reference/rest/v1/mediaItems/batchGet).
 
 ## Disconnect and stored data
 

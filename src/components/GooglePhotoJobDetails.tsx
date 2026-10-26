@@ -21,6 +21,7 @@ export default function GooglePhotoJobDetails({ job, onChanged }: { job: Process
   if (!details) return <p className="text-xs text-amber-200">Protected Google Photos receipt details are unavailable. Refresh Jobs; no new upload is needed.</p>;
   const awaiting = details.awaitingVerification ?? 0;
   const warnings = details.verificationNeedsAttention ?? 0;
+  const unavailable = details.readbackUnavailable ?? 0;
   const mayContinue = job.canContinue === true && !job.persistenceError;
   async function action(run: () => Promise<void>) {
     if (pending.current) return;
@@ -44,7 +45,8 @@ export default function GooglePhotoJobDetails({ job, onChanged }: { job: Process
   return <section className="space-y-3" aria-label="Google Photos receipt details">
     <p className="text-xs text-gray-400">Destination account: {details.accountEmail}</p>
     <div className="gp-pills" aria-label="Google Photos acceptance and verification"><span className="gp-pill">Accepted by Google: {details.accepted ?? details.uploaded}</span><span className="gp-pill gp-pill-ready">Verified: {details.uploaded}</span>{awaiting > warnings && <span className="gp-pill">Awaiting verification: {awaiting - warnings}</span>}{warnings > 0 && <span className="gp-pill gp-pill-blocked">Verification needs attention: {warnings}</span>}</div>
-    <p className="text-xs text-gray-400">Bytes transferred (not confirmed uploads): {googlePhotoSize(details.bytesDone)} / {googlePhotoSize(details.totalBytes)}. Accepted means a registration receipt; Verified means completed read-back checks.</p>
+    {unavailable > 0 && <p className="gp-note" role="status">Read-back unavailable: {unavailable}. Google accepted these photos. Previously uploaded library photos may have restricted app access. This is separate from read-back verification. {job.status === "completed_with_warnings" ? ((details.accepted ?? 0) > details.uploaded ? "Upload complete; open the album to review. Rechecking verification is optional and reuses saved IDs without uploading again." : "Upload complete; reused photos keep their original acceptance evidence. Open the album to review.") : "Remaining photos can continue; accepted receipts are retained."}</p>}
+    <p className="text-xs text-gray-400">Bytes transferred (not confirmed uploads): {googlePhotoSize(details.bytesDone)} / {googlePhotoSize(details.totalBytes)}. Accepted means a registration receipt; Verified means completed read-back checks. Reused photos retain their original verification evidence.</p>
     {awaiting > 0 && <p className="gp-note">Google accepted these photos; some verification remains outstanding. {job.status === "running" || job.status === "queued" ? "Verification is continuing in this saved job." : `${job.status === "paused" ? "Resume" : "Retry"} this saved job to recheck accepted photos. Receipts are retained; do not reset or create a new upload to resolve verification.`}</p>}
     {job.status === "aborted" && <p className="gp-note">Network work is stopped. Saved registration receipts and resumable checkpoints remain available; Retry continues this same saved job.</p>}
     <div className="gp-row gp-actions">

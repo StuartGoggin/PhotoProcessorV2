@@ -30,12 +30,9 @@ pub(super) fn invalidate() {
     }
 }
 pub(super) fn history_eligible(job: &Job) -> bool {
-    job.status == "completed"
+    matches!(job.status.as_str(), "completed" | "completed_with_warnings")
         && job.errors.is_empty()
-        && job
-            .items
-            .iter()
-            .all(|item| matches!(item.state.as_str(), "verified" | "skipped"))
+        && job.items.iter().all(super::engine::resolved_receipt)
         && job
             .albums
             .iter()
@@ -49,6 +46,9 @@ pub(super) fn project(job: &Job, account_id: Option<&str>) -> ProcessJob {
         "paused" => ProcessJobStatus::Paused,
         "aborted" | "cancelled" => ProcessJobStatus::Aborted,
         "completed" if history_eligible(job) => ProcessJobStatus::Completed,
+        "completed_with_warnings" if history_eligible(job) => {
+            ProcessJobStatus::CompletedWithWarnings
+        }
         "failed" => ProcessJobStatus::Failed,
         _ => ProcessJobStatus::NeedsAttention,
     };
@@ -70,6 +70,7 @@ pub(super) fn project(job: &Job, account_id: Option<&str>) -> ProcessJob {
         "paused" => "Paused at a safe checkpoint".into(),
         "aborted" | "cancelled" => "Stopped; registered receipts retained".into(),
         "needs_attention" => "Verification or upload needs attention".into(),
+        "completed_with_warnings" => "Completed with verification warnings".into(),
         _ => diagnostics::phase(job),
     };
     ProcessJob {

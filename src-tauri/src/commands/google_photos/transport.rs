@@ -129,13 +129,18 @@ pub struct Registration {
 /// Failed requests, permissions, quota and malformed responses stop the worker.
 #[derive(Debug)]
 pub enum ReadbackError {
+    /// The singleton API result is unavailable (code 3); acceptance may still
+    /// be established by a separately validated registration receipt.
+    Unavailable(String),
     ItemRejected(String),
     RequestFailed(String),
 }
 impl std::fmt::Display for ReadbackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ItemRejected(message) | Self::RequestFailed(message) => f.write_str(message),
+            Self::Unavailable(message)
+            | Self::ItemRejected(message)
+            | Self::RequestFailed(message) => f.write_str(message),
         }
     }
 }
@@ -441,7 +446,7 @@ fn verification(value: &Value, ids: &[String]) -> Result<Vec<Media>, ReadbackErr
         if code != 0 {
             let message = rpc_error("media read-back", code);
             return Err(if ids.len() == 1 && code == 3 {
-                ReadbackError::ItemRejected(message)
+                ReadbackError::Unavailable(message)
             } else {
                 ReadbackError::RequestFailed(message)
             });
@@ -840,7 +845,7 @@ mod tests {
             )
             .err()
             .unwrap();
-            assert_eq!(matches!(error, ReadbackError::ItemRejected(_)), code == 3);
+            assert_eq!(matches!(error, ReadbackError::Unavailable(_)), code == 3);
         }
         assert!(matches!(
             verification(

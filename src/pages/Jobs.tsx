@@ -58,6 +58,7 @@ const PROCESS_STATUS_STYLES: Record<ProcessJob["status"], string> = {
   paused: "bg-amber-900/30 border-amber-700 text-amber-200",
   aborted: "bg-red-900/30 border-red-700 text-red-200",
   completed: "bg-surface-700 border-surface-500 text-gray-200",
+  completed_with_warnings: "bg-amber-950 border-amber-700 text-amber-200",
   failed: "bg-red-900/50 border-red-600 text-red-200",
   needs_attention: "bg-amber-900/40 border-amber-700 text-amber-200",
 };
@@ -515,7 +516,7 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
                         <div className="text-xs text-gray-500 mt-1 break-all">Job ID: {job.id}</div>
                       </div>
                       <div className="flex items-center gap-2 flex-wrap justify-end">
-                        <div className={`text-xs px-2 py-1 rounded-full border capitalize ${PROCESS_STATUS_STYLES[job.status]}`}>{job.status.replace(/_/g, " ")}</div>
+                        <div className={`text-xs px-2 py-1 rounded-full border capitalize ${PROCESS_STATUS_STYLES[job.status]}`}>{job.status === "completed_with_warnings" && job.task === "googlePhotos" ? "Completed with verification warnings" : job.status.replace(/_/g, " ")}</div>
                         <ProcessJobControls job={job} onChanged={() => loadJobs(false)} />
                       </div>
                     </div>

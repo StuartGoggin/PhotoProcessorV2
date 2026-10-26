@@ -159,3 +159,12 @@ test("dock does not install a wheel hijack or duplicate Studio status bar", asyn
   assert.doesNotMatch(panel, /addEventListener\(["']wheel|scrollLeft\s*\+=/);
   assert.doesNotMatch(app, /<StudioJobs\s+compact/);
 });
+
+test("completed warning jobs stay in History without concealing genuine errors", () => {
+  const job = { status: "completed_with_warnings", errors: [] };
+  assert.equal(isActiveJob(job), false);
+  assert.equal(jobNeedsAttention(job), false);
+  assert.equal(matchesJobsView(job, "history"), true);
+  assert.equal(jobNeedsAttention({ ...job, errors: ["Actual upload failure"] }), true);
+  assert.equal(jobNeedsAttention({ ...job, persistenceError: "Protected store unavailable" }), true);
+});

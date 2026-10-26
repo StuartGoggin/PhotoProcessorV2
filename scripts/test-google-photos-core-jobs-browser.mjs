@@ -115,5 +115,24 @@ try {
   await card.waitFor({ state: "detached" }); assert.equal(await page.evaluate(() => window.__checkpointRetained), true);
   assert.equal((await calls(page, "clear_finished_process_jobs")).length, 1);
   report.checks.push("Standard History includes completed Google process jobs; core Clear finished hides resolved history without deleting protected checkpoints/receipts");
+  await page.evaluate(() => { const job = window.__coreJob; job.status = "completed_with_warnings"; job.errors = []; job.currentFile = ""; job.googlePhotos.status = job.status; job.googlePhotos.uploaded = 3; job.googlePhotos.accepted = 4; job.googlePhotos.failed = 0; job.googlePhotos.awaitingVerification = 0; job.googlePhotos.verificationNeedsAttention = 0; job.googlePhotos.readbackUnavailable = 1; window.__coreJobs.push(job); });
+  await jobs.getByRole("button", { name: "Refresh", exact: true }).click();
+  await card.getByText("Completed with verification warnings", { exact: true }).waitFor();
+  await receipts.getByRole("status").filter({ hasText: "Read-back unavailable: 1" }).waitFor();
+  await receipts.getByText("Verified: 3", { exact: true }).waitFor();
+  assert.equal(await card.getByRole("button", { name: "Retry", exact: true }).count(), 0);
+  assert.equal(await page.locator(".jobs-panel .jobs-attention-button").count(), 0);
+  await card.screenshot({ path: output + "/completed-verification-warning.png" });
+  await card.getByRole("button", { name: "Recheck verification", exact: true }).click();
+  await card.waitFor({ state: "detached" });
+  assert.equal((await calls(page, "retry_process_job")).length, 2);
+  assert.deepEqual((await calls(page, "retry_process_job"))[1].args, { jobId: id });
+  await page.evaluate(() => { window.__coreJob.status = "completed_with_warnings"; window.__coreJob.googlePhotos.status = "completed_with_warnings"; });
+  await jobs.getByRole("button", { name: "Refresh", exact: true }).click();
+  await card.getByText("Completed with verification warnings", { exact: true }).waitFor();
+  await jobs.getByRole("button", { name: "Clear finished import / process history", exact: true }).click();
+  await card.waitFor({ state: "detached" });
+  assert.equal(await page.evaluate(() => window.__checkpointRetained), true);
+  report.checks.push("Accepted uploads with unavailable read-back finish in History with a distinct warning, preserve verified counts, allow optional same-ID recheck, create no perpetual attention alert and archive visibility without deleting receipts");
   assert.deepEqual(errors, []); report.complete = true; console.log(JSON.stringify(report, null, 2));
 } finally { await writeFile(`${output}/report.json`, JSON.stringify(report, null, 2)); await browser?.close(); server.kill(); }

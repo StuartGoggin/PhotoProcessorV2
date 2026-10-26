@@ -368,7 +368,7 @@ pub async fn google_photos_control(
             let store = protected(&app)?;
             let mut job = load_job(&store, &job_id)?;
             job.recover();
-            if !matches!(job.status.as_str(), "completed" | "completed_with_errors") {
+            if !matches!(job.status.as_str(), "completed" | "completed_with_errors" | "completed_with_warnings") {
                 job.status = if action == "abort" { "aborted" } else { "paused" }.into();
                 job.save(&store)?;
             }

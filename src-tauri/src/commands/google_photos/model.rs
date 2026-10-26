@@ -194,6 +194,14 @@ pub struct LedgerEntry {
     pub album_key: String,
     pub album_id: String,
     pub media_item_id: String,
+    /// Older ledger entries were written only after successful read-back.
+    #[serde(default = "previous_receipts_were_verified")]
+    pub readback_verified: bool,
+    #[serde(default)]
+    pub readback_rejected: bool,
+}
+fn previous_receipts_were_verified() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

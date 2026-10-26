@@ -22,7 +22,7 @@ export function jobNeedsAttention(job: JobSummary): boolean {
   if (job.status === "retried") return false;
   return ["failed", "interrupted", "aborted", "cancelled"].includes(job.status)
     || Boolean(job.error || job.persistenceError || job.errors?.length)
-    || !(ACTIVE_STATES.includes(job.status) || job.status === "completed");
+    || !(ACTIVE_STATES.includes(job.status) || ["completed", "completed_with_warnings"].includes(job.status));
 }
 export function matchesJobsView(job: JobSummary, view: JobsView): boolean {
   if (view === "active") return isActiveJob(job);

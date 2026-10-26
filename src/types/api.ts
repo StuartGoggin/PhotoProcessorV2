@@ -182,7 +182,7 @@ export type StabilizationMode = "maxFrame" | "edgeSafe" | "aggressiveCrop";
 
 export type StabilizationStrength = "gentle" | "balanced" | "strong";
 
-export type ProcessJobStatus = "queued" | "running" | "paused" | "aborted" | "completed" | "failed" | "needs_attention";
+export type ProcessJobStatus = "queued" | "running" | "paused" | "aborted" | "completed" | "completed_with_warnings" | "failed" | "needs_attention";
 
 export interface ProcessJob {
   id: string;

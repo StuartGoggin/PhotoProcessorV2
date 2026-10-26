@@ -21,6 +21,7 @@ export default function ProcessJobControls({ job, onChanged }: { job: ProcessJob
       {["running", "queued"].includes(job.status) && <button className="btn-secondary" disabled={busy} onClick={() => void run("pause_process_job")}>Pause</button>}
       {job.status === "paused" && <button className="btn-secondary" disabled={busy || !mayContinue} onClick={() => void run("resume_process_job")}>Resume</button>}
       {job.task === "googlePhotos" && ["needs_attention", "failed", "aborted"].includes(job.status) && <button className="btn-secondary" disabled={busy || !mayContinue} onClick={() => void run("retry_process_job")}>Retry</button>}
+      {job.task === "googlePhotos" && job.status === "completed_with_warnings" && (job.googlePhotos?.accepted ?? 0) > (job.googlePhotos?.uploaded ?? 0) && <button className="btn-secondary" disabled={busy || !mayContinue} onClick={() => void run("retry_process_job")}>Recheck verification</button>}
       {["running", "queued", "paused"].includes(job.status) && <button className="btn-danger" disabled={busy} onClick={() => void run("abort_process_job")}>Abort</button>}
     </div>
     {!mayContinue && <p className="text-xs text-amber-200 mt-2">{job.controlBlockedReason || "Reconnect the original Google account and OAuth client to continue this saved job."}</p>}

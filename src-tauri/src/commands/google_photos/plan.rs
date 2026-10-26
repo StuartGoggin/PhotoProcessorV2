@@ -393,14 +393,18 @@ pub fn build(
                 })
                 .collect();
             if let Some(album_id) = &album.album_id {
-                if receipts.iter().any(|entry| {
-                    &entry.album_id == album_id
+                if let Some(receipt) = receipts.iter().find(|entry| {
+                    !entry.readback_rejected
+                        && &entry.album_id == album_id
                         && entry.source_sha256 == source_sha256
                         && entry.original_sha256 == original_sha256
                         && entry.metadata_recipe == 1
                         && entry.strip_gps == request.strip_gps
                 }) {
                     status = PlanItemStatus::AlreadyUploaded;
+                    if !receipt.readback_verified {
+                        item_warnings.push("Previously accepted by Google; additional read-back was unavailable. The saved receipt is reused, not marked read-back verified.".into());
+                    }
                 } else if !receipts.is_empty() {
                     status = PlanItemStatus::Changed;
                     item_warnings.push("The local version, original metadata, metadata recipe or privacy policy differs from a previous upload. It will be added as a new Google Photos item, not replace the old image.".into());
@@ -550,6 +554,8 @@ mod tests {
             album_key: item.album_key.clone(),
             album_id: "album-A".into(),
             media_item_id: "media-A".into(),
+            readback_verified: true,
+            readback_rejected: false,
         });
         request.album_mode = AlbumMode::Continue;
         assert_eq!(
@@ -585,6 +591,8 @@ mod tests {
             album_key: item.album_key.clone(),
             album_id: "old".into(),
             media_item_id: "media".into(),
+            readback_verified: true,
+            readback_rejected: false,
         });
         let plan = build(&catalogue, &request, &context).unwrap();
         assert_eq!(plan.items[0].status, PlanItemStatus::Ready);
@@ -648,6 +656,8 @@ mod tests {
             album_key: item.album_key.clone(),
             album_id: "album-A".into(),
             media_item_id: "media-A".into(),
+            readback_verified: true,
+            readback_rejected: false,
         });
         request.album_mode = AlbumMode::Continue;
         assert_eq!(

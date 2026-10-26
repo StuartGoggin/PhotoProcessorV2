@@ -44,6 +44,7 @@ pub enum Outcome {
     Succeeded,
     Failed,
     Paused,
+    Warning,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -144,6 +145,8 @@ fn known_state(value: &str) -> &str {
         | "uploaded_bytes"
         | "registering"
         | "registered"
+        | "accepted_unverified"
+        | "skipped_unverified"
         | "verified"
         | "skipped"
         | "blocked"
@@ -153,6 +156,7 @@ fn known_state(value: &str) -> &str {
         | "running"
         | "completed"
         | "completed_with_errors"
+        | "completed_with_warnings"
         | "needs_attention"
         | "creation_outcome_unknown" => value,
         _ => "unknown",
@@ -187,7 +191,7 @@ fn explain(rpc: Option<i64>, http: Option<u16>, reason: Option<&str>) -> String 
 
 pub fn report(job: &Job) -> String {
     let summary = job.summary();
-    let confirmation = format!("Accepted by Google: {}; verified by read-back: {}; awaiting verification: {}; verification needs attention: {}\n", summary.accepted, summary.uploaded, summary.awaiting_verification, summary.verification_needs_attention);
+    let confirmation = format!("Accepted by Google: {}; verified by read-back: {}; awaiting verification: {}; verification needs attention: {}; read-back unavailable: {}\n", summary.accepted, summary.uploaded, summary.awaiting_verification, summary.verification_needs_attention, summary.readback_unavailable);
     let mut text = format!("PhotoGoGo {} — Google Photos diagnostics\nCreated: {}\nStatus: {}\nConfirmed uploaded: {}; skipped: {}; need attention: {}; total: {}\nBytes transferred: {} / {} (byte transfer is not confirmation of upload success)\n\n", env!("CARGO_PKG_VERSION"), time(&job.plan.created_at), known_state(&job.status), summary.uploaded, summary.skipped, summary.failed, summary.total, summary.bytes_done, summary.total_bytes);
     text.push_str(&confirmation);
     text.push_str("Privacy: filenames, local paths, account details, album/media IDs, credentials, upload tokens, session URLs and raw Google response messages are omitted. Photo numbers refer to this saved job's reviewed order.\n\nPhoto checkpoints (first 200):\n");
@@ -242,7 +246,14 @@ pub fn report(job: &Job) -> String {
         if let Some(index) = event.item.filter(|i| *i < job.items.len()) {
             let _ = write!(text, " | photo {}", index + 1);
         }
-        if event.outcome == Outcome::Failed {
+        if event.outcome == Outcome::Warning && event.stage == Stage::VerifyMedia {
+            text.push_str(" | Google accepted this photo with matching registration dimensions. Additional read-back is unavailable; existing library photos may have restricted app access. This is not read-back verification.");
+            if let Some(code) = event.rpc_code {
+                let _ = write!(text, " {} (code {code}).", transport::status_name(code));
+            }
+        } else if event.outcome == Outcome::Warning && event.stage == Stage::Job {
+            text.push_str(" | Upload finished with acceptance receipts; read-back warnings remain. Earlier failed attempts, if shown above, are historical.");
+        } else if event.outcome == Outcome::Failed {
             let _ = write!(
                 text,
                 " | {}",
@@ -258,7 +269,11 @@ pub fn report(job: &Job) -> String {
             let _ = writeln!(text, "{}", explain(rpc, http, reason.as_deref()));
         }
     }
-    text.push_str("\nRecovery: use this saved job's Resume/Retry action after reviewing the error. Registered media is read back again rather than re-uploaded. Never change OAuth client/account or create a fresh job just to bypass verification. No remote checksum verification is claimed.\n");
+    if job.status == "completed_with_warnings" {
+        text.push_str("\nUpload completed with verification warnings. Accepted receipts are retained and will not be re-uploaded by this saved job. Open the album to review; Recheck verification is optional and checks saved IDs only. Previously accepted unchanged photos are reused with their original verification evidence. No remote checksum verification is claimed.\n");
+    } else {
+        text.push_str("\nRecovery: use this saved job's Resume/Retry action after reviewing the error. Registered media is read back again rather than re-uploaded. Never change OAuth client/account or create a fresh job just to bypass verification. No remote checksum verification is claimed.\n");
+    }
     text
 }
 

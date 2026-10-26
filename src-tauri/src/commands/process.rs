@@ -79,6 +79,8 @@ pub enum ProcessJobStatus {
     Paused,
     Aborted,
     Completed,
+    #[serde(rename = "completed_with_warnings")]
+    CompletedWithWarnings,
     Failed,
     #[serde(rename = "needs_attention")]
     NeedsAttention,
@@ -638,7 +640,7 @@ pub fn clear_finished_process_jobs(app: AppHandle) -> Result<usize, String> {
     let archived = super::google_photos::archive_finished_jobs(&app);
     let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
     let before = jobs.len();
-    jobs.retain(|_, job| !matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted));
+    jobs.retain(|_, job| !matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::CompletedWithWarnings | ProcessJobStatus::Failed | ProcessJobStatus::Aborted));
     let local_cleared = before.saturating_sub(jobs.len());
     match archived {
         Ok(archived) => Ok(local_cleared + archived),
@@ -654,7 +656,7 @@ pub async fn pause_process_job(app: AppHandle, job_id: String) -> Result<bool, S
     }
     let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
     let Some(job) = jobs.get_mut(&job_id) else { return Ok(false); };
-    if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
+    if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::CompletedWithWarnings | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
         return Ok(false);
     }
     job.pause_requested = true;
@@ -672,7 +674,7 @@ pub async fn resume_process_job(app: AppHandle, job_id: String) -> Result<bool, 
     }
     let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
     let Some(job) = jobs.get_mut(&job_id) else { return Ok(false); };
-    if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
+    if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::CompletedWithWarnings | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
         return Ok(false);
     }
     job.pause_requested = false;
@@ -689,7 +691,7 @@ pub async fn abort_process_job(app: AppHandle, job_id: String) -> Result<bool, S
     }
     let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
     let Some(job) = jobs.get_mut(&job_id) else { return Ok(false); };
-    if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
+    if matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::CompletedWithWarnings | ProcessJobStatus::Failed | ProcessJobStatus::Aborted) {
         return Ok(false);
     }
     job.abort_requested = true;

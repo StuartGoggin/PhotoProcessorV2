@@ -56,6 +56,7 @@ const STATUS_COLORS: Record<Job["status"], { bg: string; text: string; border: s
   paused: { bg: "bg-amber-950", text: "text-amber-200", border: "border-amber-700" },
   aborted: { bg: "bg-red-950", text: "text-red-200", border: "border-red-700" },
   completed: { bg: "bg-surface-800", text: "text-emerald-300", border: "border-surface-600" },
+  completed_with_warnings: { bg: "bg-amber-950", text: "text-amber-200", border: "border-amber-700" },
   failed: { bg: "bg-red-950", text: "text-red-300", border: "border-red-600" },
   needs_attention: { bg: "bg-amber-950", text: "text-amber-200", border: "border-amber-700" },
 };
@@ -195,7 +196,7 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
         <div className="flex items-center gap-2 flex-shrink-0">
           {job.status === "completed" && <span className="text-emerald-400 text-lg">✓</span>}
           <div className={`text-xs px-2 py-1 rounded-full capitalize whitespace-nowrap font-medium ${colors.text}`}>
-            {job.status === "completed" ? "Done" : job.status.replace(/_/g, " ")}
+            {job.status === "completed" ? "Done" : job.status === "completed_with_warnings" && processJob?.task === "googlePhotos" ? "Completed with verification warnings" : job.status.replace(/_/g, " ")}
           </div>
         </div>
       </div>

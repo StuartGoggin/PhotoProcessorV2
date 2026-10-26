@@ -78,6 +78,8 @@ export interface GooglePhotosJob {
   awaitingVerification?: number;
   /** Awaiting receipts whose last verification attempt has a saved error. */
   verificationNeedsAttention?: number;
+  /** Accepted receipts whose additional read-back is unavailable. Not failures or verified photos. */
+  readbackUnavailable?: number;
   skipped: number;
   failed: number;
   bytesDone: number;

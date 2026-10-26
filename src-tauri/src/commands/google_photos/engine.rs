@@ -86,6 +86,7 @@ pub struct JobSummary {
     pub accepted: usize,
     pub awaiting_verification: usize,
     pub verification_needs_attention: usize,
+    pub readback_unavailable: usize,
     pub skipped: usize,
     pub failed: usize,
     pub bytes_done: u64,
@@ -158,7 +159,8 @@ impl Job {
             .iter()
             .map(|item| {
                 let receipt = ledger.iter().find(|r| {
-                    r.account_id == plan.account_id
+                    !r.readback_rejected
+                        && r.account_id == plan.account_id
                         && r.asset_id == item.id
                         && r.source_sha256 == item.source_sha256
                         && r.original_sha256 == item.original_sha256
@@ -169,7 +171,13 @@ impl Job {
                         })
                 });
                 let state = match item.status {
-                    PlanItemStatus::AlreadyUploaded if receipt.is_some() => "skipped",
+                    PlanItemStatus::AlreadyUploaded if receipt.is_some() => {
+                        if receipt.is_some_and(|r| r.readback_verified) {
+                            "skipped"
+                        } else {
+                            "skipped_unverified"
+                        }
+                    }
                     PlanItemStatus::Ready | PlanItemStatus::Changed => "pending",
                     _ => "blocked",
                 };
@@ -203,23 +211,53 @@ impl Job {
     }
     pub fn summary(&self) -> JobSummary {
         let uploaded = self.items.iter().filter(|p| p.state == "verified").count();
-        let skipped = self.items.iter().filter(|p| p.state == "skipped").count();
+        let skipped = self
+            .items
+            .iter()
+            .filter(|p| matches!(p.state.as_str(), "skipped" | "skipped_unverified"))
+            .count();
+        let readback_unavailable = self
+            .items
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.state.as_str(),
+                    "accepted_unverified" | "skipped_unverified"
+                )
+            })
+            .count();
+        let accepted_unverified = self
+            .items
+            .iter()
+            .filter(|p| p.state == "accepted_unverified")
+            .count();
         let accepted = self
             .items
             .iter()
-            .filter(|p| p.media.is_some() && p.state != "skipped")
+            .filter(|p| {
+                p.media.is_some() && !matches!(p.state.as_str(), "skipped" | "skipped_unverified")
+            })
             .count();
         let awaiting_verification = self
             .items
             .iter()
-            .filter(|p| p.media.is_some() && !matches!(p.state.as_str(), "verified" | "skipped"))
+            .filter(|p| {
+                p.media.is_some()
+                    && !matches!(
+                        p.state.as_str(),
+                        "verified" | "skipped" | "accepted_unverified" | "skipped_unverified"
+                    )
+            })
             .count();
         let verification_needs_attention = self
             .items
             .iter()
             .filter(|p| {
                 p.media.is_some()
-                    && !matches!(p.state.as_str(), "verified" | "skipped")
+                    && !matches!(
+                        p.state.as_str(),
+                        "verified" | "skipped" | "accepted_unverified" | "skipped_unverified"
+                    )
                     && p.error.is_some()
             })
             .count();
@@ -229,7 +267,11 @@ impl Job {
             .filter(|p| {
                 p.state == "failed"
                     || p.state == "blocked"
-                    || (p.error.is_some() && p.state != "verified" && p.state != "skipped")
+                    || (p.error.is_some()
+                        && !matches!(
+                            p.state.as_str(),
+                            "verified" | "skipped" | "accepted_unverified" | "skipped_unverified"
+                        ))
             })
             .count();
         JobSummary {
@@ -238,12 +280,13 @@ impl Job {
             account_id: self.plan.account_id.clone(),
             account_email: self.plan.account_email.clone(),
             created_at: self.plan.created_at.clone(),
-            done: uploaded + skipped + failed,
+            done: uploaded + skipped + failed + accepted_unverified,
             total: self.items.len(),
             uploaded,
             accepted,
             awaiting_verification,
             verification_needs_attention,
+            readback_unavailable,
             skipped,
             failed,
             bytes_done: self
@@ -262,7 +305,10 @@ impl Job {
                 .iter()
                 .zip(&self.plan.items)
                 .map(|(progress, item)| {
-                    if matches!(progress.state.as_str(), "skipped" | "blocked") {
+                    if matches!(
+                        progress.state.as_str(),
+                        "skipped" | "skipped_unverified" | "blocked"
+                    ) {
                         0
                     } else {
                         progress
@@ -305,11 +351,13 @@ impl Job {
         if matches!(self.status.as_str(), "queued" | "running") {
             self.status = "paused".into();
         }
-        if matches!(self.status.as_str(), "completed" | "completed_with_errors")
-            && self
-                .items
-                .iter()
-                .any(|p| p.media.is_some() && !matches!(p.state.as_str(), "verified" | "skipped"))
+        if matches!(
+            self.status.as_str(),
+            "completed" | "completed_with_errors" | "completed_with_warnings"
+        ) && self
+            .items
+            .iter()
+            .any(|p| p.media.is_some() && !resolved_receipt(p))
         {
             self.status = "needs_attention".into();
         }
@@ -353,7 +401,13 @@ fn remember(store: &GoogleStore, job: &Job, index: usize) -> Result<(), String> 
         .ok_or("Job album is missing.")?;
     let media = p.media.as_ref().ok_or("Google media receipt is missing.")?;
     let mut entries: Vec<LedgerEntry> = store.load("ledger")?.unwrap_or_default();
-    if !entries.iter().any(|r| {
+    let verified = matches!(p.state.as_str(), "verified" | "skipped");
+    if !verified && !usable_registration(p) {
+        return Err(
+            "Registration evidence is incomplete; receipt was not recorded as accepted.".into(),
+        );
+    }
+    if let Some(entry) = entries.iter_mut().find(|r| {
         r.account_id == job.plan.account_id
             && r.asset_id == item.id
             && r.album_id == album.id.as_deref().unwrap_or("")
@@ -361,7 +415,14 @@ fn remember(store: &GoogleStore, job: &Job, index: usize) -> Result<(), String> 
             && r.original_sha256 == item.original_sha256
             && r.metadata_recipe == 1
             && r.strip_gps == item.strip_gps
+            && r.media_item_id == media.id
     }) {
+        if verified && !entry.readback_verified {
+            entry.readback_verified = true;
+            entry.readback_rejected = false;
+            store.save("ledger", &entries)?;
+        }
+    } else {
         entries.push(LedgerEntry {
             account_id: job.plan.account_id.clone(),
             asset_id: item.id.clone(),
@@ -377,10 +438,60 @@ fn remember(store: &GoogleStore, job: &Job, index: usize) -> Result<(), String> 
             album_key: item.album_key.clone(),
             album_id: album.id.clone().ok_or("Album receipt is missing.")?,
             media_item_id: media.id.clone(),
+            readback_verified: verified,
+            readback_rejected: false,
         });
         store.save("ledger", &entries)?;
     }
     Ok(())
+}
+fn dimensions_match(media: &Media, prepared: &Prepared) -> bool {
+    prepared.width > 0
+        && prepared.height > 0
+        && ((media.width == prepared.width as u64 && media.height == prepared.height as u64)
+            || (media.width == prepared.height as u64 && media.height == prepared.width as u64))
+}
+fn usable_registration(progress: &ItemProgress) -> bool {
+    match (&progress.media, &progress.prepared) {
+        (Some(media), Some(prepared)) => {
+            !media.id.is_empty() && !prepared.sha256.is_empty() && dimensions_match(media, prepared)
+        }
+        _ => false,
+    }
+}
+pub(super) fn resolved_receipt(progress: &ItemProgress) -> bool {
+    match progress.state.as_str() {
+        "verified" | "skipped" | "skipped_unverified" => progress.media.is_some(),
+        "accepted_unverified" => usable_registration(progress),
+        _ => false,
+    }
+}
+fn rejected_receipt(
+    store: &GoogleStore,
+    job: &Job,
+    index: usize,
+    reject: bool,
+) -> Result<bool, String> {
+    let id = &job.items[index]
+        .media
+        .as_ref()
+        .ok_or("Missing media receipt.")?
+        .id;
+    let mut entries: Vec<LedgerEntry> = store.load("ledger")?.unwrap_or_default();
+    let mut found = false;
+    for entry in &mut entries {
+        if entry.account_id == job.plan.account_id && &entry.media_item_id == id {
+            if reject {
+                entry.readback_rejected = true;
+                entry.readback_verified = false;
+            }
+            found |= entry.readback_rejected;
+        }
+    }
+    if reject && found {
+        store.save("ledger", &entries)?;
+    }
+    Ok(found)
 }
 fn verify_item(
     store: &GoogleStore,
@@ -403,8 +514,7 @@ fn verify_item(
         .ok_or("Google did not confirm the registered media ID.")?;
         if let Some(prepared) = &job.items[index].prepared {
         // Google reports display dimensions; portrait EXIF may swap raw pixels.
-        if !((result.width == prepared.width as u64 && result.height == prepared.height as u64)
-            || (result.width == prepared.height as u64 && result.height == prepared.width as u64))
+        if !dimensions_match(&result, prepared)
         {
             return Err(ReadbackError::ItemRejected("Google's reported photo dimensions differ from the full-resolution upload. Needs review; not marked successful.".into()));
         }
@@ -416,12 +526,26 @@ fn verify_item(
         Err(error) => {
             // Keep the registered receipt and checkpoint. Retry must verify the
             // same ID, never turn a read-back failure into another byte upload.
-            job.items[index].error = Some(error.to_string());
+            let unavailable = matches!(error, ReadbackError::Unavailable(_))
+                && usable_registration(&job.items[index])
+                && !rejected_receipt(store, job, index, false)?;
+            if !unavailable {
+                job.items[index].state = "registered".into();
+            }
+            job.items[index].error = if unavailable {
+                None
+            } else {
+                Some(error.to_string())
+            };
             diagnostics::note(
                 job,
                 Stage::VerifyMedia,
                 Some(index),
-                Outcome::Failed,
+                if unavailable {
+                    Outcome::Warning
+                } else {
+                    Outcome::Failed
+                },
                 Some(&error.to_string()),
             );
             job.save(store)?;
@@ -453,7 +577,12 @@ fn verify_receipts(
     stop: &AtomicBool,
 ) -> Result<(), String> {
     for &index in indices {
-        if job.items[index].media.is_none() || job.items[index].state == "skipped" {
+        if job.items[index].media.is_none()
+            || matches!(
+                job.items[index].state.as_str(),
+                "skipped" | "skipped_unverified"
+            )
+        {
             continue;
         }
         stop_requested(stop)?;
@@ -464,7 +593,20 @@ fn verify_receipts(
         }
         match verify_item(store, job, index, api) {
             Ok(()) => cleanup_copy(job, index, workspace)?,
+            Err(ReadbackError::Unavailable(_))
+                if usable_registration(&job.items[index])
+                    && !rejected_receipt(store, job, index, false)? =>
+            {
+                job.items[index].state = "accepted_unverified".into();
+                // Keep a distinct warning, never promote it to read-back verified.
+                job.items[index].error = None;
+                job.save(store)?;
+                remember(store, job, index)?;
+                cleanup_copy(job, index, workspace)?;
+            }
+            Err(ReadbackError::Unavailable(error)) => return Err(error),
             Err(ReadbackError::ItemRejected(error)) => {
+                rejected_receipt(store, job, index, true)?;
                 if !job.errors.contains(&error) {
                     job.errors.push(error);
                 }
@@ -476,7 +618,7 @@ fn verify_receipts(
     let remaining = job
         .items
         .iter()
-        .filter(|p| p.media.is_some() && !matches!(p.state.as_str(), "verified" | "skipped"))
+        .filter(|p| p.media.is_some() && !resolved_receipt(p))
         .count();
     if remaining > 0 {
         let error = format!("Google accepted these photos, but {remaining} registered photo(s) still need verification. Review the existing album and use Resume/Retry on this saved job; its media receipts are retained and will not be uploaded again.");
@@ -987,7 +1129,7 @@ fn complete(store: &GoogleStore, job: &mut Job) -> Result<(), String> {
     if job
         .items
         .iter()
-        .any(|p| p.media.is_some() && !matches!(p.state.as_str(), "verified" | "skipped"))
+        .any(|p| p.media.is_some() && !resolved_receipt(p))
     {
         return Err("Registered Google photos still need verification. Resume the saved job; no registered photo will be uploaded again.".into());
     }
@@ -997,11 +1139,28 @@ fn complete(store: &GoogleStore, job: &mut Job) -> Result<(), String> {
         .any(|i| i.state == "blocked" || i.state == "failed")
     {
         "completed_with_errors"
+    } else if job.items.iter().any(|p| {
+        matches!(
+            p.state.as_str(),
+            "accepted_unverified" | "skipped_unverified"
+        )
+    }) {
+        "completed_with_warnings"
     } else {
         "completed"
     }
     .into();
-    diagnostics::note(job, Stage::Job, None, Outcome::Succeeded, None);
+    diagnostics::note(
+        job,
+        Stage::Job,
+        None,
+        if job.status == "completed_with_warnings" {
+            Outcome::Warning
+        } else {
+            Outcome::Succeeded
+        },
+        None,
+    );
     job.finished_at = Some(chrono::Utc::now().to_rfc3339());
     job.save(store)
 }
@@ -1011,7 +1170,7 @@ fn cleanup_copy(job: &Job, index: usize, workspace: &Path) -> Result<(), String>
         if path.parent() == Some(workspace) && path.is_file() {
             super::store::reject_link(path)?;
             fs::remove_file(path).map_err(|_| {
-                "Uploaded photo was verified, but its owned temporary copy could not be removed."
+                "Google accepted the photo, but its owned temporary copy could not be removed."
             })?;
         }
     }

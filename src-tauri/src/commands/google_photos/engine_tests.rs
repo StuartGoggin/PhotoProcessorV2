@@ -15,6 +15,232 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn accepted_receipt_readback_rejection_completes_with_warning_and_survives_restart() {
+    let mut fixture = Fixture::core(10);
+    let mut api = FakeGoogle {
+        verify_error_on_call: Some((
+            3,
+            ReadbackError::Unavailable(
+                "Google media read-back failed: INVALID_ARGUMENT (code 3).".into(),
+            ),
+        )),
+        ..Default::default()
+    };
+    fixture.drive(&mut api, &AtomicBool::new(false)).unwrap();
+    fixture.reload();
+    fixture.job.recover();
+    assert_eq!(fixture.job.status, "completed_with_warnings");
+    assert_eq!(fixture.job.summary().accepted, 10);
+    assert_eq!(fixture.job.summary().uploaded, 9);
+    assert_eq!(fixture.job.summary().failed, 0);
+    assert_eq!(fixture.job.summary().done, 10);
+    assert_eq!(api.begins, 10, "later batches must still finish");
+    assert_eq!(api.registrations, 2);
+    assert_eq!(api.verifies, 10);
+    assert!(fixture.job.errors.is_empty());
+    assert!(fixture.job.finished_at.is_some());
+    let row = super::super::core_jobs::project(&fixture.job, Some(&fixture.job.plan.account_id));
+    assert!(matches!(
+        row.status,
+        crate::commands::process::ProcessJobStatus::CompletedWithWarnings
+    ));
+    assert!(row.errors.is_empty());
+    assert_eq!(fixture.job.summary().readback_unavailable, 1);
+    let ledger: Vec<LedgerEntry> = fixture.store.load("ledger").unwrap().unwrap();
+    assert_eq!(ledger.len(), 10);
+    assert_eq!(
+        ledger
+            .iter()
+            .filter(|entry| !entry.readback_verified)
+            .count(),
+        1
+    );
+    assert!(super::super::core_jobs::history_eligible(&fixture.job));
+    let report = diagnostics::report(&fixture.job);
+    assert!(report.contains("Job | Warning"));
+    assert!(!report.contains("Job | Failed"));
+    assert!(!report.contains("No API code was retained"));
+    assert!(fixture.workspace.read_dir().unwrap().next().is_none());
+    // Future plans reuse the accepted evidence without claiming read-back.
+    let mut plan = fixture.job.plan.clone();
+    for item in &mut plan.items {
+        item.status = PlanItemStatus::AlreadyUploaded;
+    }
+    for album in &mut plan.albums {
+        album.album_id = fixture
+            .job
+            .albums
+            .iter()
+            .find(|p| p.key == album.key)
+            .unwrap()
+            .id
+            .clone();
+    }
+    let edits = plan
+        .albums
+        .iter()
+        .map(|a| AlbumEdit {
+            key: a.key.clone(),
+            title: a.title.clone(),
+            cover_item_id: None,
+        })
+        .collect();
+    let reused = Job::new(plan, edits, fixture.job.original_hashes.clone(), &ledger).unwrap();
+    assert_eq!(reused.summary().skipped, 10);
+    assert_eq!(reused.summary().readback_unavailable, 1);
+    assert_eq!(reused.summary().uploaded, 0);
+    // Explicit same-job recheck succeeds while the original drive is offline.
+    fs::rename(&fixture.photos, fixture.directory.join("offline-photos")).unwrap();
+    fixture.drive(&mut api, &AtomicBool::new(false)).unwrap();
+    assert_eq!(fixture.job.status, "completed");
+    assert_eq!(api.begins, 10);
+    assert_eq!(api.registrations, 2);
+    assert!(fixture
+        .store
+        .load::<Vec<LedgerEntry>>("ledger")
+        .unwrap()
+        .unwrap()
+        .iter()
+        .all(|entry| entry.readback_verified));
+}
+
+#[test]
+fn unavailable_readback_without_matching_registration_dimensions_is_not_completion() {
+    for dimensions in [(0, 0), (1, 1)] {
+        let mut fixture = Fixture::new(1);
+        let mut api = FakeGoogle {
+            registration_dimensions: Some(dimensions),
+            verify_error_on_call: Some((
+                1,
+                ReadbackError::Unavailable("INVALID_ARGUMENT (code 3).".into()),
+            )),
+            ..Default::default()
+        };
+        let error = fixture
+            .drive(&mut api, &AtomicBool::new(false))
+            .unwrap_err();
+        finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+        assert_eq!(fixture.job.status, "needs_attention");
+        assert_eq!(fixture.job.items[0].state, "registered");
+        assert_eq!(fixture.job.summary().readback_unavailable, 0);
+        assert!(fixture
+            .store
+            .load::<Vec<LedgerEntry>>("ledger")
+            .unwrap()
+            .is_none());
+        assert!(!super::super::core_jobs::history_eligible(&fixture.job));
+    }
+}
+
+#[test]
+fn prior_registered_job_upgrades_to_warning_without_upload_or_source_access() {
+    let mut fixture = Fixture::new(1);
+    let mut api = FakeGoogle {
+        fail_verify_once: true,
+        ..Default::default()
+    };
+    let error = fixture
+        .drive(&mut api, &AtomicBool::new(false))
+        .unwrap_err();
+    finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+    fs::rename(&fixture.photos, fixture.directory.join("offline-photos")).unwrap();
+    for _ in 0..3 {
+        fixture.reload();
+        api.verify_error_on_call = Some((
+            api.verifies + 1,
+            ReadbackError::Unavailable("INVALID_ARGUMENT (code 3).".into()),
+        ));
+        fixture.drive(&mut api, &AtomicBool::new(false)).unwrap();
+        assert_eq!(fixture.job.status, "completed_with_warnings");
+        assert_eq!(fixture.job.summary().readback_unavailable, 1);
+        assert_eq!(fixture.job.summary().failed, 0);
+        assert_eq!(api.begins, 1);
+        assert_eq!(api.registrations, 1);
+        assert_eq!(api.albums_created, 1);
+    }
+}
+
+#[test]
+fn warning_recheck_still_stops_for_authentication_and_dimension_errors() {
+    for authentication in [true, false] {
+        let mut fixture = Fixture::new(1);
+        let mut api = FakeGoogle {
+            verify_error_on_call: Some((
+                1,
+                ReadbackError::Unavailable("INVALID_ARGUMENT (code 3).".into()),
+            )),
+            ..Default::default()
+        };
+        fixture.drive(&mut api, &AtomicBool::new(false)).unwrap();
+        assert_eq!(fixture.job.status, "completed_with_warnings");
+        if authentication {
+            api.verify_error_once =
+                Some("Google media read-back failed: UNAUTHENTICATED (code 16).".into());
+        } else {
+            for media in api.registered.values_mut() {
+                media.width = 1;
+                media.height = 1;
+            }
+        }
+        let error = fixture
+            .drive(&mut api, &AtomicBool::new(false))
+            .unwrap_err();
+        finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+        assert_eq!(fixture.job.status, "needs_attention");
+        assert_eq!(fixture.job.items[0].state, "registered");
+        assert_eq!(fixture.job.summary().readback_unavailable, 0);
+        assert_eq!(fixture.job.summary().failed, 1);
+        assert!(!super::super::core_jobs::history_eligible(&fixture.job));
+        assert_eq!(api.begins, 1);
+        assert_eq!(api.registrations, 1);
+        let ledger: Vec<LedgerEntry> = fixture.store.load("ledger").unwrap().unwrap();
+        assert_eq!(ledger[0].readback_rejected, !authentication);
+        if !authentication {
+            let context = PlanContext {
+                id: "next-job".into(),
+                account_id: fixture.job.plan.account_id.clone(),
+                account_email: fixture.job.plan.account_email.clone(),
+                ledger,
+                albums: fixture.store.load("albums").unwrap().unwrap_or_default(),
+            };
+            let catalogue = catalogue::scan(&fixture.photos).unwrap();
+            let plan = plan::build(
+                &catalogue,
+                &PlanRequest {
+                    root: catalogue.root.clone(),
+                    mode: SelectionMode::Originals,
+                    ..Default::default()
+                },
+                &context,
+            )
+            .unwrap();
+            assert!(plan
+                .items
+                .iter()
+                .all(|item| !matches!(item.status, PlanItemStatus::AlreadyUploaded)));
+            // A subsequent unavailable read must not erase known contradictory evidence.
+            api.verify_error_on_call = Some((
+                api.verifies + 1,
+                ReadbackError::Unavailable("INVALID_ARGUMENT (code 3).".into()),
+            ));
+            assert!(fixture.drive(&mut api, &AtomicBool::new(false)).is_err());
+            for media in api.registered.values_mut() {
+                media.width = 40;
+                media.height = 60;
+            }
+            fixture.drive(&mut api, &AtomicBool::new(false)).unwrap();
+            assert!(fixture
+                .store
+                .load::<Vec<LedgerEntry>>("ledger")
+                .unwrap()
+                .unwrap()
+                .iter()
+                .all(|r| r.readback_verified && !r.readback_rejected));
+        }
+    }
+}
+
+#[test]
 fn core_jobs_project_one_authoritative_upload_with_safe_counts_and_log() {
     let mut fixture = Fixture::core(4);
     let mut api = FakeGoogle { verify_error_on_call: Some((3, ReadbackError::ItemRejected("Google media read-back failed: INVALID_ARGUMENT (code 3). bearer fixture-secret private@example.test".into()))), ..Default::default() };
@@ -353,6 +579,7 @@ impl Drop for Fixture {
 
 #[derive(Default)]
 struct FakeGoogle {
+    registration_dimensions: Option<(u64, u64)>,
     albums_created: usize,
     begins: usize,
     queries: usize,
@@ -475,7 +702,11 @@ impl GoogleApi for FakeGoogle {
                         result: Err("Simulated per-item registration failure".into()),
                     };
                 }
-                let value = Self::media_for(token);
+                let mut value = Self::media_for(token);
+                if let Some((width, height)) = self.registration_dimensions {
+                    value.width = width;
+                    value.height = height;
+                }
                 self.registered.insert(value.id.clone(), value.clone());
                 Registration {
                     token: token.clone(),
@@ -1029,6 +1260,8 @@ fn foreign_account_receipt_cannot_mark_a_photo_skipped() {
         album_key: item.album_key.clone(),
         album_id: "foreign-album".into(),
         media_item_id: "foreign-media".into(),
+        readback_verified: true,
+        readback_rejected: false,
     };
     plan.items[0].status = PlanItemStatus::AlreadyUploaded;
     plan.albums[0].album_id = Some("foreign-album".into());
