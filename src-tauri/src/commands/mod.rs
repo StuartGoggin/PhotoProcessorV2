@@ -20,6 +20,7 @@ mod process_runtime;
 pub mod process_jobs;
 mod photo_process;
 pub mod process_preview;
+pub mod raw_development;
 pub mod settings;
 pub mod staging_tags;
 pub mod tidy;

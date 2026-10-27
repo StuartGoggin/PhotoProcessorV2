@@ -58,7 +58,7 @@ fn task(name: &str) -> Result<ProcessTask, String> {
 fn candidates(staging: &str, scope: &str, mode: &ProcessScopeMode, task: &ProcessTask) -> Result<Vec<PathBuf>, String> {
     let directory = process::resolve_process_scope(staging, Some(scope.into()), mode)?;
     let canonical = directory.canonicalize().map_err(|e| e.to_string())?;
-    let mut files = process::collect_process_files(task, &directory, !matches!(mode, ProcessScopeMode::FolderOnly));
+    let mut files = process::collect_process_files(task, &directory, !matches!(mode, ProcessScopeMode::FolderOnly))?;
     files.retain(|file| file.canonicalize().map(|path| path.starts_with(&canonical)).unwrap_or(false));
     files.sort();
     Ok(files)

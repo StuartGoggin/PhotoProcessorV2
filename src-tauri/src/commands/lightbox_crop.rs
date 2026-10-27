@@ -1037,13 +1037,13 @@ mod tests {
             &w.0,
             false,
         );
-        assert_eq!(focus, vec![p]);
+        assert_eq!(focus.unwrap(), vec![p]);
         let bw = super::super::process::collect_process_files(
             &super::super::process::ProcessTask::Bw,
             &w.0,
             false,
         );
-        assert_eq!(bw.len(), 2);
+        let bw=bw.unwrap();assert_eq!(bw.len(), 2);
         assert!(bw.contains(&w.0.join("photo_crop.jpg")));
     }
     #[test]

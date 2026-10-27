@@ -174,7 +174,7 @@ export interface ProcessResult {
   errors: string[];
 }
 
-export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums" | "scan_faces" | "search_person_videos" | "googlePhotos";
+export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums" | "scan_faces" | "search_person_videos" | "googlePhotos" | "rawDevelop";
 
 export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly";
 
@@ -275,6 +275,13 @@ export interface TreeNode {
   type: "dir" | "file";
   size?: number;
   children?: TreeNode[];
+  /** Native-validated RAW output lineage; a suffix alone is never ownership. */
+  rawSource?: string;
+  rawKind?: "developed" | "bw" | "retired";
+  /** Same-folder camera JPEG companion proven by native capture metadata. */
+  cameraJpeg?: string;
+  /** Recoverable ownership/recipe warning supplied by the native staging scan. */
+  rawWarning?: string;
 }
 
 export interface StagingTagEntry {

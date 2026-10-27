@@ -291,6 +291,7 @@ fn library_metadata(path: &Path) -> bool {
     matches!(
         n.as_str(),
         ".photogogo-curation.json"
+              | ".photogogo-raw.json"
             | ".photogogo-event.json"
             | ".photogogo.staging-tags.json"
             | ".faces_db.json"
@@ -399,6 +400,7 @@ fn roots(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String> {
 }
 
 fn build(request: Request) -> Result<FrozenPlan, String> {
+    let raw_epoch=super::raw_development::manifest::snapshot()?;
     for r in [
         &request.rules.originals,
         &request.rules.bw,
@@ -636,6 +638,7 @@ fn build(request: Request) -> Result<FrozenPlan, String> {
         items,
         warnings,
     };
+    super::raw_development::manifest::unchanged(raw_epoch)?;
     Ok(FrozenPlan {
         request,
         staging,

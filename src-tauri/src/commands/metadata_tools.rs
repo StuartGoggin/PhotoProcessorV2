@@ -40,7 +40,7 @@ pub(super) fn resolve(directory: &str) -> (PathBuf, &'static str) {
     let mut selected = resolve_in(directory, exe.as_deref().and_then(Path::parent));
     // Development and native tests use the same resource tree copied by Tauri.
     // Release applications never search a development checkout.
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions,test))]
     if selected.1 == "path" {
         selected = resolve_in(directory, Some(Path::new(env!("CARGO_MANIFEST_DIR"))));
     }
@@ -112,10 +112,13 @@ pub(super) fn check(directory: &str) -> bool {
 }
 
 #[cfg(windows)]
-struct ToolProcessJob(windows_sys::Win32::Foundation::HANDLE);
+pub(super) struct ToolProcessJob(windows_sys::Win32::Foundation::HANDLE);
 #[cfg(windows)]
 impl ToolProcessJob {
-    fn attach(child: &std::process::Child) -> Result<Self, String> {
+    pub(super) fn attach(child: &std::process::Child) -> Result<Self, String> {
+        Self::attach_bounded(child,None)
+    }
+    pub(super) fn attach_bounded(child:&std::process::Child,memory:Option<usize>)->Result<Self,String>{
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::*;
         // The non-inheritable job owns this one invocation, including the
@@ -127,6 +130,7 @@ impl ToolProcessJob {
         let job = Self(handle);
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if let Some(bytes)=memory{limits.BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_PROCESS_MEMORY;limits.ProcessMemoryLimit=bytes;}
         let configured = unsafe {
             SetInformationJobObject(
                 handle,
@@ -167,6 +171,12 @@ pub async fn metadata_tool_status(
 }
 
 pub(super) fn run(tool: &Path, args: &[std::ffi::OsString]) -> Result<Vec<u8>, String> {
+    run_limited(tool, args, 65536)
+}
+
+/// Binary preview extraction has a separate admission limit from small text
+/// metadata responses. No shell, external config or unbounded stdout reads.
+pub(super) fn run_limited(tool: &Path, args: &[std::ffi::OsString], limit: u64) -> Result<Vec<u8>, String> {
     use std::{
         io::{Read, Write},
         process::{Command, Stdio},
@@ -274,7 +284,7 @@ pub(super) fn run(tool: &Path, args: &[std::ffi::OsString]) -> Result<Vec<u8>, S
     // Drain concurrently; a full pipe must not turn a bounded result into a hang.
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        let result = stdout.take(65537).read_to_end(&mut bytes);
+        let result = stdout.take(limit + 1).read_to_end(&mut bytes);
         (result, bytes)
     });
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -300,7 +310,7 @@ pub(super) fn run(tool: &Path, args: &[std::ffi::OsString]) -> Result<Vec<u8>, S
     }
     written.map_err(|_| "Could not send metadata arguments.")?;
     read.map_err(|_| "Could not read metadata result.")?;
-    if output.len() > 65536 {
+    if output.len() as u64 > limit {
         return Err("Metadata response exceeds its safety limit.".into());
     }
     if !status.unwrap().success() {

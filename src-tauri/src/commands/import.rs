@@ -1422,6 +1422,9 @@ fn run_import(
     // Flatten back in directory-grouped order
     let mut ordered_files: Vec<PathBuf> = by_dir.into_values().flatten().collect();
     ordered_files.sort();
+    if opts.reprocess_existing {
+        super::raw_development::capture::preflight_reprocess(&ordered_files)?;
+    }
 
     let staging_existing_hashes = Arc::new(load_existing_staging_md5_hashes(&staging));
     let staging_size_index = Arc::new(build_staging_size_index(&staging));
@@ -1870,6 +1873,20 @@ fn run_import(
             // Release reservations on success, failure, cancellation and panic.
             // Published files themselves continue to prevent filename reuse.
             let _reservation = DestinationReservation(dest.clone(), reserved_clone.clone());
+
+            // Keep RAW lineage fixed through the final touch/rename. Admission
+            // already checked the whole batch, but another job may have added a
+            // recipe since then. Hold the same lease used by RAW publication.
+            let _raw_lease = if opts.reprocess_existing {
+                match super::raw_development::capture::guard_reprocess(src_path) {
+                    Ok(lease) => Some(lease),
+                    Err(error) => {
+                        errors_clone.lock().unwrap().push(format!("{}: {}", src_path.display(), error));
+                        done_clone.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            } else { None };
 
             if opts.reprocess_existing && *src_path == dest {
                 if let Err(e) = set_file_times(src_path, &dt) {
@@ -2576,11 +2593,13 @@ pub async fn start_import_job(
 
 #[tauri::command]
 pub fn list_staging_tree(staging_dir: String) -> Result<serde_json::Value, String> {
+    let raw_epoch=super::raw_development::manifest::snapshot()?;
     let root = PathBuf::from(&staging_dir);
     if !root.exists() {
         return Ok(serde_json::json!([]));
     }
     let tree = build_tree(&root, &root).map_err(|e| e.to_string())?;
+    super::raw_development::manifest::unchanged(raw_epoch)?;
     Ok(tree)
 }
 
@@ -2619,6 +2638,7 @@ fn build_tree(path: &Path, root: &Path) -> anyhow::Result<serde_json::Value> {
             }
             children.push(build_tree(&entry, root)?);
         }
+        super::raw_development::annotate_tree(&mut children,path,root);
         Ok(serde_json::json!({
             "name": name,
             "path": rel,

@@ -1,5 +1,6 @@
 //! Bounded, read-only full-resolution Lightbox payloads. File IO and base64
-//! encoding run away from the UI thread; RAW decoding is deliberately not added.
+//! encoding run away from the UI thread. RAW display uses a labelled embedded
+//! camera preview; only RAW Development can create full-quality RAW outputs.
 use image::ImageReader;
 use serde::Serialize;
 use std::io::{Cursor, Read};
@@ -14,9 +15,22 @@ pub struct LightboxImage {
     mime: &'static str,
     width: u32,
     height: u32,
+    #[serde(skip_serializing_if="Option::is_none")]
+    source: Option<&'static str>,
+    #[serde(rename="sourceWidth",skip_serializing_if="Option::is_none")]
+    source_width: Option<u32>,
+    #[serde(rename="sourceHeight",skip_serializing_if="Option::is_none")]
+    source_height: Option<u32>,
 }
 
 fn read_payload(path: &Path) -> Result<LightboxImage, String> {
+    if super::raw_development::is_raw(path) {
+        super::raw_development::reject_link(path)?;
+        let(image,w,h)=super::raw_development::worker::camera_preview(path)?;
+        let image=image.thumbnail(2000,2000);
+        let bytes=super::photo_process::jpeg_bytes(&image)?;
+        return Ok(LightboxImage {data:crate::utils::base64_encode(&bytes),mime:"image/jpeg",width:image.width(),height:image.height(),source:Some("cameraPreview"),source_width:Some(w),source_height:Some(h)});
+    }
     let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
     let length = file.metadata().map_err(|error| error.to_string())?.len();
     if length > MAX_IMAGE_BYTES { return Err("Image exceeds the 64 MiB Lightbox read limit".into()); }
@@ -33,7 +47,7 @@ fn read_payload(path: &Path) -> Result<LightboxImage, String> {
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS {
         return Err("Image dimensions exceed the Lightbox safety limit".into());
     }
-    Ok(LightboxImage { data: crate::utils::base64_encode(&data), mime, width, height })
+    Ok(LightboxImage { data: crate::utils::base64_encode(&data), mime, width, height, source:None,source_width:None,source_height:None })
 }
 
 #[tauri::command]

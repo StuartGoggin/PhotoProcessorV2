@@ -203,7 +203,9 @@ pub fn build(
             families
                 .into_values()
                 .filter_map(|mut assets| {
-                    assets.sort_by_key(|asset| rank(asset.variant));
+                    // Prefer a supported camera JPEG over its RAW companion
+                    // when both are Original members of the same capture.
+                    assets.sort_by_key(|asset| (rank(asset.variant), !allowed(Path::new(&asset.path))));
                     assets.into_iter().next()
                 })
                 .collect()

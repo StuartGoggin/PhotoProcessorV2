@@ -53,6 +53,7 @@ try {
   await complete(page, "bw");
   await bw.getByRole("img", { name: "Original photo preview", exact: true }).waitFor();
   await bw.getByRole("img", { name: "Result photo preview", exact: true }).waitFor();
+  assert.equal(await bw.getByRole("img", { name: "Result photo preview", exact: true }).evaluate((image) => image.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))), false, "Photo Process previews are not finished exports");
   assert.equal(await page.evaluate(() => window.__queuedJobs.length), 0);
   const first = await page.evaluate(() => window.__previewCalls.at(-1));
   assert.deepEqual(first.bwParams, { localContrast: 1, sharpness: 0.6, curveStrength: 0.25, shadowDepth: 0.12, highlightLift: 0.12, midpoint: 0.5 });

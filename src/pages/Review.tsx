@@ -9,12 +9,11 @@ import { lightboxCommands, lightboxTypingTarget, matchLightboxCommand, shortcutF
 
 const emptyPan = () => [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
 const frameId = (context?: ReviewContext) => context ? JSON.stringify([context.root, context.path, context.epoch, context.cropped]) : "";
-const panelNames = ["Original", "B&W", "Enhanced"];
 
 export default function Review() {
   const review = useReview();
   const { tree, selected, siblings, siblingIdx, images, zoom, loading, trashed, stars, error, renaming,
-    stagingDir, cropped, selectedPhoto, catalogueRevision } = review;
+    stagingDir, cropped, selectedPhoto, catalogueRevision, originalSource, originalInfo } = review;
   const [cropOpen, setCropOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [cropMessage, setCropMessage] = useState("");
@@ -32,6 +31,10 @@ export default function Review() {
   const [resetKey, setResetKey] = useState(0);
   const curation = useGooglePhotoCuration(catalogueRevision ? stagingDir : "", catalogueRevision);
   const version = cropped && selectedPhoto?.crop ? selectedPhoto.crop : selectedPhoto;
+  const rawOriginal = !!version && /\.(cr3|dng)$/i.test(version.original.name);
+  const sourceWarning = version?.original.rawWarning || selected?.rawWarning;
+  const labels = [cropped ? "Cropped" : rawOriginal && selectedPhoto?.cameraJpeg ? "Original RAW" : selectedPhoto?.cameraJpeg && originalSource === "cameraJpeg" ? "Camera JPEG" : "Original",
+    "B&W", version?.improvedLabel || "Enhanced"];
   const snapshot = review.getSnapshot();
   const renderContext = snapshot?.context.path === selected?.path && snapshot?.context.root === stagingDir ? snapshot.context : undefined;
   const renderFrame = frameId(renderContext);
@@ -58,6 +61,13 @@ export default function Review() {
   }
   function openCrop() { modal.current.crop = true; setCropOpen(true); }
   function closeCrop() { modal.current.crop = false; setCropOpen(false); }
+  async function chooseOriginalSource(source: "raw" | "cameraJpeg") {
+    if (actionBusy.current || renaming || loading || curation.hasPending()) {
+      setFeedback("Wait for the current photo decisions to finish saving before changing the original source."); return;
+    }
+    setFeedback("");
+    if (await review.setOriginalSource(source)) focusReview();
+  }
   function markVisible(context?: ReviewContext) {
     if (!context || !review.isContextCurrent(context)) return;
     visible.current = frameId(context); setVisibleFrame(visible.current);
@@ -139,8 +149,8 @@ export default function Review() {
       else {
         const index = id.includes("active") ? active.current : id.endsWith("original") ? 0 : id.endsWith("bw") ? 1 : 2;
         const node = nodes[index];
-        if (!node || curation.loading) {
-          setFeedback(node ? "Wait for this version's saved selections to load." : "That version is unavailable for this photo."); return;
+        if (!node || !renderedImages[index] || curation.loading) {
+          setFeedback(node && renderedImages[index] ? "Wait for this version's saved selections to load." : "That version is unavailable for this photo."); return;
         }
         const asset = curation.assetForPath(node.path);
         if (!asset) { setFeedback("Saved selections are unavailable for that exact version. Retry selections."); return; }
@@ -184,12 +194,12 @@ export default function Review() {
   function controls(index: number) {
     const node = [version?.original, version?.bw, version?.improved][index];
     if (!node) return undefined;
-    const label = index === 0 && cropped ? "Cropped" : index === 1 && cropped ? "Cropped B&W" : index === 2 && cropped ? "Cropped Enhanced" : panelNames[index];
+    const label = cropped && index === 1 ? "Cropped B&W" : cropped && index === 2 ? "Cropped Enhanced" : labels[index];
     const selectIds = ["select-original", "select-bw", "select-enhanced"] as const;
     const favouriteIds = ["favourite-original", "favourite-bw", "favourite-enhanced"] as const;
     const asset = curation.assetForPath(node.path);
     return <LightboxVersionControls label={label} shortcut={shortcutFor(selectIds[index])} favouriteShortcut={shortcutFor(favouriteIds[index])}
-      asset={asset ?? null} loading={curation.loading} disabled={busy || renaming || !ready}
+      asset={asset ?? null} loading={curation.loading} disabled={busy || renaming || !ready || !renderedImages[index]}
       saving={curation.pendingFor(asset?.id)} error={curation.errorFor(asset?.id)}
       onSelected={value => void execute(selectIds[index], value)} onFavourite={() => void execute(favouriteIds[index])} />;
   }
@@ -228,10 +238,18 @@ export default function Review() {
       </div>
       {selected && <div className="px-3 py-1.5 bg-surface-800 text-xs text-gray-400 flex flex-wrap items-center gap-2 border-b border-surface-700">
         <span className="truncate flex-1 min-w-0" title={selected.name}>{selected.name}</span>
-        <span className="text-cyan-200">Active: {activePanel === 0 && cropped ? "Cropped" : panelNames[activePanel]}</span>
+        <span className="text-cyan-200">Active: {labels[activePanel]}</span>
         <span role="status" aria-live="polite" className={busy ? "text-amber-200" : "text-cyan-200"}>{busy ? "Saving decision…" : curation.saving ? "Saving selections… wait before closing" : feedback || (ready ? "Ready to review" : "Loading photo…")}</span>
       </div>}
+      {selectedPhoto?.cameraJpeg && <div className="px-3 py-2 border-b border-surface-700 bg-surface-800 text-xs text-gray-300 flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2">Original source<select aria-label="Original source" className="input-field w-auto text-xs py-1.5" value={originalSource} disabled={busy || renaming || loading || curation.saving} onChange={(event) => void chooseOriginalSource(event.target.value === "cameraJpeg" ? "cameraJpeg" : "raw")}><option value="raw">Camera RAW preview</option><option value="cameraJpeg">Camera JPEG</option></select></label>
+        <span>Upload / favourite controls target the displayed original file. Ratings and trash apply to the RAW original. Cropping is unavailable for this paired RAW capture.</span>
+      </div>}
+      {rawOriginal && <div className="px-3 py-1.5 border-b border-surface-700 bg-amber-950/20 text-xs text-amber-200">
+        Camera preview — not full RAW development{originalInfo ? ` · ${originalInfo.width} × ${originalInfo.height} displayed pixels` : ""}{originalInfo?.sourceWidth && originalInfo.sourceHeight ? ` · Embedded camera image ${originalInfo.sourceWidth} × ${originalInfo.sourceHeight}` : ""}. Use Photo Process → RAW Development for finished full-resolution photos. RAW upload selections never export this preview.
+      </div>}
       {error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800">{error}</div>}
+      {sourceWarning && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-amber-950/20">RAW metadata needs attention: {sourceWarning} Images remain available for inspection; ownership and saved recipes require repair before transfer.</div>}
       {curation.error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800 flex items-center justify-between gap-3"><span>{curation.error} Photos remain available for review.</span><button className="btn-secondary min-h-11 px-2 text-xs" disabled={busy} onClick={() => void curation.refresh(true)}>Reload selections</button></div>}
       {curation.warnings.length > 0 && <details className="px-4 py-2 text-xs text-amber-200 bg-surface-800"><summary className="cursor-pointer">Upload selection notes ({curation.warnings.length})</summary><ul className="mt-1 ml-4 list-disc">{curation.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
       {cropMessage && <div role="status" className="px-4 py-2 text-xs text-cyan-100 bg-surface-800 flex gap-3 justify-between"><span>{cropMessage}</span><button type="button" aria-label="Dismiss crop result" onClick={() => setCropMessage("")}>×</button></div>}
@@ -239,7 +257,8 @@ export default function Review() {
         {loading ? <div className="flex-1 flex items-center justify-center text-gray-500">Loading...</div> : renderedImages.map((src, index) => {
           const offset = pan.frame === renderFrame ? pan.offsets[index] : { x: 0, y: 0 };
           return <div key={index} className={"flex-1 min-w-0 " + (index < 2 ? "border-r border-surface-700" : "")}>
-            <ImagePanel key={renderFrame + "-" + index} src={src} label={index === 0 && cropped ? "Cropped" : panelNames[index]} zoom={zoom}
+            <ImagePanel key={renderFrame + "-" + index} src={src} label={labels[index]} zoom={zoom}
+              previewOnly={index === 0 && rawOriginal}
               panX={offset.x} panY={offset.y} resetKey={resetKey} active={activePanel === index}
               onActivate={() => activate(index)} onReady={() => markVisible(renderContext)} headerAction={controls(index)} />
           </div>;

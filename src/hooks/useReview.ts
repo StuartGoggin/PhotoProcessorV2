@@ -3,8 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { TreeNode, ImageSet } from "../types";
 import { useSettings } from "./useSettings";
 import { parseStars, isTrashed, applyStars, applyTrash } from "../utils";
-import { lightboxCatalogue, lightboxAbsolute, neighborPaths, photoFolder, photoPaths, type LightboxPhoto } from "../utils/lightboxCatalogue";
-import { LightboxCache, type LightboxImage } from "../utils/lightboxCache";
+import { lightboxCatalogue, lightboxAbsolute, neighborPaths, photoFolder, photoPaths, photoForSource, type LightboxPhoto, type OriginalSource } from "../utils/lightboxCatalogue";
+import { LightboxCache, type LightboxImage, type LightboxImageInfo } from "../utils/lightboxCache";
 
 const emptyImages = (): ImageSet => ({ original: null, improved: null, bw: null });
 export interface ReviewContext { root: string; path: string; epoch: number; cropped: boolean }
@@ -25,6 +25,9 @@ export function useReview() {
   const [stagingDir, setStagingDir] = useState("");
   const [cropped, setCropped] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<LightboxPhoto | null>(null);
+  const [originalSource, setOriginalSourceState] = useState<OriginalSource>("raw");
+  const [originalInfo, setOriginalInfo] = useState<LightboxImageInfo | null>(null);
+  const sourceChoice = useRef<OriginalSource>("raw");
   const [catalogueRevision, setCatalogueRevision] = useState(0);
   const showingCrop = useRef(false);
   const root = useRef("");
@@ -52,7 +55,7 @@ export function useReview() {
     const path = selectedPath.current;
     const photo = path ? catalogue.current.photos.get(path) : undefined;
     if (!mounted.current || !path || !photo || !root.current || root.current !== configuredRoot.current) return null;
-    return { context: { root: root.current, path, epoch: selectionRequest.current, cropped: showingCrop.current } as ReviewContext, photo };
+    return { context: { root: root.current, path, epoch: selectionRequest.current, cropped: showingCrop.current } as ReviewContext, photo: photoForSource(photo, sourceChoice.current) };
   }
   function isContextCurrent(context: ReviewContext) {
     return mounted.current && context.root === root.current && context.root === configuredRoot.current
@@ -60,24 +63,29 @@ export function useReview() {
   }
   function isReady() { return !!getSnapshot() && viewReady.current && !renameBusy.current; }
 
-  async function show(photo: LightboxPhoto, direction: 1 | -1 = 1, useCrop = false): Promise<boolean> {
+  async function show(photo: LightboxPhoto, direction: 1 | -1 = 1, useCrop = false, source: OriginalSource = sourceChoice.current): Promise<boolean> {
     if (!mounted.current || root.current !== configuredRoot.current) return false;
+    photo = catalogue.current.photos.get(photo.node.path) ?? photo;
     const request = ++selectionRequest.current, originalRoot = root.current;
     const group = catalogue.current.folders.get(photoFolder(photo.node.path)) ?? [];
     const index = group.findIndex(item => item.node.path === photo.node.path);
-    const activeCrop = useCrop && !!photo.crop, version = activeCrop ? photo.crop! : photo;
-    cache.current!.select(photoPaths(photo, activeCrop).map(path => lightboxAbsolute(originalRoot, path)));
+    const display = photoForSource(photo, source);
+    const activeCrop = useCrop && !!display.crop, version = activeCrop ? display.crop! : display;
+    cache.current!.select(photoPaths(display, activeCrop).map(path => lightboxAbsolute(originalRoot, path)));
     selectedPath.current = photo.node.path; viewReady.current = false;
-    showingCrop.current = activeCrop; setCropped(activeCrop); setSelectedPhoto(photo);
+    sourceChoice.current = source;
+    setOriginalSourceState(source === "cameraJpeg" && photo.cameraJpeg ? "cameraJpeg" : "raw");
+    showingCrop.current = activeCrop; setCropped(activeCrop); setSelectedPhoto(display); setOriginalInfo(null);
     setSelected(photo.node); setSiblings(group.map(item => item.node)); setSiblingIdx(Math.max(0, index));
     setZoom(1); setLoading(true); setError(""); setImages(emptyImages());
     const load = (node?: TreeNode) => node ? cache.current!.get(lightboxAbsolute(originalRoot, node.path)) : Promise.resolve(null);
     const [original, bw, improved] = await Promise.all([load(version.original), load(version.bw), load(version.improved)]);
     if (!mounted.current || request !== selectionRequest.current || originalRoot !== root.current || originalRoot !== configuredRoot.current) return false;
     viewReady.current = !!(original || bw || improved);
+    setOriginalInfo(original ? cache.current!.info(lightboxAbsolute(originalRoot, version.original.path)) : null);
     setImages({ original, bw, improved }); setLoading(false);
     if (!original) setError(/\.(cr3|dng)$/i.test(photo.node.name)
-      ? "RAW display is not supported in this Lightbox. Its available JPEG comparison versions are shown."
+      ? "The RAW camera preview is unavailable. Its available developed versions are shown; try Photo Process → RAW Development for a full-quality decode."
       : "Could not display this original. It may be missing, unreadable or exceed the Lightbox safety limits. Refresh to retry.");
     cache.current!.prefetch(neighborPaths(group, index, direction).map(path => lightboxAbsolute(originalRoot, path)));
     return viewReady.current;
@@ -113,7 +121,8 @@ export function useReview() {
   useEffect(() => {
     root.current = settings?.staging_dir ?? "";
     setStagingDir(root.current); setCatalogueRevision(0);
-    selectedPath.current = null; viewReady.current = false; showingCrop.current = false;
+    selectedPath.current = null; viewReady.current = false; showingCrop.current = false; sourceChoice.current = "raw";
+    setOriginalSourceState("raw"); setOriginalInfo(null);
     setSelected(null); setSelectedPhoto(null); setSiblings([]); setSiblingIdx(0); setCropped(false);
     ++selectionRequest.current; ++treeRequest.current; cache.current!.clear(); setImages(emptyImages()); setError("");
     if (root.current) void refreshTree(root.current);
@@ -129,6 +138,12 @@ export function useReview() {
     if (renameBusy.current) return false;
     const snapshot = getSnapshot();
     return snapshot ? show(snapshot.photo, 1, useCrop) : false;
+  }
+  async function setOriginalSource(source: OriginalSource) {
+    if (renameBusy.current) return false;
+    const snapshot = getSnapshot();
+    if (!snapshot || (source === "cameraJpeg" && !snapshot.photo.cameraJpeg)) return false;
+    return show(snapshot.photo, 1, false, source);
   }
   async function navigate(direction: 1 | -1) {
     if (renameBusy.current) return false;
@@ -191,10 +206,10 @@ export function useReview() {
 
   return {
     tree, selected, siblings, siblingIdx, images, zoom, loading, error, renaming, stagingDir,
-    cropped, selectedPhoto, catalogueRevision,
+    cropped, selectedPhoto, catalogueRevision, originalSource, originalInfo,
     trashed: selected ? isTrashed(selected.name) : false,
     stars: selected ? parseStars(selected.name) : 0,
-    refreshTree, selectNode, handleStars, handleTrash, navigate, navigateToEdge, setZoom, setCropVersion,
+    refreshTree, selectNode, handleStars, handleTrash, navigate, navigateToEdge, setZoom, setCropVersion, setOriginalSource,
     getSnapshot, isContextCurrent, isReady, advanceFromContext,
   };
 }

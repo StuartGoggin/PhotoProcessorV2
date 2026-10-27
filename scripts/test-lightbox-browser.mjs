@@ -115,7 +115,7 @@ try {
   await page.getByRole("button", { name: "Next original photo", exact: true }).click();
   await expectImage(page, "Original", "02-arena.CR3");
   report.syntheticCachedForwardDisplayMs = Math.round(performance.now() - warmStarted);
-  await expectImage(page, "Enhanced", "02-arena_improved.jpg");
+  await expectImage(page, "Developed RAW", "02-arena_improved.jpg");
   await page.getByText("2 / 5", { exact: true }).waitFor();
   await page.keyboard.press("ArrowLeft");
   await expectImage(page, "Original", "01-rider.jpg");
@@ -140,7 +140,7 @@ try {
   await page.getByText("2 / 2", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Next original photo", exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole("img", { name: "B&W", exact: true }).count(), 0, "Missing derivative does not show the previous photo's B&W image");
-  report.checks.push("RAW/PNG/JPEG sources resolve .jpg comparisons and review tags; nested navigation stays within its original-only folder and absent variants clear");
+  report.checks.push("Explicitly owned RAW outputs and legacy PNG/JPEG comparisons retain review tags; nested navigation stays within its original-only folder and absent variants clear");
 
   await select(page, "01-rider.jpg");
   await expectImage(page, "Original", "01-rider.jpg");

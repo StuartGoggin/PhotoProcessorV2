@@ -11,6 +11,11 @@ fixture.__controlsCommandReference=[...lightboxCommands,...lightboxCropCommands]
 const untag = (value: string) => value.replace(/\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi, "");
 const file = (name: string, parent = ""): TreeNode => ({type:"file", name, path:parent ? `${parent}/${name}` : name, size:32768});
 function makeTree(): TreeNode {
+  if (fixture.__controlsRawFixture) return { type:"dir",name:"RAW fixture",path:"",children:[
+    { ...file("01-horse.CR3"), cameraJpeg:"01-horse.JPG", ...(fixture.__controlsRawWarning ? { rawWarning: fixture.__controlsRawWarning } : {}) }, file("01-horse.JPG"), file("01-horse_BW.jpg"), file("01-horse_improved.jpg"),
+    { ...file("01-owned-colour.jpg"), rawSource:"01-horse.CR3",rawKind:"developed" }, { ...file("01-owned-bw.jpg"), rawSource:"01-horse.CR3",rawKind:"bw" },
+    { ...file("01-retired.jpg"), rawSource:"01-horse.CR3",rawKind:"retired" },file("02-rider.jpg"),
+  ] };
   const names = ["01-horse.jpg", "01-horse_BW.jpg", "01-horse_improved.jpg", "01-horse_crop.jpg", "01-horse_crop_BW.jpg", "01-horse_crop_improved.jpg", "02-rider.jpg", "02-rider_BW.jpg", "02-rider_improved.jpg", "03-wide.jpg"];
   const missing: string[] = fixture.__controlsMissing ?? [];
   if (fixture.__controlsCollision) names.push("01-horse{Like o}.jpg");
@@ -41,7 +46,7 @@ function image(root:string,path:string) {
   ctx.fillStyle=bw?"#1b232d":"#32281f"; ctx.beginPath(); ctx.ellipse(460,355,170,76,0,0,Math.PI*2);ctx.fill();ctx.fillRect(580,210,65,160);ctx.fillRect(310,390,24,120);ctx.fillRect(540,390,24,120);
   ctx.fillStyle=bw?"#f1f5f9":"#e5c87c";ctx.font="22px Segoe UI";ctx.fillText(path,30,55,840);ctx.font="16px Segoe UI";ctx.fillText("Synthetic Lightbox regression image",30,85);
   const data=canvas.toDataURL("image/jpeg",.84).split(",")[1];fixture.__controlsPayloads.set(data,{root,path});
-  return {data,mime:"image/jpeg",width:900,height:600};
+  return {data,mime:"image/jpeg",width:900,height:600,...(/\.CR3$/i.test(path)?{source:"cameraPreview",sourceWidth:6000,sourceHeight:4000}:{})};
 }
 function source(oldPath:string) {
   const normalized=oldPath.replace(/\\/g,"/");
@@ -87,6 +92,7 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",invoke:async(command:string,a
     const photo=files(lib.tree).find(node=>node.path===src.path);if(!photo)throw Error("Missing synthetic rename source");
     const parent=photo.path.includes("/")?photo.path.slice(0,photo.path.lastIndexOf("/")+1):"";const next=parent+args.newName;
     if(files(lib.tree).some(node=>node!==photo&&node.path.toLowerCase()===next.toLowerCase()))throw Error("Destination already exists; source and destination preserved");
+    for (const node of files(lib.tree)) if (node.rawSource === photo.path) node.rawSource = next;
     photo.path=next;photo.name=args.newName;return null;
   }
   if(command==="lightbox_crop_info")return {width:900,height:600,sourceFingerprint:`${args.stagingDir}:${args.path}`,original:`data:image/jpeg;base64,${image(args.stagingDir,args.path).data}`,crop:null,hasCrop:true};

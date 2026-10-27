@@ -11,7 +11,7 @@ const file = (name: string, parent = ""): TreeNode => ({ name, path: parent ? `$
 fixture.__lightboxTree = {
   name: "Synthetic photos", path: "", type: "dir", children: [
     file("01-rider.jpg"), file("01-rider_improved.jpg"), file("01-rider_BW.jpg"),
-    file("02-arena.CR3"), file("02-arena_improved.jpg"), file("02-arena_BW.jpg"),
+    file("02-arena.CR3"), { ...file("02-arena_improved.jpg"), rawSource: "02-arena.CR3", rawKind: "developed" }, { ...file("02-arena_BW.jpg"), rawSource: "02-arena.CR3", rawKind: "bw" },
     file("03-wide{Like oo}.PNG"), file("03-wide_improved.jpg"), file("03-wide_BW{trash}.jpg"),
     // These are genuine independently named originals: there is no source sibling.
     file("04-genuine_BW.jpg"), file("05-course_improved.jpg"),

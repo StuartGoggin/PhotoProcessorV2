@@ -264,6 +264,7 @@ pub(crate) fn scan_selection(root: &Path, relative_path: &str) -> Result<Catalog
 }
 
 fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Catalogue, String> {
+    let raw_epoch=super::super::raw_development::manifest::snapshot()?;
     if !root.is_absolute() || !root.is_dir() {
         return Err("Choose an existing absolute photo folder.".into());
     }
@@ -378,8 +379,16 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
         }
         // The Lightbox gives an exact tagged-source variant precedence over old
         // untagged output names. Do not publish both stale and current versions.
+        let owned_raw=super::super::raw_development::manifest::associations(&directory,&files)?;
+        let retired_raw:HashSet<usize>=owned_raw.iter().filter(|(_,_,kind)|kind.starts_with("retired:")).map(|(index,_,_)|*index).collect();
+        let owned_raw_indices:HashSet<usize>=owned_raw.iter().map(|(index,_,_)|*index).collect();
+        for(index,source,kind)in &owned_raw{
+            if kind.starts_with("retired:")&&!archive{continue}
+            associations.insert(*index,(*source,if kind.ends_with("bw"){PhotoVariant::Bw}else{PhotoVariant::Enhanced}));
+        }
         let mut comparison_groups = BTreeMap::<(usize, PhotoVariant), Vec<usize>>::new();
         for (&index, &(source, variant)) in &associations {
+            if owned_raw_indices.contains(&index){continue}
             comparison_groups
                 .entry((source, variant))
                 .or_default()
@@ -444,8 +453,14 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
                 crops.insert(children[0], owner);
             }
         }
+        // One capture rating/trash state follows the RAW Lightbox entry. Upload
+        // flags stay keyed to the exact physical version, never to its family.
+        let pair_excluded: HashSet<usize> = associations.keys().chain(crops.keys()).copied().collect();
+        let camera_raw: HashMap<usize,usize> = super::super::raw_development::capture::pairs(&files,&pair_excluded)
+            .into_iter().map(|(raw,jpeg)|(jpeg,raw)).collect();
         let mut duplicate_keys = HashMap::<String, usize>::new();
         for (index, path) in files.iter().enumerate() {
+            if retired_raw.contains(&index)&&!archive{continue}
             if suppressed.contains(&index) {
                 continue;
             }
@@ -453,6 +468,7 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
         }
         let (event_name, event_date) = event(&directory);
         for (index, path) in files.iter().enumerate() {
+            if retired_raw.contains(&index)&&!archive{continue}
             if suppressed.contains(&index) {
                 continue;
             }
@@ -461,6 +477,7 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
                 .copied()
                 .unwrap_or((index, PhotoVariant::Original));
             let owner = crops.get(&source).copied().unwrap_or(source);
+            let owner = camera_raw.get(&owner).copied().unwrap_or(owner);
             if crops.contains_key(&source) {
                 variant = match variant {
                     PhotoVariant::Original => PhotoVariant::Crop,
@@ -559,6 +576,7 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
     }
     warnings.sort();
     warnings.dedup();
+    super::super::raw_development::manifest::unchanged(raw_epoch)?;
     Ok(Catalogue {
         root: root.to_string_lossy().into_owned(),
         revision,

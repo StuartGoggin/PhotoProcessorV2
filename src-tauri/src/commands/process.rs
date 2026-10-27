@@ -61,6 +61,7 @@ pub enum ProcessTask {
     ScanFaces,
     SearchPersonVideos,
     GooglePhotos,
+    RawDevelop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1031,7 +1032,7 @@ pub(super) fn enhance_rgb_clahe(rgb: &RgbImage) -> RgbImage {
     out
 }
 
-fn collect_jpgs(dir: &Path, recursive: bool) -> Vec<PathBuf> {
+fn collect_jpgs(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>,String> {
     let walker = if recursive {
         WalkDir::new(dir)
     } else {
@@ -1056,12 +1057,13 @@ fn collect_jpgs(dir: &Path, recursive: bool) -> Vec<PathBuf> {
     let stems: std::collections::HashSet<_> = files.iter().map(|path| (
         path.parent().unwrap_or(Path::new("")).to_path_buf(), clean_photo_stem(path)
     )).collect();
-    files.into_iter().filter(|path| {
+    let originals=files.into_iter().filter(|path| {
         let stem = clean_photo_stem(path);
         let generated = ["_bw", "_improved"].iter().find_map(|suffix| stem.strip_suffix(suffix));
         let is_variant = generated.map(|base| stems.contains(&(path.parent().unwrap_or(Path::new("")).to_path_buf(), base.to_string()))).unwrap_or(false);
         !is_variant && !path.file_name().and_then(|name| name.to_str()).unwrap_or("").contains("{Out of Focus")
-    }).collect()
+    }).collect();
+    super::raw_development::manifest::exclude_owned_jpegs(originals)
 }
 
 fn clean_photo_stem(path: &Path) -> String {
@@ -1160,11 +1162,11 @@ fn collect_mp4s(dir: &Path, recursive: bool) -> Vec<PathBuf> {
         .collect()
 }
 
-pub(super) fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Vec<PathBuf> {
-    match task {
+pub(super) fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: bool) -> Result<Vec<PathBuf>,String> {
+    Ok(match task {
         // Managed crop names are stable family identities, not focus-rename targets.
-        ProcessTask::Focus => collect_jpgs(dir, recursive).into_iter().filter(|p| !(clean_photo_stem(p).ends_with("_crop") && p.with_extension("photogogo-crop.json").is_file())).collect(),
-        ProcessTask::Enhance | ProcessTask::Bw => collect_jpgs(dir, recursive),
+        ProcessTask::Focus => collect_jpgs(dir, recursive)?.into_iter().filter(|p| !(clean_photo_stem(p).ends_with("_crop") && p.with_extension("photogogo-crop.json").is_file())).collect(),
+        ProcessTask::Enhance | ProcessTask::Bw => collect_jpgs(dir, recursive)?,
         ProcessTask::RemoveFocus => collect_focus_marked_jpgs(dir, recursive),
         ProcessTask::RemoveEnhance => collect_named_outputs(dir, recursive, "_improved", "jpg"),
         ProcessTask::RemoveBw => collect_named_outputs(dir, recursive, "_BW", "jpg"),
@@ -1172,8 +1174,8 @@ pub(super) fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: b
         ProcessTask::RemoveStabilize => collect_named_outputs(dir, recursive, "_stabilized", "mp4"),
         ProcessTask::ScanArchiveNaming | ProcessTask::ApplyEventNaming => vec![],
         ProcessTask::Transfer | ProcessTask::VerifyChecksums => vec![],
-        ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos => vec![],
-    }
+        ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos | ProcessTask::RawDevelop => vec![],
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -2158,6 +2160,7 @@ fn task_name(task: &ProcessTask) -> &'static str {
         ProcessTask::ScanFaces => "scan_faces",
         ProcessTask::SearchPersonVideos => "search_person_videos",
         ProcessTask::GooglePhotos => "google_photos",
+        ProcessTask::RawDevelop => "raw_develop",
     }
 }
 
@@ -2178,6 +2181,7 @@ fn task_result_label(task: &ProcessTask) -> &'static str {
         ProcessTask::ScanFaces => "faces_detected",
         ProcessTask::SearchPersonVideos => "videos_found",
         ProcessTask::GooglePhotos => "verified",
+        ProcessTask::RawDevelop => "developed",
     }
 }
 
@@ -2436,6 +2440,9 @@ fn run_process_task(
     task: ProcessTask,
     job_id: Option<String>,
 ) -> Result<ProcessResult, String> {
+    if matches!(task, ProcessTask::RawDevelop) {
+        return super::raw_development::run(app, job_id.as_deref().ok_or("RAW job identity missing")?);
+    }
     if matches!(task, ProcessTask::ScanArchiveNaming) {
         return run_archive_naming_scan_task(app, staging_dir, scope_dir, scope_mode, job_id);
     }
@@ -2459,7 +2466,7 @@ fn run_process_task(
     let scope_mode = scope_mode.unwrap_or(ProcessScopeMode::FolderRecursive);
     let scope = resolve_process_scope(&staging_dir, scope_dir.clone(), &scope_mode)?;
     let recursive = !matches!(scope_mode, ProcessScopeMode::FolderOnly);
-    let files = collect_process_files(&task, &scope, recursive);
+    let files = collect_process_files(&task, &scope, recursive)?;
     let total = files.len();
     let done_count = Arc::new(AtomicU64::new(0));
     let result_count = Arc::new(AtomicU64::new(0));
@@ -2765,7 +2772,7 @@ fn run_process_task(
                     ProcessTask::ScanArchiveNaming => {}
                     ProcessTask::ApplyEventNaming => {}
                     ProcessTask::Transfer | ProcessTask::VerifyChecksums => {}
-                    ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos => {}
+                    ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos | ProcessTask::RawDevelop => {}
                 }
                 Ok(())
             })();
@@ -2877,9 +2884,11 @@ pub fn start_process_job(
     frames_per_second: Option<usize>,
     similarity_threshold: Option<f32>,
     person_name: Option<String>,
+    raw_development_request: Option<super::raw_development::Request>,
 ) -> Result<String, String> {
     let task_enum = match task.to_lowercase().as_str() {
         "focus" => ProcessTask::Focus,
+        "raw_develop" => ProcessTask::RawDevelop,
         "remove_focus" => ProcessTask::RemoveFocus,
         "enhance" => ProcessTask::Enhance,
         "remove_enhance" => ProcessTask::RemoveEnhance,
@@ -2941,6 +2950,18 @@ pub fn start_process_job(
         None
     };
 
+    if matches!(task_enum, ProcessTask::RawDevelop) {
+        let raw = raw_development_request.as_ref().ok_or("RAW recipe missing")?;
+        let mode = scope_mode.clone().unwrap_or(ProcessScopeMode::FolderRecursive);
+        let raw_root = Path::new(&raw.staging_dir).canonicalize().map_err(|e|e.to_string())?;
+        let job_root = Path::new(&staging_dir).canonicalize().map_err(|e|e.to_string())?;
+        if raw_root != job_root || resolve_process_scope(&raw.staging_dir,Some(raw.scope_dir.clone()),&raw.scope_mode)?.canonicalize().map_err(|e|e.to_string())?
+            != resolve_process_scope(&staging_dir,scope_dir.clone(),&mode)?.canonicalize().map_err(|e|e.to_string())?
+            || std::mem::discriminant(&raw.scope_mode) != std::mem::discriminant(&mode) {
+            return Err("RAW request and core job scope do not match".into());
+        }
+        raw.files()?;
+    } else if raw_development_request.is_some() { return Err("RAW recipes require a RAW Development job".into()); }
     // Crop publication and queue admission share a short scheduling seam.
     let _photo_edit_gate = super::lightbox_crop::PHOTO_EDIT_GATE.lock().map_err(|e|e.to_string())?;
     if super::lightbox_crop::is_editing() { return Err("Wait for the current crop operation to finish before queuing Photo Process work".into()); }
@@ -3043,6 +3064,9 @@ pub fn start_process_job(
         );
     }
 
+    if let Some(request) = raw_development_request {
+        super::raw_development::requests().lock().map_err(|_|"RAW queue lock failed")?.insert(job_id.clone(), request);
+    }
     let app_for_task = app.clone();
     let job_id_for_task = job_id.clone();
     let job_id_for_status = job_id.clone();
@@ -3059,14 +3083,16 @@ pub fn start_process_job(
         match result {
             Ok(Ok(_)) => {}
             Ok(Err(err)) => {
+                let cancelled = is_process_abort_requested(Some(&job_id_for_status));
                 update_process_job(&job_id_for_status, |job| {
-                    job.status = ProcessJobStatus::Failed;
+                    job.status = if cancelled { ProcessJobStatus::Aborted } else { ProcessJobStatus::Failed };
                     job.finished_at = Some(now_string());
-                    job.current_file = "Failed".to_string();
-                    job.errors.push(err.clone());
+                    job.current_file = if cancelled { "Aborted" } else { "Failed" }.to_string();
+                    if !cancelled { job.errors.push(err.clone()); }
                 });
-                append_process_job_log(&job_id_for_status, format!("failed before processing: {}", err));
-                let _ = append_app_log(&app_for_status, format!("process_{} failed job_id='{}' error='{}'", task_name(&task_for_status), job_id_for_status, err));
+                let outcome=if cancelled { "aborted" } else { "failed" };
+                append_process_job_log(&job_id_for_status, format!("{} before processing: {}", outcome, err));
+                let _ = append_app_log(&app_for_status, format!("process_{} {} job_id='{}' error='{}'", task_name(&task_for_status), outcome, job_id_for_status, err));
             }
             Err(join_err) => {
                 let err = format!("Process background task failed: {}", join_err);
@@ -3085,6 +3111,7 @@ pub fn start_process_job(
             enhance_store.remove(&job_id_for_status);
         }
         if let Ok(mut bw_store) = bw_params_store().lock() { bw_store.remove(&job_id_for_status); }
+        if let Ok(mut raw_store) = super::raw_development::requests().lock() { raw_store.remove(&job_id_for_status); }
         if let Ok(mut stabilize_store) = stabilize_params_store().lock() {
             stabilize_store.remove(&job_id_for_status);
         }

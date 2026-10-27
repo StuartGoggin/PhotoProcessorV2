@@ -728,6 +728,7 @@ fn rename_review_file(old: &Path, new_name: &str) -> Result<String, String> {
     }
     let new = old.parent().ok_or("No photo parent directory")?.join(new_name);
     if old == new { return Ok(old.to_string_lossy().into_owned()); }
+    let _raw_lease = super::raw_development::capture::guard_move(&old, &new)?;
     for attempt in 0..8 {
         match super::import_safety::rename_new(&old, &new) {
             Ok(()) => return Ok(new.to_string_lossy().into_owned()),

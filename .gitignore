@@ -26,6 +26,7 @@ Thumbs.db
 tools/ffmpeg/
 src-tauri/tools/ffmpeg/
 src-tauri/tools/exiftool/
+src-tauri/tools/rawtherapee/
 test-output/
 tools/ffmpeg-n71-test/
 *.zip

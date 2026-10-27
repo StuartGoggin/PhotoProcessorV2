@@ -30,6 +30,7 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   scan_faces: "Scan Faces",
   search_person_videos: "Search Person",
   googlePhotos: "Google Photos",
+  rawDevelop: "RAW Development",
 };
 
 const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {

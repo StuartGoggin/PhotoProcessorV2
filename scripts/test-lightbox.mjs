@@ -5,10 +5,11 @@ const bundle = async path => {
   const result = await build({ entryPoints: [path], bundle: true, write: false, format: "esm", platform: "node" });
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}`);
 };
-const { lightboxCatalogue, neighborPaths, photoFolder, lightboxAbsolute } = await bundle("src/utils/lightboxCatalogue.ts");
+const { lightboxCatalogue, neighborPaths, photoFolder, lightboxAbsolute, photoForSource } = await bundle("src/utils/lightboxCatalogue.ts");
 const { LightboxCache } = await bundle("src/utils/lightboxCache.ts");
 const { FULL_CROP, fitCropRatio, dragCrop, validCrop, cropPixelSize } = await bundle("src/utils/lightboxCrop.ts");
 const { normalizePhotoProcessRecipe } = await bundle("src/utils/photoProcessRecipe.ts");
+const { normalizeRawRecipe, rawPreset } = await bundle("src/utils/rawRecipe.ts");
 const file = (name, folder = "") => ({ name, path: folder ? `${folder}/${name}` : name, type: "file", size: 10 });
 const payload = { data: Buffer.from("compressed image bytes").toString("base64"), mime: "image/jpeg", width: 640, height: 480 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -46,6 +47,53 @@ test("RAW + JPEG pairs associate processed versions with their JPEG original", (
   assert.equal(result.photos.get("shot.JPG").bw.name,"shot_BW.jpg");
   assert.equal(result.photos.get("shot.JPG").improved.name,"shot_improved.jpg");
   assert.equal(result.photos.get("shot.CR3").bw,undefined);
+});
+
+test("RAW comparisons require explicit unique ownership; retired, ambiguous and invalid claims fail safely", () => {
+  const nodes = [file("capture.CR3"), { ...file("finished.jpg"), rawSource: "capture.CR3", rawKind: "developed" },
+    { ...file("mono.jpg"), rawSource: "capture.CR3", rawKind: "bw" }, { ...file("old.jpg"), rawSource: "capture.CR3", rawKind: "retired" }, file("capture_BW.jpg"),
+    { ...file("missing.jpg"), rawSource: "absent.CR3", rawKind: "developed" }];
+  const result = lightboxCatalogue(nodes);
+  assert.equal(result.photos.get("capture.CR3").improved.name, "finished.jpg");
+  assert.equal(result.photos.get("capture.CR3").improvedLabel, "Developed RAW");
+  assert.equal(result.photos.get("capture.CR3").bw.name, "mono.jpg");
+  assert.equal(result.photos.has("old.jpg"), false);
+  assert.equal(result.photos.has("capture_BW.jpg"), true, "RAW suffix guessing cannot hide a user file");
+  assert.equal(result.photos.has("missing.jpg"), true, "an unresolvable ownership claim is visible");
+  const duplicate = lightboxCatalogue([file("capture.CR3"), { ...file("first.jpg"), rawSource: "capture.CR3", rawKind: "developed" }, { ...file("second.jpg"), rawSource: "capture.CR3", rawKind: "developed" }]);
+  assert.equal(duplicate.folders.get("").length, 3);
+  assert.equal(duplicate.photos.get("capture.CR3").improved, undefined);
+  const nested = lightboxCatalogue([file("capture.CR3"), { name: "day", path: "day", type: "dir", children: [{ ...file("other.jpg", "day"), rawSource: "capture.CR3", rawKind: "retired" }] }]);
+  assert.equal(nested.photos.has("day/other.jpg"), true, "cross-folder ownership never hides a file");
+});
+
+test("native-identified RAW+JPEG captures group navigation while keeping source families and exact paths distinct", () => {
+  const result = lightboxCatalogue([{ ...file("shot.CR3"), cameraJpeg: "shot.JPG" }, file("shot.JPG"), file("shot_BW.jpg"), file("shot_improved.jpg"),
+    { ...file("developed.jpg"), rawSource: "shot.CR3", rawKind: "developed" }, { ...file("raw-mono.jpg"), rawSource: "shot.CR3", rawKind: "bw" }, file("shot_crop.jpg")]);
+  assert.equal(result.folders.get("").length, 1);
+  const capture = result.photos.get("shot.CR3");
+  assert.equal(capture.original.path, "shot.CR3"); assert.equal(capture.improved.path, "developed.jpg"); assert.equal(capture.bw.path, "raw-mono.jpg");
+  assert.equal(result.photos.has("shot.JPG"), false);
+  const jpeg = photoForSource(capture, "cameraJpeg");
+  assert.equal(jpeg.node.path, "shot.CR3", "the navigation identity remains the capture");
+  assert.equal(jpeg.original.path, "shot.JPG", "curation targets the displayed exact original");
+  assert.equal(jpeg.improved.path, "shot_improved.jpg"); assert.equal(jpeg.bw.path, "shot_BW.jpg"); assert.equal(jpeg.crop.original.path, "shot_crop.jpg");
+  assert.equal(photoForSource(capture, "raw").original.path, "shot.CR3");
+  const ambiguous = lightboxCatalogue([{ ...file("shot.CR3"), cameraJpeg: "shot.JPG" }, { ...file("other.DNG"), cameraJpeg: "shot.JPG" }, file("shot.JPG")]);
+  assert.equal(ambiguous.folders.get("").length, 3);
+  assert.equal(ambiguous.photos.get("shot.CR3").cameraJpeg, undefined);
+});
+
+test("metadata-proven differently named camera companions group; absent proof and competing claims stay separate", () => {
+  const paired = lightboxCatalogue([{ ...file("sensor-number.CR3"), cameraJpeg: "renamed-camera.JPG" }, file("renamed-camera.JPG"), file("renamed-camera_BW.jpg")]);
+  assert.equal(paired.folders.get("").length, 1);
+  assert.equal(photoForSource(paired.photos.get("sensor-number.CR3"), "cameraJpeg").original.path, "renamed-camera.JPG");
+  assert.equal(photoForSource(paired.photos.get("sensor-number.CR3"), "cameraJpeg").bw.path, "renamed-camera_BW.jpg");
+  const unproven = lightboxCatalogue([file("same.CR3"), file("same.JPG"), file("different.CR3"), file("renamed.JPG")]);
+  assert.equal(unproven.folders.get("").length, 4, "a matching basename never manufactures capture proof");
+  const crossFolder = lightboxCatalogue([{ ...file("sensor.CR3"), cameraJpeg: "day/renamed.JPG" }, { type: "dir", name: "day", path: "day", children: [file("renamed.JPG", "day")] }]);
+  assert.equal(crossFolder.photos.has("day/renamed.JPG"), true);
+  assert.equal(crossFolder.photos.get("sensor.CR3").cameraJpeg, undefined);
 });
 
 test("regenerating a rated original prefers its exact current-stem comparison", () => {
@@ -112,6 +160,14 @@ test("persisted processing recipes reject malformed values and clamp supported b
   assert.equal(recipe.enhanceSharpnessLevel, .5);
 });
 
+test("RAW recipes preserve manual exposure by default and opt in to automatic levels explicitly", () => {
+  for (const preset of ["natural", "neutral", "highIso"]) assert.equal(rawPreset(preset).autoExposure, false);
+  assert.equal(normalizeRawRecipe({ exposure: .5 }).autoExposure, false, "older recipes safely default off");
+  assert.equal(normalizeRawRecipe({ autoExposure: "true" }).autoExposure, false, "invalid booleans do not opt in");
+  const automatic = normalizeRawRecipe({ autoExposure: true, exposure: -.25 });
+  assert.equal(automatic.autoExposure, true); assert.equal(automatic.exposure, -.25);
+});
+
 test("foreground reads coalesce; cached full-resolution data avoids repeated read", async () => {
   let reads = 0;
   const cache = new LightboxCache(async () => { reads++; return payload; });
@@ -120,6 +176,13 @@ test("foreground reads coalesce; cached full-resolution data avoids repeated rea
   assert.equal(first, second); assert.match(first, /^blob:/); assert.equal(reads, 1);
   assert.equal(await cache.get("one"), first); assert.equal(reads, 1);
   cache.clear(); assert.equal(cache.stats().bytes, 0);
+});
+
+test("camera-preview display and embedded-image dimensions survive cache hits without replacing RAW file identity", async () => {
+  const cache = new LightboxCache(async () => ({ ...payload, source: "cameraPreview", sourceWidth: 6000, sourceHeight: 4000 }));
+  cache.select(["capture.CR3"]); await cache.get("capture.CR3");
+  assert.deepEqual(cache.info("capture.CR3"), { width: 640, height: 480, source: "cameraPreview", sourceWidth: 6000, sourceHeight: 4000 });
+  cache.clear(); assert.equal(cache.info("capture.CR3"), null);
 });
 
 test("refresh generation discards late reads and safely rereads identical paths", async () => {

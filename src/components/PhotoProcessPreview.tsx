@@ -198,7 +198,7 @@ export default function PhotoProcessPreview({ request }: PreviewProps) {
               {result.kind === "video" ? <video ref={item.videoRef} src={item.src} controls muted playsInline preload="metadata" aria-label={`${item.label} video preview`} className="w-full max-h-80 bg-black"
                 onPlay={(event) => syncVideo(event.currentTarget, item.otherVideo.current, "play")} onPause={(event) => syncVideo(event.currentTarget, item.otherVideo.current, "pause")} onSeeked={(event) => syncVideo(event.currentTarget, item.otherVideo.current, "seek")} /> :
                 <div ref={item.scroll} className="h-80 overflow-auto bg-black/40 flex" onScroll={(event) => syncScroll(event.currentTarget, item.otherScroll.current)}>
-                  <img src={item.src} alt={`${item.label} photo preview`} className={actualPixels ? "shrink-0 self-start" : "w-full h-full object-contain"} style={actualPixels ? { width: result.width, maxWidth: "none" } : undefined} />
+                  <img src={item.src} alt={`${item.label} photo preview`} draggable={false} title="Display preview only. Queue Job to save the processed photo at its export quality." onContextMenu={(event) => event.preventDefault()} className={actualPixels ? "shrink-0 self-start" : "w-full h-full object-contain"} style={actualPixels ? { width: result.width, maxWidth: "none" } : undefined} />
                 </div>}
             </div>)}
           </div>

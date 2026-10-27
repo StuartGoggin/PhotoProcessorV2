@@ -4,6 +4,7 @@ import { FileTree } from "../components";
 import type { ProcessScopeMode, ProcessTask, StabilizationMode, StabilizationStrength, TreeNode } from "../types";
 import { useSettings } from "../hooks";
 import PhotoProcessPreview from "../components/PhotoProcessPreview";
+import RawDevelopment from "../components/RawDevelopment";
 import { DEFAULT_BW, type BwParams } from "../types/photoProcess";
 import { loadPhotoProcessRecipe, savePhotoProcessRecipe } from "../utils/photoProcessRecipe";
 
@@ -314,6 +315,8 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
           </div>
         </div>
       )}
+
+      <RawDevelopment stagingDir={settings?.staging_dir || ""} scopeDir={effectiveScope} scopeMode={scopeMode} onOpenJobs={onOpenJobs} />
 
       <div className="space-y-4">
         {TASKS.map((task) => {

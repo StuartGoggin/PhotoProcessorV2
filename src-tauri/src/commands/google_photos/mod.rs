@@ -1,6 +1,6 @@
 //! Google Photos publishing is an additive export, not a cloud-library sync.
 //! Only this module owns cloud credentials, immutable plans and resumable jobs.
-mod catalogue;
+pub(crate) mod catalogue;
 pub(crate) use catalogue::{scan_for_archive as scan_archive_photos, untag as archive_untag};
 mod diagnostics;
 pub(crate) mod engine;
@@ -10,7 +10,7 @@ mod metadata;
 pub mod model;
 mod oauth;
 mod plan;
-mod store;
+pub(crate) mod store;
 mod transport;
 pub(crate) use transport::Album as CoreAlbum;
 mod vault;

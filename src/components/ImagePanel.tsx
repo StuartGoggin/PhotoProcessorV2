@@ -13,9 +13,11 @@ interface ImagePanelProps {
   onActivate?: () => void;
   resetKey?: number;
   onReady?: () => void;
+  /** Display-only RAW/thumbnail data must not be mistaken for a saved photo. */
+  previewOnly?: boolean;
 }
 
-export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, headerAction, active, onActivate, resetKey, onReady }: ImagePanelProps) {
+export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, headerAction, active, onActivate, resetKey, onReady, previewOnly = false }: ImagePanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [localPanX, setLocalPanX] = useState(0);
@@ -79,6 +81,9 @@ export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, h
             alt={label}
             draggable={false}
             onLoad={onReady}
+            data-preview-only={previewOnly || undefined}
+            title={previewOnly ? "Display preview only. Use Photo Process → RAW Development to export a full-quality photo." : undefined}
+            onContextMenu={previewOnly ? (event) => event.preventDefault() : undefined}
             style={{
               transform: `scale(${zoom}) translate(${effectivePanX / zoom}px, ${effectivePanY / zoom}px)`,
               transformOrigin: "center center",

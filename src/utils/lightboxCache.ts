@@ -1,5 +1,8 @@
-export interface LightboxImage { data: string; mime: string; width: number; height: number }
-interface Loaded { url: string; bytes: number; pixels: number; image?: HTMLImageElement }
+/** width/height are the displayed payload; source dimensions describe the
+ * embedded camera image, not the RAW sensor/developed output dimensions. */
+export interface LightboxImage { data: string; mime: string; width: number; height: number; source?: "cameraPreview"; sourceWidth?: number; sourceHeight?: number }
+export type LightboxImageInfo = Pick<LightboxImage, "width" | "height" | "source" | "sourceWidth" | "sourceHeight">;
+interface Loaded { url: string; bytes: number; pixels: number; image?: HTMLImageElement; info: LightboxImageInfo }
 interface Pending { path: string; foreground: boolean; generation: number; resolve: (url: string | null) => void; promise: Promise<string | null> }
 
 const MiB = 1024 * 1024;
@@ -67,6 +70,7 @@ export class LightboxCache {
   }
 
   stats() { return { entries: this.entries.size, bytes: this.bytes, decodedBytes: this.decoded, running: this.running, queued: this.queue.length }; }
+  info(path: string): LightboxImageInfo | null { return this.entries.get(path)?.info ?? null; }
 
   private release(entry: Loaded) {
     if (entry.image) { entry.image.src = ""; this.decoded -= entry.pixels; }
@@ -115,7 +119,10 @@ export class LightboxCache {
       const binary = atob(payload.data);
       const array = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
-      const entry: Loaded = { url: URL.createObjectURL(new Blob([array], { type: payload.mime })), bytes, pixels };
+      const entry: Loaded = { url: URL.createObjectURL(new Blob([array], { type: payload.mime })), bytes, pixels,
+        info: { width: payload.width, height: payload.height, ...(payload.source === "cameraPreview" ? { source: payload.source } : {}),
+          ...(Number.isSafeInteger(payload.sourceWidth) && payload.sourceWidth! > 0 ? { sourceWidth: payload.sourceWidth } : {}),
+          ...(Number.isSafeInteger(payload.sourceHeight) && payload.sourceHeight! > 0 ? { sourceHeight: payload.sourceHeight } : {}) } };
       this.entries.set(item.path, entry); this.bytes += bytes;
       if (!this.active.has(item.path) && this.decoded + pixels <= this.decodedLimit && typeof Image !== "undefined") {
         entry.image = new Image(); this.decoded += pixels;

@@ -63,6 +63,9 @@ Import-MsvcBuildEnvironment
 & (Join-Path $PSScriptRoot 'verify-exiftool-bundle.ps1') `
     -BundleDirectory (Join-Path $repoRoot 'src-tauri/tools/exiftool') -ForRelease
 
+& (Join-Path $PSScriptRoot 'verify-raw-bundle.ps1') `
+    -BundleDirectory (Join-Path $repoRoot 'src-tauri/tools/rawtherapee') -ForRelease
+
 $cargo = Get-Command cargo.exe -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1
 if (-not $cargo) {

@@ -1,6 +1,8 @@
 param(
     [string]$Version = '2.0.34',
-    [string]$PreviousVersion = '2.0.33'
+    [string]$PreviousVersion = '2.0.33',
+    [string]$RawSmokeSource = '',
+    [string]$RawSmokeProfile = ''
 )
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
@@ -67,7 +69,7 @@ function Expand-MsiMetadataLayout([string]$packagePath,[string]$extractionRoot) 
     Get-ChildItem -LiteralPath $extractionRoot -Recurse -File | ForEach-Object { $cabFiles[$_.Name]=$_.FullName }
     foreach ($file in $files) {
         $directory=Get-InstalledDirectory $components[$file.component]
-        if ($null -eq $directory -or -not ($directory+'\').StartsWith('tools\exiftool\',[StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ($null -eq $directory -or -not (($directory+'\').StartsWith('tools\exiftool\',[StringComparison]::OrdinalIgnoreCase) -or ($directory+'\').StartsWith('tools\rawtherapee\',[StringComparison]::OrdinalIgnoreCase))) { continue }
         if (-not $cabFiles.ContainsKey($file.id)) { throw 'MSI metadata file is missing from the extracted cabinet.' }
         $name=($file.name.Split('|'))[-1]
         $target=[IO.Path]::GetFullPath((Join-Path $layout (Join-Path $directory $name)))
@@ -130,8 +132,19 @@ foreach ($package in @(@{ kind='msi'; path=$msi },@{ kind='nsis'; path=$nsis }))
         # Verify relative paths and every file, then execute the relocated intact
         # package with PATH empty. Do not install either package for inspection.
         & (Join-Path $PSScriptRoot 'verify-exiftool-bundle.ps1') -BundleDirectory $metadataExecutables[0].Directory.Parent.FullName -ForRelease
+        $rawExecutables=@($payloadFiles|Where-Object {$_.Name -ieq 'rawtherapee-cli.exe' -and $_.Directory.Name -ieq 'rawtherapee'})
+        if($rawExecutables.Count -ne 1){throw 'Expected one bundled RAW CLI'}
+        $rawDirectory=$rawExecutables[0].Directory.FullName
+        & (Join-Path $PSScriptRoot 'verify-raw-bundle.ps1') -BundleDirectory $rawDirectory -ForRelease
+        $smoke=$false
+        if($RawSmokeSource){
+            if(-not $RawSmokeProfile){throw 'Supply the accepted RAW smoke profile'}
+            & (Join-Path $PSScriptRoot 'test-raw-bundle.ps1') -BundleDirectory $rawDirectory -MetadataDirectory $metadataExecutables[0].Directory.Parent.FullName -Source $RawSmokeSource -Profile $RawSmokeProfile -EvidenceDirectory (Join-Path $reportRoot ($package.kind+'-raw-smoke'))
+            $smoke=$true
+        }
         $file = Get-Item -LiteralPath $package.path
         $packages += @{ path=$file.FullName; bytes=$file.Length; sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash; payloadsVerified=($expected.Count + 1); metadataRuntime=@{ version='13.59'; closureVerified=$true; relocatedWithoutPath=$true }; application=@{ sha256=(Get-FileHash -LiteralPath $applications[0].FullName -Algorithm SHA256).Hash; normalizedSha256=$application.sha256; bundleType=$application.bundleType; markerOffset=$application.markerOffset }; signature=(Get-AuthenticodeSignature -LiteralPath $file.FullName).Status.ToString() }
+        $packages[-1].rawRuntime=@{version='5.13';closureVerified=$true;relocatedWithoutPath=$smoke;resources=@(Get-Content (Join-Path $rawDirectory 'runtime-manifest.json') -Raw|ConvertFrom-Json).files.Count}
     } finally {
         # Only this new run's exact, validated extraction directory is disposable.
         if ($extracted -notin @((Join-Path $reportRoot 'msi'),(Join-Path $reportRoot 'nsis'))) { throw 'Unsafe extraction cleanup target' }
