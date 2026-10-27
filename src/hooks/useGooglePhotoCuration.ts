@@ -6,15 +6,18 @@ import { curationWriter as writer } from "../utils/curationPersistence";
 
 type Changes = { selected?: boolean; favourite?: boolean };
 interface Intent { id: number; assetId: string; changes: Changes }
-const createModel = (root: string) => ({ root, assets: new Map<string, GooglePhotoAsset>(), paths: new Map<string, string | null>(),
+const createModel = (root: string, scope: string) => ({ root, scope, assets: new Map<string, GooglePhotoAsset>(), paths: new Map<string, string | null>(),
   pending: [] as Intent[], warnings: [] as string[], loading: false, error: "", generation: 0, scanning: false, deferred: false, deferredClear: false });
 
 /** Requested flags paint immediately. Only compact native acknowledgements
  * update confirmed flags; older completions cannot erase newer queued intent. */
-export function useGooglePhotoCuration(root: string, refreshKey?: unknown) {
+export function useGooglePhotoCuration(root: string, refreshKey?: unknown, relativePath?: string) {
+  const folder=relativePath?.replace(/\\/g,"/").split("/").slice(0,-1).join("/");
+  const scope=JSON.stringify([root,folder??null]);
+  const pathRef=useRef(relativePath);pathRef.current=relativePath;
   const [, redraw] = useState(0);
-  const modelRef = useRef(createModel(root));
-  if (modelRef.current.root !== root) modelRef.current = createModel(root);
+  const modelRef = useRef(createModel(root,scope));
+  if (modelRef.current.scope !== scope) modelRef.current = createModel(root,scope);
   const mounted = useRef(true), sequence = useRef(0);
   const refreshLatest = useRef<(clearErrors?: boolean) => Promise<void>>(async () => {});
   const notify = (model: ReturnType<typeof createModel>) => {
@@ -22,15 +25,17 @@ export function useGooglePhotoCuration(root: string, refreshKey?: unknown) {
   };
   const refresh = useCallback(async (clearErrors = false) => {
     const model = modelRef.current;
-    if (model.root !== root) return;
+    if (model.root !== root || model.scope!==scope) return;
     if (model.scanning || model.pending.length) { model.generation++; model.deferred = true; model.deferredClear ||= clearErrors; return; }
     const request = ++model.generation;
     if (!root) { model.assets.clear(); model.paths.clear(); model.loading = false; notify(model); return; }
     model.loading = true; model.error = ""; model.scanning = true; notify(model);
+    const capturedPath=pathRef.current;
     try {
       // A prior Review can have accepted writes still draining after unmount.
       await writer.settled();
-      const result = await invoke<GooglePhotoCatalogue>("google_photos_catalogue", { root });
+      if(!mounted.current||model!==modelRef.current||request!==model.generation)return;
+      const result = await invoke<GooglePhotoCatalogue>("google_photos_catalogue", { root, ...(capturedPath?{relativePath:capturedPath}:{}) });
       if (mounted.current && model === modelRef.current && request === model.generation) {
         model.assets = new Map(result.assets.map(asset => [asset.id, asset]));
         model.paths.clear();
@@ -51,7 +56,7 @@ export function useGooglePhotoCuration(root: string, refreshKey?: unknown) {
         notify(model);
       }
     }
-  }, [root]);
+  }, [root,scope]);
   refreshLatest.current = refresh;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; modelRef.current.generation++; }; }, []);
   useEffect(() => { void refresh(); return () => { modelRef.current.generation++; }; }, [refresh, refreshKey]);

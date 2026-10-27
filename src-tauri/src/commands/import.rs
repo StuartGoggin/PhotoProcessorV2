@@ -2592,15 +2592,92 @@ pub async fn start_import_job(
 }
 
 #[tauri::command]
-pub fn list_staging_tree(staging_dir: String) -> Result<serde_json::Value, String> {
-    let raw_epoch=super::raw_development::manifest::snapshot()?;
+pub async fn list_staging_tree(staging_dir: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || staging_tree(staging_dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+pub(crate) fn staging_tree(staging_dir: String) -> Result<serde_json::Value, String> {
+    let raw_epoch = super::raw_development::manifest::snapshot()?;
     let root = PathBuf::from(&staging_dir);
     if !root.exists() {
         return Ok(serde_json::json!([]));
     }
+    super::raw_development::reject_link(&root)?;
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
     let tree = build_tree(&root, &root).map_err(|e| e.to_string())?;
     super::raw_development::manifest::unchanged(raw_epoch)?;
     Ok(tree)
+}
+
+#[tauri::command]
+pub async fn read_lightbox_folder(
+    staging_dir: String,
+    relative_dir: String,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || lightbox_folder(staging_dir, relative_dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+pub(crate) fn lightbox_folder(
+    staging_dir: String,
+    relative_dir: String,
+) -> Result<serde_json::Value, String> {
+    let epoch = super::raw_development::manifest::snapshot()?;
+    let root = PathBuf::from(staging_dir);
+    super::raw_development::reject_link(&root)?;
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let relative = relative_dir.replace('\\', "/");
+    if relative.contains(':')
+        || relative.starts_with('/')
+        || relative.len() > 32768
+        || (!relative.is_empty()
+            && relative
+                .split('/')
+                .any(|p| p.is_empty() || p == "." || p == ".."))
+    {
+        return Err("Choose a folder inside staging".into());
+    }
+    let mut dir = root.clone();
+    if !relative.is_empty() {
+        for part in relative.split('/') {
+            dir.push(part);
+            super::raw_development::reject_link(&dir)?;
+        }
+    }
+    let dir = dir.canonicalize().map_err(|e| e.to_string())?;
+    if !dir.starts_with(&root) || !dir.is_dir() {
+        return Err("Lightbox folder is outside staging".into());
+    }
+    let mut paths = fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .map(|e| e.map(|e| e.path()).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if paths.len() > 50_000 {
+        return Err("This folder exceeds the 50,000-entry Lightbox limit".into());
+    }
+    paths.sort();
+    let mut children = vec![];
+    for p in paths {
+        let name = p.file_name().unwrap_or_default().to_string_lossy();
+        if name.to_ascii_lowercase().starts_with(".photogogo")
+            || name.to_ascii_lowercase().contains(".pgg.")
+            || super::raw_development::reject_link(&p).is_err()
+        {
+            continue;
+        }
+        if p.is_dir() {
+            children.push(serde_json::json!({"name":name,"path":p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\',"/"),"type":"dir"}));
+        } else {
+            children.push(build_tree(&p, &root).map_err(|e| e.to_string())?);
+        }
+    }
+    super::raw_development::annotate_tree(&mut children, &dir, &root);
+    let complete = super::raw_development::enrich_folder(&mut children, &root);
+    super::raw_development::manifest::unchanged(epoch)?;
+    Ok(
+        serde_json::json!({"name":dir.file_name().unwrap_or_default().to_string_lossy(),"path":relative,"type":"dir","children":children,"captureMetadataComplete":complete}),
+    )
 }
 
 fn build_tree(path: &Path, root: &Path) -> anyhow::Result<serde_json::Value> {
@@ -2623,6 +2700,7 @@ fn build_tree(path: &Path, root: &Path) -> anyhow::Result<serde_json::Value> {
             .collect();
         entries.sort();
         for entry in entries {
+            if super::raw_development::reject_link(&entry).is_err() { continue; }
             let entry_name_lower = entry
                 .file_name()
                 .and_then(|n| n.to_str())

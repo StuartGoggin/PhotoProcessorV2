@@ -166,9 +166,10 @@ pub async fn google_photos_disconnect(app: AppHandle, revoke: bool) -> Result<()
     .map_err(|_| "Google disconnect task failed.")?
 }
 #[tauri::command]
-pub async fn google_photos_catalogue(app: AppHandle, root: String) -> Result<Catalogue, String> {
+pub async fn google_photos_catalogue(app: AppHandle, root: String, relative_path: Option<String>) -> Result<Catalogue, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        enrich_history(&app, catalogue::scan(Path::new(&root))?)
+        let catalogue=if let Some(path)=relative_path { catalogue::scan_selection(Path::new(&root),&path)? } else { catalogue::scan(Path::new(&root))? };
+        enrich_history(&app, catalogue)
     })
     .await
     .map_err(|_| "Photo catalogue task failed.")?

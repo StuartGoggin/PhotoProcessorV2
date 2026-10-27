@@ -20,7 +20,8 @@ async function pageWith(options = {}) {
   page.setDefaultTimeout(12000); page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript((values) => Object.assign(window, { __controlsRawFixture: true, ...values }), options);
   await page.goto(url, { timeout: 45000, waitUntil: "domcontentloaded" });
-  await tree(page).getByText("01-horse.CR3", { exact: true }).waitFor();
+  await tree(page).getByText(options.__controlsLazyMetadata ? "Event" : "01-horse.CR3", { exact: true }).waitFor();
+  if(options.__controlsLazyMetadata)await tree(page).getByText("Elsewhere",{exact:true}).click();
   return page;
 }
 async function displayed(page, label, suffix) {
@@ -106,6 +107,49 @@ try {
   assert.equal(await stale.getByRole("combobox", { name: "Original source", exact: true }).count(), 0);
   await delay(100); await displayed(stale, "Original", "02-rider.jpg");
   report.checks.push("An incomplete source change cannot write a selection; navigating away invalidates its epoch and a late camera-JPEG read cannot replace the newer visible original");
+
+  const lazy = await pageWith({__controlsLazyMetadata:true,__controlsDeferMetadata:true});
+  assert.equal(await lazy.evaluate(()=>window.__controlsCalls.filter(c=>c.command==="read_lightbox_folder"||c.command==="google_photos_catalogue").length),0);
+  await tree(lazy).getByText("Event",{exact:true}).click();
+  await tree(lazy).getByText("Event",{exact:true}).click();
+  await tree(lazy).getByText("01-horse.JPG",{exact:true}).click();
+  await lazy.waitForFunction(()=>typeof window.__controlsReleaseMetadata==="function");
+  await hotkey(lazy,"q");
+  assert.equal(await lazy.evaluate(()=>window.__controlsSelectionWrites.length),0);
+  assert.equal(await lazy.evaluate(()=>window.__controlsCalls.filter(c=>c.command==="read_lightbox_folder").length),1);
+  await lazy.evaluate(()=>{window.__controlsDeferMetadata=false;window.__controlsReleaseMetadata();});
+  await ready(lazy,"Camera JPEG","Event/01-horse.JPG");
+  await hotkey(lazy,"q");await saved(lazy,1);
+  assert.equal(await lazy.evaluate(()=>window.__controlsSelectionWrites[0].relativePath),"Event/01-horse.JPG");
+  assert.ok(await lazy.evaluate(()=>window.__controlsCalls.filter(c=>c.command==="google_photos_catalogue").every(c=>c.args.relativePath?.startsWith("Event/"))));
+  assert.ok(await lazy.evaluate(()=>window.__controlsCalls.filter(c=>c.command==="read_lightbox_folder").every(c=>c.args.relativeDir==="Event")));
+  report.checks.push("First list requires no capture metadata or Google catalogue scan; opening a folder coalesces metadata reads, scopes curation to that folder, and a JPEG clicked before pairing remains the exact selected physical upload");
+
+  await lazy.evaluate(()=>{window.__controlsDeferTree=true;});
+  await lazy.getByRole("button",{name:"Refresh photos",exact:true}).click();
+  await lazy.waitForFunction(()=>typeof window.__controlsReleaseTree==="function");
+  await tree(lazy).getByText("01-horse.CR3",{exact:true}).click();
+  await ready(lazy,"Camera JPEG","Event/01-horse.JPG");
+  await lazy.evaluate(()=>{window.__controlsDeferMetadata=true;window.__controlsDeferTree=false;window.__controlsReleaseTree();});
+  await lazy.waitForFunction(()=>window.__controlsCalls.filter(c=>c.command==="read_lightbox_folder").length===2);
+  assert.equal(await lazy.getByRole("img",{name:"Camera JPEG",exact:true}).count(),0);
+  await hotkey(lazy,"q");assert.equal(await lazy.evaluate(()=>window.__controlsSelectionWrites.length),1);
+  await lazy.evaluate(()=>{window.__controlsDeferMetadata=false;window.__controlsReleaseMetadata();});
+  await ready(lazy,"Camera JPEG","Event/01-horse.JPG");await hotkey(lazy,"q");await saved(lazy,2);
+  assert.equal(await lazy.evaluate(()=>window.__controlsSelectionWrites.at(-1).relativePath),"Event/01-horse.JPG");
+  report.checks.push("A generic refresh overtaken by a newer camera-JPEG pick revokes readiness during its temporary catalogue replacement; shortcuts stay blocked until the matching JPEG display and identity are restored");
+  await lazy.close();
+
+  const retry=await pageWith({__controlsLazyMetadata:true,__controlsMetadataIncomplete:true});
+  await tree(retry).getByText("Event",{exact:true}).click();
+  await tree(retry).getByText("Event",{exact:true}).click();
+  await tree(retry).getByText("01-horse.JPG",{exact:true}).click();await ready(retry,"Original","Event/01-horse.JPG");
+  await retry.evaluate(()=>{window.__controlsMetadataIncomplete=false;});
+  await tree(retry).getByText("Event",{exact:true}).click();await tree(retry).getByText("Event",{exact:true}).click();
+  await ready(retry,"Camera JPEG","Event/01-horse.JPG");await hotkey(retry,"q");await saved(retry,1);
+  assert.equal(await retry.evaluate(()=>window.__controlsSelectionWrites[0].relativePath),"Event/01-horse.JPG");
+  report.checks.push("Successful metadata retry reconciles a formerly standalone JPEG into its RAW capture while preserving the displayed JPEG and exact upload target");
+  await retry.close();
   await page.screenshot({ path: `${output}/paired-source.png`, fullPage: true });
   await page.close(); await stale.close(); assert.deepEqual(errors, []); report.complete = true;
 } catch (error) { report.error = error.stack || String(error); throw error; }

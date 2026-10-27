@@ -115,14 +115,52 @@ pub(crate) fn annotate_tree(children: &mut [serde_json::Value], dir: &Path, root
             kind.into()
         };
     }
-    for (raw, jpeg) in capture::pairs(&paths, &excluded) {
-        children[child_indices[raw]]["cameraJpeg"] = paths[jpeg]
+    if !capture::candidate_paths(&paths, &excluded).is_empty() {
+        for index in &child_indices {
+            children[*index]["captureMetadataPending"] = true.into();
+        }
+    }
+}
+pub(crate) fn enrich_folder(children: &mut [serde_json::Value], root: &Path) -> bool {
+    let indices: Vec<_> = children
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n["type"] == "file")
+        .map(|(i, _)| i)
+        .collect();
+    let paths: Vec<_> = indices
+        .iter()
+        .map(|&i| root.join(children[i]["path"].as_str().unwrap_or("")))
+        .collect();
+    let excluded: HashSet<_> = indices
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| {
+            children[**i]["rawSource"].is_string()
+                || children[**i]["rawKind"].is_string()
+                || children[**i]["rawWarning"].is_string()
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let candidates = capture::candidate_paths(&paths, &excluded);
+    let tokens = capture::read_tokens(&candidates);
+    let complete = candidates.iter().all(|p| tokens.contains_key(p));
+    for (raw, jpeg) in capture::pairs_from_tokens(&paths, &excluded, &tokens) {
+        children[indices[raw]]["cameraJpeg"] = paths[jpeg]
             .strip_prefix(root)
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/")
             .into();
     }
+    if complete {
+        for i in indices {
+            children[i]
+                .as_object_mut()
+                .map(|o| o.remove("captureMetadataPending"));
+        }
+    }
+    complete
 }
 impl Request {
     pub fn files(&self) -> Result<Vec<PathBuf>, String> {
@@ -209,7 +247,7 @@ impl Request {
 }
 #[tauri::command]
 pub async fn raw_development_candidates(request: Request) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move||{let paths=request.files()?;let total=paths.len();let available=worker::runtime_identity().is_ok();Ok(serde_json::json!({"paths":paths.into_iter().take(1000).map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>(),"total":total,"truncated":total>1000,"runtime":{"available":available,"version":"RawTherapee 5.13 / recipe 1","message":if available{"Bundled CPU RAW developer is ready. One bounded worker; originals remain unchanged."}else{"Bundled RAW developer is missing. Repair the installation."}}}))}).await.map_err(|e|e.to_string())?
+    tauri::async_runtime::spawn_blocking(move||{let paths=request.files()?;let total=paths.len();let available=worker::runtime().is_ok();Ok(serde_json::json!({"paths":paths.into_iter().take(1000).map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>(),"total":total,"truncated":total>1000,"runtime":{"available":available,"version":"RawTherapee 5.13 / recipe 1","message":if available{"Bundled RAW developer found. Full integrity verification runs before preview or export; originals remain unchanged."}else{"Bundled RAW developer is missing. Repair the installation."}}}))}).await.map_err(|e|e.to_string())?
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

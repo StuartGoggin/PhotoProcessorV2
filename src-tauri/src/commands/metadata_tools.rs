@@ -176,7 +176,11 @@ pub(super) fn run(tool: &Path, args: &[std::ffi::OsString]) -> Result<Vec<u8>, S
 
 /// Binary preview extraction has a separate admission limit from small text
 /// metadata responses. No shell, external config or unbounded stdout reads.
+#[cfg(test)]
+pub(super) static DIAGNOSTIC_READ_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub(super) fn run_limited(tool: &Path, args: &[std::ffi::OsString], limit: u64) -> Result<Vec<u8>, String> {
+    #[cfg(test)]
+    DIAGNOSTIC_READ_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     use std::{
         io::{Read, Write},
         process::{Command, Stdio},

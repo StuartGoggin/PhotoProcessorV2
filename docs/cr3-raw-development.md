@@ -1,12 +1,12 @@
 # Canon CR3 originals and RAW Development
 
-Release: PhotoGoGo 2.0.42. Engine: the separately bundled, pinned RawTherapee 5.13 CLI. Canon software, an external editor and a separate RAW installation are not required.
+Release: PhotoGoGo 2.0.43. Engine: the separately bundled, pinned RawTherapee 5.13 CLI. Canon software, an external editor and a separate RAW installation are not required.
 
 ## Workflow
 
 1. Import original CR3 files into staging as usual. Photo Lightbox displays their embedded camera rendering for quick review. This image is a reference preview, not a developed RAW export.
 2. Open **Photo Process → RAW Development**, expand the controls, choose the event folder and explicitly find its RAW originals. Choose all, non-trashed, a minimum rating, or selected originals. Scans return up to 1,000 picker entries and report a larger batch total; select a smaller event folder for individual overrides in a large shoot.
-3. Start with **Natural**. **Neutral** removes the optional tone/detail treatment; **High ISO** is a conservative starting recipe, not a claim that every camera/ISO mode has been validated. Adjust white balance, exposure, highlight compression, shadows, black point, contrast, saturation, curve, edge sharpening and noise reduction.
+3. For bright sharing copies, choose **Internet ready** (Auto finish 65). Move **Auto finish** from Off through Auto balance, Bright and Web pop to Vivid. **Natural** retains the recorded exposure and conservative detail treatment. **Neutral** removes the optional tone/detail treatment; **High ISO** is a conservative starting recipe, not a claim that every camera/ISO mode has been validated. Refine white balance, exposure, tone, detail and noise controls below.
 4. **Generate preview** explicitly. Use the draft to compare treatment, then the full-resolution preview to inspect detail at 100%. The histogram and clipping indications describe the rendered display, not recoverable sensor data. Browser Save Image is disabled on preview comparisons to prevent accidental thumbnail exports.
 5. Select colour development, independent B&W, or both. Choose high-quality full-resolution sRGB JPEG or 16-bit TIFF, then queue the core **Jobs** task. Pause takes effect between originals; Abort terminates an active decode. Final exports always decode the RAW, even when the Lightbox reference is a camera JPEG.
 6. Refresh Photo Lightbox after the job. JPEG developments appear as versions of their RAW master. TIFF exports are beside the original and available to archive/export; this release's Lightbox comparison panels show JPEG versions.
@@ -21,11 +21,23 @@ The untouched `.cr3` stays in staging. Outputs have recipe-specific `_raw-develo
 
 **Auto levels** calculates exposure, black point, contrast and highlight compression. Those four manual controls are disabled while it is on; their saved values return when it is switched off. It is not an additive automatic-plus-manual EV mode. Natural defaults to recorded exposure and as-shot white balance; an underexposed original may need exposure adjustment or explicit Auto levels.
 
+## Auto finish for bright sharing copies
+
+The slider is a look-strength control, not an opacity blend. **0 / Off** uses manual levels. Any positive value enables the RAW engine's automatic exposure baseline; the first step can therefore change brightness noticeably. Increasing strength then adds downstream midtone brightness and contrast, protected vibrance and edge-limited sharpening. At 65 the added Lab brightness/contrast are 13/12, vibrance is 18 for muted colours and 3 for already saturated colours, and colour sharpening receives a 23-point boost over its manual base. At 100 those limits are 20/18, 28/5 and 35 respectively. These values describe engine controls, not percentages of exposure or measured photographic quality.
+
+The automatic baseline is computed before the added look, so it cannot overwrite the strength adjustment. The look does not add dehaze, clarity or extra luminance denoising. White balance remains independently controllable. B&W receives the shared tone treatment but retains its own sharpening and curve, without colour vibrance. This is edge-based detail processing; it does not identify or mask a horse/rider, and cannot repair missed focus or motion blur.
+
+Choose **Generate RAW preview**, then **100% RAW detail check** before a batch. Try 50–70 for these overcast R6 II samples; 100 is an optional stronger look, not a promise that every image benefits from maximum treatment. Inspect white saddle cloths, faces and smooth backgrounds. Export remains full-resolution sRGB JPEG for Google Photos, or 16-bit TIFF for further editing. The slider does not resize, upload, or alter the original.
+
+To apply one look across an event, set the **Job defaults** and save them on this computer. Existing saved per-photo overrides deliberately take precedence while **Use saved per-photo overrides where present** is checked. Uncheck that option for a uniform batch, or edit and save the individual override. Changing a preset or preview does not silently rewrite saved overrides. Old saved recipes and cache keys retain their existing behavior when the new strength is absent/zero; a legacy Auto levels recipe with no added finish is labelled explicitly.
+
 RAW B&W runs independently from the source RAW through the engine's high-precision pipeline. It never reads the developed colour JPEG. Shared white balance/exposure/tone settings apply to both branches; B&W has its own curve/detail controls. Its controls use the RAW engine, so their numerical effect differs from the existing JPEG job's CLAHE processing.
 
 ## Review, selection and archive safety
 
 RAW plus camera JPEG is paired only when camera model, serial and exact capture timestamp/subseconds identify one unambiguous pair in the same folder. Different filenames are allowed. Missing proof or ambiguous duplicates leave separate entries visible. A source selector makes the currently shown physical version explicit. Capture rating/trash is anchored to the RAW entry; Google Photos selection remains specific to the displayed physical version.
+
+The first folder list reads filenames and portable ownership metadata without launching capture probes. Opening/selecting a mixed RAW/JPEG folder inspects that folder on demand. Entries may remain separate until proof is available; failed metadata reads remain retryable. Pairing never guesses from filenames. Folder loads, displayed images and upload decisions share a pinned selection identity, so late reads cannot retarget a keyboard action. Runtime integrity is verified before preview/export rather than before listing RAW candidates.
 
 Generated JPEG ownership comes from the manifest, not a guessed filename suffix. Retired generations remain generated files and are not offered as fresh Originals. Existing JPEG Enhance/B&W jobs do not process RAW-owned outputs as new masters. A corrupt manifest or changed/ambiguous recorded output blocks processing/transfer rather than silently losing lineage.
 

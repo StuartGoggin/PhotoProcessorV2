@@ -4,6 +4,7 @@ import type { TreeNode } from "../types";
 interface FileTreeProps {
   nodes: TreeNode[];
   onSelect?: (node: TreeNode) => void;
+  onExpand?: (node: TreeNode) => void;
   selected?: string;
   disabled?: boolean;
   keyboardNavigation?: boolean;
@@ -69,13 +70,13 @@ function TreeItem({
   );
 }
 
-export default function FileTree({ nodes, onSelect, selected, disabled = false, keyboardNavigation = false }: FileTreeProps) {
+export default function FileTree({ nodes, onSelect, onExpand, selected, disabled = false, keyboardNavigation = false }: FileTreeProps) {
   if (nodes.length === 0) {
     return (
       <div className="text-gray-500 text-sm p-4 text-center">No files found</div>
     );
   }
-  if (keyboardNavigation) return <KeyboardFileTree nodes={nodes} onSelect={onSelect} selected={selected} disabled={disabled} />;
+  if (keyboardNavigation) return <KeyboardFileTree nodes={nodes} onSelect={onSelect} onExpand={onExpand} selected={selected} disabled={disabled} />;
   return (
     <div className="overflow-y-auto h-full py-1">
       {nodes.map((node) => (
@@ -93,7 +94,7 @@ export default function FileTree({ nodes, onSelect, selected, disabled = false, 
 }
 
 /** One tab stop, explicit file activation, and folder-local arrow navigation. */
-function KeyboardFileTree({ nodes, onSelect, selected, disabled }: FileTreeProps) {
+function KeyboardFileTree({ nodes, onSelect, onExpand, selected, disabled }: FileTreeProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [focused, setFocused] = useState<string | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
@@ -115,7 +116,7 @@ function KeyboardFileTree({ nodes, onSelect, selected, disabled }: FileTreeProps
       aria-selected={node.path === selected} aria-disabled={disabled} tabIndex={!disabled && node.path === tabStop ? 0 : -1}
       className={`flex items-center gap-1.5 px-2 py-1 rounded text-sm transition-colors ${disabled ? "opacity-60 cursor-default" : "cursor-pointer"} ${node.path === selected ? "bg-accent/20 text-white" : "text-gray-300 hover:bg-surface-700"}`}
       style={{ paddingLeft: depth * 12 + 8 }} onFocus={() => setFocused(node.path)}
-      onClick={() => { if (disabled) return; focus(node.path); if (node.type === "dir") setExpanded(current => ({ ...current, [node.path]: !open })); else onSelect?.(node); }}
+      onClick={() => { if (disabled) return; focus(node.path); if (node.type === "dir") {setExpanded(current => ({ ...current, [node.path]: !open }));if(!open)onExpand?.(node);} else onSelect?.(node); }}
       onKeyDown={event => {
         if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "].includes(event.key)) return;
         event.preventDefault(); event.stopPropagation(); if (disabled || event.altKey || event.ctrlKey || event.metaKey) return;
@@ -124,12 +125,12 @@ function KeyboardFileTree({ nodes, onSelect, selected, disabled }: FileTreeProps
         else if (event.key === "Home") focus(visible[0]?.node.path);
         else if (event.key === "End") focus(visible[visible.length - 1]?.node.path);
         else if (event.key === "ArrowRight") {
-          if (node.type === "dir" && !open) setExpanded(current => ({ ...current, [node.path]: true }));
+          if (node.type === "dir" && !open) {setExpanded(current => ({ ...current, [node.path]: true }));onExpand?.(node);}
           else if (node.type === "dir") focus(visible[index + 1]?.parent === node.path ? visible[index + 1].node.path : undefined);
         } else if (event.key === "ArrowLeft") {
           if (node.type === "dir" && open) setExpanded(current => ({ ...current, [node.path]: false })); else focus(parent);
         } else if (!event.repeat) {
-          if (node.type === "dir") setExpanded(current => ({ ...current, [node.path]: !open })); else onSelect?.(node);
+          if (node.type === "dir") {setExpanded(current => ({ ...current, [node.path]: !open }));if(!open)onExpand?.(node);} else onSelect?.(node);
         }
       }}>
       <span className="shrink-0 text-xs" aria-hidden="true">{node.type === "dir" ? open ? "📂" : "📁" : fileIcon(node.name)}</span>

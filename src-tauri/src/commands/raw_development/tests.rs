@@ -1,6 +1,234 @@
 use super::*;
 use std::fs;
 #[test]
+#[ignore = "Explicit supplied-CR3 automatic-finish visual acceptance; original is read-only"]
+fn raw_auto_finish_quality() {
+    let source = PathBuf::from(
+        std::env::var_os("PHOTOGOGO_RAW_TEST_SOURCE").expect("Set PHOTOGOGO_RAW_TEST_SOURCE"),
+    );
+    let before = worker::hash(&source).unwrap();
+    let meta = worker::source_metadata(&source).unwrap();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../test-output/auto-finish")
+        .join(source.file_stem().unwrap());
+    fs::create_dir_all(&dir).unwrap();
+    let mut checks = vec![];
+    for (label, strength, legacy) in [
+        ("manual", 0., false),
+        ("levels", 0., true),
+        ("balanced", 25., false),
+        ("web", 65., false),
+        ("vivid", 100., false),
+    ] {
+        let mut r = RawRecipe::default();
+        r.finishing_strength = strength;
+        r.auto_exposure = legacy;
+        let space = worker::Workspace::new().unwrap();
+        let start = Instant::now();
+        let out = worker::execute(&source, &r, false, false, &space, None).unwrap();
+        worker::final_metadata(&source, &out, true).unwrap();
+        let m = worker::metadata(&out).unwrap();
+        worker::validate_full_dimensions(
+            &meta,
+            m["ImageWidth"].as_u64().unwrap(),
+            m["ImageHeight"].as_u64().unwrap(),
+        )
+        .unwrap();
+        let image = super::super::photo_process::load_oriented(&out).unwrap();
+        image
+            .thumbnail(1600, 1600)
+            .save(dir.join(format!("{label}.jpg")))
+            .unwrap();
+        image
+            .crop_imm(image.width() / 3, image.height() / 3, 1000, 1000)
+            .save(dir.join(format!("{label}-detail.png")))
+            .unwrap();
+        let small = image.thumbnail(512, 512).to_rgb8();
+        let n = f64::from(small.width()) * f64::from(small.height());
+        let mut total = 0.;
+        let mut white = 0;
+        for p in small.pixels() {
+            total += 0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]);
+            if p.0.iter().all(|&v| v >= 252) {
+                white += 1
+            }
+        }
+        checks.push(serde_json::json!({"look":label,"strength":strength,"meanDisplayLuma":total/n,"whiteClipPercent":f64::from(white)*100./n,"ms":start.elapsed().as_millis(),"metadata":m}));
+    }
+    assert_eq!(worker::hash(&source).unwrap(), before);
+    fs::write(dir.join("report.json"),serde_json::to_vec_pretty(&serde_json::json!({"checks":checks,"sourceHashUnchanged":true,"displayHistogramOnly":true})).unwrap()).unwrap();
+    assert!(
+        checks[3]["meanDisplayLuma"].as_f64().unwrap()
+            > checks[0]["meanDisplayLuma"].as_f64().unwrap() * 1.15,
+        "Web look must visibly lift the supplied underexposed sample"
+    );
+    assert!(
+        checks[3]["whiteClipPercent"].as_f64().unwrap() < 2.,
+        "Review excessive white clipping before accepting the look"
+    );
+}
+#[test]
+#[ignore = "Explicit owned-library startup benchmark; set PHOTOGOGO_STARTUP_RAW_SOURCE to a sample CR3"]
+fn startup_open_latency_budget() {
+    use crate::commands::{import, metadata_tools};
+    use std::sync::atomic::Ordering;
+    let source = PathBuf::from(
+        std::env::var_os("PHOTOGOGO_STARTUP_RAW_SOURCE").expect("Set PHOTOGOGO_STARTUP_RAW_SOURCE"),
+    );
+    let space = worker::Workspace::new().unwrap();
+    let seed = space.0.join("seed.cr3");
+    fs::copy(&source, &seed).unwrap();
+    let library = space.0.join("library");
+    fs::create_dir(&library).unwrap();
+    let jpeg = space.0.join("seed.jpg");
+    image::RgbImage::new(32, 32).save(&jpeg).unwrap();
+    let (tool, _) = metadata_tools::resolve("");
+    metadata_tools::run(
+        &tool,
+        &[
+            "-overwrite_original".into(),
+            "-TagsFromFile".into(),
+            seed.as_os_str().to_owned(),
+            "-Model".into(),
+            "-SerialNumber".into(),
+            "-DateTimeOriginal".into(),
+            "-SubSecTimeOriginal".into(),
+            jpeg.as_os_str().to_owned(),
+        ],
+    )
+    .unwrap();
+    let folders = std::env::var("PHOTOGOGO_STARTUP_FOLDERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(8)
+        .clamp(1, 8);
+    let with_jpeg = std::env::var("PHOTOGOGO_STARTUP_CASE").unwrap_or_default() != "rawOnly";
+    for index in 0..folders {
+        let dir = library.join(format!("event-{index}"));
+        fs::create_dir(&dir).unwrap();
+        fs::hard_link(&seed, dir.join("capture.cr3")).unwrap();
+        if with_jpeg {
+            fs::hard_link(&jpeg, dir.join("camera.jpg")).unwrap();
+        }
+    }
+    metadata_tools::DIAGNOSTIC_READ_CALLS.store(0, Ordering::Relaxed);
+    let start = Instant::now();
+    let tree = tauri::async_runtime::block_on(import::list_staging_tree(
+        library.to_string_lossy().into_owned(),
+    ))
+    .unwrap();
+    let tree_ms = start.elapsed().as_millis();
+    let tree_reads = metadata_tools::DIAGNOSTIC_READ_CALLS.load(Ordering::Relaxed);
+    assert_eq!(
+        tree_reads, 0,
+        "Opening a list must not probe capture metadata"
+    );
+    assert_eq!(tree["children"].as_array().unwrap().len(), folders);
+    let start = Instant::now();
+    tauri::async_runtime::block_on(import::list_staging_tree(
+        library.to_string_lossy().into_owned(),
+    ))
+    .unwrap();
+    let tree_warm_ms = start.elapsed().as_millis();
+    let start = Instant::now();
+    let folder =
+        import::lightbox_folder(library.to_string_lossy().into_owned(), "event-0".into()).unwrap();
+    let folder_ms = start.elapsed().as_millis();
+    let folder_reads = metadata_tools::DIAGNOSTIC_READ_CALLS.load(Ordering::Relaxed);
+    assert_eq!(
+        folder_reads,
+        if with_jpeg { 1 } else { 0 },
+        "Only the selected folder may probe metadata"
+    );
+    if with_jpeg {
+        assert!(folder["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["cameraJpeg"] == "event-0/camera.jpg"));
+    }
+    import::lightbox_folder(library.to_string_lossy().into_owned(), "event-0".into()).unwrap();
+    assert_eq!(
+        metadata_tools::DIAGNOSTIC_READ_CALLS.load(Ordering::Relaxed),
+        folder_reads,
+        "Repeated and catalogue callers share successful token reads"
+    );
+    worker::DIAGNOSTIC_HASH_BYTES.store(0, Ordering::Relaxed);
+    let request = Request {
+        staging_dir: library.to_string_lossy().into_owned(),
+        scope_dir: library.to_string_lossy().into_owned(),
+        scope_mode: ProcessScopeMode::FolderRecursive,
+        selection: "all".into(),
+        min_rating: 0,
+        selected_paths: vec![],
+        recipe: RawRecipe::default(),
+        use_photo_overrides: false,
+    };
+    let start = Instant::now();
+    let candidates =
+        tauri::async_runtime::block_on(raw_development_candidates(request.clone())).unwrap();
+    let raw_ms = start.elapsed().as_millis();
+    let hash_bytes = worker::DIAGNOSTIC_HASH_BYTES.load(Ordering::Relaxed);
+    assert_eq!(
+        hash_bytes, 0,
+        "Runtime integrity must be verified before execution, not file discovery"
+    );
+    assert_eq!(candidates["total"], folders);
+    assert_eq!(candidates["runtime"]["available"], true);
+    let start = Instant::now();
+    tauri::async_runtime::block_on(raw_development_candidates(request)).unwrap();
+    let raw_warm_ms = start.elapsed().as_millis();
+    let result = serde_json::json!({"folders":folders,"photos":folders*if with_jpeg{2}else{1},"treeFirstMs":tree_ms,"treeWarmMs":tree_warm_ms,"metadataProcessesBeforeFirstTree":tree_reads,"selectedFolderMs":folder_ms,"selectedFolderMetadataProcesses":folder_reads,"rawOpenFirstMs":raw_ms,"rawOpenWarmMs":raw_warm_ms,"runtimeBytesHashedBeforeRawList":hash_bytes,"processColdOnly":true,"note":"Owned fixture. No RAW development, user-library scan or OS cache flushing. Timings are local, not deployment-PC measurements."});
+    let evidence = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-output/startup-performance");
+    fs::create_dir_all(&evidence).unwrap();
+    fs::write(
+        evidence.join(format!(
+            "after-{folders}-{}.json",
+            if with_jpeg { "mixed" } else { "raw-only" }
+        )),
+        serde_json::to_vec_pretty(&result).unwrap(),
+    )
+    .unwrap();
+    println!("{result}");
+    assert!(
+        tree_ms < 1000,
+        "First Lightbox folder list exceeded one second: {tree_ms} ms"
+    );
+    assert!(
+        raw_ms < 1000,
+        "First RAW candidate list exceeded one second: {raw_ms} ms"
+    );
+}
+#[test]
+fn lightbox_folder_rejects_traversal_and_keeps_nested_folders_shallow() {
+    use crate::commands::import;
+    let space = worker::Workspace::new().unwrap();
+    fs::create_dir_all(space.0.join("event/nested")).unwrap();
+    fs::write(space.0.join("event/photo.jpg"), b"fixture").unwrap();
+    fs::write(space.0.join("event/nested/private.jpg"), b"fixture").unwrap();
+    for path in [
+        "..",
+        "event/../nested",
+        "event//nested",
+        "/event",
+        "C:/event",
+        "event/.",
+    ] {
+        assert!(
+            import::lightbox_folder(space.0.to_string_lossy().into_owned(), path.into()).is_err(),
+            "{path}"
+        );
+    }
+    let node =
+        import::lightbox_folder(space.0.to_string_lossy().into_owned(), "event".into()).unwrap();
+    let children = node["children"].as_array().unwrap();
+    assert_eq!(children.len(), 2);
+    assert!(children.iter().any(|n| n["path"] == "event/photo.jpg"));
+    assert!(children
+        .iter()
+        .any(|n| n["path"] == "event/nested" && n.get("children").is_none()));
+}
+#[test]
 fn scope_is_bounded_and_selected_is_explicit() {
     let space = worker::Workspace::new().unwrap();
     let dir = &space.0;

@@ -11,6 +11,9 @@ fixture.__controlsCommandReference=[...lightboxCommands,...lightboxCropCommands]
 const untag = (value: string) => value.replace(/\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi, "");
 const file = (name: string, parent = ""): TreeNode => ({type:"file", name, path:parent ? `${parent}/${name}` : name, size:32768});
 function makeTree(): TreeNode {
+  if (fixture.__controlsLazyMetadata) return {type:"dir",name:"Lazy RAW fixture",path:"",children:["Event","Elsewhere"].map(parent=>({type:"dir",name:parent,path:parent,children:[
+    {...file("01-horse.CR3",parent),captureMetadataPending:true}, {...file("01-horse.JPG",parent),captureMetadataPending:true}, file("02-rider.jpg",parent),
+  ]}))};
   if (fixture.__controlsRawFixture) return { type:"dir",name:"RAW fixture",path:"",children:[
     { ...file("01-horse.CR3"), cameraJpeg:"01-horse.JPG", ...(fixture.__controlsRawWarning ? { rawWarning: fixture.__controlsRawWarning } : {}) }, file("01-horse.JPG"), file("01-horse_BW.jpg"), file("01-horse_improved.jpg"),
     { ...file("01-owned-colour.jpg"), rawSource:"01-horse.CR3",rawKind:"developed" }, { ...file("01-owned-bw.jpg"), rawSource:"01-horse.CR3",rawKind:"bw" },
@@ -61,6 +64,19 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",invoke:async(command:string,a
     if(fixture.__controlsTreeError)throw Error(fixture.__controlsTreeError);
     const value=structuredClone(library(args.stagingDir).tree);
     if(fixture.__controlsDeferTree) await new Promise<void>(resolve=>{fixture.__controlsReleaseTree=resolve;});
+    return value;
+  }
+  if(command==="read_lightbox_folder") {
+    const folder=library(args.stagingDir).tree.children?.find(node=>node.path===args.relativeDir);
+    if(!folder)throw Error("Unknown synthetic folder");
+    const value=structuredClone(folder);
+    value.captureMetadataComplete=!fixture.__controlsMetadataIncomplete;
+    if(value.captureMetadataComplete) {
+      value.children?.forEach(node=>{delete node.captureMetadataPending;});
+      const raw=value.children?.find(node=>/\.cr3$/i.test(node.name));
+      if(raw)raw.cameraJpeg=value.children?.find(node=>/\.jpg$/i.test(node.name)&&node.name.startsWith("01-"))?.path;
+    }
+    if(fixture.__controlsDeferMetadata)await new Promise<void>(resolve=>{fixture.__controlsReleaseMetadata=resolve;});
     return value;
   }
   if(command==="google_photos_catalogue") {

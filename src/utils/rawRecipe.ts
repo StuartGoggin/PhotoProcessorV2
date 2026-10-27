@@ -7,9 +7,10 @@ const bounded = (value: unknown, min: number, max: number, fallback: number) => 
 export function rawPreset(preset: Exclude<RawPreset, "custom">): RawRecipe {
   const neutral = preset === "neutral";
   const highIso = preset === "highIso";
+  const web = preset === "webBright";
   return {
     schemaVersion: 1, preset, whiteBalance: "asShot", temperature: 6500, tint: 1,
-    autoExposure: false, exposure: 0, highlights: neutral ? 0 : 20, shadows: 0, blackPoint: 0,
+    autoExposure: web, finishingStrength:web?65:0, exposure: 0, highlights: neutral ? 0 : 20, shadows: 0, blackPoint: 0,
     contrast: 0, saturation: 0, curveStrength: neutral ? 0 : 0.15,
     sharpening: neutral ? 0 : highIso ? 10 : 20,
     luminanceNoise: highIso ? 20 : 0, chromaNoise: neutral ? 0 : highIso ? 30 : 15,
@@ -22,11 +23,12 @@ export function normalizeRawRecipe(value?: Partial<RawRecipe> | null): RawRecipe
   const bw = value?.bwParams;
   return {
     ...base,
-    preset: ["natural", "neutral", "highIso", "custom"].includes(value?.preset || "") ? value!.preset! : base.preset,
+    preset: ["natural", "neutral", "highIso", "webBright", "custom"].includes(value?.preset || "") ? value!.preset! : base.preset,
     whiteBalance: ["asShot", "auto", "custom"].includes(value?.whiteBalance || "") ? value!.whiteBalance! : base.whiteBalance,
     temperature: bounded(value?.temperature, 2000, 12000, base.temperature),
     tint: bounded(value?.tint, .5, 2, base.tint),
     autoExposure: typeof value?.autoExposure === "boolean" ? value.autoExposure : false,
+    finishingStrength: bounded(value?.finishingStrength,0,100,0),
     exposure: bounded(value?.exposure, -3, 3, base.exposure),
     highlights: bounded(value?.highlights, 0, 100, base.highlights),
     shadows: bounded(value?.shadows, 0, 100, base.shadows),

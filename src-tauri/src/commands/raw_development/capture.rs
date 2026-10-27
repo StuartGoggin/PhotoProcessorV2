@@ -51,11 +51,8 @@ fn token(value: &serde_json::Value) -> Option<String> {
     }
     Some(format!("{model}\0{serial}\0{date}\0{sub}"))
 }
-pub fn pairs(files: &[PathBuf], excluded: &HashSet<usize>) -> Vec<(usize, usize)> {
-    if !files.iter().any(|p| super::is_raw(p)) {
-        return vec![];
-    }
-    let candidates: Vec<_> = files
+pub fn candidate_paths(files: &[PathBuf], excluded: &HashSet<usize>) -> Vec<PathBuf> {
+    let paths: Vec<_> = files
         .iter()
         .enumerate()
         .filter(|(i, p)| {
@@ -64,36 +61,73 @@ pub fn pairs(files: &[PathBuf], excluded: &HashSet<usize>) -> Vec<(usize, usize)
                     || p.extension().is_some_and(|e| {
                         e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg")
                     }))
+                && super::reject_link(p).is_ok()
         })
-        .filter(|(_, p)| super::reject_link(p).is_ok())
+        .map(|(_, p)| p.clone())
         .collect();
-    if !candidates.iter().any(|(_, p)| !super::is_raw(p)) {
+    if !paths.iter().any(|p| super::is_raw(p)) || !paths.iter().any(|p| !super::is_raw(p)) {
         return vec![];
     }
-    let mut values = HashMap::<usize, Option<String>>::new();
-    let mut missing = vec![];
-    {
+    paths
+}
+/// A snapshot distinguishes successful missing tags (None) from failed reads
+/// (absent key). Incomplete folders can never become apparently unique pairs.
+pub fn read_tokens(files: &[PathBuf]) -> HashMap<PathBuf, Option<String>> {
+    fn collect(
+        files: &[PathBuf],
+        values: &mut HashMap<PathBuf, Option<String>>,
+    ) -> Vec<(PathBuf, u64, u64)> {
         let Ok(cache) = cache().lock() else {
             return vec![];
         };
-        for &(index, path) in &candidates {
+        let mut missing = vec![];
+        let mut seen = HashSet::new();
+        for path in files {
+            if !seen.insert(path) {
+                continue;
+            }
             let Ok(meta) = std::fs::metadata(path) else {
                 continue;
             };
-            let modified = manifest::modified(path).unwrap_or(0);
+            let Ok(modified) = manifest::modified(path) else {
+                continue;
+            };
             if let Some(hit) = cache
                 .entries
                 .get(path)
                 .filter(|e| e.bytes == meta.len() && e.modified == modified)
             {
-                values.insert(index, hit.token.clone());
+                values.insert(path.clone(), hit.token.clone());
             } else {
-                missing.push((index, path.clone(), meta.len(), modified));
+                missing.push((path.clone(), meta.len(), modified));
             }
         }
+        missing
     }
-    if !missing.is_empty() {
-        let (tool, _) = metadata_tools::resolve("");
+    let mut values = HashMap::new();
+    if collect(files, &mut values).is_empty() {
+        return values;
+    }
+    static LANE: Mutex<()> = Mutex::new(());
+    let Ok(_lane) = LANE.lock() else {
+        return values;
+    };
+    // Another caller may have filled these entries while this one waited.
+    let missing = collect(files, &mut values);
+    let (tool, _) = metadata_tools::resolve("");
+    let mut position = 0;
+    while position < missing.len() {
+        let start = position;
+        let mut argument_bytes = 0;
+        while position < missing.len() && position - start < 128 {
+            let n = missing[position].0.as_os_str().len() + 1;
+            if position > start && argument_bytes + n > 64 * 1024 {
+                break;
+            }
+            argument_bytes += n;
+            position += 1;
+        }
+        let batch = &missing[start..position];
         let mut args = vec![
             "-j".into(),
             "-n".into(),
@@ -103,41 +137,49 @@ pub fn pairs(files: &[PathBuf], excluded: &HashSet<usize>) -> Vec<(usize, usize)
             "-DateTimeOriginal".into(),
             "-SubSecTimeOriginal".into(),
         ];
-        args.extend(missing.iter().map(|(_, p, _, _)| p.as_os_str().to_owned()));
-        let Ok(bytes) = metadata_tools::run_limited(&tool, &args, 32 * 1024 * 1024) else {
-            return vec![];
+        args.extend(batch.iter().map(|(p, _, _)| p.as_os_str().to_owned()));
+        let Ok(bytes) = metadata_tools::run_limited(&tool, &args, 4 * 1024 * 1024) else {
+            continue;
         };
         let Ok(rows) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
-            return vec![];
+            continue;
         };
-        if rows.len() > missing.len() {
-            return vec![];
+        if rows.len() > batch.len() {
+            continue;
         }
-        let by_path: HashMap<_, _> = rows
-            .into_iter()
-            .filter_map(|v| {
-                v.get("SourceFile")
-                    .and_then(|s| s.as_str())
-                    .map(|p| (normal(p), token(&v)))
-            })
-            .collect();
+        let mut by_path = HashMap::<String, Vec<serde_json::Value>>::new();
+        for row in rows {
+            if let Some(path) = row.get("SourceFile").and_then(|v| v.as_str()) {
+                by_path.entry(normal(path)).or_default().push(row);
+            }
+        }
         let Ok(mut cache) = cache().lock() else {
-            return vec![];
+            continue;
         };
-        for (index, path, bytes, modified) in missing {
-            let value = by_path
-                .get(&normal(&path.to_string_lossy()))
-                .cloned()
-                .unwrap_or(None);
-            values.insert(index, value.clone());
-            if !cache.entries.contains_key(&path) {
+        for (path, bytes, modified) in batch {
+            let Some(rows) = by_path.get(&normal(&path.to_string_lossy())) else {
+                continue;
+            };
+            if rows.len() != 1 || rows[0].get("Error").is_some() {
+                continue;
+            }
+            if std::fs::metadata(path)
+                .map(|m| m.len() != *bytes)
+                .unwrap_or(true)
+                || manifest::modified(path).ok() != Some(*modified)
+            {
+                continue;
+            }
+            let value = token(&rows[0]);
+            values.insert(path.clone(), value.clone());
+            if !cache.entries.contains_key(path) {
                 cache.order.push_back(path.clone());
             }
             cache.entries.insert(
-                path,
+                path.clone(),
                 Entry {
-                    bytes,
-                    modified,
+                    bytes: *bytes,
+                    modified: *modified,
                     token: value,
                 },
             );
@@ -150,13 +192,35 @@ pub fn pairs(files: &[PathBuf], excluded: &HashSet<usize>) -> Vec<(usize, usize)
             }
         }
     }
-    let mut groups = HashMap::<String, (Vec<usize>, Vec<usize>)>::new();
-    for (index, value) in values {
-        if let Some(value) = value {
-            let group = groups.entry(value).or_default();
-            if super::is_raw(&files[index]) {
+    values
+}
+pub fn pairs_from_tokens(
+    files: &[PathBuf],
+    excluded: &HashSet<usize>,
+    values: &HashMap<PathBuf, Option<String>>,
+) -> Vec<(usize, usize)> {
+    let candidates = candidate_paths(files, excluded);
+    if candidates.iter().any(|p| !values.contains_key(p)) {
+        return vec![];
+    }
+    let mut groups = HashMap::<(PathBuf, String), (Vec<usize>, Vec<usize>)>::new();
+    for (index, path) in files.iter().enumerate() {
+        if excluded.contains(&index) {
+            continue;
+        }
+        if let Some(Some(token)) = values.get(path) {
+            let group = groups
+                .entry((
+                    path.parent().unwrap_or(Path::new("")).to_path_buf(),
+                    token.clone(),
+                ))
+                .or_default();
+            if super::is_raw(path) {
                 group.0.push(index)
-            } else {
+            } else if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"))
+            {
                 group.1.push(index)
             }
         }
@@ -171,6 +235,11 @@ pub fn pairs(files: &[PathBuf], excluded: &HashSet<usize>) -> Vec<(usize, usize)
             }
         })
         .collect()
+}
+pub fn pairs(files: &[PathBuf], excluded: &HashSet<usize>) -> Vec<(usize, usize)> {
+    let candidates = candidate_paths(files, excluded);
+    let values = read_tokens(&candidates);
+    pairs_from_tokens(files, excluded, &values)
 }
 /// A maintenance operation may keep stable rating/trash tags, or move the
 /// entire event folder. It cannot strand RAW recipes by moving one member.
@@ -246,5 +315,49 @@ mod tests {
         let mut other = v.clone();
         other["SerialNumber"] = "456".into();
         assert_ne!(token(&v), token(&other));
+    }
+    #[test]
+    fn pairs_need_a_complete_unique_same_folder_snapshot() {
+        let space = worker::Workspace::new().unwrap();
+        std::fs::create_dir(space.0.join("one")).unwrap();
+        std::fs::create_dir(space.0.join("two")).unwrap();
+        let files: Vec<_> = ["one/a.cr3", "one/b.jpg", "two/c.cr3", "two/d.jpg"]
+            .iter()
+            .map(|p| space.0.join(p))
+            .collect();
+        for path in &files {
+            std::fs::write(path, b"owned snapshot fixture").unwrap();
+        }
+        let mut values: HashMap<_, _> = files
+            .iter()
+            .cloned()
+            .map(|p| (p, Some("same capture".into())))
+            .collect();
+        let mut pairs = pairs_from_tokens(&files, &HashSet::new(), &values);
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![(0, 1), (2, 3)],
+            "Matching tokens in other folders do not make either capture ambiguous"
+        );
+        values.remove(&files[1]);
+        assert!(
+            pairs_from_tokens(&files, &HashSet::new(), &values).is_empty(),
+            "An unread row cannot prove uniqueness"
+        );
+        values.insert(files[1].clone(), None);
+        assert_eq!(
+            pairs_from_tokens(&files, &HashSet::new(), &values),
+            vec![(2, 3)],
+            "Successfully absent tags are distinct from failed reads"
+        );
+        let mut duplicates = files.clone();
+        duplicates.push(space.0.join("two/duplicate.cr3"));
+        std::fs::write(&duplicates[4], b"owned duplicate fixture").unwrap();
+        values.insert(duplicates[4].clone(), Some("same capture".into()));
+        assert!(
+            pairs_from_tokens(&duplicates, &HashSet::new(), &values).is_empty(),
+            "A duplicate anywhere in the complete folder snapshot defeats a unique pair"
+        );
     }
 }

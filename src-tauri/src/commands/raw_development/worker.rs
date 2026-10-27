@@ -65,6 +65,9 @@ impl Drop for Workspace {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+#[cfg(test)]
+pub(super) static DIAGNOSTIC_HASH_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 pub fn hash(path: &Path) -> Result<String, String> {
     let mut f = fs::File::open(path).map_err(|e| e.to_string())?;
     let mut h = Sha256::new();
@@ -74,6 +77,8 @@ pub fn hash(path: &Path) -> Result<String, String> {
         if n == 0 {
             break;
         }
+        #[cfg(test)]
+        DIAGNOSTIC_HASH_BYTES.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
         h.update(&b[..n]);
     }
     Ok(hex::encode(h.finalize()))

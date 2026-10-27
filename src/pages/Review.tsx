@@ -29,7 +29,7 @@ export default function Review() {
   const [pan, setPan] = useState({ frame: "", offsets: emptyPan() });
   const panRef = useRef(pan);
   const [resetKey, setResetKey] = useState(0);
-  const curation = useGooglePhotoCuration(catalogueRevision ? stagingDir : "", catalogueRevision);
+  const curation = useGooglePhotoCuration(selectedPhoto ? stagingDir : "", catalogueRevision, selectedPhoto?.node.path);
   const version = cropped && selectedPhoto?.crop ? selectedPhoto.crop : selectedPhoto;
   const rawOriginal = !!version && /\.(cr3|dng)$/i.test(version.original.name);
   const sourceWarning = version?.original.rawWarning || selected?.rawWarning;
@@ -212,6 +212,7 @@ export default function Review() {
       </div>
       <div className="flex-1 overflow-y-auto">
         <FileTree nodes={tree} keyboardNavigation disabled={busy || renaming || curation.saving} selected={selected?.path}
+          onExpand={node=>{if(!actionBusy.current&&!curation.hasPending())void review.loadFolder(node.path);}}
           onSelect={node => { if (!actionBusy.current && !curation.hasPending()) void review.selectNode(node).then(shown => { if (shown) focusReview(); }); }} />
       </div>
     </div>
@@ -250,6 +251,7 @@ export default function Review() {
       </div>}
       {error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800">{error}</div>}
       {sourceWarning && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-amber-950/20">RAW metadata needs attention: {sourceWarning} Images remain available for inspection; ownership and saved recipes require repair before transfer.</div>}
+      {version?.original.captureMetadataPending && <div role="status" className="px-4 py-2 text-xs text-amber-200">Capture pairing is not fully verified. Originals remain separate; refresh to retry.</div>}
       {curation.error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800 flex items-center justify-between gap-3"><span>{curation.error} Photos remain available for review.</span><button className="btn-secondary min-h-11 px-2 text-xs" disabled={busy} onClick={() => void curation.refresh(true)}>Reload selections</button></div>}
       {curation.warnings.length > 0 && <details className="px-4 py-2 text-xs text-amber-200 bg-surface-800"><summary className="cursor-pointer">Upload selection notes ({curation.warnings.length})</summary><ul className="mt-1 ml-4 list-disc">{curation.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
       {cropMessage && <div role="status" className="px-4 py-2 text-xs text-cyan-100 bg-surface-800 flex gap-3 justify-between"><span>{cropMessage}</span><button type="button" aria-label="Dismiss crop result" onClick={() => setCropMessage("")}>×</button></div>}

@@ -59,6 +59,23 @@ try {
     assert.equal(await input.isDisabled(), false); assert.equal(await input.inputValue(), savedLevels[index]);
   }
   report.checks.push("Auto levels is explicitly off by default and sends its native boolean; it disables exposure/black/contrast/highlight controls while preserving their manual values for switching off; comparison-image context menus cannot save previews as exports");
+  const finish=page.getByRole("slider",{name:"RAW Auto finish strength",exact:true});
+  assert.equal(await finish.inputValue(),"0");
+  await range(finish,65);
+  assert.equal(await page.getByRole("checkbox",{name:"Auto levels",exact:true}).isChecked(),true);
+  for(const label of manualLevels)assert.equal(await page.getByRole("slider",{name:`RAW ${label}`,exact:true}).isDisabled(),true);
+  assert.equal(await page.getByRole("img",{name:"RAW developed comparison",exact:true}).count(),0,"Look changes revoke the prior preview");
+  await page.getByRole("button",{name:"Generate RAW preview",exact:true}).click();
+  await page.getByRole("img",{name:"RAW developed comparison",exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.__rawCalls.filter(call=>call.command==="raw_development_preview").at(-1).args.request.recipe.finishingStrength),65);
+  await range(finish,0);
+  assert.equal(await page.getByRole("checkbox",{name:"Auto levels",exact:true}).isChecked(),false);
+  assert.equal(await page.getByRole("slider",{name:"RAW Exposure (EV)",exact:true}).inputValue(),"0.75");
+  await page.getByRole("button",{name:"Internet ready",exact:true}).click();
+  assert.equal(await finish.inputValue(),"65");
+  await page.getByRole("button",{name:"Natural",exact:true}).click();
+  await range(page.getByRole("slider",{name:"RAW Exposure (EV)",exact:true}),.75);
+  report.checks.push("Auto finish transmits its numeric strength, revokes stale previews, enables automatic levels, preserves manual values when Off, and Internet ready is an explicit preset rather than a saved-recipe migration");
   await page.getByRole("button", { name: "Generate RAW preview", exact: true }).click();
   await page.getByRole("img", { name: "RAW developed comparison", exact: true }).waitFor();
   await page.getByRole("img", { name: "Red, green and blue tonal distribution", exact: true }).waitFor();
@@ -181,7 +198,8 @@ try {
   assert.equal(await page.getByRole("button", { name: "Generate RAW preview", exact: true }).isDisabled(), true);
   report.checks.push("Decode errors are scoped to preview without queueing; unavailable worker disables final and preview actions with its runtime explanation");
 
-  await page.evaluate(() => { window.__rawUnavailable = false; window.__rawSetScope("D:\\Photos\\Event"); }); await ready(page);
+  await page.evaluate(() => { window.__rawUnavailable = false; window.__rawSetScope("D:\\Photos\\Event"); });
+  await page.waitForFunction(()=>document.querySelector('select[aria-label="RAW preview original"]')?.value === "D:\\Photos\\Event\\Rider.CR3");await ready(page);
   assert.equal(await page.getByRole("combobox", { name: "RAW preview original", exact: true }).inputValue(), "D:\\Photos\\Event\\Rider.CR3");
   assert.equal(await page.getByRole("checkbox", { name: "Include Rider.CR3 in RAW batch", exact: true }).isChecked(), false);
   await page.getByRole("combobox", { name: "RAW batch selection", exact: true }).selectOption("minRating"); await ready(page);
@@ -189,6 +207,9 @@ try {
   await page.waitForFunction(() => window.__rawCalls.filter((call) => call.command === "raw_development_candidates").at(-1)?.args.request.minRating === 2);
   const rated = await page.evaluate(() => window.__rawCalls.filter((call) => call.command === "raw_development_candidates").at(-1).args.request);
   assert.equal(rated.selection, "minRating"); assert.equal(rated.scopeDir, "D:\\Photos\\Event");
+  await page.getByRole("button",{name:"Internet ready",exact:true}).click();
+  assert.equal(await finish.inputValue(),"65");
+  await page.screenshot({path:`${output}/auto-finish.png`,fullPage:true});
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addStyleTag({ content: "html, body, #root { height: auto; overflow: visible; }" });
   const width = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, viewport: innerWidth }));

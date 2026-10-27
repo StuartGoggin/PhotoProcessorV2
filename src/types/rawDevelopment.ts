@@ -1,7 +1,7 @@
 import type { ProcessScopeMode } from "./api";
 import type { BwParams } from "./photoProcess";
 
-export type RawPreset = "natural" | "neutral" | "highIso" | "custom";
+export type RawPreset = "natural" | "neutral" | "highIso" | "webBright" | "custom";
 export type RawSelection = "all" | "nonTrash" | "minRating" | "selected";
 /** Versioned portable development recipe; no display thumbnail is an export. */
 export interface RawRecipe {
@@ -11,6 +11,7 @@ export interface RawRecipe {
   temperature: number;
   tint: number;
   autoExposure: boolean;
+  finishingStrength: number;
   exposure: number;
   highlights: number;
   shadows: number;

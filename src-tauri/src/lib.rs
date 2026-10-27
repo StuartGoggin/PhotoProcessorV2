@@ -24,7 +24,7 @@ use commands::{
     },
     import::{
         abort_import_job, clear_finished_import_jobs, list_import_jobs, list_sd_cards,
-        list_staging_tree, pause_import_job, resume_import_job, start_import, start_import_job,
+        list_staging_tree, read_lightbox_folder, pause_import_job, resume_import_job, start_import, start_import_job,
     },
     logs::{clear_log_file, read_log_file},
     naming::{
@@ -119,6 +119,7 @@ pub fn run() {
             start_import,
             start_import_job,
             list_staging_tree,
+            read_lightbox_folder,
             list_sd_cards,
             list_event_day_directories,
             load_event_naming_catalog,

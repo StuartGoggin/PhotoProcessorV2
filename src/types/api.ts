@@ -282,6 +282,8 @@ export interface TreeNode {
   cameraJpeg?: string;
   /** Recoverable ownership/recipe warning supplied by the native staging scan. */
   rawWarning?: string;
+  captureMetadataPending?: boolean;
+  captureMetadataComplete?: boolean;
 }
 
 export interface StagingTagEntry {

@@ -87,6 +87,8 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
   const scopeKey = JSON.stringify([stagingDir, scopeDir, scopeMode]);
   const recipe = editingPhoto ? photoRecipe : defaults;
   const recipeKey = JSON.stringify(recipe);
+  const automaticLevels=recipe.autoExposure||recipe.finishingStrength>0;
+  const finishLabel=recipe.finishingStrength===0?(recipe.autoExposure?"Custom Auto levels · extra finish off":"Off"):recipe.finishingStrength<=25?"Auto balance":recipe.finishingStrength<=50?"Bright":recipe.finishingStrength<=75?"Web pop":"Vivid";
   const effectivePreviewVariant = !recipe.colour && recipe.bw ? "bw" : !recipe.bw && recipe.colour ? "colour" : previewVariant;
   const photoDirty = editingPhoto && JSON.stringify(photoRecipe) !== JSON.stringify(savedPhotoRecipe || defaults);
   const unavailable = candidates?.runtime?.available === false;
@@ -145,7 +147,7 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
     if (editingPhoto) setPhotoRecipe(next); else setDefaults(next);
     setMessage(null);
   }
-  function preset(value: "natural" | "neutral" | "highIso") {
+  function preset(value: "natural" | "neutral" | "highIso" | "webBright") {
     const next = { ...rawPreset(value), output: recipe.output, colour: recipe.colour, bw: recipe.bw, keepGps: recipe.keepGps, bwParams: { ...recipe.bwParams } };
     if (editingPhoto) setPhotoRecipe(next); else setDefaults(next);
     setMessage(null);
@@ -248,13 +250,21 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
         <span className="text-xs text-gray-400">{editingPhoto ? `${name(path)} · ${photoDirty ? "unsaved changes" : savedPhotoRecipe ? "saved override" : "no saved override"}` : "Used for each eligible original unless it has a saved override"}</span>
       </div>
       <fieldset disabled={saving || queueing} className="space-y-3 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap"><span className="text-xs text-gray-300">Starting preset</span>{([['natural', 'Natural'], ['neutral', 'Neutral'], ['highIso', 'High ISO']] as const).map(([value, label]) => <button type="button" key={value} className="btn-secondary text-xs" aria-pressed={recipe.preset === value} onClick={() => preset(value)}>{label}</button>)}<span className="text-xs text-gray-500">{recipe.preset === "custom" ? "Custom adjustments" : "Refine below; inspect at 100%"}</span></div>
+        <div className="flex items-center gap-2 flex-wrap"><span className="text-xs text-gray-300">Starting preset</span>{([['natural', 'Natural'], ['neutral', 'Neutral'], ['highIso', 'High ISO'], ['webBright', 'Internet ready']] as const).map(([value, label]) => <button type="button" key={value} className="btn-secondary text-xs" aria-pressed={recipe.preset === value} onClick={() => preset(value)}>{label}</button>)}<span className="text-xs text-gray-500">{recipe.preset === "custom" ? "Custom adjustments" : "Refine below; inspect at 100%"}</span></div>
+        <div className="rounded-lg border border-amber-700/50 bg-amber-950/15 p-3 space-y-2">
+          <label className="block"><span className="flex justify-between gap-3 text-sm text-amber-100"><strong>Auto finish</strong><span className="tabular-nums">{finishLabel} · {recipe.finishingStrength}%</span></span>
+            <input aria-label="RAW Auto finish strength" type="range" min={0} max={100} step={1} value={recipe.finishingStrength} className="w-full accent-amber-400 mt-2" onChange={event=>{const amount=Number(event.target.value);edit({finishingStrength:amount,autoExposure:amount>0});}} />
+          </label>
+          <div className="flex justify-between text-xs text-gray-400"><span>Off</span><span>Balance</span><span>Bright</span><span>Web pop</span><span>Vivid</span></div>
+          <p className="text-xs text-gray-300">Try 65 for a bright, attractive Google Photos starting look. Automatic levels establish exposure; increasing strength adds midtone light, contrast, protected vibrance and restrained edge detail. White balance and output resolution stay under your control.</p>
+          <p className="text-xs text-gray-500">Leaving Off enables automatic levels, so the first step can visibly change exposure. This is not an opacity blend. Returning to Off restores saved manual values. Existing Auto levels recipes remain unchanged until you adjust them.</p>
+        </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <label className="text-xs text-gray-300">White balance<select aria-label="RAW white balance" className="input-field w-full mt-1" value={recipe.whiteBalance} onChange={(event) => edit({ whiteBalance: event.target.value as RawRecipe["whiteBalance"] })}><option value="asShot">As shot</option><option value="auto">Automatic</option><option value="custom">Custom temperature / tint</option></select></label>
-          <label className="text-xs text-gray-200 flex gap-2 items-start pt-1"><input type="checkbox" aria-label="Auto levels" className="w-5 h-5 shrink-0 accent-amber-400" checked={recipe.autoExposure} onChange={(event) => edit({ autoExposure: event.target.checked })} /><span>Auto levels<small className="block text-xs text-gray-500 mt-1">Off by default. Automatically calculates exposure, black point, contrast and highlight compression. Those manual values are kept for when you turn Auto levels off.</small></span></label>
+          <label className="text-xs text-gray-200 flex gap-2 items-start pt-1"><input type="checkbox" aria-label="Auto levels" className="w-5 h-5 shrink-0 accent-amber-400" checked={automaticLevels} onChange={(event) => edit({ autoExposure: event.target.checked, ...(!event.target.checked ? {finishingStrength:0} : {}) })} /><span>Auto levels<small className="block text-xs text-gray-500 mt-1">Off by default. Automatically calculates exposure, black point, contrast and highlight compression. Those manual values are kept for when you turn Auto levels off.</small></span></label>
           {recipe.whiteBalance === "custom" && <><label className="text-xs text-gray-300">Temperature (K)<input type="number" aria-label="RAW temperature" className="input-field w-full mt-1" min={2000} max={12000} step={50} value={recipe.temperature} onChange={(event) => edit({ temperature: Number(event.target.value) })} /></label><label className="text-xs text-gray-300">Tint multiplier<input type="number" aria-label="RAW tint" className="input-field w-full mt-1" min={.5} max={2} step={.01} value={recipe.tint} onChange={(event) => edit({ tint: Number(event.target.value) })} /></label></>}
           {sliders.map(({ key, label, min, max, step = 1, hint }) => {
-            const automatic = recipe.autoExposure && AUTO_LEVEL_KEYS.includes(key);
+            const automatic = automaticLevels && AUTO_LEVEL_KEYS.includes(key);
             return <label key={key} className="block min-w-0"><span className="flex justify-between gap-2 text-xs text-gray-300"><span>{label}</span><span className="text-amber-200 tabular-nums">{automatic ? "Saved " : ""}{Number(recipe[key]).toFixed(step < 1 ? 2 : 0)}</span></span><input aria-label={`RAW ${label}`} type="range" className="w-full accent-amber-400 mt-1 disabled:opacity-40" disabled={automatic} value={Number(recipe[key])} min={min} max={max} step={step} onChange={(event) => edit({ [key]: Number(event.target.value) })} /><span className="block text-xs text-gray-500">{automatic ? "Calculated by Auto levels; saved manual value returns when off" : hint}</span></label>;
           })}
         </div>
