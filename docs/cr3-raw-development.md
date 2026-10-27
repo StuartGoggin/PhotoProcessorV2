@@ -31,6 +31,8 @@ Choose **Generate RAW preview**, then **100% RAW detail check** before a batch. 
 
 To apply one look across an event, set the **Job defaults** and save them on this computer. Existing saved per-photo overrides deliberately take precedence while **Use saved per-photo overrides where present** is checked. Uncheck that option for a uniform batch, or edit and save the individual override. Changing a preset or preview does not silently rewrite saved overrides. Old saved recipes and cache keys retain their existing behavior when the new strength is absent/zero; a legacy Auto levels recipe with no added finish is labelled explicitly.
 
+For the first test, use a copy of a small event folder, including its metadata. Version 2.0.43 reads existing 2.0.42 recipes, but 2.0.42 cannot read saved recipes containing the new nonzero Auto finish field. If you roll back, keep the new event/metadata intact and use the pre-test event copy with the older version. Do not delete ownership metadata to force a downgrade; that would discard recipe and generated-version lineage.
+
 RAW B&W runs independently from the source RAW through the engine's high-precision pipeline. It never reads the developed colour JPEG. Shared white balance/exposure/tone settings apply to both branches; B&W has its own curve/detail controls. Its controls use the RAW engine, so their numerical effect differs from the existing JPEG job's CLAHE processing.
 
 ## Review, selection and archive safety

@@ -2,7 +2,8 @@ param(
     [string]$Version = '2.0.34',
     [string]$PreviousVersion = '2.0.33',
     [string]$RawSmokeSource = '',
-    [string]$RawSmokeProfile = ''
+    [string]$RawSmokeProfile = '',
+    [switch]$CompactInspection
 )
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
@@ -75,7 +76,14 @@ function Expand-MsiMetadataLayout([string]$packagePath,[string]$extractionRoot) 
         $target=[IO.Path]::GetFullPath((Join-Path $layout (Join-Path $directory $name)))
         if (-not $target.StartsWith($layout+'\',[StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $target)) { throw 'Unsafe or duplicate MSI metadata target.' }
         New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-        Copy-Item -LiteralPath $cabFiles[$file.id] -Destination $target
+        # Both paths are inside this owned extraction. Runtime verification is
+        # read-only and decoder settings/cache live in separate scratch space.
+        # Reuse immutable bytes instead of doubling the large runtime closure.
+        try { New-Item -ItemType HardLink -Path $target -Target $cabFiles[$file.id] -ErrorAction Stop | Out-Null }
+        catch {
+            if (Test-Path -LiteralPath $target) { throw }
+            Copy-Item -LiteralPath $cabFiles[$file.id] -Destination $target -ErrorAction Stop
+        }
     }
     return $layout
 }
@@ -112,9 +120,54 @@ foreach ($package in @(@{ kind='msi'; path=$msi },@{ kind='nsis'; path=$nsis }))
     $extracted = [IO.Path]::GetFullPath((Join-Path $reportRoot $package.kind))
     if (-not $extracted.StartsWith($reportRoot + '\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe extraction path' }
     New-Item -ItemType Directory -Path $extracted | Out-Null
+    if ($CompactInspection) {
+        # NTFS compression applies only to this disposable inspection tree.
+        # Logical bytes and all existing hash/runtime checks remain unchanged.
+        & compact.exe /C /I /Q $extracted | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Could not enable temporary inspection compression.' }
+    }
     try {
-        & $sevenZip x '-y' "-o$extracted" $package.path | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Cannot inspect $($package.kind)" }
+        if ($CompactInspection -and $package.kind -eq 'msi') {
+            # Avoid 7-Zip's nested Compound->CAB temporary spill by opening the
+            # cabinet explicitly, then remove only this owned intermediate.
+            & $sevenZip x '-tCompound' '-y' "-o$extracted" $package.path 'app.cab' | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot extract the MSI cabinet.' }
+            $cabinet=Join-Path $extracted 'app.cab'
+            if (-not (Test-Path -LiteralPath $cabinet)) { throw 'Expected MSI cabinet missing.' }
+            $listing=& $sevenZip l '-slt' '-tCab' $cabinet
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot list the MSI cabinet.' }
+            $names=@(foreach($line in $listing) {
+                if ($line -cmatch '^Path = (.+)$') {
+                    $name=$Matches[1]
+                    if ($name -ceq $cabinet) { continue }
+                    if ($name -cnotmatch '^[A-Za-z0-9_.-]+$' -or $name -in @('.','..')) { throw 'Unexpected non-flat MSI cabinet member.' }
+                    $name
+                }
+            })
+            if (-not $names.Count) { throw 'MSI cabinet has no payload members.' }
+            $seenNames=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            foreach($name in $names) { if(-not $seenNames.Add($name)) { throw 'Duplicate MSI cabinet member refused.' } }
+            $groups=$names | Group-Object { if ($_.StartsWith('PathFile_I',[StringComparison]::Ordinal) -and $_.Length -ge 11) { $_.Substring(0,11)+'*' } else { $_ } }
+            foreach($group in $groups) {
+                # The Windows CAB expander streams each bounded File-ID group.
+                # 7-Zip's CAB extraction can spill the whole cabinet even when
+                # individual members were requested on a constrained disk.
+                $expanded=& "$env:SystemRoot\System32\expand.exe" "-F:$($group.Name)" $cabinet $extracted 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "Cannot expand MSI member group $($group.Name): $expanded" }
+                $batchFiles=@($group.Group | ForEach-Object { Join-Path $extracted $_ })
+                foreach($file in $batchFiles) { if(-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw 'Missing expanded MSI member.' } }
+                for($offset=0;$offset -lt $batchFiles.Count;$offset+=64) {
+                    $last=[Math]::Min($offset+63,$batchFiles.Count-1)
+                    $batch=@($batchFiles[$offset..$last])
+                    & compact.exe /C /F /EXE:LZX /I /Q @batch | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw 'Cannot compress the owned MSI inspection batch.' }
+                }
+            }
+            Remove-Item -LiteralPath $cabinet -Force
+        } else {
+            & $sevenZip x '-y' "-o$extracted" $package.path | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Cannot inspect $($package.kind)" }
+        }
         $payloadFiles = @(Get-ChildItem -LiteralPath $extracted -Recurse -File)
         $applications = @($payloadFiles | Where-Object Length -eq $binaryLength)
         if ($applications.Count -ne 1) { throw "Expected exactly one application payload in $($package.kind)" }
@@ -153,6 +206,6 @@ foreach ($package in @(@{ kind='msi'; path=$msi },@{ kind='nsis'; path=$nsis }))
 }
 & (Join-Path $PSScriptRoot 'verify-media-bundle.ps1') -BundleDirectory (Join-Path $repo 'src-tauri\tools\ffmpeg') -SourceArchive $source
 if ($LASTEXITCODE -ne 0) { throw 'Managed media verification failed' }
-$report = @{ complete=$true; reportFolder=$reportRoot; version=$Version; inspectedWithoutInstalling=$true; productVersion=$productVersion; upgradeCode=$upgradeCode; previousVersion=$PreviousVersion; binarySha256=$binaryHash; packages=$packages; sourceArchive=@{ path=$source; bytes=(Get-Item -LiteralPath $source).Length; sha256=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash } }
+$report = @{ complete=$true; reportFolder=$reportRoot; version=$Version; inspectedWithoutInstalling=$true; compactInspection=[bool]$CompactInspection; productVersion=$productVersion; upgradeCode=$upgradeCode; previousVersion=$PreviousVersion; binarySha256=$binaryHash; packages=$packages; sourceArchive=@{ path=$source; bytes=(Get-Item -LiteralPath $source).Length; sha256=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash } }
 $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $reportRoot 'report.json') -Encoding utf8
 $report | ConvertTo-Json -Depth 8
