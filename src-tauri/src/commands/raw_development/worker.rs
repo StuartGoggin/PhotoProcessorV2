@@ -552,11 +552,22 @@ pub fn publish(
                 active: true,
             });
         }
+        let source_changed = !rec.source_hash.is_empty() && rec.source_hash != source_hash;
         rec.source_hash = source_hash.into();
         rec.source_bytes = fs::metadata(source).map_err(|e| e.to_string())?.len();
         rec.source_modified = manifest::modified(source)?;
         for old in &mut rec.outputs {
-            old.active = false
+            // Separate colour/B&W and JPEG/TIFF branches are independent.
+            // Only a replacement of the same branch retires its predecessor;
+            // a changed master invalidates every previous active branch.
+            if source_changed
+                || published.iter().any(|new| {
+                    new.kind == old.kind
+                        && Path::new(&new.file).extension() == Path::new(&old.file).extension()
+                })
+            {
+                old.active = false;
+            }
         }
         rec.outputs
             .retain(|old| !published.iter().any(|new| new.file == old.file));

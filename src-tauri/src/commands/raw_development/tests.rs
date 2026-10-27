@@ -110,6 +110,94 @@ fn missing_or_thumbnail_dimensions_are_never_full_raw_export() {
     );
 }
 #[test]
+fn publication_keeps_colour_bw_and_tiff_branches_independent() {
+    let space = worker::Workspace::new().unwrap();
+    let raw = space.0.join("master.cr3");
+    fs::write(&raw, b"master").unwrap();
+    let hash = worker::hash(&raw).unwrap();
+    let jpeg = space.0.join("result.jpg");
+    image::RgbImage::new(512, 512).save(&jpeg).unwrap();
+    let r = RawRecipe::default();
+    worker::publish(
+        &raw,
+        &[(jpeg.clone(), "developed".into())],
+        &r,
+        &hash,
+        &"a".repeat(64),
+    )
+    .unwrap();
+    let mut bw = r.clone();
+    bw.colour = false;
+    bw.bw = true;
+    worker::publish(
+        &raw,
+        &[(jpeg.clone(), "bw".into())],
+        &bw,
+        &hash,
+        &"b".repeat(64),
+    )
+    .unwrap();
+    worker::publish(
+        &raw,
+        &[(jpeg.clone(), "developed".into())],
+        &r,
+        &hash,
+        &"c".repeat(64),
+    )
+    .unwrap();
+    let tiff = space.0.join("result.tif");
+    image::RgbImage::new(512, 512).save(&tiff).unwrap();
+    let mut t = r.clone();
+    t.output = "tiff16".into();
+    worker::publish(
+        &raw,
+        &[(tiff, "developed".into())],
+        &t,
+        &hash,
+        &"d".repeat(64),
+    )
+    .unwrap();
+    let m = manifest::load(&space.0).unwrap();
+    let outputs = &m.records.values().next().unwrap().outputs;
+    assert_eq!(outputs.iter().filter(|o| o.active).count(), 3);
+    assert!(
+        !outputs
+            .iter()
+            .find(|o| o.recipe_hash == "a".repeat(64))
+            .unwrap()
+            .active
+    );
+    assert!(
+        outputs
+            .iter()
+            .find(|o| o.recipe_hash == "b".repeat(64))
+            .unwrap()
+            .active
+    );
+    fs::write(&raw, b"explicitly changed master").unwrap();
+    let changed = worker::hash(&raw).unwrap();
+    worker::publish(
+        &raw,
+        &[(jpeg, "developed".into())],
+        &r,
+        &changed,
+        &"e".repeat(64),
+    )
+    .unwrap();
+    let m = manifest::load(&space.0).unwrap();
+    assert_eq!(
+        m.records
+            .values()
+            .next()
+            .unwrap()
+            .outputs
+            .iter()
+            .filter(|o| o.active)
+            .count(),
+        1
+    );
+}
+#[test]
 fn raw_lineage_survives_event_moves_and_blocks_individual_maintenance() {
     let space = worker::Workspace::new().unwrap();
     let event = space.0.join("event");

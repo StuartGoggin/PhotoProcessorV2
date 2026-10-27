@@ -11,7 +11,7 @@ Release: PhotoGoGo 2.0.42. Engine: the separately bundled, pinned RawTherapee 5.
 5. Select colour development, independent B&W, or both. Choose high-quality full-resolution sRGB JPEG or 16-bit TIFF, then queue the core **Jobs** task. Pause takes effect between originals; Abort terminates an active decode. Final exports always decode the RAW, even when the Lightbox reference is a camera JPEG.
 6. Refresh Photo Lightbox after the job. JPEG developments appear as versions of their RAW master. TIFF exports are beside the original and available to archive/export; this release's Lightbox comparison panels show JPEG versions.
 
-The untouched `.cr3` stays in staging. Outputs have recipe-specific `_raw-developed-…` / `_raw-bw-…` names. Repeating an unchanged job reuses verified outputs. Changed settings create a new generation, preserving earlier files and their recorded lineage.
+The untouched `.cr3` stays in staging. Outputs have recipe-specific `_raw-developed-…` / `_raw-bw-…` names. Repeating an unchanged job reuses verified outputs. Changed settings create a new generation, preserving earlier files and their recorded lineage. Colour and B&W retain their latest versions independently; exporting a TIFF also keeps the latest JPEG comparison. Replacing the master's bytes invalidates all older active branches.
 
 ## Settings have three deliberate scopes
 
