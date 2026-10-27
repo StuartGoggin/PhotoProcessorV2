@@ -1,6 +1,6 @@
 # PhotoGoGo 2.0.42 — CR3 originals and standalone RAW development
 
-Application source and installer inspection/delivery receipts are recorded below once complete. The implementation starts with `f59828e` and includes the subsequent fix retaining independent colour/B&W/JPEG/TIFF branches.
+Built application source: `bf7fdfff8582a037927ae04165d30554467a8f1f`. The implementation starts with `f59828e` and includes the subsequent fix retaining independent colour/B&W/JPEG/TIFF branches. Later commits record validation/delivery only.
 
 ## Result and workflow
 
@@ -14,15 +14,15 @@ See [the user/developer guide](cr3-raw-development.md) for exact scopes, preset 
 
 ## Validation evidence
 
-- Native suite initially passed 332 tests with zero failures and 26 opt-in tests skipped. The final branch-isolation regression and complete rerun are recorded with final results below. Separate opt-in real-file acceptance exercised two supplied originals, TIFF/orientation/repeatability and library/reuse/cancellation. These are four successful test invocations across three dedicated tests, not a claim that all 26 opt-in tests ran.
+- Final native suite: **333 passed**, zero failed, 26 opt-in tests skipped, including the new colour/B&W/JPEG/TIFF branch-isolation regression. Separate opt-in real-file acceptance exercised two supplied originals, TIFF/orientation/repeatability and library/reuse/cancellation. The library acceptance was repeated against the final native test harness after the branch fix. These are dedicated acceptance runs, not a claim that all 26 opt-in tests ran.
 - Frontend: TypeScript and 20 catalogue/cache/recipe tests passed. RAW Development 12 browser groups, RAW Lightbox 5, existing Photo Process 13, existing Lightbox 13, Google Photos 15, archive 10, selection 11 and keyboard/controller 14 passed: **93 browser groups**. Browser fixtures test UI/IPC behavior; decoder quality is covered by separate real-file checks.
 - Real originals: `20261024_111624.cr3` and `20261024_111630.cr3`. Natural, Neutral, B&W and +1 EV exported independently, with unchanged original hashes, capture date, orientation and RTv4_sRGB profile. Camera framing is 6000 × 4000; this engine exposes 6014 × 4016 usable pixels without resize. True 16-bit TIFF was verified as 16/16/16 bits. An isolated orientation-6 source copy produced 4016 × 6014, orientation 1.
-- Same recipe produced the same output bytes across repeated executions. Library integration proved metadata pairing across different names, canonical rating propagation, independent selection flags and checksum reuse. An actually started decoder was aborted in **811 ms** in the local test, without publishing an output.
+- Same recipe produced the same output bytes across repeated executions. Library integration proved metadata pairing across different names, canonical rating propagation, independent selection flags and checksum reuse. An actually started decoder was aborted without publishing output: **811 ms** in the initial local check and **1,370 ms** in the final acceptance run while other work was active.
 - Both samples' outer-corner sheets and subject-detail crops were inspected. No black sensor border was observed in these sheets; the conservative default retained smooth background bokeh. This is visual integration acceptance, not calibrated colour/DPP equivalence or a missed-focus restoration claim.
 - A standalone relocated runtime decoded a real CR3 with PATH empty at 6014 × 4016, with expected ICC and unchanged source hash. This ran in roughly 7.3 seconds locally. Individual natural/neutral/B&W/EV checks varied around 6.5–17 seconds with other work active. These measurements are not deployment-machine throughput guarantees; peak working set was unavailable from that probe.
 - Independent bounded source review found no remaining concrete release blocker after fixes to reuse source revalidation, metadata pairing, cancellation, native scopes, lineage maintenance, owned-output classification and runtime-manifest completeness.
 
-Evidence files remain under ignored `test-output/raw-development/`: `native-tests-acceptance.log`, `real-acceptance.log` (historical fixture failure retained), `real-library-retest.log` (corrected fixture passes), `second-sample-quality.log`, `quality/<sample>/report.json`, `quality/export-edges.json`, `library-cancel.json`, `standalone-runtime/raw-runtime-smoke.json` and browser reports. The first library fixture failed because it attempted to write an ExifTool alias that did not copy the camera serial; correcting the fixture to the actual SerialNumber tag made the intended proof pass. No production pairing relaxation was used to pass it.
+Evidence files remain under ignored `test-output/raw-development/`: `native-tests-final-333.log`, `real-library-final.log`, `native-tests-acceptance.log`, `real-acceptance.log` (historical fixture failure retained), `real-library-retest.log` (corrected fixture passes), `second-sample-quality.log`, `quality/<sample>/report.json`, `quality/export-edges.json`, `library-cancel.json`, `standalone-runtime/raw-runtime-smoke.json` and browser reports. The first library fixture failed because it attempted to write an ExifTool alias that did not copy the camera serial; correcting the fixture to the actual SerialNumber tag made the intended proof pass. No production pairing relaxation was used to pass it.
 
 ## Runtime/source and quality boundaries
 
@@ -38,4 +38,14 @@ Stuart explicitly approved removing only generated local installer copies 2.0.21
 
 ## Installer and delivery receipts
 
-Pending final installer inspection and verified GitHub/Slack publication. No installation on Stuart's PCs or Google account uploads are performed by this task.
+The optimized TypeScript/Vite/Rust production build passed. Four nonblocking native warnings remain: three existing unused items and one cfg-dependent unused-mut warning in the runtime resolver; existing frontend bundle-size/Browserslist-age notices remain. No unrelated dependency updates were made.
+
+Final installer inspection: `test-output/release-2.0.42-inspection-20261027T035330244Z/report.json`, complete. The earlier 033905Z preflight report belongs to an unshared candidate and is not the release receipt.
+
+- EXE: `PhotoGoGoV2_2.0.42_x64-setup.exe`, **130,055,537 bytes**; SHA-256 `44F653A19AED87DBC0FA6A2A878625936A3764BA98F70B0284744F70495389D8`.
+- MSI: `PhotoGoGoV2_2.0.42_x64_en-US.msi`, **220,921,976 bytes**; SHA-256 `FDBCDB1DFC9FEF334017374A46C1F00EB1D2AA855FE86CEDDF6EA6DA39F6FB3E`.
+- Standalone application: 29,902,848 bytes; SHA-256 `2D73F14441F9F74FA1773E04F7D176105901A50D445BC00416E1EC41D46036F7`.
+
+Both unsigned Windows x64 installers were extracted without installation. Application payloads match the standalone binary after normalizing only the expected three-byte Tauri bundle marker. Both exact 2,205-file metadata-tool and 440-resource RAW closures verified and executed after relocation with PATH empty. Each extracted RAW runtime decoded a real CR3 at 6014 × 4016 with RTv4_sRGB and unchanged source hash. Media/source manifests verified; MSI UpgradeCode `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` is unchanged from 2.0.41. The production frontend contains version 2.0.42 and source marker bf7fdfff.
+
+GitHub and Slack publication receipts follow after verified delivery. No installation on Stuart's PCs, Google account uploads, active-render interruptions, driver changes or source-photo writes are performed by this task.
