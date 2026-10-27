@@ -48,4 +48,15 @@ Final installer inspection: `test-output/release-2.0.42-inspection-20261027T0353
 
 Both unsigned Windows x64 installers were extracted without installation. Application payloads match the standalone binary after normalizing only the expected three-byte Tauri bundle marker. Both exact 2,205-file metadata-tool and 440-resource RAW closures verified and executed after relocation with PATH empty. Each extracted RAW runtime decoded a real CR3 at 6014 × 4016 with RTv4_sRGB and unchanged source hash. Media/source manifests verified; MSI UpgradeCode `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` is unchanged from 2.0.41. The production frontend contains version 2.0.42 and source marker bf7fdfff.
 
-GitHub and Slack publication receipts follow after verified delivery. No installation on Stuart's PCs, Google account uploads, active-render interruptions, driver changes or source-photo writes are performed by this task.
+## Verified GitHub and Slack delivery
+
+Installer-receipt commit `d1d8c38eaf8ddcaab2d2abb260d1e5a765d3fbb9` was atomically pushed to GitHub master and `SWG/cr3-raw-development` with annotated tag `v2.0.42`. Remote read-back confirmed both heads and the peeled tag at that commit. Built application source remains `bf7fdfff8582a037927ae04165d30554467a8f1f`; subsequent changes record receipts only. Other chats' local master and subject-finishing worktrees were left untouched.
+
+Published through the verified Personal connection to GoggoVille **#swghermes** (`C0BDK1DDZTM`):
+
+- EXE parent: 27 October 2026, **15:01:28 AEDT**, timestamp `1793073688.473119`, file `F0CBY3V2K7H`. HTTP 200 acknowledged exactly **130,055,537 bytes**. [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793073688473119).
+- MSI reply: **15:03:58 AEDT**, timestamp `1793073838.878389`, file `F0CCFC5J78R`. HTTP 200 acknowledged exactly **220,921,976 bytes**. [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793073838878389).
+
+Local sizes and SHA-256 values were rechecked immediately before each upload. Full thread read-back confirmed both file IDs/names, captions, checksums, testing guide and validation boundaries, with no remaining pagination. This verifies upload acknowledgements and Slack attachment metadata; no independent download/hash comparison of Slack-hosted bytes is claimed. A sandboxed request could not access the Windows network client certificate; the approved upload succeeded using the normal Windows transport outside that sandbox. No duplicate release post was created.
+
+Install either unsigned x64 package when PhotoGoGo is idle; 2.0.41 is retained for rollback. No installation on Stuart's PCs, Google account uploads, active-render interruptions, driver changes or source-photo writes were performed by this task.
