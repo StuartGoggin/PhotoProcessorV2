@@ -42,4 +42,13 @@ Use a copied small event for the first test. Internet ready / strength 50–70 i
 
 Only old extracted installer payloads for the previously approved 2.0.21–2.0.39 range were removed; their reports were retained. Reversible build-cache compression preserved file hashes. No installation, Google-account upload, active-render interruption, driver change or user-photo write was performed by this task.
 
-GitHub and Slack delivery receipts follow after verified publication.
+## Verified GitHub and Slack delivery
+
+Receipt commit `976f3bc1e7a6b8ac39fbe653af1f4a8b316aa256` was atomically pushed to GitHub master and `SWG/lightbox-first-open`, with annotated tag `v2.0.43` pointing to that commit. Remote read-back confirmed both heads and the peeled tag. The installed application's built source remains c739018; this later delivery note changes documentation only. Other chats' local master and subject-finishing worktrees were not changed.
+
+Published through the Personal connection to GoggoVille **#swghermes** (`C0BDK1DDZTM`):
+
+- EXE parent: **28 October 2026, 09:19:53 AEDT**, timestamp `1793139593.946859`, file `F0CCP492C5Q`. HTTP 200 acknowledged exactly **130,045,602 bytes**. [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793139593946859).
+- MSI reply: **09:24:07 AEDT**, timestamp `1793139847.622489`, file `F0CCH3JD1JP`. HTTP 200 acknowledged exactly **220,938,360 bytes**. [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793139847622489).
+
+Local sizes and SHA-256 values were checked immediately before each upload. Full thread read-back confirmed the two file IDs/names, release captions, checksums, testing workflow, rollback and validation boundaries, with no remaining thread pages. This verifies transport acknowledgements and accessible Slack attachment metadata, not an independent download/hash of Slack-hosted bytes. No duplicate release post was created. Local delivery receipt: `test-output/release-2.0.43-delivery.json`.
