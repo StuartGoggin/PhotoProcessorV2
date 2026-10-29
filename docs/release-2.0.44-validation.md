@@ -40,6 +40,15 @@ MSI ProductVersion is 2.0.44; UpgradeCode remains `{9CBA7A69-EDA0-5480-A421-9DC9
 
 ## Delivery
 
-GitHub and Slack receipts will be appended after verified publication. Other chats' local master and subject-finishing worktrees remain unchanged.
+Receipt commit `0f7006d137ff1a0080b89f96ffe5465bed4821b6` was atomically published to GitHub `master` and `SWG/tree-event-naming`, with annotated tag `v2.0.44` pointing to that receipt. Remote read-back verified both heads and the peeled tag. The installed application remains built from d6df2f52. This later delivery note and the archive-guide wording clarification change documentation only. Other chats' local master and subject-finishing worktrees remain unchanged.
+
+Published via the Personal connection to GoggoVille **#swghermes** (`C0BDK1DDZTM`):
+
+- EXE parent: **30 October 2026, 08:46:31 AEDT**, timestamp `1793310391.714969`, file `F0CE75WPW8G`. HTTP 200 acknowledged exactly **130,083,537 bytes**. [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793310391714969).
+- MSI reply: **08:51:40 AEDT**, timestamp `1793310700.309139`, file `F0CE76Z64HW`. HTTP 200 acknowledged exactly **220,946,552 bytes**. [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793310700309139).
+
+The direct local WinHTTP route timed out twice before acknowledgement. A bounded read-only check established that the Windows user's configured proxy could reach the file host; using that route for each request succeeded (EXE 171.6 s, MSI 257.7 s). No system proxy settings changed. The first upload slot (`F0CE75A99L0`) was left unfinalized and unshared; the retry slot is the single published EXE above. No duplicate release post was made. No signed upload URLs or credentials are saved in the repository.
+
+Installer sizes and SHA-256 values were rechecked immediately before each transfer. Complete thread read-back verified both file IDs/names, captions, hashes, testing instructions, limits and rollback, with no remaining thread pages. These checks establish local hashes, HTTP byte acknowledgements and accessible Slack metadata; they do not claim an independent download/hash of Slack-hosted bytes. Local delivery receipt: `test-output/release-2.0.44-delivery.json`.
 
 Guide: [Name Events workflow](name-events-workflow.md).

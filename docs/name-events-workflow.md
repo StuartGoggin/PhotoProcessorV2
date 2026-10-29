@@ -37,7 +37,7 @@ Renaming a folder can invalidate saved Video Studio projects, snapshot sessions,
 
 ## Persistence and failure behaviour
 
-Each named day folder has a small `.photogogo-event.json` sidecar containing schema version 1, the structured description, the selected dates and the composed title. Copying the complete folder with this sidecar preserves those fields. Folders without it remain usable as legacy custom names. Keep the sidecar when moving folders between machines. The existing archive transfer includes the event sidecar; internal naming locks and unfinished temporary files are excluded.
+Each named day folder has a small `.photogogo-event.json` sidecar containing schema version 1, the structured description, the selected dates and the composed title. Copying the complete folder with this sidecar preserves those fields. Folders without it remain usable as legacy custom names. Keep the sidecar when moving folders between machines. In Archive Transfer, enable the library-metadata backup option to include event descriptions; it is optional in the current selective archive workflow. Internal naming locks and unfinished temporary files remain excluded.
 
 The native preview validates the staging root, real calendar dates, leaf names, target collisions and metadata size/version. Apply checks the reviewed folder name and metadata checksum again. Changed inputs require a fresh review. Linked/reparse paths and out-of-root sources are rejected.
 
