@@ -18,6 +18,28 @@ The review explicitly warns that saved Studio projects, snapshots, upload plans 
 
 Local evidence: `test-output/tree-event-naming/` contains the native log, browser report/screenshots and core/Lightbox/editor/transfer regression logs. These generated files are not release source.
 
-Package build, inspection, source identity and delivery receipts will be recorded below after completion. Browser checks exercise production React components with deterministic native adapters; they do not establish a real collection's rename throughput or a successful upgrade on the render PC.
+Browser checks exercise production React components with deterministic native adapters; they do not establish a real collection's rename throughput or a successful upgrade on the render PC.
+
+## Built source and finished packages
+
+Built source: `d6df2f52f3c7b1e980f3dd934f40efc897bc849a`, from the clean `SWG/tree-event-naming` checkout based on `4423d652`. The optimized native build and production frontend passed. The four existing native warnings and frontend bundle-size/Browserslist notices remain; no new build errors occurred.
+
+The installed frontend identifies `2.0.44 / 20261029T212040916Z-d6df2f52+local`. The `+local` suffix comes from Vite 5 creating `vite.config.ts.timestamp-*.mjs` before evaluating the configuration's untracked-file check, then removing it. The previous 2.0.43 build log has the same suffix. Source status was clean immediately before and after building; no app-source difference from d6df2f52 is being omitted. This receipt records the literal marker rather than claiming it lacks that suffix.
+
+`test-output/release-2.0.44-inspection-20261029T213142966Z/report.json` reports `complete: true`. Both unsigned packages were extracted and inspected without installation using the existing compact verifier. Application hashes match the standalone executable after normalizing only the expected Tauri bundle marker. Media hashes, exact 2,205-file ExifTool 13.59 closure, 440-resource RawTherapee 5.13 closure and source/licence payloads all passed. No dependencies or pinned runtimes were updated.
+
+Both relocated package runtimes decoded the supplied CR3 with the accepted Auto-finish-65 profile and PATH empty: 6014 × 4016, `RTv4_sRGB`, source hash unchanged. These smoke runs validate runtime packaging, not universal camera/lighting quality or render-PC throughput. Temporary extraction trees were removed; reports remain.
+
+MSI ProductVersion is 2.0.44; UpgradeCode remains `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` from 2.0.43. No event-sidecar schema changes were introduced; 2.0.43 and earlier retained installers remain locally available. Use a copied small event for the initial naming test, especially if saved path-based projects or tags are involved.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| PhotoGoGoV2_2.0.44_x64-setup.exe | 130,083,537 | 94435EA7B16BE84EC42C8011884DB137BA874B784610643A376725C311A270DD |
+| PhotoGoGoV2_2.0.44_x64_en-US.msi | 220,946,552 | 9891154C29FE726C2FE5EEA83FBB5B29BD02C39DF7D46B19CC1D9B2CF18A0808 |
+| photogogo-v2.exe | 30,018,560 | 6A448A031BAF69B5D31D8E5503FD41DCE311E379B7CC6361237152C6B9E7CB0E |
+
+## Delivery
+
+GitHub and Slack receipts will be appended after verified publication. Other chats' local master and subject-finishing worktrees remain unchanged.
 
 Guide: [Name Events workflow](name-events-workflow.md).
