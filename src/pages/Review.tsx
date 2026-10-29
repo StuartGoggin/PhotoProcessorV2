@@ -6,6 +6,8 @@ import LightboxHelp from "../components/LightboxHelp";
 import LightboxVersionControls from "../components/LightboxVersionControls";
 import { useGooglePhotoCuration } from "../hooks/useGooglePhotoCuration";
 import { lightboxCommands, lightboxTypingTarget, matchLightboxCommand, shortcutFor, type LightboxCommandId } from "../utils/lightboxCommands";
+import { useEventNaming } from "../hooks/useEventNaming";
+import { namedEventPath } from "../utils/eventNamingContext";
 
 const emptyPan = () => [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
 const frameId = (context?: ReviewContext) => context ? JSON.stringify([context.root, context.path, context.epoch, context.cropped]) : "";
@@ -20,7 +22,7 @@ export default function Review() {
   const [feedback, setFeedback] = useState("");
   const [busy, setBusy] = useState(false);
   const actionBusy = useRef(false), alive = useRef(true);
-  const modal = useRef({ crop: false, help: false });
+  const modal = useRef({ crop: false, help: false, naming: false });
   const reviewRoot = useRef<HTMLDivElement>(null);
   const [activePanel, setActivePanel] = useState(0);
   const active = useRef(0);
@@ -30,6 +32,10 @@ export default function Review() {
   const panRef = useRef(pan);
   const [resetKey, setResetKey] = useState(0);
   const curation = useGooglePhotoCuration(selectedPhoto ? stagingDir : "", catalogueRevision, selectedPhoto?.node.path);
+  const naming = useEventNaming(stagingDir, async result => {
+    const before = review.getSnapshot();
+    await review.refreshTree(result.root, before?.context.cropped, before ? namedEventPath(before.context.path, result) : null);
+  });
   const version = cropped && selectedPhoto?.crop ? selectedPhoto.crop : selectedPhoto;
   const rawOriginal = !!version && /\.(cr3|dng)$/i.test(version.original.name);
   const sourceWarning = version?.original.rawWarning || selected?.rawWarning;
@@ -50,10 +56,10 @@ export default function Review() {
       const first = renderedImages.findIndex(Boolean); active.current = first; setActivePanel(first);
     }
   }, [loading, images.original, images.bw, images.improved]);
-  modal.current = { crop: cropOpen, help: helpOpen };
+  modal.current = { crop: cropOpen, help: helpOpen, naming: naming.isOpen };
 
   function focusReview() {
-    if (alive.current && !modal.current.crop && !modal.current.help) reviewRoot.current?.focus({ preventScroll: true });
+    if (alive.current && !modal.current.crop && !modal.current.help && !modal.current.naming) reviewRoot.current?.focus({ preventScroll: true });
   }
   function activate(index: number) {
     if (actionBusy.current) return;
@@ -78,7 +84,7 @@ export default function Review() {
   }
 
   async function execute(id: LightboxCommandId, desired?: boolean) {
-    if (!alive.current || modal.current.crop || modal.current.help || actionBusy.current) return;
+    if (!alive.current || modal.current.crop || modal.current.help || modal.current.naming || actionBusy.current) return;
     if (id === "help") { modal.current.help = true; setHelpOpen(true); return; }
     const selectionCommand = id.startsWith("select-") || id.startsWith("favourite-");
     const inspection = id.startsWith("panel-") || id.startsWith("zoom-") || id.startsWith("pan-") || id === "fit";
@@ -176,7 +182,7 @@ export default function Review() {
   const executeLatest = useRef(execute); executeLatest.current = execute;
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.defaultPrevented || modal.current.crop || modal.current.help) return;
+      if (event.defaultPrevented || modal.current.crop || modal.current.help || modal.current.naming) return;
       const command = matchLightboxCommand(event);
       if (!command) return;
       if (lightboxTypingTarget(event.target) && event.key !== "F1") return;
@@ -212,6 +218,7 @@ export default function Review() {
       </div>
       <div className="flex-1 overflow-y-auto">
         <FileTree nodes={tree} keyboardNavigation disabled={busy || renaming || curation.saving} selected={selected?.path}
+          onFolderMenu={(node, anchor, point) => { if (!actionBusy.current && !curation.hasPending()) naming.openMenu(node.path, anchor, point); }}
           onExpand={node=>{if(!actionBusy.current&&!curation.hasPending())void review.loadFolder(node.path);}}
           onSelect={node => { if (!actionBusy.current && !curation.hasPending()) void review.selectNode(node).then(shown => { if (shown) focusReview(); }); }} />
       </div>
@@ -279,5 +286,6 @@ export default function Review() {
         closeCrop(); void review.refreshTree(undefined, true);
         setCropMessage("Saved crop (" + result.width.toLocaleString() + " × " + result.height.toLocaleString() + " pixels). Original unchanged." + (result.errors.length ? " Regeneration needs attention: " + result.errors.join("; ") : " Cropped view is ready."));
       }} />}
+    {naming.layer}
   </div>;
 }

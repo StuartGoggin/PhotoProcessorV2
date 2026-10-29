@@ -32,6 +32,16 @@ export interface NamingDay extends EventDayDirectory {
     event?: SavedEvent | null;
     warning?: string | null;
 }
+/** Tree context is explicit; it never inherits the standalone date selection. */
+export interface EventNamingContext {
+    root: string;
+    relativePath: string;
+    dayPath?: string;
+}
+export interface EventNamingResult {
+    root: string;
+    changes: Array<{ from: string; to: string }>;
+}
 export interface ReviewedAssignment extends EventNamingAssignment {
     event: SavedEvent;
     expectedName: string;

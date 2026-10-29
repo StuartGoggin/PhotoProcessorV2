@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileTree } from "../components";
 import type { ProcessScopeMode, ProcessTask, StabilizationMode, StabilizationStrength, TreeNode } from "../types";
@@ -7,6 +7,8 @@ import PhotoProcessPreview from "../components/PhotoProcessPreview";
 import RawDevelopment from "../components/RawDevelopment";
 import { DEFAULT_BW, type BwParams } from "../types/photoProcess";
 import { loadPhotoProcessRecipe, savePhotoProcessRecipe } from "../utils/photoProcessRecipe";
+import { useEventNaming } from "../hooks/useEventNaming";
+import { eventAbsolutePath, eventPathInRoot, namedEventPath, namingRootKey } from "../utils/eventNamingContext";
 
 interface TaskConfig {
   label: string;
@@ -144,9 +146,23 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
   const [preserveSourceBitrate, setPreserveSourceBitrate] = useState(true);
   const [bwParams, setBwParams] = useState<BwParams>(initialRecipe.bwParams);
   const [previewTask, setPreviewTask] = useState<ProcessTask | null>(null);
+  const [treeLoading, setTreeLoading] = useState(false), [scopeUnresolved, setScopeUnresolved] = useState(false);
+  const [rawRevision, setRawRevision] = useState(0);
+  const staging = settings?.staging_dir || "";
+  const currentRoot = useRef(staging), treeGeneration = useRef(0), mounted = useRef(true);
+  const rawNamingBlock = useRef<string | null>(null);
+  const rawNamingStatus = useCallback((reason: string | null) => { rawNamingBlock.current = reason; }, []);
+  currentRoot.current = staging;
+  const naming = useEventNaming(staging, async result => {
+    try {
+      const preferred = eventAbsolutePath(result.root, namedEventPath(eventPathInRoot(result.root, selectedScope || result.root), result));
+      await loadTree(preferred);
+      if (result.changes.length) { setPreviewTask(null); setRawRevision(value => value + 1); }
+    } catch (reason) { setScopeUnresolved(true); throw reason; }
+  }, () => { if (rawNamingBlock.current) throw Error(rawNamingBlock.current); });
   useEffect(() => { savePhotoProcessRecipe({ bwParams, enhanceContrastLevel, enhanceSharpnessLevel }); }, [bwParams, enhanceContrastLevel, enhanceSharpnessLevel]);
 
-  const canQueue = Boolean(settings?.staging_dir);
+  const canQueue = Boolean(staging) && !scopeUnresolved && !treeLoading && !naming.isOpen;
   const effectiveScope = useMemo(() => {
     if (!settings?.staging_dir) return "";
     if (scopeMode === "entireStaging") return settings.staging_dir;
@@ -157,31 +173,41 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
     [scopeMode]
   );
 
-  useEffect(() => {
-    async function loadTree() {
-      const staging = settings?.staging_dir || "";
+  async function loadTree(preferred = staging) {
+      const request = ++treeGeneration.current, originalRoot = staging;
+      const current = () => mounted.current && request === treeGeneration.current && namingRootKey(originalRoot) === namingRootKey(currentRoot.current);
       if (!staging) {
         setTree([]);
         setSelectedScope("");
         return;
       }
-
+      setTreeLoading(true);
       try {
         const data = await invoke<TreeNode | TreeNode[]>("list_staging_tree", {
           stagingDir: staging,
         });
+        if (!current()) return;
         const nodes = Array.isArray(data) ? data : [data];
         setTree(nodes.filter((node) => node.type === "dir"));
-        setSelectedScope(staging);
+        const relative = eventPathInRoot(staging, preferred);
+        const hasFolder = (items: TreeNode[]): boolean => items.some(node => node.type === "dir" && (node.path.toLowerCase() === relative.toLowerCase() || hasFolder(node.children ?? [])));
+        if (!hasFolder(nodes)) throw Error("The selected scope no longer exists. Choose a folder explicitly before queueing.");
+        setSelectedScope(preferred); setScopeUnresolved(false);
       } catch (e) {
-        setError(String(e));
+        if (current()) { setScopeUnresolved(true); setError(String(e)); }
+        throw e;
+      } finally {
+        if (current()) setTreeLoading(false);
       }
-    }
-
-    void loadTree();
-  }, [settings?.staging_dir]);
+  }
+  useEffect(() => {
+    mounted.current = true; setSelectedScope(staging); setScopeUnresolved(false); setError(null);
+    void loadTree().catch(() => {});
+    return () => { mounted.current = false; treeGeneration.current++; };
+  }, [staging]);
 
   async function runTask(taskId: ProcessTask, params?: Record<string, unknown>) {
+    if (!canQueue) return;
     if (!settings?.staging_dir) {
       setError("Staging directory not configured in Settings.");
       return;
@@ -224,7 +250,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
         Preview the effect on an original, then queue the same settings for your selected scope. Photo outputs preserve the original's displayed orientation; originals are never overwritten.
       </p>
 
-      {!canQueue && (
+      {!staging && (
         <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg px-4 py-3 mb-4 text-yellow-200 text-sm">
           Set the staging directory in Settings before queueing post-process jobs.
         </div>
@@ -285,12 +311,14 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
           <div className="h-64 rounded-lg border border-surface-600 bg-surface-900/60 overflow-hidden">
             <FileTree
               nodes={tree}
-              selected={selectedScope.replace(settings.staging_dir, "").replace(/^[\\/]+/, "")}
+              onFolderMenu={(node, anchor, point) => { if (!queueingTask) naming.openMenu(node.path, anchor, point); }}
+              selected={selectedScope.replace(settings.staging_dir, "").replace(/^[\\/]+/, "").replace(/\\/g, "/")}
               onSelect={(node) => {
                 if (node.type !== "dir") return;
                 const relative = node.path.replace(/^[\\/]+/, "");
                 const absolute = relative ? `${settings.staging_dir}\\${relative.replace(/\//g, "\\")}` : settings.staging_dir;
                 setSelectedScope(absolute);
+                setScopeUnresolved(false); setError(null);
               }}
             />
           </div>
@@ -316,7 +344,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
         </div>
       )}
 
-      <RawDevelopment stagingDir={settings?.staging_dir || ""} scopeDir={effectiveScope} scopeMode={scopeMode} onOpenJobs={onOpenJobs} />
+      <RawDevelopment stagingDir={scopeUnresolved ? "" : staging} scopeDir={effectiveScope} scopeMode={scopeMode} onOpenJobs={onOpenJobs} onNamingBlockChange={rawNamingStatus} refreshKey={rawRevision} />
 
       <div className="space-y-4">
         {TASKS.map((task) => {
@@ -528,6 +556,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
           );
         })}
       </div>
+      {naming.layer}
     </div>
   );
 }

@@ -1,10 +1,11 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { TreeNode } from "../types";
 
 interface FileTreeProps {
   nodes: TreeNode[];
   onSelect?: (node: TreeNode) => void;
   onExpand?: (node: TreeNode) => void;
+  onFolderMenu?: (node: TreeNode, anchor: HTMLElement, point?: { x: number; y: number }) => void;
   selected?: string;
   disabled?: boolean;
   keyboardNavigation?: boolean;
@@ -14,18 +15,21 @@ function TreeItem({
   node,
   depth,
   onSelect,
+  onFolderMenu,
   selected,
   disabled,
 }: {
   node: TreeNode;
   depth: number;
   onSelect?: (n: TreeNode) => void;
+  onFolderMenu?: FileTreeProps["onFolderMenu"];
   selected?: string;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(depth < 2);
   const isDir = node.type === "dir";
   const isSelected = node.path === selected;
+  useEffect(() => { if (isDir && selected?.startsWith(node.path + "/")) setOpen(true); }, [selected, node.path, isDir]);
 
   return (
     <div>
@@ -36,6 +40,14 @@ function TreeItem({
             : "text-gray-300 hover:bg-surface-700"
         }`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
+        data-event-folder={isDir ? node.path : undefined}
+        tabIndex={isDir && onFolderMenu ? 0 : undefined}
+        onContextMenu={event => { if (!disabled && isDir && onFolderMenu) { event.preventDefault(); event.stopPropagation(); event.currentTarget.focus(); onFolderMenu(node, event.currentTarget, { x: event.clientX, y: event.clientY }); } }}
+        onKeyDown={event => {
+          if (disabled || !isDir || !onFolderMenu) return;
+          if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); event.stopPropagation(); onFolderMenu(node, event.currentTarget); }
+          else if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setOpen(!open); onSelect?.(node); }
+        }}
         onClick={() => {
           if (disabled) return;
           if (isDir) setOpen(!open);
@@ -46,6 +58,8 @@ function TreeItem({
           {isDir ? (open ? "📂" : "📁") : fileIcon(node.name)}
         </span>
         <span className="truncate">{node.name}</span>
+        {isDir && onFolderMenu && <button type="button" className="event-folder-action ml-auto" aria-label={`Event actions for ${node.name}`} title="Event actions (Shift+F10)" disabled={disabled}
+          onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onFolderMenu(node, event.currentTarget); }}>⋯</button>}
         {!isDir && node.size !== undefined && (
           <span className="ml-auto flex-shrink-0 text-xs text-gray-500">
             {formatSize(node.size)}
@@ -60,6 +74,7 @@ function TreeItem({
               node={child}
               depth={depth + 1}
               onSelect={onSelect}
+              onFolderMenu={onFolderMenu}
               selected={selected}
               disabled={disabled}
             />
@@ -70,13 +85,13 @@ function TreeItem({
   );
 }
 
-export default function FileTree({ nodes, onSelect, onExpand, selected, disabled = false, keyboardNavigation = false }: FileTreeProps) {
+export default function FileTree({ nodes, onSelect, onExpand, onFolderMenu, selected, disabled = false, keyboardNavigation = false }: FileTreeProps) {
   if (nodes.length === 0) {
     return (
       <div className="text-gray-500 text-sm p-4 text-center">No files found</div>
     );
   }
-  if (keyboardNavigation) return <KeyboardFileTree nodes={nodes} onSelect={onSelect} onExpand={onExpand} selected={selected} disabled={disabled} />;
+  if (keyboardNavigation) return <KeyboardFileTree nodes={nodes} onSelect={onSelect} onExpand={onExpand} onFolderMenu={onFolderMenu} selected={selected} disabled={disabled} />;
   return (
     <div className="overflow-y-auto h-full py-1">
       {nodes.map((node) => (
@@ -85,6 +100,7 @@ export default function FileTree({ nodes, onSelect, onExpand, selected, disabled
           node={node}
           depth={0}
           onSelect={onSelect}
+          onFolderMenu={onFolderMenu}
           selected={selected}
           disabled={disabled}
         />
@@ -94,10 +110,17 @@ export default function FileTree({ nodes, onSelect, onExpand, selected, disabled
 }
 
 /** One tab stop, explicit file activation, and folder-local arrow navigation. */
-function KeyboardFileTree({ nodes, onSelect, onExpand, selected, disabled }: FileTreeProps) {
+function KeyboardFileTree({ nodes, onSelect, onExpand, onFolderMenu, selected, disabled }: FileTreeProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [focused, setFocused] = useState<string | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
+  useEffect(() => {
+    if (!selected) return;
+    const parts = selected.split("/"); parts.pop();
+    const parents: Record<string, boolean> = {};
+    while (parts.length) { parents[parts.join("/")] = true; parts.pop(); }
+    setExpanded(current => ({ ...current, ...parents }));
+  }, [selected]);
   const visible: { node: TreeNode; depth: number; parent?: string; open: boolean }[] = [];
   function visit(children: TreeNode[], depth: number, parent?: string) {
     for (const node of children) {
@@ -113,11 +136,14 @@ function KeyboardFileTree({ nodes, onSelect, onExpand, selected, disabled }: Fil
     {visible.map(({ node, depth, parent, open }, index) => <div key={node.path}
       ref={element => { if (element) rows.current.set(node.path, element); else rows.current.delete(node.path); }}
       role="treeitem" aria-level={depth + 1} aria-expanded={node.type === "dir" ? open : undefined}
+      data-event-folder={node.type === "dir" ? node.path : undefined}
       aria-selected={node.path === selected} aria-disabled={disabled} tabIndex={!disabled && node.path === tabStop ? 0 : -1}
       className={`flex items-center gap-1.5 px-2 py-1 rounded text-sm transition-colors ${disabled ? "opacity-60 cursor-default" : "cursor-pointer"} ${node.path === selected ? "bg-accent/20 text-white" : "text-gray-300 hover:bg-surface-700"}`}
       style={{ paddingLeft: depth * 12 + 8 }} onFocus={() => setFocused(node.path)}
       onClick={() => { if (disabled) return; focus(node.path); if (node.type === "dir") {setExpanded(current => ({ ...current, [node.path]: !open }));if(!open)onExpand?.(node);} else onSelect?.(node); }}
+      onContextMenu={event => { if (!disabled && node.type === "dir" && onFolderMenu) { event.preventDefault(); event.stopPropagation(); focus(node.path); onFolderMenu(node, event.currentTarget, { x: event.clientX, y: event.clientY }); } }}
       onKeyDown={event => {
+        if (!disabled && node.type === "dir" && onFolderMenu && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) { event.preventDefault(); event.stopPropagation(); onFolderMenu(node, event.currentTarget); return; }
         if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "].includes(event.key)) return;
         event.preventDefault(); event.stopPropagation(); if (disabled || event.altKey || event.ctrlKey || event.metaKey) return;
         if (event.key === "ArrowUp") focus(visible[Math.max(0, index - 1)]?.node.path);
@@ -135,6 +161,8 @@ function KeyboardFileTree({ nodes, onSelect, onExpand, selected, disabled }: Fil
       }}>
       <span className="shrink-0 text-xs" aria-hidden="true">{node.type === "dir" ? open ? "📂" : "📁" : fileIcon(node.name)}</span>
       <span className="truncate">{node.name}</span>
+      {node.type === "dir" && onFolderMenu && <button type="button" className="event-folder-action ml-auto" aria-label={`Event actions for ${node.name}`} title="Event actions (Shift+F10)" disabled={disabled}
+        onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onFolderMenu(node, event.currentTarget); }}>⋯</button>}
       {node.type !== "dir" && node.size !== undefined && <span className="ml-auto shrink-0 text-xs text-gray-500">{formatSize(node.size)}</span>}
     </div>)}
   </div>;

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettings } from "../hooks";
+import { useEventNaming } from "../hooks/useEventNaming";
+import { eventAbsolutePath, namedEventPath, namingRootKey } from "../utils/eventNamingContext";
 import type {
-  ApplyEventNamingRequest,
   EventDayDirectory,
   EventNamingCatalog,
   MetadataTagWriteResult,
@@ -136,27 +137,6 @@ const SESSION_BAND_COLORS = [
 
 function normalizeTagList(tags: string[]): string[] {
   return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-}
-
-function formatPreviewName(day: number, eventType: string, location: string, tags: string[]): string {
-  const parts = [String(day).padStart(2, "0")];
-  const cleanEventType = eventType.trim();
-  const cleanLocation = location.trim();
-  const cleanTags = normalizeTagList(tags);
-
-  if (cleanEventType && cleanLocation) {
-    parts.push(`${cleanEventType} - ${cleanLocation}`);
-  } else if (cleanEventType) {
-    parts.push(cleanEventType);
-  } else if (cleanLocation) {
-    parts.push(cleanLocation);
-  }
-
-  if (cleanTags.length > 0) {
-    parts.push(cleanTags.join(", "));
-  }
-
-  return parts.join(" - ");
 }
 
 function findNodeByPath(nodes: TreeNode[], targetPath: string): TreeNode | null {
@@ -408,10 +388,6 @@ export default function StagingExplorer() {
   const [checkedPaths, setCheckedPaths] = useState<string[]>([]);
   const [lastCheckedPath, setLastCheckedPath] = useState<string | null>(null);
 
-  const [eventType, setEventType] = useState("");
-  const [location, setLocation] = useState("");
-  const [namingTagsText, setNamingTagsText] = useState("");
-
   const [tagText, setTagText] = useState("");
   const [groupLabel, setGroupLabel] = useState("");
   const [createGroup, setCreateGroup] = useState(true);
@@ -492,6 +468,22 @@ export default function StagingExplorer() {
   const loadingTimelineVideoPreviewsRef = useRef(new Set<string>());
 
   const stagingDir = settings?.staging_dir ?? "";
+  const viewRoot = useRef(stagingDir), selectedDayRef = useRef(selectedDayPath), refreshSerial = useRef(0);
+  viewRoot.current = stagingDir; selectedDayRef.current = selectedDayPath;
+  const naming = useEventNaming(stagingDir, async result => {
+    const originalDay = directories.find(day => day.path === selectedDayRef.current);
+    const preferred = originalDay ? eventAbsolutePath(result.root, namedEventPath(originalDay.relativePath, result)) : null;
+    setCheckedPaths(paths => paths.map(path => namedEventPath(path, result)));
+    setLastCheckedPath(path => path ? namedEventPath(path, result) : null);
+    setSelectedPreviewPath(path => path ? namedEventPath(path, result) : null);
+    setForcedSequenceBreaks(paths => paths.map(path => namedEventPath(path, result)));
+    setSuppressedSequenceBreaks(paths => paths.map(path => namedEventPath(path, result)));
+    if (originalDay && preferred && namingRootKey(originalDay.path) !== namingRootKey(preferred)) { setPreviewDataUrl(null); setTimelineItems([]); }
+    setContextMenuFilePath(null); setTimelineSessionMenu(null);
+    await refreshAll(preferred);
+    setMessage("Event naming finished. The directory view has been refreshed; saved project/session references may need relinking.");
+  });
+  const namingOpen = useRef(naming.isOpen); namingOpen.current = naming.isOpen;
   const previewWidth = Math.max(120, settings?.timeline_preview_width ?? 420);
   const motionPreviewsEnabled = settings?.timeline_preview_enabled === true;
   const previewHeight = Math.max(68, settings?.timeline_preview_height ?? 240);
@@ -775,7 +767,10 @@ export default function StagingExplorer() {
     [files, viewMode, renderTimelineItems],
   );
 
-  async function refreshAll() {
+  async function refreshAll(preferredDayPath?: string | null) {
+    const request = ++refreshSerial.current, originalRoot = stagingDir;
+    const current = () => request === refreshSerial.current && namingRootKey(originalRoot) === namingRootKey(viewRoot.current);
+    let problem: unknown;
     if (!stagingDir) {
       setDirectories([]);
       setTreeNodes([]);
@@ -792,34 +787,40 @@ export default function StagingExplorer() {
         invoke<EventNamingCatalog>("load_event_naming_catalog"),
         invoke<StagingTagsState>("load_staging_tags", { stagingDir }),
       ]);
+      if (!current()) return;
 
       setDirectories(loadedDirectories);
       setCatalog(loadedCatalog);
       setTagsState(loadedTags);
 
-      if (!selectedDayPath && loadedDirectories.length > 0) {
-        setSelectedDayPath(loadedDirectories[0].path);
-      }
+      const wanted = preferredDayPath !== undefined ? preferredDayPath : selectedDayRef.current;
+      const restored = wanted ? loadedDirectories.find(day => namingRootKey(day.path) === namingRootKey(wanted))?.path : preferredDayPath === null ? null : loadedDirectories[0]?.path;
+      setSelectedDayPath(restored ?? null);
+      if (wanted && !restored) { setCheckedPaths([]); setLastCheckedPath(null); setSelectedPreviewPath(null); setPreviewDataUrl(null); }
     } catch (e) {
-      setError(String(e));
+      problem = e;
+      if (current()) setError(String(e));
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
 
     // Phase 2: load the full file tree in the background — only needed for the List view.
-    void invoke<TreeNode>("list_staging_tree", { stagingDir })
+    await invoke<TreeNode>("list_staging_tree", { stagingDir })
       .then((loadedTree) => {
-        setTreeNodes(loadedTree?.children ?? []);
+        if (current()) setTreeNodes(loadedTree?.children ?? []);
       })
-      .catch(() => {
-        setTreeNodes([]);
+      .catch((reason) => {
+        problem = reason;
+        if (current()) { setTreeNodes([]); setError(String(reason)); }
       });
+    if (problem && preferredDayPath !== undefined) throw problem;
   }
 
   useEffect(() => {
     if (!settingsLoading && stagingDir) {
       void refreshAll();
     }
+    return () => { refreshSerial.current++; };
   }, [settingsLoading, stagingDir]);
 
   useEffect(() => {
@@ -1260,6 +1261,7 @@ export default function StagingExplorer() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || namingOpen.current) return;
       const activeElement = document.activeElement;
       const tagName = activeElement?.tagName ?? "";
       const editable = tagName === "INPUT" || tagName === "TEXTAREA" || (activeElement as HTMLElement | null)?.isContentEditable;
@@ -1354,9 +1356,11 @@ export default function StagingExplorer() {
     }
 
     const absPath = `${stagingDir.replace(/\//g, "\\")}\\${selectedPreviewFile.relativePath.replace(/\//g, "\\")}`;
+    let cancelled = false;
     void invoke<string>("read_image_base64", { path: absPath })
-      .then((base64) => setPreviewDataUrl(`data:image/jpeg;base64,${base64}`))
-      .catch(() => setPreviewDataUrl(null));
+      .then((base64) => { if (!cancelled) setPreviewDataUrl(`data:image/jpeg;base64,${base64}`); })
+      .catch(() => { if (!cancelled) setPreviewDataUrl(null); });
+    return () => { cancelled = true; };
   }, [selectedPreviewFile, stagingDir]);
 
   function toggleFileSelection(path: string, checked: boolean, useRange: boolean) {
@@ -2076,33 +2080,10 @@ export default function StagingExplorer() {
     }
   }
 
-  async function applyDayNaming() {
-    if (!selectedDay) {
-      setError("Select a day folder first.");
-      return;
-    }
-
-    const tags = normalizeTagList(namingTagsText.split(","));
-    const request: ApplyEventNamingRequest = {
-      directories: [selectedDay.path],
-      eventType: eventType.trim(),
-      location: location.trim(),
-      peopleTags: [],
-      groupTags: [],
-      generalTags: tags,
-      assignments: [],
-    };
-
-    setError(null);
-    setMessage(null);
-
-    try {
-      await invoke("apply_event_naming", { request });
-      setMessage("Day folder renamed.");
-      await refreshAll();
-    } catch (e) {
-      setError(String(e));
-    }
+  function openDayNaming(event: React.MouseEvent<HTMLButtonElement>) {
+    if (writingMetadata) return;
+    if (selectedDay) naming.openEditor(selectedDay.relativePath, event.currentTarget);
+    else setError("Select a day folder first.");
   }
 
   const activeItemCount = viewMode === "timeline" ? renderTimelineItems.length : files.length;
@@ -2221,13 +2202,13 @@ export default function StagingExplorer() {
       <div className="h-full flex flex-col rounded-xl border border-surface-600 bg-surface-900 overflow-hidden shadow-lg shadow-black/30">
         <div className="px-4 py-2 border-b border-surface-700 bg-surface-800/90">
           <div className="flex items-center gap-2 flex-wrap">
-            <button className="btn-secondary px-3 py-1.5 text-xs" onClick={refreshAll} disabled={!stagingDir || loading}>
+            <button className="btn-secondary px-3 py-1.5 text-xs" onClick={() => void refreshAll()} disabled={!stagingDir || loading}>
               {loading ? "Refreshing..." : "Refresh"}
             </button>
             <button className="btn-secondary px-3 py-1.5 text-xs" onClick={applyTagsToChecked} disabled={checkedPaths.length === 0}>
               Tag Selected
             </button>
-            <button className="btn-secondary px-3 py-1.5 text-xs" onClick={applyDayNaming} disabled={!selectedDay}>
+            <button className="btn-secondary px-3 py-1.5 text-xs" onClick={openDayNaming} disabled={!selectedDay || writingMetadata}>
               Rename Day Folder
             </button>
             <div className="flex items-center rounded-md border border-surface-600 overflow-hidden">
@@ -2352,8 +2333,10 @@ export default function StagingExplorer() {
                 <div className="text-xs text-gray-500 px-2 py-2">No day folders found.</div>
               ) : (
                 directories.map((directory) => (
+                  <div key={directory.path} className="flex items-center" tabIndex={-1} data-event-folder={directory.relativePath}
+                    onContextMenu={event => { event.preventDefault(); event.stopPropagation(); if (!writingMetadata) naming.openMenu(directory.relativePath, event.currentTarget, { x: event.clientX, y: event.clientY }); }}
+                    onKeyDown={event => { if (!writingMetadata && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) { event.preventDefault(); event.stopPropagation(); naming.openMenu(directory.relativePath, event.currentTarget); } }}>
                   <button
-                    key={directory.path}
                     type="button"
                     className={`w-full text-left rounded-md px-2 py-1.5 transition-colors ${selectedDayPath === directory.path ? "bg-accent/20 text-white" : "text-gray-300 hover:bg-surface-700"}`}
                     onClick={() => {
@@ -2367,6 +2350,8 @@ export default function StagingExplorer() {
                     <div className="text-sm truncate">{directory.name}</div>
                     <div className="text-[11px] text-gray-500 truncate">{directory.dateKey}</div>
                   </button>
+                  <button type="button" className="event-folder-action" aria-label={`Event actions for ${directory.name}`} disabled={writingMetadata} onClick={event => naming.openMenu(directory.relativePath, event.currentTarget)}>⋯</button>
+                  </div>
                 ))
               )}
             </div>
@@ -3158,38 +3143,10 @@ export default function StagingExplorer() {
             <div className="px-3 py-2 text-xs uppercase tracking-wide text-gray-400 border-b border-surface-700">Details Pane</div>
             <div className="flex-1 overflow-auto p-3 space-y-3">
               <div className="space-y-2 rounded-md border border-surface-700 bg-surface-900 p-3">
-                <div className="text-xs uppercase tracking-wide text-gray-500">Rename Day Folder</div>
+                <div className="text-xs uppercase tracking-wide text-gray-500">Event description</div>
                 <div className="text-xs text-gray-400">Selected day: {selectedDay?.name ?? "None"}</div>
-                <div className="text-xs text-cyan-300 break-all">
-                  {selectedDay ? formatPreviewName(selectedDay.day, eventType, location, normalizeTagList(namingTagsText.split(","))) : ""}
-                </div>
-                <input
-                  className="input-field"
-                  placeholder="Event type"
-                  value={eventType}
-                  onChange={(e) => setEventType(e.target.value)}
-                  list="event-types-staging-explorer"
-                />
-                <input
-                  className="input-field"
-                  placeholder="Location"
-                  value={location}
-                  onChange={(e) => setLocation(e.target.value)}
-                />
-                <input
-                  className="input-field"
-                  placeholder="Naming tags (comma-separated)"
-                  value={namingTagsText}
-                  onChange={(e) => setNamingTagsText(e.target.value)}
-                />
-                <button className="btn-primary w-full" onClick={applyDayNaming} disabled={!selectedDay}>
-                  Rename Selected Day Folder
-                </button>
-                <datalist id="event-types-staging-explorer">
-                  {catalog.eventTypes.map((item) => (
-                    <option key={item.name} value={item.name} />
-                  ))}
-                </datalist>
+                <p className="text-xs text-gray-400">Use the shared event editor for favourites, structured names and a reviewed folder change.</p>
+                <button type="button" className="btn-primary w-full" onClick={openDayNaming} disabled={!selectedDay || writingMetadata}>Name or edit selected event</button>
               </div>
 
               <div className="space-y-2 rounded-md border border-surface-700 bg-surface-900 p-3">
@@ -3301,6 +3258,7 @@ export default function StagingExplorer() {
           )}
         </div>
       </div>
+      {naming.layer}
     </div>
   );
 }

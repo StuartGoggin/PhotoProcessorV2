@@ -1,0 +1,19 @@
+.event-folder-action { flex: none; width: 28px; min-height: 28px; border-radius: 5px; color: #a7b8d0; font-size: 19px; line-height: 1; }
+.event-folder-action:hover,.event-folder-action:focus-visible { background: #344158; color: white; outline: 2px solid #8db5ee; outline-offset: -2px; }
+.event-folder-menu { position: fixed; z-index: 100; width: min(300px,calc(100vw - 16px)); background: #202b3c; border: 1px solid #61748e; border-radius: 9px; padding: 6px; box-shadow: 0 12px 40px #0009; color: #e8effa; }
+.event-folder-menu-label { font-size: 11px; color: #a9bad1; padding: 7px; overflow-wrap: anywhere; }
+.event-folder-menu button { display: block; width: 100%; text-align: left; border-radius: 5px; padding: 10px; font-size: 13px; }
+.event-folder-menu button:focus-visible,.event-folder-menu button:hover:not(:disabled) { background: #37527a; outline: 2px solid #9bc3ff; outline-offset: -2px; }
+.event-folder-menu button:disabled { color: #aab7ca; }
+.event-folder-menu p { padding: 7px; font-size: 12px; overflow-wrap: anywhere; }
+.event-naming-backdrop { position: fixed; inset: 0; z-index: 110; background: #060c16a6; display: flex; justify-content: flex-end; }
+.event-naming-drawer { width: min(1060px,100vw); height: 100%; min-width: 0; overflow-y: auto; background: #111a28; box-shadow: -14px 0 60px #0008; color: #e7edf7; }
+.event-naming-drawer-heading { position: sticky; top: 0; z-index: 5; padding: 16px 20px; border-bottom: 1px solid #40516b; background: #1b2639; display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.event-naming-drawer-heading div { min-width: 0; }
+.event-naming-drawer-heading strong { font-size: 17px; }
+.event-naming-drawer-heading p { color: #b0c0d7; font-size: 12px; margin-top: 5px; overflow-wrap: anywhere; }
+.event-naming-drawer-heading button { flex: none; min-height: 40px; }
+.event-naming-drawer .name-events { max-width: none; padding: 18px; }
+.event-naming-drawer .ne-header h2 { font-size: 20px; }
+.event-naming-progress { padding: 10px 20px; background: #283c58; font-size: 13px; }
+@media(max-width:760px) { .event-naming-drawer .ne-workspace { grid-template-columns: minmax(0,1fr); } .event-naming-drawer .name-events { padding: 12px; } .event-naming-drawer-heading { padding: 12px; } }

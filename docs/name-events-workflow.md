@@ -14,6 +14,19 @@ The folder remains in the established `YYYY/MM/DD - Event group - Event type - V
 
 **Use a custom event name** preserves older wording without trying to infer fields from hyphens. Clicking a date name opens that date's saved description; checking its checkbox adds it to the current group. Adding a checkbox does not silently load or apply another event's description.
 
+## Name events directly from a directory
+
+In **Photo Lightbox**, **Photo Process** and the **Video Timeline / Staging Explorer** navigation list, right-click a folder, click its **⋯** action, or focus its row and press **Shift+F10**. Choose **Name event…** for an unnamed day or **Edit event…** for an existing event. A compact side panel opens the same editor, review and core naming job used by Name Events.
+
+- A day opens with just that native-recognised date selected and its saved description loaded. Expand **Add or change dates** to include other dates deliberately.
+- A folder inside an event offers the containing event's action. A year, month or staging root offers **Name events within…**, scoped to its recognised descendants with no dates selected in advance. The Timeline navigation lists days, so it offers day actions.
+- Opening or cancelling the panel preserves the current photo/crop, folder expansion, processing options and checked Timeline files. It does not replace the standalone Name Events draft.
+- Review shows the current and proposed names. Existing descriptions still require individual replacement consent. Apply waits for pending Lightbox selection saves and refuses a Photo Process rename while a per-photo RAW override is unsaved or RAW work is active. Save or discard that override first.
+- While review/apply work or a naming job is active, the panel stays open. After a terminal job, the originating page refreshes before Close is enabled. Only moves confirmed by a fresh directory scan are followed, including successful dates from a partially failed job. The same photo and crop are restored when available. Photo Process retains its selected scope; a missing scope disables queueing until you choose a valid folder.
+- Closing returns keyboard focus to the invoking control or its confirmed new folder row. Missing or unrelated recovered job IDs produce a notice and refresh; saved draft data cannot supply path mappings or submit a rename automatically.
+
+Renaming a folder can invalidate saved Video Studio projects, snapshot sessions, upload plans and Timeline tags/groups. The review warns about these references; relink or rebuild them as needed. Live checked-file and manual sequence-boundary paths follow verified moves, but the feature does not migrate the staging-root Timeline tag/group store.
+
 ## Reuse and older data
 
 - **Favourites & recent events** saves recurring descriptions and tags, never the selected dates. A favourite with the same name requires explicit replacement consent. Changing a favourite does not rename any existing folder.
@@ -41,6 +54,8 @@ All automated naming tests use synthetic folders or browser fixtures, not a real
 ```powershell
 node scripts/test-event-naming.mjs
 node scripts/test-name-events-browser.mjs
+node scripts/test-event-context.mjs
+node scripts/test-event-tree-browser.mjs
 pwsh -NoProfile -File scripts/test-event-naming.ps1
 npm.cmd run build
 ```
@@ -51,7 +66,7 @@ Coverage includes exact date/title composition, cross-month and year boundaries,
 
 ## Integration boundary
 
-This feature changes the Name Events page and native naming commands, plus a narrow archive-transfer exclusion for internal naming work files. The only Google Photos change is a small lease adapter for folder naming; it does not alter upload selection, authentication, or failure diagnostics. Existing preview/processing/stabilisation engines are unchanged. Installer versioning and publication belong to the coordinated release after this feature is integrated.
+The original feature changes the Name Events page and native naming commands, plus a narrow archive-transfer exclusion for internal naming work files. Its Google Photos lease adapter prevents an upload from racing naming. Version 2.0.44 adds a shared contextual editor and tree entry points, using those same native commands and the shared curation-save queue. No naming filesystem rules, photo-processing engines, upload authentication or media-runtime dependencies change in this increment. See the versioned release receipt for package validation and publication.
 
 ## Verified checkpoint — 26 October 2026
 

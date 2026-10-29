@@ -1,7 +1,7 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.43",
+  "version": "2.0.44",
   "type": "module",
   "scripts": {
     "test:archive:browser": "node scripts/test-archive-transfer-browser.mjs",

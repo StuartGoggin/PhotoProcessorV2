@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProcessScopeMode } from "../types";
 import type { RawCandidates, RawHistogram, RawPreviewResult, RawRecipe, RawRecipeRecord, RawScope, RawSelection } from "../types/rawDevelopment";
 import { loadRawDefaults, normalizeRawRecipe, rawPreset, saveRawDefaults } from "../utils/rawRecipe";
 
-interface Props { stagingDir: string; scopeDir: string; scopeMode: ProcessScopeMode; onOpenJobs?: () => void }
+interface Props { stagingDir: string; scopeDir: string; scopeMode: ProcessScopeMode; onOpenJobs?: () => void; onNamingBlockChange?: (reason: string | null) => void; refreshKey?: number }
 type DisplayPreview = RawPreviewResult & { urls: string[]; previewVariant: "colour" | "bw" };
 let previewLane: Promise<void> = Promise.resolve();
 const name = (path: string) => path.split(/[\\/]/).pop() || path;
@@ -47,7 +47,7 @@ function Histogram({ data }: { data: RawHistogram }) {
 }
 
 /** RAW controls remain separate from legacy JPEG jobs and share the core Jobs queue. */
-export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpenJobs }: Props) {
+export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpenJobs, onNamingBlockChange, refreshKey = 0 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [defaults, setDefaults] = useState(loadRawDefaults);
   const [photoRecipe, setPhotoRecipe] = useState<RawRecipe>(defaults);
@@ -91,6 +91,10 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
   const finishLabel=recipe.finishingStrength===0?(recipe.autoExposure?"Custom Auto levels · extra finish off":"Off"):recipe.finishingStrength<=25?"Auto balance":recipe.finishingStrength<=50?"Bright":recipe.finishingStrength<=75?"Web pop":"Vivid";
   const effectivePreviewVariant = !recipe.colour && recipe.bw ? "bw" : !recipe.bw && recipe.colour ? "colour" : previewVariant;
   const photoDirty = editingPhoto && JSON.stringify(photoRecipe) !== JSON.stringify(savedPhotoRecipe || defaults);
+  const namingBlock = photoDirty ? "Close this event editor and save or discard the unsaved RAW photo override before renaming its folder."
+    : previewPendingCount > 0 || saving || queueing ? "Wait for the current RAW preview/save to finish before renaming its folder." : null;
+  useLayoutEffect(() => { onNamingBlockChange?.(namingBlock); }, [namingBlock, onNamingBlockChange]);
+  useEffect(() => () => onNamingBlockChange?.(null), [onNamingBlockChange]);
   const unavailable = candidates?.runtime?.available === false;
   const noOutput = !defaults.colour && !defaults.bw;
   const scope: RawScope = { stagingDir, scopeDir, scopeMode, selection, minRating, ...(selection === "selected" ? { selectedPaths } : {}) };
@@ -123,7 +127,7 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
       }).catch((reason) => { if (current === candidateGeneration.current) setError(String(reason)); })
       .finally(() => { if (current === candidateGeneration.current) setLoading(false); });
     return () => { candidateGeneration.current++; };
-  }, [expanded, scopeKey, selection, minRating, refresh]);
+  }, [expanded, scopeKey, selection, minRating, refresh, refreshKey]);
 
   useEffect(() => {
     const current = ++recipeGeneration.current;
