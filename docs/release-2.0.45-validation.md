@@ -29,3 +29,25 @@ Auto is a bounded throughput heuristic. It cannot guarantee a saturated gigabit/
 Installers 2.0.43 and 2.0.44 remain locally available for rollback. With explicit approval, only the six generated EXE/MSI installers for 2.0.40–2.0.42 were removed to recover 678,294,566 bytes; sources, photos and validation reports were retained.
 
 Start with a small representative reviewed selection on the deployment PC, leave Auto selected, then run Latest recorded transfer verification. Repeat the same selection to confirm verified duplicates without extra copies. Use Whole archive verification deliberately when checking the cumulative index. If a job fails or stops with recovery records pending, retain those records for the next operation. This release is packaged and inspected without installation on the render PC; actual network throughput and upgrade behaviour still require that deployment test.
+
+After an interrupted transfer, let 2.0.45 reconcile its pending recovery journal before downgrading. Earlier versions do not understand that recovery journal or the explicit latest-transfer pointer.
+
+## Built source and finished packages
+
+Built source: `4951c3f788dee5723387259ce9b079cb387604de`, based on current `origin/master` at `ca05d95f440c2b360b19ee896f3786146033ad68`. The source checkout was clean immediately before building. No application source changed during packaging or inspection. An unrelated untracked `disk-scan-results.json` appeared at 03:03:31 UTC during packaging; it is untouched and excluded from all release commits.
+
+The optimized native application and production frontend passed. Five native unused-code warnings remain: four pre-existing groups and one archive test-wrapper group. Existing frontend Browserslist and chunk-size notices remain. No dependency or pinned runtime versions changed.
+
+The installed frontend identifies `2.0.45 / 20261031T025138198Z-4951c3f7+local`. The literal `+local` marker is retained in this receipt. Vite's temporary configuration module already caused the same marker in previous clean builds; the unrelated diagnostic file appeared later than this frontend timestamp. The application source is the committed source above.
+
+`test-output/release-2.0.45-inspection-20261031T031229285Z/report.json` reports `complete: true`. Both unsigned packages were extracted and inspected without installation. All application bytes match the standalone executable after normalizing only Tauri's expected bundle marker. The managed FFmpeg payload/source closure, exact 2,205-file ExifTool 13.59 closure, 440-resource RawTherapee 5.13 closure and source/licence payloads passed. Both relocated packages decoded the supplied CR3 with the accepted Auto-finish-65 profile, PATH empty, at 6014 × 4016; the original hash remained unchanged. These are runtime packaging checks, not universal camera-quality or NAS-throughput evidence.
+
+MSI ProductVersion is 2.0.45. UpgradeCode remains `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` from 2.0.44.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| PhotoGoGoV2_2.0.45_x64-setup.exe | 130,047,754 | 462C9B4C8BA85726E3F58DEC194A30572B594A1B818BBA42020CFC7B25BD3606 |
+| PhotoGoGoV2_2.0.45_x64_en-US.msi | 220,979,320 | E451508514858D867DE428419F7DDB50E34155C9C23F3C0F2A7E38964AB36D7E |
+| photogogo-v2.exe | 29,970,944 | 76FEB236642C48CCAF1A55F5768128F1DC6020DE2EC6FB5E9E976DF3562A4B16 |
+
+The first inspection passed MSI validation but exhausted disk during NSIS extraction. It was not recorded as a passing full inspection. The successful retry used a process-scoped compressed temporary directory, with no installer changes or system-setting changes. Four test executable/symbol files produced by this task were retired after recording their hashes, and five build-cache files received reversible LZX compression with identical before/after hashes. Sources, test reports, photos and retained rollback installers were preserved. Both runs' owned extraction trees and the retry temporary directory were removed; evidence reports remain. Application source was not rebuilt or changed between attempts.
