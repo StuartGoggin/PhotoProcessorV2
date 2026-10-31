@@ -51,3 +51,16 @@ MSI ProductVersion is 2.0.45. UpgradeCode remains `{9CBA7A69-EDA0-5480-A421-9DC9
 | photogogo-v2.exe | 29,970,944 | 76FEB236642C48CCAF1A55F5768128F1DC6020DE2EC6FB5E9E976DF3562A4B16 |
 
 The first inspection passed MSI validation but exhausted disk during NSIS extraction. It was not recorded as a passing full inspection. The successful retry used a process-scoped compressed temporary directory, with no installer changes or system-setting changes. Four test executable/symbol files produced by this task were retired after recording their hashes, and five build-cache files received reversible LZX compression with identical before/after hashes. Sources, test reports, photos and retained rollback installers were preserved. Both runs' owned extraction trees and the retry temporary directory were removed; evidence reports remain. Application source was not rebuilt or changed between attempts.
+
+## Delivery
+
+Receipt commit `8ebc237a273b58e97b0034d5f86a914a72e9b629` was atomically published to GitHub `master` and `SWG/adaptive-archive`, with annotated tag `v2.0.45` pointing to the receipt. Remote read-back verified both heads and the peeled tag. The installed application remains built from `4951c3f7`. This subsequent delivery-note commit changes documentation only. The other local master and subject-finishing worktrees remain at their original commits.
+
+Published through Personal to GoggoVille **#swghermes** (`C0BDK1DDZTM`) on **31 October 2026**:
+
+- EXE parent: **14:22:37 AEDT**, timestamp `1793416957.613269`, file `F0CDK65BCBD`. HTTP 200 acknowledged exactly **130,047,754 bytes**, in 101.0 seconds. [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793416957613269).
+- MSI reply: **14:26:52 AEDT**, timestamp `1793417212.620689`, file `F0CDL4Q37JR`. HTTP 200 acknowledged exactly **220,979,320 bytes**, in 150.3 seconds. [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1793417212620689).
+
+Installer sizes and SHA-256 values were checked immediately before each upload. Complete thread read-back verified both file identities/names, captions, hashes, test instructions and rollback guidance, with no remaining thread pages. Local receipt: `test-output/release-2.0.45-delivery.json`. These checks establish local hashes, exact HTTP byte acknowledgements and accessible Slack metadata; they do not claim an independent download/hash of Slack-hosted bytes.
+
+The first EXE request failed during local request construction, before sending bytes: unlike the earlier release, the current Windows user PAC resolved the file host directly and returned no proxy URI. A bounded read-only check confirmed HTTP 200 by the direct route; both uploads then succeeded using that current route. No system settings changed, no duplicate upload slot or release post was created, and no signed upload URLs or credentials are saved in the repository.
