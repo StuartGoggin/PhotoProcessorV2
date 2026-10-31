@@ -33,6 +33,8 @@ try {
   for (const name of ["B&W", "Enhanced", "Crops", "Cropped B&W", "Cropped enhanced"]) assert.equal(await page.getByLabel(`${name} archive rule`, { exact: true }).inputValue(), "google_selected");
   assert.equal(await page.getByLabel("Exclude trashed photos and their versions").isChecked(), true);
   assert.equal(await page.getByLabel("Back up PhotoGoGo library metadata").isChecked(), false);
+  assert.equal(await page.getByLabel("Archive transfer concurrency", { exact: true }).inputValue(), "auto");
+  assert.equal(await page.getByLabel("Archive verification scope", { exact: true }).inputValue(), "latest");
   assert.equal(await queueButton(page).count(), 0);
   assert.equal((await calls(page, "start_transfer")).length, 0);
   report.checks.push("Safe defaults keep all non-trash originals, select generated versions by their local Google checkbox, exclude metadata and require a preview before queuing");
@@ -80,16 +82,23 @@ try {
   await previewButton(page).click(); await queueButton(page).waitFor();
   await page.evaluate(() => { window.__archiveQueueDelay = true; });
   await queueButton(page).click(); await page.waitForFunction(() => !!window.__resolveArchiveQueue);
+  assert.equal(await page.getByLabel("Archive transfer concurrency", { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByLabel("Archive verification scope", { exact: true }).isDisabled(), true);
   await page.keyboard.press("Enter"); await page.keyboard.press("Enter");
   assert.equal((await calls(page, "start_transfer")).length, 1);
-  assert.deepEqual((await calls(page, "start_transfer"))[0].args, { stagingDir: "D:\\Stage", archiveDir: "E:\\Archive", previewId: "archive-preview-3" });
+  assert.deepEqual((await calls(page, "start_transfer"))[0].args, { stagingDir: "D:\\Stage", archiveDir: "E:\\Archive", previewId: "archive-preview-3", concurrency: null });
   await page.evaluate(() => { window.__archiveQueueDelay = false; window.__resolveArchiveQueue(); });
   await page.getByRole("status").filter({ hasText: "Queued transfer job transfer-1" }).waitFor();
   assert.equal(await queueButton(page).count(), 0);
   await page.getByText("Reviewed selection queued in core Jobs.", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Queue Verify Job", exact: true }).click();
-  assert.deepEqual((await calls(page, "verify_checksums"))[0].args, { archiveDir: "E:\\Archive" });
+  assert.deepEqual((await calls(page, "verify_checksums"))[0].args, { archiveDir: "E:\\Archive", verificationScope: "latest" });
   report.checks.push("Single-use native preview ID queues exactly one existing core transfer job, displays the standard job card and retains independent checksum verification");
+  await page.getByLabel("Archive verification scope", { exact: true }).selectOption("archive");
+  await page.getByRole("button", { name: "Queue Verify Job", exact: true }).click();
+  assert.deepEqual((await calls(page, "verify_checksums"))[1].args, { archiveDir: "E:\\Archive", verificationScope: "archive" });
+  await page.getByText("Verifying the whole archive MD5 index", { exact: true }).waitFor();
+  report.checks.push("Latest-transfer and whole-archive verification are explicit native scopes and the active verification job describes its actual scope");
   await page.evaluate(() => { window.__archiveStale = true; });
   await previewButton(page).click(); await queueButton(page).click();
   await page.getByRole("alert").filter({ hasText: "Generate a fresh preview" }).waitFor();
@@ -123,6 +132,53 @@ try {
   const stored = await malformed.evaluate(() => JSON.parse(localStorage.getItem("photogogo.archive-rules.v1")));
   assert.equal("previewId" in stored, false);
   report.checks.push("Malformed or unsupported persisted preferences restore safe values and discard unknown properties");
+
+  const tuned = await fixture(); const concurrency = tuned.getByLabel("Archive transfer concurrency", { exact: true });
+  assert.deepEqual(await concurrency.locator("option").evaluateAll(options => options.map(option => option.value)), ["auto", "1", "2", "4", "8"]);
+  await tuned.getByLabel("Archive scope").selectOption("folder"); await tuned.getByLabel("Folder inside staging").fill("D:\\Stage\\Selected event");
+  await tuned.getByLabel("Originals archive rule", { exact: true }).selectOption("rated");
+  await tuned.getByLabel("Originals minimum rating", { exact: true }).selectOption("3");
+  await previewButton(tuned).click(); await queueButton(tuned).waitFor();
+  const reviewedRequest = (await calls(tuned, "preview_archive_transfer"))[0].args.request;
+  for (const value of ["1", "2", "4", "8", "auto", "4"]) {
+    await concurrency.selectOption(value); assert.equal(await queueButton(tuned).isVisible(), true);
+    assert.equal((await calls(tuned, "preview_archive_transfer")).length, 1);
+    assert.equal((await calls(tuned, "start_transfer")).length, 0);
+  }
+  assert.equal(reviewedRequest.scopeDir, "D:\\Stage\\Selected event"); assert.deepEqual(reviewedRequest.rules.originals, { mode: "rated", minStars: 3 });
+  await queueButton(tuned).click();
+  assert.deepEqual((await calls(tuned, "start_transfer"))[0].args, { stagingDir: "D:\\Stage", archiveDir: "E:\\Archive", previewId: "archive-preview-1", concurrency: 4 });
+  assert.deepEqual((await calls(tuned, "preview_archive_transfer"))[0].args.request, reviewedRequest);
+  report.checks.push("Auto and bounded fixed concurrency change execution only; a rated folder selection stays reviewed under the same single-use native preview without widening or re-planning");
+
+  await tuned.evaluate(() => Object.assign(window.__archiveJobs[0], { status: "running", currentPhase: "archive_pipeline", currentFile: "horse.CR3", done: 2, processed: 1, resultCount: 2, speedMbps: 20, statusLine: "Fixed 4 · 4 worker limit / 3 active · 1 hashing, 0 checking, 1 copying, 1 verifying · 32.5 MiB/s verified · 20.0 MiB/s copied · 45.0/137.5 MiB selected bytes verified" }));
+  await tuned.getByText("Copying and verifying — overlapping file pipeline", { exact: true }).waitFor();
+  const pipelineStatus = tuned.getByRole("status").filter({ hasText: "4 worker limit / 3 active" });
+  await pipelineStatus.waitFor(); assert.match(await pipelineStatus.innerText(), /1 hashing, 0 checking, 1 copying, 1 verifying/);
+  assert.match(await pipelineStatus.innerText(), /32\.5 MiB\/s verified/); assert.match(await pipelineStatus.innerText(), /20\.0 MiB\/s copied/);
+  const transferCard = tuned.getByRole("heading", { name: "Transfer to Archive", exact: true, level: 3 }).locator("..").locator("..").locator("..");
+  await transferCard.getByText("Copied", { exact: true }).locator("..").getByText("1", { exact: true }).waitFor();
+  await transferCard.getByText("Verified", { exact: true }).locator("..").getByText("2", { exact: true }).waitFor();
+  assert.equal(await transferCard.getByText("Uploaded", { exact: true }).count(), 0);
+  await tuned.locator(".archive-fixture").evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await tuned.screenshot({ path: `${output}/archive-adaptive-progress.png` });
+  await tuned.evaluate(() => Object.assign(window.__archiveJobs[0], { currentPhase: "archive_recovery", statusLine: "Checking archive recovery records before starting file work" }));
+  await tuned.getByText("Checking archive recovery records", { exact: true }).waitFor();
+  report.checks.push("Core job status exposes bounded workers/stages, copied versus verified counters and separate verified/copied MiB/s; confirmed duplicates never inflate an Uploaded label, and recovery has its own phase");
+
+  assert.equal(await tuned.evaluate(() => localStorage.getItem("photogogo.archive-concurrency.v1")), "4");
+  await tuned.reload(); await previewButton(tuned).waitFor();
+  assert.equal(await tuned.getByLabel("Archive transfer concurrency", { exact: true }).inputValue(), "4");
+  assert.equal(await queueButton(tuned).count(), 0); assert.equal(await tuned.getByLabel("Archive scope").inputValue(), "all");
+  assert.equal(await tuned.getByLabel("Archive verification scope", { exact: true }).inputValue(), "latest");
+  for (const unsafe of ["0", "16", "4.5", '{"concurrency":"8","scopeDir":"D:\\\\Other","previewId":"old"}']) {
+    await tuned.evaluate(value => localStorage.setItem("photogogo.archive-concurrency.v1", value), unsafe);
+    await tuned.reload(); await previewButton(tuned).waitFor();
+    assert.equal(await tuned.getByLabel("Archive transfer concurrency", { exact: true }).inputValue(), "auto");
+    assert.equal(await tuned.evaluate(() => localStorage.getItem("photogogo.archive-concurrency.v1")), "auto");
+    assert.equal(await queueButton(tuned).count(), 0); assert.equal((await calls(tuned, "start_transfer")).length, 0);
+  }
+  report.checks.push("Only an allowed concurrency token persists; invalid or object-shaped values restore Auto, while paths, scope, reviewed tokens and verification scope are not resurrected");
   assert.deepEqual(errors, []); report.complete = true;
   console.log(`PASS: ${report.checks.length} archive transfer browser checks`);
 } catch (error) { report.error = String(error?.stack || error); console.error(error); process.exitCode = 1; }

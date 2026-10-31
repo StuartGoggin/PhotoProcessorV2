@@ -1,6 +1,11 @@
 import type { ArchivePreferences, ArchiveRuleMode, ArchiveVariantKey } from "../types/archiveTransfer";
 
 export const ARCHIVE_PREFERENCES_KEY = "photogogo.archive-rules.v1";
+export const ARCHIVE_CONCURRENCY_KEY = "photogogo.archive-concurrency.v1";
+export function readArchiveConcurrency(): string {
+  try { const value=localStorage.getItem(ARCHIVE_CONCURRENCY_KEY); if(value && ["auto","1","2","4","8"].includes(value))return value; } catch { /* Safe default. */ }
+  return "auto";
+}
 export const ARCHIVE_VARIANTS: Array<{ key: ArchiveVariantKey; label: string }> = [
   { key: "originals", label: "Originals" }, { key: "bw", label: "B&W" },
   { key: "enhanced", label: "Enhanced" }, { key: "crops", label: "Crops" },

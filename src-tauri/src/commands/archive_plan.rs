@@ -291,7 +291,7 @@ fn library_metadata(path: &Path) -> bool {
     matches!(
         n.as_str(),
         ".photogogo-curation.json"
-              | ".photogogo-raw.json"
+            | ".photogogo-raw.json"
             | ".photogogo-event.json"
             | ".photogogo.staging-tags.json"
             | ".faces_db.json"
@@ -400,7 +400,7 @@ fn roots(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String> {
 }
 
 fn build(request: Request) -> Result<FrozenPlan, String> {
-    let raw_epoch=super::raw_development::manifest::snapshot()?;
+    let raw_epoch = super::raw_development::manifest::snapshot()?;
     for r in [
         &request.rules.originals,
         &request.rules.bw,
@@ -721,8 +721,15 @@ impl FrozenPlan {
     /// Legacy sidecars have no trustworthy freshness identity. Fresh hashes stop
     /// a modified source being deduplicated against its previously archived bytes.
     pub(super) fn hash_source(&self, path: &Path) -> Result<String, String> {
+        self.hash_source_checked(path, &|| false)
+    }
+    pub(super) fn hash_source_checked(
+        &self,
+        path: &Path,
+        checkpoint: &dyn Fn() -> bool,
+    ) -> Result<String, String> {
         self.check_source(path)?;
-        let hash = crate::utils::compute_md5(path).map_err(|e| e.to_string())?;
+        let hash = protected_hash(path, checkpoint)?.hash;
         self.check_source(path)?;
         Ok(hash)
     }
@@ -733,12 +740,31 @@ impl FrozenPlan {
         expected_hash: &str,
         mut checkpoint: impl FnMut() -> Result<(), String>,
     ) -> Result<u64, String> {
+        self.copy_verified_with_intent(
+            source,
+            destination,
+            expected_hash,
+            &mut checkpoint,
+            &mut |_, _, _| Ok(()),
+            &|_| {},
+        )
+    }
+    pub(super) fn copy_verified_with_intent(
+        &self,
+        source: &Path,
+        destination: &Path,
+        expected_hash: &str,
+        checkpoint: &mut dyn FnMut() -> Result<(), String>,
+        before_publish: &mut dyn FnMut(&Path, &str, u64) -> Result<(), String>,
+        phase: &dyn Fn(&str),
+    ) -> Result<u64, String> {
         use md5::Md5;
         let bytes = self.check_source(source)?;
         let relative = destination
             .strip_prefix(&self.archive)
             .map_err(|_| "Archive destination is outside its root.")?;
         safe_destination(&self.archive, &normalized(relative))?;
+        phase("copy");
         let mut hasher = Md5::new();
         let mut staged = super::import_safety::stage_copy(
             source,
@@ -756,11 +782,18 @@ impl FrozenPlan {
             );
         }
         self.check_source(source)?;
-        staged.verify(expected_hash, |p| {
-            crate::utils::compute_md5(p).map_err(|e| e.to_string())
-        })?;
+        phase("verify");
+        {
+            let control = std::cell::RefCell::new(&mut *checkpoint);
+            staged.verify(expected_hash, |p| {
+                protected_hash(p, &|| control.borrow_mut()().is_err()).map(|result| result.hash)
+            })?;
+        }
         checkpoint()?;
         safe_destination(&self.archive, &normalized(relative))?;
+        phase("record");
+        before_publish(destination, expected_hash, bytes)?;
+        checkpoint()?;
         staged.publish(destination)?;
         Ok(bytes)
     }
@@ -790,4 +823,62 @@ impl FrozenPlan {
         }
         Ok(expected.bytes)
     }
+}
+
+/// Keep an archived duplicate read-only through the decision that records it.
+pub(super) struct ProtectedHash {
+    pub hash: String,
+    pub bytes: u64,
+    _file: fs::File,
+}
+pub(super) fn protected_hash(
+    path: &Path,
+    checkpoint: &dyn Fn() -> bool,
+) -> Result<ProtectedHash, String> {
+    use md5::{Digest, Md5};
+    use std::io::Read;
+    if checkpoint() {
+        return Err("Archive operation stopped during checksum reading.".into());
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(1);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("Cannot read archive checksum for '{}': {e}", path.display()))?;
+    let before = file.metadata().map_err(|e| e.to_string())?;
+    if !before.is_file() {
+        return Err("Archive checksum input is not a regular file.".into());
+    }
+    let mut hash = Md5::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    let mut bytes = 0u64;
+    loop {
+        if checkpoint() {
+            return Err("Archive operation stopped during checksum reading.".into());
+        }
+        let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        bytes += n as u64;
+        hash.update(&buffer[..n]);
+    }
+    let after = file.metadata().map_err(|e| e.to_string())?;
+    if bytes != before.len()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+        || before.created().ok() != after.created().ok()
+    {
+        return Err("File changed while its archive checksum was being read.".into());
+    }
+    Ok(ProtectedHash {
+        hash: hex::encode(hash.finalize()),
+        bytes,
+        _file: file,
+    })
 }

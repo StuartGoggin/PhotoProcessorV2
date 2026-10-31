@@ -54,7 +54,11 @@ fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) 
     fixture.__archiveJobs.push({ id, task: "transfer", status: "queued", createdAt: "2026-10-26T10:01:00Z", stagingDir: args.stagingDir, archiveDir: args.archiveDir, scopeDir: args.stagingDir, total: 4, done: 0, processed: 0, resultCount: 0, currentFile: "Queued reviewed archive selection", errors: [], logs: ["Reviewed selection queued in core Jobs."], statusLine: "Queued", pauseRequested: false, abortRequested: false });
     return id;
   }
-  if (command === "verify_checksums") return "verify-1";
+  if (command === "verify_checksums") {
+    const id = `verify-${fixture.__archiveCalls.filter((call: any) => call.command === "verify_checksums").length}`;
+    fixture.__archiveJobs.push({ id, task: "verify_checksums", status: "queued", createdAt: "2026-10-26T10:02:00Z", stagingDir: "", archiveDir: args.archiveDir, scopeDir: args.archiveDir, currentPhase: args.verificationScope === "archive" ? "verify_checksums_archive" : "verify_checksums_latest", total: 4, done: 0, processed: 0, resultCount: 0, currentFile: "Queued verification", errors: [], logs: [], statusLine: "Queued", pauseRequested: false, abortRequested: false });
+    return id;
+  }
   if (["pause_process_job", "resume_process_job", "abort_process_job"].includes(command)) return true;
   throw new Error(`Unexpected archive fixture command: ${command}`);
 } };

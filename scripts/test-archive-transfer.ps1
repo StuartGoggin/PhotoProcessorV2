@@ -30,7 +30,7 @@ try {
     if (-not $binary.StartsWith($projectRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw 'Use the test harness built in this workspace.'
     }
-    $groups = @('commands::archive_plan', 'commands::transfer::archive_transfer_tests')
+    $groups = @('commands::archive_plan', 'commands::archive_ledger', 'commands::archive_transfer')
     if ($AllNative) { $groups += 'all-native' }
     $checks = @()
     foreach ($group in $groups) {

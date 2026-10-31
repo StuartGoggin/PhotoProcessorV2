@@ -22,6 +22,9 @@ function getJobPhaseLabel(job: ProcessJob | null): string {
     return "Waiting for job.";
   }
 
+  const phaseLabels: Record<string,string>={archive_recovery:"Checking archive recovery records",archive_pipeline:"Copying and verifying — overlapping file pipeline",verify_checksums_latest:"Verifying the latest recorded transfer",verify_checksums_archive:"Verifying the whole archive MD5 index"};
+  if(job.currentPhase && phaseLabels[job.currentPhase])return phaseLabels[job.currentPhase];
+
   const lastLog = job.logs[job.logs.length - 1]?.toLowerCase() ?? "";
   if (job.task === "transfer") {
     if (lastLog.includes("checksum generation phase") || lastLog.includes("transfer manifest") || lastLog.includes("master manifest")) {
@@ -42,6 +45,7 @@ export default function Transfer() {
   const { processJobs } = useJobsMonitor(true, 1000);
   const [queueingTransfer, setQueueingTransfer] = useState(false);
   const [queueingVerify, setQueueingVerify] = useState(false);
+  const [verificationScope,setVerificationScope]=useState("latest");
   const [queuedTransferJobId, setQueuedTransferJobId] = useState<string | null>(null);
   const [queuedVerifyJobId, setQueuedVerifyJobId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -72,7 +76,7 @@ export default function Transfer() {
 
     if (job.status === "completed") {
       setQueuedTransferJobId(null);
-      setMessage(`Transfer completed. Copied ${job.processed} files and checksummed ${job.resultCount}.`);
+      setMessage(`Transfer completed. Copied ${job.processed} files; verified ${job.resultCount}, including confirmed existing duplicates. Archive checksum records are saved.`);
     } else if (job.status === "failed") {
       setQueuedTransferJobId(null);
       setError(job.errors[job.errors.length - 1] ?? "Transfer failed. Check Jobs for details.");
@@ -117,6 +121,7 @@ export default function Transfer() {
     try {
       const jobId = await invoke<string>("verify_checksums", {
         archiveDir: settings.archive_dir,
+        verificationScope,
       });
       setQueuedVerifyJobId(jobId);
       setMessage(`Queued checksum verification job ${jobId}. Progress will appear here and in Jobs.`);
@@ -196,18 +201,20 @@ export default function Transfer() {
           label={job.currentFile || "Waiting"}
           extra={
             job.speedMbps && job.speedMbps > 0
-              ? `${progress.toFixed(0)}% • ${job.done}/${job.total} • ${job.speedMbps.toFixed(1)} MB/s`
+              ? `${progress.toFixed(0)}% • ${job.done}/${job.total} • ${job.speedMbps.toFixed(1)} MiB/s copied`
               : `${progress.toFixed(0)}% • ${job.done}/${job.total}`
           }
         />
 
+        {job.statusLine && <p role="status" className="rounded bg-surface-900 px-3 py-2 text-xs text-cyan-100 leading-relaxed">{job.statusLine}</p>}
+
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div className="rounded bg-surface-900 px-3 py-2">
-            <div className="text-gray-500">{getProcessAttemptLabel(job.task)}</div>
+            <div className="text-gray-500">{job.task === "transfer" ? "Copied" : getProcessAttemptLabel(job.task)}</div>
             <div className="text-lg font-semibold text-white">{job.processed}</div>
           </div>
           <div className="rounded bg-surface-900 px-3 py-2">
-            <div className="text-gray-500">{getProcessResultLabel(job.task)}</div>
+            <div className="text-gray-500">{job.task === "transfer" ? "Verified" : getProcessResultLabel(job.task)}</div>
             <div className="text-lg font-semibold text-cyan-300">{job.resultCount}</div>
           </div>
         </div>
@@ -292,10 +299,11 @@ export default function Transfer() {
       <ArchiveSelectionPanel stagingDir={settings?.staging_dir ?? ""} archiveDir={settings?.archive_dir ?? ""} externalBusy={queueingVerify} onBusyChange={setQueueingTransfer} onQueued={jobId => { setQueuedTransferJobId(jobId); setError(null); setMessage(`Queued transfer job ${jobId}. Progress appears here and in Jobs. Generate a new preview before another transfer.`); }} />
 
       <div className="flex gap-3 items-center flex-wrap">
+        <label className="text-xs text-gray-300 space-y-1"><span className="block">Verify scope</span><select className="input-field" aria-label="Archive verification scope" value={verificationScope} disabled={queueingTransfer || queueingVerify} onChange={event=>setVerificationScope(event.target.value)}><option value="latest">Latest recorded transfer</option><option value="archive">Whole archive — master MD5 index</option></select></label>
         <button className="btn-secondary" onClick={verifyChecksums} disabled={queueingTransfer || queueingVerify}>
           {queueingVerify ? "Queueing Verify..." : "Queue Verify Job"}
         </button>
-        <span className="text-xs text-gray-400">Independently verify the latest transfer’s checksum manifest.</span>
+        <span className="text-xs text-gray-400">{verificationScope === "latest" ? "Recheck the confirmed files recorded by the latest completed, partial or stopped run. Requires a manifest made by this version." : "Recheck every file in the master index. On slow connections or large archives this can take a long time."}</span>
       </div>
 
       <div className="space-y-6">
@@ -310,7 +318,7 @@ export default function Transfer() {
         <section className="space-y-3">
           <div>
             <h3 className="text-sm uppercase tracking-wide text-gray-400">Latest Verification Job</h3>
-            <p className="text-xs text-gray-500 mt-1">Verify the latest transfer manifest as a separate process job.</p>
+            <p className="text-xs text-gray-500 mt-1">{activeVerifyJob ? getJobPhaseLabel(activeVerifyJob) : "Choose Latest recorded transfer or Whole archive, then queue an independent verification job."}</p>
           </div>
           {renderJobCard(activeVerifyJob, "No checksum verification job queued yet.")}
         </section>

@@ -3,12 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { settleCuration } from "../utils/curationPersistence";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ArchivePreferences, ArchivePreview, ArchiveRequest, ArchiveRuleMode, ArchiveVariantKey } from "../types/archiveTransfer";
-import { ARCHIVE_PREFERENCES_KEY, ARCHIVE_VARIANTS, archiveBytes, archiveKindLabel, archivePreset, readArchivePreferences } from "../utils/archiveTransfer";
+import { ARCHIVE_PREFERENCES_KEY, ARCHIVE_VARIANTS, ARCHIVE_CONCURRENCY_KEY, archiveBytes, archiveKindLabel, archivePreset, readArchivePreferences, readArchiveConcurrency } from "../utils/archiveTransfer";
 
 interface Props { stagingDir: string; archiveDir: string; externalBusy: boolean; onBusyChange: (busy: boolean) => void; onQueued: (id: string) => void }
 const PAGE_SIZE = 50;
 export default function ArchiveSelectionPanel({ stagingDir, archiveDir, externalBusy, onBusyChange, onQueued }: Props) {
   const [preferences, setPreferences] = useState(readArchivePreferences);
+  const [concurrency,setConcurrency]=useState(readArchiveConcurrency);
+  useEffect(()=>{try{localStorage.setItem(ARCHIVE_CONCURRENCY_KEY,concurrency);}catch{/* Optional machine preference. */}},[concurrency]);
   const [scopeMode, setScopeMode] = useState("all");
   const [scopePath, setScopePath] = useState("");
   const [preview, setPreview] = useState<{ signature: string; value: ArchivePreview } | null>(null);
@@ -62,7 +64,7 @@ export default function ArchiveSelectionPanel({ stagingDir, archiveDir, external
     // Preview IDs are single use. Never queue a saved list silently after an error.
     setPreview(null);
     try {
-      const id = await invoke<string>("start_transfer", { stagingDir: current.stagingDir, archiveDir: current.archiveDir, previewId: current.id });
+      const id = await invoke<string>("start_transfer", { stagingDir: current.stagingDir, archiveDir: current.archiveDir, previewId: current.id, concurrency: concurrency === "auto" ? null : Number(concurrency) });
       if (alive.current) onQueued(id);
     } catch (failure) { if (alive.current) setError(`${String(failure)} Generate a fresh preview before trying again.`); }
     finally { pending.current = false; if (alive.current) { setBusy(null); onBusyChange(false); } }
@@ -75,6 +77,7 @@ export default function ArchiveSelectionPanel({ stagingDir, archiveDir, external
     <div className="card space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap"><div><h3 className="text-base font-semibold text-white">Choose what to archive</h3><p className="text-xs text-gray-400 mt-1">Your staged library and its metadata stay in place. These rules only choose what is copied.</p></div><span className="text-xs rounded-full border border-cyan-800 px-3 py-1 text-cyan-200">Copy & verify</span></div>
       <div className="grid sm:grid-cols-2 gap-3">
+        <label className="space-y-1 text-xs text-gray-300"><span>Transfer speed</span><select className="input-field w-full" aria-label="Archive transfer concurrency" value={concurrency} disabled={disabled} onChange={event=>setConcurrency(event.target.value)}><option value="auto">Auto — adapt to verified throughput</option><option value="1">Limit to 1 file at a time</option><option value="2">Limit to 2 files at a time</option><option value="4">Limit to 4 files at a time</option><option value="8">Limit to 8 files at a time</option></select><small className="block text-gray-500">Auto starts with two workers and tests a bounded 1–8 range as conditions change. Every new copy is still independently verified.</small></label>
         <label className="space-y-1 text-xs text-gray-300"><span>Archive scope</span><select className="input-field w-full" aria-label="Archive scope" value={scopeMode} disabled={disabled} onChange={event => { invalidate(); setScopeMode(event.target.value); }}><option value="all">All staging folders</option><option value="folder">One folder or event, including subfolders</option></select></label>
         <label className="space-y-1 text-xs text-gray-300"><span>Start with a preset</span><select className="input-field w-full" aria-label="Archive preset" value="custom" disabled={disabled} onChange={event => update(archivePreset(event.target.value))}><option value="custom">Choose preset… / custom rules</option><option value="default">All originals + Google-selected versions</option><option value="rated">Rated originals + Google-selected versions</option><option value="originals">Originals only</option><option value="selected">Only Google-selected photos</option><option value="all">All photo versions and videos</option></select></label>
       </div>
