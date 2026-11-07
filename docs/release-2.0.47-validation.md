@@ -126,7 +126,7 @@ These infrastructure/assertion errors are not represented as successful runs.
 
 ## Packaging and deployment boundary
 
-Built-source, package and delivery receipts are added after validation.
+Built-source, package and delivery receipts follow below.
 Retained 2.0.45/2.0.46 installers support rollback; Release and close PhotoGoGo
 before downgrading, then restart AJAZZ manually. The new bindings file is
 separate and ignored by older versions. No staging/media schema changes or
@@ -173,3 +173,37 @@ remains `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` from 2.0.46.
 | PhotoGoGoV2_2.0.47_x64-setup.exe | 130,906,040 | 2FFB9E4252EBDAB5BE913ACBA12F128C709EBAA4096DA9464AE760EFD5B39406 |
 | PhotoGoGoV2_2.0.47_x64_en-US.msi | 222,147,284 | E5FC94E9B4C1B9C737D166104208FBA927BFA82BCFE163A5EC09D45F54077432 |
 | photogogo-v2.exe | 30,180,864 | F24A04FE3B263D83399F7507D677C001B9FECCE83EE1EE7B1457C994632B3005 |
+
+## Publication and delivery
+
+Package receipt commit `336d4b74425806620bb22de967e492535b92926c` was atomically
+published to GitHub `master` and `SWG/akp03e-reconnect-controls`, with annotated
+tag `v2.0.47` pointing to it. Remote read-back verified both heads and the peeled
+tag. The application remains built from `0c0b4f43`; receipt/delivery documentation
+does not change the compiled source. Other local worktrees remain untouched.
+
+Published through Personal to GoggoVille **#swghermes** (`C0BDK1DDZTM`) on
+**8 November 2026**:
+
+- EXE parent timestamp `1794094877.594539`, file `F0CFY6WSFCL`. HTTP 200
+  acknowledged exactly **130,906,040 bytes**, in **91.6 seconds**, using the
+  current direct route. [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794094877594539).
+- MSI reply timestamp `1794095062.082339`, file `F0CFUAF6AG2`. HTTP 200
+  acknowledged exactly **222,147,284 bytes**, in **152.2 seconds**, using the
+  current direct route. [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794095062082339).
+
+Local bytes and SHA-256 hashes were rechecked immediately before each upload.
+Complete thread read-back verified both file identities, filenames, captions,
+hashes, byte counts, Identify instructions, manual AJAZZ restart and physical
+retest boundary, with no remaining pages. Local receipt is
+`test-output/release-2.0.47-delivery.json`. These checks establish local hashes,
+exact HTTP acknowledgements and accessible Slack metadata; they do not claim an
+independent download/hash of the Slack-hosted files. No signed upload URLs or
+credentials are stored in these files.
+
+The specific failed I/O operation on Stuart's unit remains unverified: no reply
+to the narrow diagnostic request had arrived at publication. Both installer
+posts identify this as a test build requiring physical connection recovery and
+button/dial/orientation checks. If the connection still fails, the new exact
+operation/error is the next diagnostic input. No render-PC installation,
+controller/vendor process access or user-media changes were performed here.
