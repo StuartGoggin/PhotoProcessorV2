@@ -30,3 +30,21 @@ Application version is 2.0.46. New locked packages are `ajazz-sdk 0.2.1` and `hi
 Built-source and package/delivery receipts are added after validation completes. Physical acceptance remains pending: six-key image position/orientation, every repeated press, three side buttons and all encoder turns/presses, live state, reconnect/Release and manual vendor restart. The pinned SDK's orientation differs from an independent implementation, so no physical orientation claim is made. See [the controller guide](akp03e-controller.md).
 
 Unrelated cleanup scripts and JSON summaries present before this feature are left untouched. The other worktrees, including subject finishing, are outside this feature's scope.
+
+## Built source
+
+Built application source: `c68d6978afd29ff500f3efa925c6c4d42b5202c0`, based on `origin/master` at `dd927f86ea62f31caddcc0e478ceaf055e19f3f7`. All feature source was committed before building. The four unrelated cleanup scripts/JSON summaries remained untracked and were excluded from the release. No tracked application source changed during packaging.
+
+The production frontend identifies `2.0.46 / 20261107T222128864Z-c68d6978+local`. The literal `+local` is expected because of those untracked files (and Vite's temporary configuration module); it is retained here rather than representing a wholly clean checkout. The optimized native build completed in 5m 45s, with five existing native unused-code warnings and the existing frontend Browserslist/chunk-size notices; no controller-specific warning remained.
+
+## Finished installer inspection
+
+`test-output/release-2.0.46-inspection-20261107T223146170Z/report.json` reports `complete: true`. Both finished unsigned installers were extracted and inspected without installation. Their application bytes match the built executable after normalizing only Tauri's expected three-byte bundle marker. The exact managed media payload/source closure, 2,205-file ExifTool 13.59 closure, 440-resource RawTherapee 5.13 closure and all six controller source/notice files passed their checks. Both relocated packages ran the accepted Auto-finish-65 CR3 smoke conversion with PATH empty. No installed application, controller, live AJAZZ process or render-PC state was changed by inspection.
+
+MSI ProductVersion is 2.0.46. UpgradeCode remains `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` from 2.0.45. The 2.0.45 installers remain available for rollback. Physical controller acceptance is still pending; package validation does not establish USB orientation, real input delivery or an installed upgrade on Stuart's PC.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| PhotoGoGoV2_2.0.46_x64-setup.exe | 130,738,252 | F4EE8F3E020D35441AE8119749FD61A7F1CA17A9F3F32FE5C2A681294D1EDBBB |
+| PhotoGoGoV2_2.0.46_x64_en-US.msi | 221,696,220 | BAA370ECBC28A3F7CD4C5BB5F2E2DBDED9F9BC96599F5051E2153A9BB6A7C4C6 |
+| photogogo-v2.exe | 30,349,824 | 2F268572ACFDBA9204BD0DE455A5F387F39680F0437D887812A0D74BA251130F |
