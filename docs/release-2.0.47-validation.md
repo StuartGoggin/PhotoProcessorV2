@@ -132,3 +132,44 @@ before downgrading, then restart AJAZZ manually. The new bindings file is
 separate and ignored by older versions. No staging/media schema changes or
 automatic vendor restart are introduced. The actual remote connection cause
 and recovery remain unverified until the returned log or physical retest.
+
+## Built source
+
+Built application source is `0c0b4f43fffda22fc7103809d31711a9ba791fd2`, based on
+`origin/master` at `040a6b94f6214239a149968272bf9f8e98b69b9f`. All controller
+source, source closure, tests, version and guides were committed before build.
+The four unrelated cleanup scripts/JSON summaries remain untracked and excluded
+from release commits. No tracked application source changed during packaging.
+
+The production frontend identifies
+`2.0.47 / 20261107T232651554Z-0c0b4f43+local`. The literal `+local` is retained:
+the unrelated untracked files and Vite's temporary configuration module make a
+wholly clean-checkout claim inappropriate. The application source is the fixed
+commit above; subsequent package/delivery documentation does not change it.
+
+## Finished packages
+
+The optimized native build completed in **4m 49s**, with the same five existing
+native unused-code warnings and existing frontend Browserslist/chunk-size
+notices. No controller-specific compiler warning remains.
+
+`test-output/release-2.0.47-inspection-20261107T233619772Z/report.json` reports
+`complete: true`. Both unsigned packages were extracted without installation.
+Application bytes match the built executable after normalizing only Tauri's
+expected three-byte bundle marker. The pinned media/source closure, 2,205-file
+ExifTool 13.59 closure, 440-resource RawTherapee 5.13 closure, upstream controller
+archives/notices and all **28 modified SDK source files** passed. Dotfiles and
+the change notice are present. The modified-source verifier checks the complete
+extracted source tree rather than trusting the original archive hash alone.
+
+Both relocated packages decoded the supplied CR3 with the accepted
+Auto-finish-65 profile, PATH empty, at **6014 × 4016**, with the original hash
+unchanged and RTv4_sRGB ICC. This is a runtime packaging check, not new camera
+quality or physical USB acceptance. MSI ProductVersion is 2.0.47; UpgradeCode
+remains `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` from 2.0.46.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| PhotoGoGoV2_2.0.47_x64-setup.exe | 130,906,040 | 2FFB9E4252EBDAB5BE913ACBA12F128C709EBAA4096DA9464AE760EFD5B39406 |
+| PhotoGoGoV2_2.0.47_x64_en-US.msi | 222,147,284 | E5FC94E9B4C1B9C737D166104208FBA927BFA82BCFE163A5EC09D45F54077432 |
+| photogogo-v2.exe | 30,180,864 | F24A04FE3B263D83399F7507D677C001B9FECCE83EE1EE7B1457C994632B3005 |
