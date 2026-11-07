@@ -27,7 +27,7 @@ Evidence lives under `test-output/controller-unit/`, `controller-browser/`, `lig
 
 Application version is 2.0.46. New locked packages are `ajazz-sdk 0.2.1` and `hidapi 2.6.7`; the direct Base64 dependency already existed transitively. Other dependencies were not updated. The exact unmodified source archives and original notices are included in `resources/controller-source`; the build and installer inspectors validate their pinned registry checksums. Existing FFmpeg, ExifTool and RAW engine bundles are unchanged.
 
-Built-source and package/delivery receipts are added after validation completes. Physical acceptance remains pending: six-key image position/orientation, every repeated press, three side buttons and all encoder turns/presses, live state, reconnect/Release and manual vendor restart. The pinned SDK's orientation differs from an independent implementation, so no physical orientation claim is made. See [the controller guide](akp03e-controller.md).
+Built-source, package and delivery receipts follow below. Physical acceptance remains pending: six-key image position/orientation, every repeated press, three side buttons and all encoder turns/presses, live state, reconnect/Release and manual vendor restart. The pinned SDK's orientation differs from an independent implementation, so no physical orientation claim is made. See [the controller guide](akp03e-controller.md).
 
 Unrelated cleanup scripts and JSON summaries present before this feature are left untouched. The other worktrees, including subject finishing, are outside this feature's scope.
 
@@ -48,3 +48,16 @@ MSI ProductVersion is 2.0.46. UpgradeCode remains `{9CBA7A69-EDA0-5480-A421-9DC9
 | PhotoGoGoV2_2.0.46_x64-setup.exe | 130,738,252 | F4EE8F3E020D35441AE8119749FD61A7F1CA17A9F3F32FE5C2A681294D1EDBBB |
 | PhotoGoGoV2_2.0.46_x64_en-US.msi | 221,696,220 | BAA370ECBC28A3F7CD4C5BB5F2E2DBDED9F9BC96599F5051E2153A9BB6A7C4C6 |
 | photogogo-v2.exe | 30,349,824 | 2F268572ACFDBA9204BD0DE455A5F387F39680F0437D887812A0D74BA251130F |
+
+## Publication and delivery
+
+Package receipt commit `f6aa3850fa7b00d8a4391053c642986954c1aa15` was atomically published to GitHub `master` and `SWG/akp03e-controller`, with annotated tag `v2.0.46`. Remote read-back verified both heads and the peeled tag at that commit. The installed application remains built from `c68d6978`; the receipt and this subsequent delivery note change documentation only. Other local worktrees remain untouched.
+
+Published through Personal to GoggoVille **#swghermes** (`C0BDK1DDZTM`) on **8 November 2026**:
+
+- EXE parent timestamp `1794091021.811279`, file `F0CFN3QV6G3`. HTTP 200 acknowledged exactly **130,738,252 bytes** in **108.9 seconds**, using the current direct route. [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794091021811279).
+- MSI reply timestamp `1794091219.902519`, file `F0CFP20CVGD`. HTTP 200 acknowledged exactly **221,696,220 bytes** in **144.4 seconds**, using the current direct route. [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794091219902519).
+
+Local file sizes and SHA-256 hashes were rechecked immediately before each upload. Full thread read-back verified file identities, names, captions, both hashes, exact byte counts, manual AJAZZ restart and physical-acceptance instructions, with no remaining thread pages. Local receipt: `test-output/release-2.0.46-delivery.json`. This establishes local hashes, exact HTTP acknowledgements and accessible Slack metadata; it does not claim an independent download/hash of the Slack-hosted files. No signed upload URLs or credentials are stored in these files.
+
+Physical AKP03E acceptance remains pending. Both the EXE and MSI post explicitly describe this as a test build and include the first physical test procedure. No installer was installed on the render PC and no live vendor application was stopped during development or packaging.
