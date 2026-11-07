@@ -20,8 +20,6 @@ dependencies = [
 [[package]]
 name = "ajazz-sdk"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10320f86148f1774e444c8fdb5ae2bbccdffee23abc2c3848cb291293590c54c"
 dependencies = [
  "hidapi",
  "image",
@@ -2985,7 +2983,7 @@ dependencies = [
 
 [[package]]
 name = "photogogo-v2"
-version = "2.0.46"
+version = "2.0.47"
 dependencies = [
  "ajazz-sdk",
  "anyhow",

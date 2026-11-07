@@ -6,12 +6,14 @@ import ControllerPanel from "../src/components/ControllerPanel";
 import type { TreeNode } from "../src/types";
 import "../src/styles.css";
 import { lightboxCommands, lightboxCropCommands } from "../src/utils/lightboxCommands";
+import { defaultLightboxBindings, parseLightboxBindings } from "../src/controller/lightboxBindings";
 
 const fixture = window as any;
 const controllerCallbacks = new Map<number, (event: unknown) => void>();
 const controllerListeners = new Map<number, number>();
 let controllerCallback = 0, controllerListener = 0, controllerClient = "", controllerSession = 0, controllerInput = 0, controllerEnabled = true;
 fixture.__controllerAcks = []; fixture.__controllerSurface = null;
+let controllerBindings = parseLightboxBindings(fixture.__controlsInitialBindings || defaultLightboxBindings());
 fixture.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: (_event: string, id: number) => controllerListeners.delete(id) };
 const controllerStatus = () => ({ enabled: controllerEnabled, phase: controllerEnabled ? "connected" : "disabled", message: "Synthetic AKP03E transport", client: controllerClient, session: "native-" + controllerSession, vendorStopped: true, brightness: 60 });
 fixture.__controlsNativeInput = (input: Record<string, unknown> = {}) => {
@@ -75,6 +77,13 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(
   if(command==="controller_configure") {controllerEnabled=args.enabled;return controllerStatus();}
   if(command==="controller_surface") {fixture.__controllerSurface=structuredClone(args.surface);return null;}
   if(command==="controller_ack") {fixture.__controllerAcks.push(structuredClone(args));return null;}
+  if(command==="controller_lightbox_bindings") {
+    if(args.bindings) {
+      if(fixture.__controlsBindingsError)throw Error(fixture.__controlsBindingsError);
+      controllerBindings=parseLightboxBindings(args.bindings);
+    }
+    return structuredClone(controllerBindings);
+  }
   if(command==="plugin:event|listen") {const id=++controllerListener;if(args.event==="controller-input")controllerListeners.set(id,args.handler);return id;}
   if(command==="plugin:event|unlisten") {controllerListeners.delete(args.eventId);return null;}
   if(command==="load_settings") return {staging_dir:currentRoot,source_root:"",archive_dir:"",exiftool_dir:""};

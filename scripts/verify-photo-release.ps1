@@ -209,7 +209,7 @@ foreach ($package in @(@{ kind='msi'; path=$msi },@{ kind='nsis'; path=$nsis }))
         $file = Get-Item -LiteralPath $package.path
         $packages += @{ path=$file.FullName; bytes=$file.Length; sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash; payloadsVerified=($expected.Count + 1); metadataRuntime=@{ version='13.59'; closureVerified=$true; relocatedWithoutPath=$true }; application=@{ sha256=(Get-FileHash -LiteralPath $applications[0].FullName -Algorithm SHA256).Hash; normalizedSha256=$application.sha256; bundleType=$application.bundleType; markerOffset=$application.markerOffset }; signature=(Get-AuthenticodeSignature -LiteralPath $file.FullName).Status.ToString() }
         $packages[-1].rawRuntime=@{version='5.13';closureVerified=$true;relocatedWithoutPath=$smoke;resources=@(Get-Content (Join-Path $rawDirectory 'runtime-manifest.json') -Raw|ConvertFrom-Json).files.Count}
-        if($controllerExpected){$packages[-1].controllerSources=@{sdk='ajazz-sdk 0.2.1';hid='hidapi 2.6.7';checksumsVerified=$true;licenceNoticesIncluded=$true}}
+        if($controllerExpected){$packages[-1].controllerSources=@{sdk='ajazz-sdk 0.2.1';hid='hidapi 2.6.7';checksumsVerified=$true;licenceNoticesIncluded=$true;modifiedSdk=(Get-Content -LiteralPath (Join-Path $controllerSource 'source-receipt.json') -Raw|ConvertFrom-Json).modified}}
     } finally {
         # Only this new run's exact, validated extraction directory is disposable.
         if ($extracted -notin @((Join-Path $reportRoot 'msi'),(Join-Path $reportRoot 'nsis'))) { throw 'Unsafe extraction cleanup target' }

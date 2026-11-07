@@ -1,9 +1,15 @@
 PhotoGoGo AKP03E controller - library notices and corresponding source
 
-PhotoGoGo links the unmodified ajazz-sdk 0.2.1 library, licensed under the
-Mozilla Public License 2.0. Its complete published source is included in
-ajazz-sdk-0.2.1.crate (a gzip-compressed tar archive), with the original licence
-and notices. No covered library source files have been modified.
+PhotoGoGo links ajazz-sdk 0.2.1 with a small local transport extension, licensed
+under the Mozilla Public License 2.0. The complete corresponding modified source
+is in ajazz-sdk-photogogo, the same directory used as the Cargo path dependency.
+Only src/device.rs and src/lib.rs are modified; PHOTOGOGO-CHANGES.md describes
+exact collection opening and the separate AKP03E press-only reader. The original
+API/readers and other models are unchanged. Every source file has a checksum in
+source-receipt.json. The original LICENSE and author notices are retained.
+
+The complete unmodified published source is also included in
+ajazz-sdk-0.2.1.crate (a gzip-compressed tar archive).
 
 The HID adapter is hidapi 2.6.7. Its published source, including native HID
 implementation and licence notices, is included in hidapi-2.6.7.crate.

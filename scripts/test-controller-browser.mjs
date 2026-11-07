@@ -12,12 +12,13 @@ let serverLog = ""; server.stdout.on("data", data => { serverLog += data; }); se
 const url = "http://127.0.0.1:5187/controller-preview.html";
 let browser; const errors = [], checks = [];
 const group = async (name, work) => { await work(); checks.push(name); console.log("PASS", name); };
-async function page(width = 1360) {
+async function page(width = 1360, initial = {}) {
   const result = await browser.newPage({ viewport: { width, height: 1000 } });
   result.on("pageerror", error => errors.push(error.message)); result.setDefaultTimeout(10000);
+  await result.addInitScript(value=>Object.assign(window,value),initial);
   await result.goto(url); await result.getByRole("button", { name: "AKP03E controller", exact: true }).click();
-  await result.getByRole("dialog", { name: "Your AKP03E, ready to work" }).waitFor();
-  await result.waitForFunction(() => window.__controllerState().status.phase === "connected" && window.__controllerFrames.length > 0);
+  await result.getByRole("dialog", { name: "Your AKP03E controller" }).waitFor();
+  await result.waitForFunction(() => window.__controllerState().status.phase === "connected" && window.__controllerState().bindingsReady && window.__controllerFrames.length > 0);
   return result;
 }
 try {
@@ -67,6 +68,58 @@ try {
     assert.equal(await p.getByRole("button", { name: "Controller key 1: Three stars" }).isDisabled(), true);
     await p.getByRole("button", { name: "Connect / retry", exact: true }).click();
     await p.waitForFunction(() => window.__controllerState().status.enabled); assert.equal(await p.getByRole("checkbox").isChecked(), true); await p.close();
+  });
+  await group("Dial drafts restore saved preferences, Cancel preserves them and failed Apply leaves the saved controls intact", async () => {
+    const saved={version:1,dials:[{turn:"zoom",press:"next"},{turn:"off",press:"off"},{turn:"browse",press:"fit"}]};
+    const p=await page(1360,{__controllerInitialBindings:saved});
+    assert.equal(await p.getByLabel("Dial 1 turn action",{exact:true}).inputValue(),"zoom");
+    await p.getByLabel("Dial 1 turn action",{exact:true}).selectOption("browse");
+    await p.getByRole("button",{name:"Cancel changes",exact:true}).click();
+    assert.equal(await p.getByLabel("Dial 1 turn action",{exact:true}).inputValue(),"zoom");
+    assert.deepEqual(await p.evaluate(()=>window.__controllerCalls.filter(call=>call.command==="bindings")),[]);
+    await p.getByLabel("Dial 1 press action",{exact:true}).selectOption("trash");
+    await p.evaluate(()=>window.__controllerFailBindings=true);
+    await p.getByRole("button",{name:"Apply dial controls",exact:true}).click();
+    await p.getByRole("alert").filter({hasText:"previous saved controls remain unchanged"}).waitFor();
+    assert.deepEqual(await p.evaluate(()=>window.__controllerState().lightboxBindings),saved);
+    await p.evaluate(()=>window.__controllerFailBindings=false);
+    await p.getByRole("button",{name:"Apply dial controls",exact:true}).click();
+    await p.waitForFunction(()=>window.__controllerState().lightboxBindings.dials[0].press==="trash");
+    assert.equal(await p.getByRole("button",{name:"Apply dial controls",exact:true}).isDisabled(),true);await p.close();
+  });
+  await group("Identify pauses every action, learns only a physical turn, and explicit Apply assigns the detected dial", async () => {
+    const p=await page();await p.getByRole("button",{name:"Identify the large dial",exact:true}).click();
+    await p.getByLabel("Identify physical dial",{exact:true}).waitFor();
+    const revision=await p.evaluate(()=>window.__controllerState().surface.revision);
+    for(const input of [{kind:"key",index:0},{kind:"key",index:1},{kind:"side",index:1},{kind:"dial",index:2,delta:0}]) {
+      const before=await p.evaluate(()=>window.__controllerAcks.length);await p.evaluate(value=>window.__controllerInput(value),input);
+      await p.waitForFunction(before=>window.__controllerAcks.length>before,before);
+    }
+    assert.equal(await p.evaluate(()=>window.__controllerState().identify.index),null);
+    assert.equal(await p.getByRole("button",{name:"Dial 3 right",exact:true}).isDisabled(),true);
+    assert.equal(await p.evaluate(()=>window.__controllerCalls.filter(call=>!["claim","configure","bindings"].includes(call.command)).length),0);
+    await p.evaluate(()=>window.__controllerInput({kind:"dial",index:2,delta:-1}));
+    await p.getByText(/Physical dial 3 detected/).waitFor();
+    assert.equal(await p.evaluate(()=>window.__controllerCalls.filter(call=>call.command==="bindings").length),0);
+    await p.screenshot({path:new URL("controller-identify.png",output).pathname.replace(/^\/([A-Za-z]:\/)/,"$1"),fullPage:true});
+    await p.getByRole("button",{name:"Apply identified dial",exact:true}).click();
+    await p.waitForFunction(()=>!window.__controllerState().identify.active&&window.__controllerState().lightboxBindings.dials[2].turn==="browse");
+    await p.evaluate(revision=>window.__controllerInput({kind:"key",index:0,revision}),revision);
+    await p.waitForFunction(()=>window.__controllerAcks.at(-1)?.result==="ignored");
+    assert.match(await p.getByTestId("fixture-photo").innerText(),/Horse 1 · stars 0 · Not selected/);
+    await p.getByRole("button",{name:"Identify the large dial",exact:true}).click();
+    await p.getByRole("button",{name:"Cancel identification",exact:true}).click();
+    assert.equal(await p.evaluate(()=>window.__controllerState().identify.active),false);await p.close();
+  });
+  await group("A pending preferences save keeps close and Identify locked until the atomic acknowledgement", async () => {
+    const p=await page();await p.getByLabel("Dial 2 press action",{exact:true}).selectOption("next");
+    await p.evaluate(()=>window.__controllerDeferBindings=true);await p.getByRole("button",{name:"Apply dial controls",exact:true}).click();
+    await p.waitForFunction(()=>window.__controllerState().bindingsBusy);
+    assert.equal(await p.getByRole("button",{name:"Close Esc",exact:true}).isDisabled(),true);
+    assert.equal(await p.getByRole("button",{name:"Identify the large dial",exact:true}).isDisabled(),true);
+    await p.keyboard.press("Escape");assert.equal(await p.getByRole("dialog").isVisible(),true);
+    await p.evaluate(()=>window.__finishBindingsSave());await p.waitForFunction(()=>!window.__controllerState().bindingsBusy);
+    assert.equal(await p.getByLabel("Dial 2 press action",{exact:true}).inputValue(),"next");await p.close();
   });
   await group("Narrow controller layout fits the viewport and keeps keyboard focus inside its dialog", async () => {
     const p = await page(360);

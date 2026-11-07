@@ -1,6 +1,6 @@
 {
-  "schema": 1,
-  "modified": false,
+  "schema": 2,
+  "modified": true,
   "packages": [
     {
       "name": "ajazz-sdk",
@@ -16,5 +16,157 @@
       "sha256": "818c0e1d27887aaf76fe737042e27a66b796a7b099e6d2e1a72d106c2dff3fa6",
       "source": "https://crates.io/api/v1/crates/hidapi/2.6.7/download"
     }
-  ]
+  ],
+  "modifiedSdk": {
+    "directory": "ajazz-sdk-photogogo",
+    "version": "0.2.1",
+    "basedOnCrateSha256": "10320f86148f1774e444c8fdb5ae2bbccdffee23abc2c3848cb291293590c54c",
+    "modifiedFiles": [
+      "src/device.rs",
+      "src/lib.rs"
+    ],
+    "notes": "PHOTOGOGO-CHANGES.md",
+    "files": [
+      {
+        "path": ".cargo_vcs_info.json",
+        "bytes": 94,
+        "sha256": "744179de0d893bbd1c216352d75b47401adbbf88482ea86f3df1ac2bfe113af2"
+      },
+      {
+        "path": ".editorconfig",
+        "bytes": 212,
+        "sha256": "7ea676bb24f8f1f017f272ee97af708e34d366a51404d39489249d64e245a1df"
+      },
+      {
+        "path": ".github/workflows/qa.yaml",
+        "bytes": 1012,
+        "sha256": "cd3753b60b87c1c1ac5582041d8a6d9755c7b0f7806d56d440ad9789dc75f752"
+      },
+      {
+        "path": ".gitignore",
+        "bytes": 163,
+        "sha256": "d10b1694c01639b1f5ce1897aecd3cfdffdab331c88585797e11871ecab27c5a"
+      },
+      {
+        "path": "40-mirabox.rules",
+        "bytes": 4467,
+        "sha256": "5e23945071f182f5d9fa23a787a703500a5e0a58e105b3df8d8db5708a9cf832"
+      },
+      {
+        "path": "Cargo.lock",
+        "bytes": 11254,
+        "sha256": "5b3270cb013e04aeb99f1a9471d21748a16eb22157141ee28165e254c68f901a"
+      },
+      {
+        "path": "Cargo.toml",
+        "bytes": 1572,
+        "sha256": "b9bb9eba9148ac3523e71890604bf70b289475d9a025e8347280221c1ddff8fb"
+      },
+      {
+        "path": "Cargo.toml.orig",
+        "bytes": 1992,
+        "sha256": "79f1cf5f0d8692081a7a75531a69f2a3f05dda48e410912216e17cc6bb7ccc0b"
+      },
+      {
+        "path": "docs/doom.jpg",
+        "bytes": 389685,
+        "sha256": "866ff600f1c2cd6f6f007d7acfa772d2db255fba2b97f91525df720413790eb5"
+      },
+      {
+        "path": "examples/boot_logo.rs",
+        "bytes": 813,
+        "sha256": "e43c42f291735da6e2441c1906c71fa7913d04338877b1fdd58220000d5444eb"
+      },
+      {
+        "path": "examples/events.rs",
+        "bytes": 1898,
+        "sha256": "cf7a2797fc79d02d85dd2986428551407ce2a3085b9c93e44bf50274cadecfb4"
+      },
+      {
+        "path": "LICENSE",
+        "bytes": 16725,
+        "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+      },
+      {
+        "path": "PHOTOGOGO-CHANGES.md",
+        "bytes": 1903,
+        "sha256": "08f73a3c6e9a2cc578632ddd3de3955e1726b7a5256309a10a745f63132694ec"
+      },
+      {
+        "path": "README.md",
+        "bytes": 1901,
+        "sha256": "b9d795f7fd83f16b801fd24637bc03e1d4b6c09083f990eeda7aa8883fbbcf0c"
+      },
+      {
+        "path": "rustfmt.toml",
+        "bytes": 121,
+        "sha256": "13fb69f85a722d7c6df111e4cd2145179be71d914c9d6d0352b7fa525cf7e5da"
+      },
+      {
+        "path": "src/asynchronous.rs",
+        "bytes": 8060,
+        "sha256": "8f78a070dd001673d8d659aab999bba0cacf3c2bd508f58779b6cdebbcdff555"
+      },
+      {
+        "path": "src/device.rs",
+        "bytes": 15257,
+        "sha256": "9fdddec03579e0f1857bdb9ee4ea899df9798c1a3a2ce8a04757e5a90fa49570"
+      },
+      {
+        "path": "src/hid.rs",
+        "bytes": 1069,
+        "sha256": "b14c8e144362388979a5bde0e1ab7e80ab18bb76c5ceac5491b9022b567d5f68"
+      },
+      {
+        "path": "src/images.rs",
+        "bytes": 5510,
+        "sha256": "09a04289298540ee88db45dd4e9412f7a2ae5667f206304adba3d96a789fea20"
+      },
+      {
+        "path": "src/info.rs",
+        "bytes": 7462,
+        "sha256": "695e29172223281cc0e34c3c3ab9bb37cca4e402c94f36bc9647ae51156a8525"
+      },
+      {
+        "path": "src/lib.rs",
+        "bytes": 4392,
+        "sha256": "963baae1bab17db617d016a9d36ae1c6a21357b8b8be35fdebebaa64d703b3f8"
+      },
+      {
+        "path": "src/protocol/codes.rs",
+        "bytes": 3638,
+        "sha256": "23b0390aa4719211b1fd5be942be1bc1e2e79c5a163127277604d18d3dbc425b"
+      },
+      {
+        "path": "src/protocol/mod.rs",
+        "bytes": 177,
+        "sha256": "eab47ecca0f3dfab5df630c7c7fbd820ad38e2d3c9a9783c9234a4c1948edea2"
+      },
+      {
+        "path": "src/protocol/parser.rs",
+        "bytes": 6275,
+        "sha256": "3f9710f8bfdb0c09bee8a325bad3c59e765a08246cc8078655b7ebffa91c2375"
+      },
+      {
+        "path": "src/protocol/request.rs",
+        "bytes": 9225,
+        "sha256": "528aabfbb667d5f3a9bc5806bd63e15dcb3d4157780cb61bcaa8cc14b5b7a580"
+      },
+      {
+        "path": "src/util.rs",
+        "bytes": 4963,
+        "sha256": "1fe4b88df4c2c58d1f2989787358f5aea51cfcb440d8a402036d401c6b7fd63a"
+      },
+      {
+        "path": "testdata/bootlogo_ajazz.jpg",
+        "bytes": 19226,
+        "sha256": "b5f7a6c5727fe6e2fd6592af05a6eafa2fe013dc1a1d44b7237870d6e82b1dfc"
+      },
+      {
+        "path": "testdata/bootlogo_layout.jpg",
+        "bytes": 25714,
+        "sha256": "ea2cc040b21223fcfae88a23fcdabf5cd59192d2d8a8fd933bae33ae8773dc27"
+      }
+    ]
+  }
 }

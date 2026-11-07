@@ -1,8 +1,10 @@
 //! Session-owned AKP03E control. No keyboard injection, firmware writes, global
 //! shortcuts, vendor-profile edits or background controller daemon.
+pub mod bindings;
 mod process;
 #[cfg(test)]
 mod session_tests;
+mod transport;
 use ajazz_sdk::{Ajazz, AjazzInput, Kind};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
@@ -140,6 +142,23 @@ fn phase(core: &Core, name: &str, message: &str, error: bool) {
     } else {
         None
     };
+}
+fn record_io_failure(core: &Core, generation: u64, error: &str, blocked: bool) {
+    diagnostic(core, &format!("USB session ended: {error}"));
+    let mut s = core.state.lock().unwrap_or_else(|e| e.into_inner());
+    if s.generation != generation || !s.status.enabled {
+        return;
+    }
+    s.presented = None;
+    s.pending = None;
+    s.status.device = None;
+    s.status.session = None;
+    s.status.phase = if blocked { "error" } else { "disconnected" }.into();
+    s.status.message = format!("{error} Reconnect or use Retry. AJAZZ restart remains manual.");
+    s.status.error = Some(error.into());
+}
+fn usb_failure(stage: &str, error: impl std::fmt::Display) -> String {
+    format!("AKP03E {stage} failed: {error}.")
 }
 pub fn init(app: &AppHandle) -> Result<(), String> {
     let directory = app
@@ -641,24 +660,32 @@ fn worker(app: AppHandle, core: Arc<Core>) {
                     continue;
                 }
             };
-            let devices: Vec<_> = ajazz_sdk::list_devices(&hid)
-                .into_iter()
-                .filter(|(kind, _)| *kind == Kind::Akp03E)
+            let endpoints: Vec<_> = hid
+                .device_list()
+                .filter(|device| device.vendor_id() == 0x0300 && device.product_id() == 0x3002)
+                .take(17)
+                .map(|device| transport::Endpoint {
+                    vendor: device.vendor_id(),
+                    product: device.product_id(),
+                    page: device.usage_page(),
+                    usage: device.usage(),
+                    interface: device.interface_number(),
+                    path: device.path().to_owned(),
+                })
                 .collect();
-            if devices.is_empty() {
+            if endpoints.is_empty() {
                 phase(&core,"searching","Connect the AJAZZ AKP03E. No AJAZZ application has been stopped for an absent device.",false);
                 continue;
             }
-            if devices.len() != 1 {
-                phase(
-                    &core,
-                    "error",
-                    "More than one AKP03E found. Connect one controller before Retry.",
-                    true,
-                );
-                blocked = true;
-                continue;
-            }
+            let endpoint = match transport::select(&endpoints) {
+                Ok(endpoint) => endpoint,
+                Err(error) => {
+                    diagnostic(&core, &transport::summary(&endpoints));
+                    phase(&core, "error", &error, true);
+                    blocked = true;
+                    continue;
+                }
+            };
             if lease.is_none() {
                 match OpenOptions::new()
                     .create(true)
@@ -679,6 +706,7 @@ fn worker(app: AppHandle, core: Arc<Core>) {
                 }
             }
             if !attempted_stop {
+                diagnostic(&core, &transport::summary(&endpoints));
                 // This check commits takeover. Release before this point cannot stop AJAZZ.
                 {
                     let s = core.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -715,7 +743,7 @@ fn worker(app: AppHandle, core: Arc<Core>) {
                     continue;
                 }
             }
-            match Ajazz::connect(&hid, Kind::Akp03E, &devices[0].1) {
+            match Ajazz::connect_path(&hid, Kind::Akp03E, &endpoint.path) {
                 Ok(d) => {
                     let mut s = core.state.lock().unwrap_or_else(|e| e.into_inner());
                     if !takeover_allowed(&s, generation, core.stop.load(Ordering::Acquire)) {
@@ -792,7 +820,8 @@ fn worker(app: AppHandle, core: Arc<Core>) {
         };
         let io = (|| -> Result<(), String> {
             if last_brightness != brightness {
-                d.set_brightness(brightness).map_err(|e| e.to_string())?;
+                d.set_brightness(brightness)
+                    .map_err(|e| usb_failure("initialise / brightness", e))?;
                 last_brightness = brightness;
             }
             if let Some(images) = images {
@@ -801,12 +830,12 @@ fn worker(app: AppHandle, core: Arc<Core>) {
                 for (i, image) in images.into_iter().enumerate() {
                     if force || painted_faces.get(i) != faces.get(i) {
                         d.set_button_image(i as u8, image)
-                            .map_err(|e| e.to_string())?;
+                            .map_err(|e| usb_failure("button artwork", e))?;
                         changed = true;
                     }
                 }
                 if changed {
-                    d.flush().map_err(|e| e.to_string())?;
+                    d.flush().map_err(|e| usb_failure("display update", e))?;
                 }
                 painted_faces = faces;
                 painted = Some((client.clone(), revision));
@@ -817,21 +846,21 @@ fn worker(app: AppHandle, core: Arc<Core>) {
                 warm_until = Instant::now() + Duration::from_millis(50);
             }
             if last_keepalive.elapsed() > Duration::from_secs(2) {
-                d.keep_alive().map_err(|e| e.to_string())?;
+                d.keep_alive().map_err(|e| usb_failure("keep-alive", e))?;
                 last_keepalive = Instant::now();
             }
             if drain {
                 for _ in 0..128 {
-                    match d.read_input(None) {
+                    match d.read_pressed_input(None) {
                         Ok(value) if value.is_empty() => break,
                         Ok(_) => {}
                         Err(ajazz_sdk::AjazzError::BadData) => {}
-                        Err(e) => return Err(e.to_string()),
+                        Err(e) => return Err(usb_failure("discard queued input", e)),
                     }
                 }
                 warm_until = Instant::now() + Duration::from_millis(40);
             }
-            let raw = match d.read_input(Some(Duration::from_millis(30))) {
+            let raw = match d.read_pressed_input(Some(Duration::from_millis(30))) {
                 Ok(value) => value,
                 Err(ajazz_sdk::AjazzError::BadData) => {
                     bad_packets += 1;
@@ -846,7 +875,7 @@ fn worker(app: AppHandle, core: Arc<Core>) {
                     }
                     AjazzInput::NoData
                 }
-                Err(e) => return Err(e.to_string()),
+                Err(e) => return Err(usb_failure("read input", e)),
             };
             if !raw.is_empty() {
                 match process::vendor_running() {
@@ -883,19 +912,9 @@ fn worker(app: AppHandle, core: Arc<Core>) {
             Ok(())
         })();
         if let Err(error) = io {
-            diagnostic(&core, &format!("USB session ended: {error}"));
             device = None;
             painted = None;
-            let mut s = core.state.lock().unwrap_or_else(|e| e.into_inner());
-            s.presented = None;
-            s.pending = None;
-            s.status.device = None;
-            drop(s);
-            if blocked {
-                phase(&core, "error", &error, true);
-            } else {
-                phase(&core,"disconnected","AKP03E disconnected or could not update. Reconnect it or use Retry; AJAZZ restart remains manual.",true);
-            }
+            record_io_failure(&core, generation, &error, blocked);
         } else {
             let mut s = core.state.lock().unwrap_or_else(|e| e.into_inner());
             if s.generation == generation && s.status.enabled {

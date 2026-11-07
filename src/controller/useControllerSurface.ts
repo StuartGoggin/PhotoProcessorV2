@@ -12,3 +12,7 @@ export function useControllerSurface(surface: ControllerSurface, active = true, 
 export function useControllerStatus(runtime: ControllerRuntime = controllerRuntime()) {
   return useSyncExternalStore(runtime.subscribe, runtime.getSnapshot, runtime.getSnapshot);
 }
+
+export function useLightboxBindings(runtime: ControllerRuntime = controllerRuntime()) {
+  return useSyncExternalStore(runtime.subscribe, runtime.getLightboxBindings, runtime.getLightboxBindings);
+}

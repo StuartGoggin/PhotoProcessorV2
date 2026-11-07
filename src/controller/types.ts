@@ -1,3 +1,5 @@
+import type { LightboxBindings } from "./lightboxBindings";
+
 /** Page actions stay in PhotoGoGo. No controller action synthesises OS keys. */
 export interface ControllerKey {
   id: string;
@@ -86,6 +88,11 @@ export interface ControllerSnapshot {
   configuring: boolean;
   notice: string;
   error: string;
+  lightboxBindings: LightboxBindings;
+  bindingsReady: boolean;
+  bindingsBusy: boolean;
+  bindingsError: string;
+  identify: { active: boolean; index: number | null; session: string | null };
 }
 
 export const initialControllerStatus: ControllerStatus = {

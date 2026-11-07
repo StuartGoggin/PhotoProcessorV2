@@ -31,12 +31,14 @@ export class ControllerRouter {
   private seen = new Set<string>();
   private dialRun: { command: string; context: string; time: number; count: number } | null = null;
   current: ControllerSurfaceView | null = null;
+  currentOwner: symbol | null = null;
 
   constructor(
     private changed: (view: ControllerSurfaceView | null, busy: boolean) => void,
     private acknowledge: (ack: ControllerAcknowledgement) => void | Promise<void>,
     private failed: (message: string) => void = () => {},
     private clock: () => number = () => performance.now(),
+    private intercept?: (event: ControllerInput, mirror: boolean) => ControllerAcknowledgement["result"] | null,
   ) {}
 
   register(owner: symbol, surface: ControllerSurface) {
@@ -46,14 +48,23 @@ export class ControllerRouter {
   }
 
   remove(owner: symbol) { this.entries.delete(owner); this.select(); }
-  setAccepting(value: boolean) { this.accepting = value; if (!value) this.dialRun = null; }
+  setAccepting(value: boolean) { this.accepting = value && !!this.session; if (!this.accepting) this.dialRun = null; }
   setSession(session: string | null) {
     if (session !== this.session) { this.session = session; this.seen.clear(); this.dialRun = null; }
     if (!session) this.accepting = false;
   }
+  /** A mode/settings transition makes already-emitted device input stale. */
+  fence() {
+    this.revision++;
+    if (this.current) this.current = { ...this.current, revision: this.revision };
+    this.dialRun = null;
+    this.changed(this.current, this.busy);
+  }
 
   private select() {
-    this.selected = [...this.entries.values()].sort((a, b) => (b.surface.priority ?? 100) - (a.surface.priority ?? 100) || b.order - a.order)[0] ?? null;
+    const selected = [...this.entries.entries()].sort(([, a], [, b]) => (b.surface.priority ?? 100) - (a.surface.priority ?? 100) || b.order - a.order)[0];
+    this.currentOwner = selected?.[0] ?? null;
+    this.selected = selected?.[1] ?? null;
     const candidate = this.selected ? viewOf(this.selected.surface, this.revision) : null;
     const fingerprint = candidate ? JSON.stringify({ ...candidate, revision: 0 }) : "";
     if (fingerprint === this.fingerprint) return;
@@ -101,6 +112,8 @@ export class ControllerRouter {
       if (this.seen.has(identity)) return;
       this.seen.add(identity);
       if (this.seen.size > 128) this.seen.delete(this.seen.values().next().value!);
+      const intercepted = this.intercept?.(event, mirror);
+      if (intercepted) { result = intercepted; return; }
       const command = this.command(event);
       if (!command) return;
       // Capture the callback selected for this revision; no delayed input queue.

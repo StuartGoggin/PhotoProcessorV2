@@ -8,3 +8,7 @@ resources/exiftool-NOTICE.txt -text
 resources/run-exiftool.pl -text
 scripts/build-metadata-perl.ps1 -text
 scripts/exiftool-bundle.lock.json -text whitespace=cr-at-eol
+
+# The compiled controller dependency ships with an exact-byte source receipt.
+# A fresh Windows checkout must preserve its reviewed source/archive bytes.
+src-tauri/resources/controller-source/** -text whitespace=cr-at-eol

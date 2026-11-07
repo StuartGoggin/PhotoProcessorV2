@@ -7,15 +7,16 @@ import ts from "typescript";
 const root = process.cwd(), output = path.join(root, "test-output", "controller-unit");
 await fs.mkdir(output, { recursive: true });
 await fs.writeFile(path.join(output, "report.json"), JSON.stringify({ complete: false, startedAt: new Date().toISOString() }, null, 2));
-for (const file of ["types", "router", "artwork", "runtime"]) {
+for (const file of ["types", "router", "artwork", "lightboxBindings", "runtime"]) {
   const source = await fs.readFile(path.join(root, "src", "controller", file + ".ts"), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText
-    .replace(/from "\.\/(types|router|artwork)"/g, 'from "./$1.mjs"');
+    .replace(/from "\.\/(types|router|artwork|lightboxBindings)"/g, 'from "./$1.mjs"');
   await fs.writeFile(path.join(output, file + ".mjs"), compiled);
 }
 const { ControllerRouter } = await import(pathToFileURL(path.join(output, "router.mjs")));
 const { ControllerRuntime } = await import(pathToFileURL(path.join(output, "runtime.mjs")));
 const { controllerKeySvg } = await import(pathToFileURL(path.join(output, "artwork.mjs")));
+const { defaultLightboxBindings, parseLightboxBindings, lightboxDials } = await import(pathToFileURL(path.join(output, "lightboxBindings.mjs")));
 const checks = [];
 const check = async (name, run) => { await run(); checks.push(name); console.log("PASS", name); };
 const deferred = () => { let resolve, reject; const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; }); return { promise, resolve, reject }; };
@@ -81,12 +82,13 @@ await check("Artwork escapes all label text and accepts only built-in vector geo
 
 const connected = session => ({ enabled: true, phase: "connected", message: "Connected", vendorStopped: true, brightness: 60, session });
 function adapterFixture() {
-  const f = { session: 0, client: "", listeners: new Set(), publications: [], acknowledgements: [], claims: [], configs: [], statuses: 0, enabled: true };
+  const f = { session: 0, client: "", listeners: new Set(), publications: [], acknowledgements: [], claims: [], configs: [], statuses: 0, enabled: true, bindings: defaultLightboxBindings(), bindingWrites: [] };
   f.adapter = {
     claim: async client => { f.client = client; f.claims.push(client); f.session++; return { ...connected("native-" + f.session), client }; },
     status: async () => { f.statuses++; return { ...(f.enabled ? connected("native-" + f.session) : { ...connected(""), enabled: false, phase: "disabled", message: "Released" }), client: f.client }; },
     configure: async enabled => { f.configs.push(enabled); f.enabled = enabled; },
     surface: async value => { f.publications.push(value); }, acknowledge: async ack => { f.acknowledgements.push(ack); },
+    lightboxBindings: async value => { if (value) { f.bindings = parseLightboxBindings(value); f.bindingWrites.push(structuredClone(value)); } return structuredClone(f.bindings); },
     subscribe: async callback => { f.listeners.add(callback); return () => f.listeners.delete(callback); },
   };
   f.send = input => [...f.listeners].forEach(callback => callback(input)); return f;
@@ -150,6 +152,82 @@ await check("A recovered status read clears its own stale warning while preservi
     f.send({ session: "native-1", revision: runtime.getSnapshot().surface.revision, id: "failed-save", kind: "key", index: 0, delta: 1 }); await tick();
     await runtime.refresh(); assert.equal(runtime.getSnapshot().error, "Page save failed");
   } finally { stop(); }
+});
+
+await check("Dial settings accept only three complete allow-listed assignments and preserve each turn/press role", async () => {
+  const defaults = defaultLightboxBindings();
+  assert.deepEqual(defaults.dials, [{turn:"browse",press:"fit"},{turn:"zoom",press:"fit"},{turn:"versions",press:"select-active"}]);
+  assert.deepEqual(lightboxDials(defaults,true,"B&W").map(dial=>[dial.left,dial.right,dial.press]),[["previous","next","fit"],["zoom-out","zoom-in","fit"],["panel-previous","panel-next","select-active"]]);
+  for (const value of [null,{}, {...defaults,version:2}, {...defaults,dials:defaults.dials.slice(1)}, {...defaults,secret:"no"}, {version:1,dials:[{turn:"shell",press:"fit"},...defaults.dials.slice(1)]}, {version:1,dials:[{turn:"off",press:"off",extra:1},...defaults.dials.slice(1)]}]) assert.throws(()=>parseLightboxBindings(value));
+  const clone=parseLightboxBindings(defaults);clone.dials[0].turn="off";assert.equal(defaults.dials[0].turn,"browse");
+});
+const runtimeEvent = (runtime, options={}) => ({session:runtime.getSnapshot().status.session,revision:runtime.getSnapshot().surface.revision,id:String(++inputId),kind:"key",index:0,delta:1,...options});
+await check("Saved mappings restore on startup and apply atomically only after a successful save", async () => {
+  const f=adapterFixture();f.bindings.dials[2]={turn:"browse",press:"next"};
+  const runtime=new ControllerRuntime(f.adapter,draw);runtime.register(Symbol(),surface(()=>{}));const stop=runtime.start();
+  try {await tick();assert.deepEqual(runtime.getSnapshot().lightboxBindings,f.bindings);assert.equal(runtime.getSnapshot().bindingsReady,true);
+    const old=structuredClone(f.bindings),next=defaultLightboxBindings(),gate=deferred(),write=f.adapter.lightboxBindings;next.dials[1]={turn:"off",press:"trash"};
+    f.adapter.lightboxBindings=async value=>{if(value)await gate.promise;return write(value);};
+    const saving=runtime.saveLightboxBindings(next);await tick();assert.deepEqual(runtime.getSnapshot().lightboxBindings,old);assert.equal(runtime.beginIdentify(),false);
+    gate.resolve();assert.equal(await saving,true);assert.deepEqual(runtime.getSnapshot().lightboxBindings,next);assert.deepEqual(f.bindingWrites,[next]);
+    f.adapter.lightboxBindings=async()=>{throw Error("disk full");};assert.equal(await runtime.saveLightboxBindings(old),false);
+    assert.deepEqual(runtime.getSnapshot().lightboxBindings,next);assert.match(runtime.getSnapshot().bindingsError,/previous saved controls remain/);
+  } finally {stop();}
+});
+await check("Identify consumes every input without a photo action and only a physical dial turn chooses its index", async () => {
+  const f=adapterFixture(),actions=[],runtime=new ControllerRuntime(f.adapter,draw);runtime.register(Symbol(),surface((...args)=>actions.push(args)));const stop=runtime.start();
+  try {await tick();const before=runtime.getSnapshot().surface.revision;assert.equal(runtime.beginIdentify(),true);assert.ok(runtime.getSnapshot().surface.revision>before);
+    runtime.mirror("dial",2,1);f.send(runtimeEvent(runtime));await tick();f.send(runtimeEvent(runtime,{kind:"side",index:1}));await tick();f.send(runtimeEvent(runtime,{kind:"dial",index:1,delta:0}));await tick();
+    assert.equal(runtime.getSnapshot().identify.index,null);assert.deepEqual(actions,[]);
+    f.send(runtimeEvent(runtime,{kind:"dial",index:2,delta:-1}));await tick();assert.equal(runtime.getSnapshot().identify.index,2);
+    f.send(runtimeEvent(runtime,{kind:"dial",index:0}));await tick();assert.equal(runtime.getSnapshot().identify.index,2);assert.deepEqual(actions,[]);assert.deepEqual(f.bindingWrites,[]);
+    assert.equal(await runtime.applyIdentifiedDial(defaultLightboxBindings()),true);assert.equal(runtime.getSnapshot().identify.active,false);assert.deepEqual(runtime.getSnapshot().lightboxBindings.dials[2],{turn:"browse",press:"fit"});assert.deepEqual(actions,[]);
+  } finally {stop();}
+});
+await check("Identify cancel, navigation, disconnect and reconnect discard learning input with stale revisions", async () => {
+  const f=adapterFixture(),actions=[],runtime=new ControllerRuntime(f.adapter,draw),owner=Symbol();runtime.register(owner,surface(()=>actions.push("photo")));const stop=runtime.start();
+  try {await tick();runtime.beginIdentify();const learning=runtimeEvent(runtime,{kind:"dial",index:0});runtime.cancelIdentify();f.send(learning);await tick();assert.deepEqual(actions,[]);assert.equal(f.acknowledgements.at(-1).result,"ignored");
+    runtime.beginIdentify();runtime.register(owner,surface(()=>actions.push("photo"),{contextKey:"photo-B"}));assert.equal(runtime.getSnapshot().identify.active,false);
+    runtime.beginIdentify();f.enabled=false;await runtime.refresh();assert.equal(runtime.getSnapshot().identify.active,false);assert.equal(await runtime.applyIdentifiedDial(defaultLightboxBindings()),false);
+    f.enabled=true;await runtime.refresh();runtime.beginIdentify();f.session++;await runtime.refresh();assert.equal(runtime.getSnapshot().identify.active,false);
+    assert.deepEqual(f.bindingWrites,[]);assert.deepEqual(actions,[]);
+  } finally {stop();}
+});
+await check("Entering Identify cannot acknowledge or release a photo save already underway", async () => {
+  const f=adapterFixture(),gate=deferred(),runtime=new ControllerRuntime(f.adapter,draw);runtime.register(Symbol(),surface(()=>gate.promise));const stop=runtime.start();
+  try {await tick();f.send(runtimeEvent(runtime));await tick();assert.equal(runtime.getSnapshot().actionBusy,true);assert.equal(runtime.beginIdentify(),false);assert.equal(f.acknowledgements.length,0);
+    assert.equal(await runtime.saveLightboxBindings(defaultLightboxBindings()),false);assert.equal(f.acknowledgements.length,0);gate.resolve();await tick();assert.equal(f.acknowledgements[0].result,"handled");
+  } finally {gate.resolve();stop();}
+});
+await check("Identify timeout, Release and renderer unmount clear learning without changing assignments", async () => {
+  const f=adapterFixture(),runtime=new ControllerRuntime(f.adapter,draw);runtime.register(Symbol(),surface(()=>{}));const stop=runtime.start();
+  const timer=globalThis.setTimeout;let expire;
+  try {await tick();globalThis.setTimeout=(callback,ms,...args)=>{if(ms===60000)expire=()=>callback(...args);return timer(callback,ms,...args);};
+    assert.equal(runtime.beginIdentify(),true);globalThis.setTimeout=timer;assert.equal(typeof expire,"function");expire();assert.equal(runtime.getSnapshot().identify.active,false);assert.match(runtime.getSnapshot().notice,/timed out/);
+    runtime.beginIdentify();await runtime.configure(false);assert.equal(runtime.getSnapshot().identify.active,false);await runtime.configure(true);runtime.beginIdentify();stop();assert.equal(runtime.getSnapshot().identify.active,false);assert.deepEqual(f.bindingWrites,[]);
+  } finally {globalThis.setTimeout=timer;stop();}
+});
+await check("A failed identified-dial Apply keeps learning paused and preserves the previous complete mapping", async () => {
+  const f=adapterFixture(),actions=[],runtime=new ControllerRuntime(f.adapter,draw);runtime.register(Symbol(),surface(()=>actions.push("photo")));const stop=runtime.start();
+  try {await tick();runtime.beginIdentify();f.send(runtimeEvent(runtime,{kind:"dial",index:1}));await tick();
+    f.adapter.lightboxBindings=async()=>{throw Error("permission denied");};assert.equal(await runtime.applyIdentifiedDial(defaultLightboxBindings()),false);
+    assert.deepEqual(runtime.getSnapshot().lightboxBindings,defaultLightboxBindings());assert.equal(runtime.getSnapshot().identify.active,true);f.send(runtimeEvent(runtime));await tick();assert.deepEqual(actions,[]);runtime.cancelIdentify();assert.deepEqual(f.bindingWrites,[]);
+  } finally {stop();}
+});
+await check("Unreadable preferences fail closed and recover only through an explicit successful replacement", async () => {
+  const f=adapterFixture(),read=f.adapter.lightboxBindings,actions=[];f.adapter.lightboxBindings=async()=>{throw Error("corrupt settings");};
+  const runtime=new ControllerRuntime(f.adapter,draw);runtime.register(Symbol(),surface(()=>actions.push("photo")));const stop=runtime.start();
+  try {await tick();assert.equal(runtime.getSnapshot().bindingsReady,false);f.send(runtimeEvent(runtime));await tick();assert.deepEqual(actions,[]);
+    assert.equal(await runtime.saveLightboxBindings(defaultLightboxBindings()),false);assert.equal(runtime.getSnapshot().bindingsReady,false);
+    f.adapter.lightboxBindings=read;assert.equal(await runtime.saveLightboxBindings(defaultLightboxBindings()),true);assert.equal(runtime.getSnapshot().bindingsReady,true);f.send(runtimeEvent(runtime));await tick();assert.deepEqual(actions,["photo"]);
+  } finally {stop();}
+});
+await check("A late preference-save acknowledgement cannot re-enable mirror actions after a status failure", async () => {
+  const f=adapterFixture(),actions=[],runtime=new ControllerRuntime(f.adapter,draw);runtime.register(Symbol(),surface(()=>actions.push("photo")));const stop=runtime.start();
+  try {await tick();const write=f.adapter.lightboxBindings,status=f.adapter.status,gate=deferred();f.adapter.lightboxBindings=async value=>{await gate.promise;return write(value);};
+    const save=runtime.saveLightboxBindings(defaultLightboxBindings());await tick();f.adapter.status=async()=>{throw Error("connection lost during settings save");};await runtime.refresh();gate.resolve();await save;
+    runtime.mirror("key",0,1);await tick();assert.deepEqual(actions,[]);f.adapter.status=status;await runtime.refresh();runtime.mirror("key",0,1);await tick();assert.deepEqual(actions,["photo"]);
+  } finally {stop();}
 });
 
 await fs.writeFile(path.join(output, "report.json"), JSON.stringify({ complete: true, checkedAt: new Date().toISOString(), checks,

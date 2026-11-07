@@ -57,6 +57,128 @@ fn key(s: &mut Session) -> Option<Input> {
     admit(s, "key", 0, 1, 2, "controller-test-owner", Some(7), false)
 }
 #[test]
+fn physical_button_and_dial_release_reports_never_repeat_the_action() {
+    for action in [
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x25, 0x30, 0x31, 0x33, 0x35, 0x34,
+    ] {
+        let mut report = vec![0u8; 512];
+        report[0] = 1;
+        report[9] = action;
+        let mut total = 0;
+        for state in [1, 0, 1, 0] {
+            report[10] = state;
+            total += inputs(ajazz_sdk::parse_akp03e_pressed_input(&report).unwrap()).len();
+        }
+        assert_eq!(
+            total, 2,
+            "Action {action:02X}: release must not toggle a photo or invoke a dial press again"
+        );
+    }
+}
+#[test]
+fn physical_dial_twists_keep_their_direction_for_both_state_markers() {
+    for (action, index, delta) in [
+        (0x90, 0, -1),
+        (0x91, 0, 1),
+        (0x50, 1, -1),
+        (0x51, 1, 1),
+        (0x60, 2, -1),
+        (0x61, 2, 1),
+    ] {
+        for state in [0, 1] {
+            let mut report = vec![0u8; 512];
+            report[0] = 1;
+            report[9] = action;
+            report[10] = state;
+            assert_eq!(
+                inputs(ajazz_sdk::parse_akp03e_pressed_input(&report).unwrap()),
+                vec![("dial", index, delta)]
+            );
+        }
+    }
+}
+#[test]
+fn consumed_releases_do_not_end_draining_and_only_timeouts_are_empty() {
+    for action in [0x01, 0x25, 0x33] {
+        let mut report = vec![0u8; 512];
+        report[0] = 1;
+        report[9] = action;
+        for state in [1, 0, 1, 0] {
+            report[10] = state;
+            let event = ajazz_sdk::parse_akp03e_pressed_input(&report).unwrap();
+            assert!(
+                !event.is_empty(),
+                "A consumed release must not hide the rest of the HID queue"
+            );
+            assert_eq!(inputs(event).len(), usize::from(state != 0));
+        }
+        report[10] = 5;
+        assert_eq!(
+            inputs(ajazz_sdk::parse_akp03e_pressed_input(&report).unwrap()).len(),
+            1,
+            "All nonzero press states retain their meaning"
+        );
+    }
+    assert!(ajazz_sdk::parse_akp03e_pressed_input(&vec![0; 512])
+        .unwrap()
+        .is_empty());
+    assert!(ajazz_sdk::parse_akp03e_pressed_input(&[1, 2, 3]).is_err());
+    for action in [0, 0x7F] {
+        let mut unknown = vec![0; 512];
+        unknown[0] = 1;
+        unknown[9] = action;
+        assert!(ajazz_sdk::parse_akp03e_pressed_input(&unknown).is_err());
+    }
+}
+#[test]
+fn reconnect_panel_preserves_the_actual_usb_failure() {
+    let core = Core {
+        state: Mutex::new(fixture()),
+        stop: AtomicBool::new(false),
+        directory: std::env::temp_dir().join("photogogo-controller-unused-diagnostic-root"),
+    };
+    record_io_failure(
+        &core,
+        2,
+        "Brightness / initialise: HidApi error: The parameter is incorrect. (87)",
+        false,
+    );
+    let s = core.state.lock().unwrap();
+    assert_eq!(s.status.phase, "disconnected");
+    assert!(
+        s.status
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("The parameter is incorrect. (87)"),
+        "The user must see the real USB failure, not a generic reconnect message"
+    );
+    assert!(s.status.message.contains("Brightness / initialise"));
+    assert!(s.presented.is_none() && s.status.session.is_none());
+}
+#[test]
+fn an_old_usb_failure_cannot_replace_a_retry_or_release() {
+    for enabled in [false, true] {
+        let mut state = fixture();
+        state.generation = 3;
+        state.status.enabled = enabled;
+        state.status.phase = if enabled { "searching" } else { "disabled" }.into();
+        state.status.message = "New user choice".into();
+        let core = Core {
+            state: Mutex::new(state),
+            stop: AtomicBool::new(false),
+            directory: std::env::temp_dir().join("photogogo-controller-unused-diagnostic-root"),
+        };
+        record_io_failure(&core, 2, "Old USB session failed", false);
+        let s = core.state.lock().unwrap();
+        assert_eq!(s.status.message, "New user choice");
+        assert_eq!(
+            s.status.phase,
+            if enabled { "searching" } else { "disabled" }
+        );
+    }
+}
+#[test]
 fn rapid_presses_are_dropped_and_wrong_acks_do_not_unlock() {
     let mut s = fixture();
     let first = key(&mut s).unwrap();

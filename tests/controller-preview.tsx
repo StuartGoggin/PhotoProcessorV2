@@ -5,11 +5,13 @@ import ControllerPanel from "../src/components/ControllerPanel";
 import { ControllerRuntime, type ControllerAdapter } from "../src/controller/runtime";
 import { useControllerSurface } from "../src/controller/useControllerSurface";
 import type { ControllerInput, ControllerStatus } from "../src/controller/types";
+import { defaultLightboxBindings, parseLightboxBindings } from "../src/controller/lightboxBindings";
 import "../src/styles.css";
 
 const fixture = window as any;
 fixture.__controllerCalls = []; fixture.__controllerAcks = []; fixture.__controllerFrames = []; fixture.__underlyingKeys = [];
 let session = 0, enabled = true, brightness = 60, client = "", lastInput = "";
+let bindings = parseLightboxBindings(fixture.__controllerInitialBindings || defaultLightboxBindings());
 const listeners = new Set<(input: ControllerInput) => void>();
 const status = (): ControllerStatus => ({ enabled, phase: enabled ? "connected" : "disabled", message: enabled ? "AKP03E connected. PhotoGoGo owns this session." : "Controller released. Restart AJAZZ manually.", device: "AJAZZ AKP03E · synthetic adapter", session: enabled ? "native-" + session : undefined, client, vendorStopped: true, brightness, lastInput });
 const adapter: ControllerAdapter = {
@@ -18,6 +20,15 @@ const adapter: ControllerAdapter = {
   configure: async (next, value) => { fixture.__controllerCalls.push({ command: "configure", enabled: next, brightness: value }); enabled = next; if (value !== undefined) brightness = value; },
   surface: async surface => { fixture.__controllerFrames.push(surface); if (fixture.__controllerFrames.length > 40) fixture.__controllerFrames.shift(); },
   acknowledge: async ack => { fixture.__controllerAcks.push(ack); },
+  lightboxBindings: async value => {
+    if (value) {
+      fixture.__controllerCalls.push({ command: "bindings", bindings: structuredClone(value) });
+      if (fixture.__controllerFailBindings) throw new Error("Synthetic settings write failure");
+      if (fixture.__controllerDeferBindings) await new Promise<void>(resolve => { fixture.__finishBindingsSave = resolve; });
+      bindings = parseLightboxBindings(value);
+    }
+    return structuredClone(bindings);
+  },
   subscribe: async callback => { listeners.add(callback); return () => { listeners.delete(callback); }; },
 };
 const runtime = new ControllerRuntime(adapter);

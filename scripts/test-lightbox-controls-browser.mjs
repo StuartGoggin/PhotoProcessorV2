@@ -300,32 +300,38 @@ try {
     assert.ok(await help.evaluate(node=>node.scrollWidth<=node.clientWidth+1));await page.keyboard.press("Escape");await page.close();
   });
 
-  await group("Managed AKP03E rating saves the real reviewed original before advancing and ignores rapid extra decisions", async () => {
+  await group("Managed default keys browse originals, toggle trash without advancing, and wait for the confirmed rename", async () => {
     const page=await newFixture({__controlsManagedController:true,__controlsDeferRename:true});await select(page);
     await page.waitForFunction(()=>window.__controllerSurface?.keys[2]?.enabled);
-    await page.evaluate(()=>window.__controlsNativeInput({index:2}));
+    assert.deepEqual(await page.evaluate(()=>window.__controllerSurface.keys.map(key=>key.label)),["PREVIOUS","TRASH","NEXT","ORIGINAL","B&W","ENHANCED"]);
+    assert.deepEqual(await page.evaluate(()=>window.__controllerSurface.keys.slice(3).map(key=>key.enabled)),[true,true,true]);
+    await page.evaluate(()=>window.__controlsNativeInput({index:1}));
     await page.waitForFunction(()=>window.__controlsRenames.length===1);
-    assert.equal(await page.evaluate(()=>window.__controllerAcks.length),0,"The rating input is not acknowledged before its native save finishes");
-    await page.evaluate(()=>window.__controlsNativeInput({index:3}));
+    assert.equal(await page.evaluate(()=>window.__controllerAcks.length),0,"The trash input is not acknowledged before its native save finishes");
+    await page.evaluate(()=>window.__controlsNativeInput({index:2}));
     await page.waitForFunction(()=>window.__controllerAcks.some(ack=>ack.result==="ignored"));
     assert.equal(await count(page,"__controlsRenames"),1);
     await page.evaluate(()=>{window.__controlsDeferRename=false;window.__controlsReleaseRename();});
-    await ready(page,"02-rider.jpg");
+    await ready(page,"01-horse{trash}.jpg");
     await page.waitForFunction(()=>window.__controllerAcks.some(ack=>ack.result==="handled"));
-    assert.match((await page.evaluate(()=>window.__controlsRenames[0])).newName,/\{Like ooo\}/);
-    assert.equal(await count(page,"__controlsRenames"),1);await page.close();
+    assert.match((await page.evaluate(()=>window.__controlsRenames[0])).newName,/\{trash\}/);
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[1]?.label==="RESTORE"&&window.__controllerSurface.keys[1].enabled);
+    await page.evaluate(()=>window.__controlsNativeInput({index:1}));await ready(page,"01-horse.jpg");
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[2]?.enabled);await page.evaluate(()=>window.__controlsNativeInput({index:2}));await ready(page,"02-rider.jpg");
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.enabled);await page.evaluate(()=>window.__controlsNativeInput({index:0}));await ready(page,"01-horse.jpg");
+    assert.equal(await count(page,"__controlsRenames"),2);await page.close();
   });
 
   await group("Managed Versions page selects exact real outputs and help blocks hidden controller actions", async () => {
     const page=await newFixture({__controlsManagedController:true});await select(page);
-    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.enabled);
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[2]?.enabled);
     await page.evaluate(()=>window.__controlsNativeInput({kind:"side",index:1}));
     await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.label==="ORIGINAL"&&window.__controllerSurface.keys[0].enabled);
     await page.evaluate(()=>window.__controlsNativeInput({index:0}));await expectChecked(page,"Original",true);
     assert.deepEqual(await flags(page,"01-horse.jpg"),{selected:true,favourite:false});
     await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.active);
     await page.evaluate(()=>window.__controlsNativeInput({kind:"dial",index:2,delta:1}));
-    await page.waitForFunction(()=>window.__controllerSurface?.dials[2]?.label==="Active: B&W");
+    await page.waitForFunction(()=>window.__controllerSurface?.dials[2]?.label==="Version: B&W");
     await page.evaluate(()=>window.__controlsNativeInput({kind:"dial",index:2,delta:0}));await expectChecked(page,"B&W",true);
     assert.deepEqual(await flags(page,"01-horse_bw.jpg"),{selected:true,favourite:false});
     await page.waitForFunction(()=>window.__controllerSurface?.keys[1]?.active);
@@ -342,7 +348,7 @@ try {
 
   await group("Managed crop dials frame the untouched original and one explicit Apply waits for regeneration", async () => {
     const page=await newFixture({__controlsManagedController:true,__controlsDeferCrop:true});await select(page);
-    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.enabled);
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[2]?.enabled);
     await page.evaluate(()=>window.__controlsNativeInput({kind:"side",index:2}));
     await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.label==="CROP");
     await page.evaluate(()=>window.__controlsNativeInput({index:0}));await page.getByTestId("lightbox-crop-editor").waitFor();
@@ -368,7 +374,7 @@ try {
   await group("Controller mirror keyboard focus cannot rate, trash or navigate the real Lightbox behind it", async () => {
     const page=await newFixture({__controlsManagedController:true});await select(page);
     await page.getByRole("button",{name:"AKP03E controller",exact:true}).click();
-    const dialog=page.getByRole("dialog",{name:"Your AKP03E, ready to work"});await dialog.waitFor();
+    const dialog=page.getByRole("dialog",{name:"Your AKP03E controller"});await dialog.waitFor();
     const close=dialog.getByRole("button",{name:"Close Esc",exact:true});await close.focus();
     for(const key of ["Delete","1","ArrowRight","ArrowLeft"])await page.keyboard.press(key);
     assert.equal(await count(page,"__controlsRenames"),0);
@@ -376,6 +382,57 @@ try {
     await expectImage(page,"Original","01-horse.jpg");
     await page.keyboard.press("Enter");await dialog.waitFor({state:"hidden"});
     assert.equal(await page.getByRole("button",{name:"AKP03E controller",exact:true}).evaluate(element=>element===document.activeElement),true);await page.close();
+  });
+
+  await group("Default lower Google keys select each exact original and cropped output without uploading", async () => {
+    const page=await newFixture({__controlsManagedController:true});await select(page);
+    for(const [index,label,suffix]of [[3,"Original","01-horse.jpg"],[4,"B&W","01-horse_bw.jpg"],[5,"Enhanced","01-horse_improved.jpg"]]) {
+      await page.waitForFunction(index=>window.__controllerSurface?.keys[index]?.enabled,index);
+      await page.evaluate(index=>window.__controlsNativeInput({index}),index);await expectChecked(page,label,true);
+      assert.deepEqual(await flags(page,suffix),{selected:true,favourite:false});
+    }
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[5]?.active);
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"side",index:2}));await page.waitForFunction(()=>window.__controllerSurface?.keys[1]?.label==="CROPPED");
+    await page.evaluate(()=>window.__controlsNativeInput({index:1}));await ready(page,"01-horse_crop.jpg","Cropped");
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.enabled);await page.evaluate(()=>window.__controlsNativeInput({kind:"side",index:0}));
+    for(const [index,label,suffix]of [[3,"Cropped","01-horse_crop.jpg"],[4,"Cropped B&W","01-horse_crop_bw.jpg"],[5,"Cropped Enhanced","01-horse_crop_improved.jpg"]]) {
+      await page.waitForFunction(index=>window.__controllerSurface?.keys[index]?.enabled,index);
+      await page.evaluate(index=>window.__controlsNativeInput({index}),index);await expectChecked(page,label,true);
+      assert.deepEqual(await flags(page,suffix),{selected:true,favourite:false});
+    }
+    assert.equal(await count(page,"__controlsSelectionWrites"),6);assert.equal(await count(page,"__controlsRenames"),0);
+    assert.equal(await page.evaluate(()=>window.__controlsCalls.some(call=>/upload|start_job/.test(call.command)&&call.command!=="google_photos_update_selection")),false);await page.close();
+  });
+
+  await group("Saved dial roles drive real Lightbox actions and Identify cannot trash, select, zoom or navigate", async () => {
+    const saved={version:1,dials:[{turn:"zoom",press:"fit"},{turn:"versions",press:"select-active"},{turn:"browse",press:"next"}]};
+    const page=await newFixture({__controlsManagedController:true,__controlsInitialBindings:saved});await select(page);
+    await page.waitForFunction(()=>window.__controllerSurface?.dials[0]?.label==="Zoom image"&&window.__controllerSurface.keys[2].enabled);
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"dial",index:2,delta:1}));await ready(page,"02-rider.jpg");
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.enabled);await page.evaluate(()=>window.__controlsNativeInput({kind:"dial",index:2,delta:-1}));await ready(page,"01-horse.jpg");
+    await page.getByRole("button",{name:"AKP03E controller",exact:true}).click();const dialog=page.getByRole("dialog",{name:"Your AKP03E controller"});
+    assert.equal(await dialog.getByLabel("Dial 3 turn action",{exact:true}).inputValue(),"browse");
+    await dialog.getByRole("button",{name:"Identify the large dial",exact:true}).click();await dialog.getByLabel("Identify physical dial",{exact:true}).waitFor();
+    await page.waitForFunction(()=>window.__controllerSurface?.title.includes("Identify a dial"));
+    const learningRevision=await page.evaluate(()=>window.__controllerSurface.revision);
+    for(const input of [{index:1},{index:3},{kind:"side",index:2},{kind:"dial",index:1,delta:0}]) {
+      const before=await count(page,"__controllerAcks");await page.evaluate(input=>window.__controlsNativeInput(input),input);await page.waitForFunction(before=>window.__controllerAcks.length>before,before);
+    }
+    assert.equal(await dialog.getByRole("button",{name:"Apply identified dial",exact:true}).isDisabled(),true);
+    assert.equal(await count(page,"__controlsRenames"),0);assert.equal(await count(page,"__controlsSelectionWrites"),0);await expectImage(page,"Original","01-horse.jpg");
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"dial",index:1,delta:1}));await dialog.getByText(/Physical dial 2 detected/).waitFor();
+    await dialog.getByRole("button",{name:"Apply identified dial",exact:true}).click();await page.waitForFunction(()=>window.__controllerSurface?.dials[1]?.label==="Browse originals");
+    await page.evaluate(revision=>window.__controlsNativeInput({revision,index:1}),learningRevision);await page.waitForFunction(()=>window.__controllerAcks.at(-1)?.result==="ignored");
+    assert.equal(await count(page,"__controlsRenames"),0);assert.equal(await count(page,"__controlsSelectionWrites"),0);
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"dial",index:1,delta:1}));await ready(page,"02-rider.jpg");await page.close();
+  });
+
+  await group("Missing versions remain unavailable on the default controller layout", async () => {
+    const page=await newFixture({__controlsManagedController:true,__controlsMissing:["01-horse_BW.jpg","01-horse_improved.jpg"]});await select(page);
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[3]?.enabled);
+    assert.deepEqual(await page.evaluate(()=>window.__controllerSurface.keys.slice(3).map(key=>key.enabled)),[true,false,false]);
+    for(const index of [4,5]){await page.evaluate(index=>window.__controlsNativeInput({index}),index);await page.waitForFunction(()=>window.__controllerAcks.at(-1)?.result==="ignored");}
+    assert.equal(await count(page,"__controlsSelectionWrites"),0);await page.close();
   });
 
   assert.deepEqual(pageErrors,[],"No browser runtime exceptions");

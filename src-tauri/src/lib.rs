@@ -73,6 +73,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::controller::controller_status,
+            commands::controller::bindings::controller_lightbox_bindings,
             commands::controller::controller_claim_client,
             commands::controller::controller_configure,
             commands::controller::controller_surface,
