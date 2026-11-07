@@ -28,9 +28,9 @@ Typing fields, select menus, the folder tree and modal editors retain their keyb
 
 ## AJAZZ AKP03E
 
-The release includes controller artwork and a manual setup reference. Configure its six buttons as one/two/three stars plus next, trash plus next, select active plus next and skip. Dial 1 browses photos and presses V, dial 2 zooms and presses 0, and dial 3 changes the active panel and presses A.
+From 2.0.46, PhotoGoGo manages the AKP03E automatically: built-in layouts, live button artwork and direct commands require no vendor scene or hotkey setup. The sidebar's AKP03E controller panel shows the live layout, automatic-mode setting, brightness, Retry and Release. Taking over stops the verified AJAZZ controller app; restarting AJAZZ is manual. See the [automatic controller guide](akp03e-controller.md) for modes, safety and the physical test checklist.
 
-Use the vendor software's Hotkey action and keep PhotoGoGo foregrounded. Actual dial/press options depend on the installed AJAZZ software and must be checked on the device. The pack is a reference, not a verified vendor-import scene. Static button artwork does not provide live hardware-state feedback. The complete setup steps are in `public/controller/ajazz-akp03e/README.md`; `reference-keymap.json` and artwork are generated from the shared app keymap.
+The older static artwork and Hotkey reference remain available for optional legacy use with automatic mode off. They are not an importable vendor scene or live-state integration. Those manual instructions are in `public/controller/ajazz-akp03e/README.md`; `reference-keymap.json` and static artwork are generated from the shared keyboard map.
 
 ## Responsive selection saving
 

@@ -3,8 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ProcessScopeMode } from "../types";
 import type { RawCandidates, RawHistogram, RawPreviewResult, RawRecipe, RawRecipeRecord, RawScope, RawSelection } from "../types/rawDevelopment";
 import { loadRawDefaults, normalizeRawRecipe, rawPreset, saveRawDefaults } from "../utils/rawRecipe";
+import { useControllerSurface } from "../controller/useControllerSurface";
 
-interface Props { stagingDir: string; scopeDir: string; scopeMode: ProcessScopeMode; onOpenJobs?: () => void; onNamingBlockChange?: (reason: string | null) => void; refreshKey?: number }
+interface Props { stagingDir: string; scopeDir: string; scopeMode: ProcessScopeMode; onOpenJobs?: () => void; onNamingBlockChange?: (reason: string | null) => void; refreshKey?: number; autoOpen?: number }
 type DisplayPreview = RawPreviewResult & { urls: string[]; previewVariant: "colour" | "bw" };
 let previewLane: Promise<void> = Promise.resolve();
 const name = (path: string) => path.split(/[\\/]/).pop() || path;
@@ -47,8 +48,9 @@ function Histogram({ data }: { data: RawHistogram }) {
 }
 
 /** RAW controls remain separate from legacy JPEG jobs and share the core Jobs queue. */
-export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpenJobs, onNamingBlockChange, refreshKey = 0 }: Props) {
+export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpenJobs, onNamingBlockChange, refreshKey = 0, autoOpen = 0 }: Props) {
   const [expanded, setExpanded] = useState(false);
+  useEffect(() => { if (autoOpen > 0) setExpanded(true); }, [autoOpen]);
   const [defaults, setDefaults] = useState(loadRawDefaults);
   const [photoRecipe, setPhotoRecipe] = useState<RawRecipe>(defaults);
   const [savedPhotoRecipe, setSavedPhotoRecipe] = useState<RawRecipe | null>(null);
@@ -202,6 +204,7 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
         if (current === previewGeneration.current) setPreviewBusy(false);
       }
     });
+    return previewLane;
   }
   async function queue() {
     if (queueing || previewPendingCount > 0 || unavailable || noOutput || !candidates?.total || (selection === "selected" && !selectedPaths.length)) return;
@@ -217,6 +220,48 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
   }
   const visiblePaths = (candidates?.paths || []).filter((item) => item.toLowerCase().includes(filter.toLowerCase()));
   const blocked = !stagingDir || loading || queueing || saving;
+  const controllerReady = !blocked && !loadingRecipe && !previewBusy && previewPendingCount === 0;
+  const controllerPathIndex = visiblePaths.indexOf(path);
+  useControllerSurface({
+    id: "raw-development", title: editingPhoto ? "RAW · This photo" : "RAW · Job defaults",
+    contextKey: JSON.stringify([scopeKey, path, editingPhoto, candidateRevision]), priority: 100,
+    keys: [
+      { id: "raw-preview", label: "Preview", icon: "photo", enabled: controllerReady && !!path && !unavailable && (recipe.colour || recipe.bw), status: previewBusy ? "saving" : error ? "error" : "idle" },
+      { id: "raw-detail", label: "100% detail", icon: "zoom", enabled: controllerReady && !!path && !unavailable && (recipe.colour || recipe.bw), active: actualPixels },
+      { id: "raw-save", label: editingPhoto ? "Save photo" : "Save defaults", icon: "save", enabled: controllerReady && (recipe.colour || recipe.bw) && (!editingPhoto || recipeLoaded), status: saving ? "saving" : editingPhoto && savedPhotoRecipe && !photoDirty ? "saved" : "idle" },
+      { id: "raw-natural", label: "Natural", icon: "reset", enabled: controllerReady, active: recipe.preset === "natural" },
+      { id: "raw-branch", label: effectivePreviewVariant === "bw" ? "B&W preview" : "Colour preview", icon: effectivePreviewVariant === "bw" ? "bw" : "color", enabled: controllerReady && recipe.colour && recipe.bw, active: effectivePreviewVariant === "bw" },
+      { id: "raw-next", label: "Next original", icon: "next", enabled: controllerReady && controllerPathIndex >= 0 && controllerPathIndex < visiblePaths.length - 1 },
+    ],
+    dials: [
+      { label: `Exposure ${recipe.exposure.toFixed(2)} EV${automaticLevels ? " · Auto" : ""}`, left: "raw-exposure-down", right: "raw-exposure-up", press: "raw-exposure-reset", enabled: controllerReady && !automaticLevels },
+      { label: `Auto finish ${recipe.finishingStrength}%`, left: "raw-finish-down", right: "raw-finish-up", press: "raw-finish-web", enabled: controllerReady },
+      { label: `Contrast ${recipe.contrast}${automaticLevels ? " · Auto" : ""}`, left: "raw-contrast-down", right: "raw-contrast-up", press: "raw-contrast-reset", enabled: controllerReady && !automaticLevels },
+    ],
+    sideButtons: [
+      { id: "raw-previous", label: "Previous original", enabled: controllerReady && controllerPathIndex > 0 },
+      { id: "raw-auto-levels", label: automaticLevels ? "Auto levels on" : "Auto levels off", enabled: controllerReady },
+      { id: "raw-edit-scope", label: editingPhoto ? "Edit job defaults" : "Edit this photo", enabled: controllerReady && !!path && recipeLoaded },
+    ],
+    execute: async command => {
+      if (!controllerReady || !alive.current) return;
+      if (command === "raw-preview" || command === "raw-detail") { await generate(command === "raw-detail"); return; }
+      if (command === "raw-save") {
+        if (editingPhoto) await savePhoto(false);
+        else setMessage(saveRawDefaults(defaults) ? "Job defaults saved on this computer. Saved per-photo overrides remain unchanged." : "Could not save defaults on this computer. Current settings still apply to the next queued job.");
+      } else if (command === "raw-natural") preset("natural");
+      else if (command === "raw-branch" && recipe.colour && recipe.bw) setPreviewVariant(effectivePreviewVariant === "bw" ? "colour" : "bw");
+      else if (command === "raw-next" || command === "raw-previous") {
+        const target = visiblePaths[controllerPathIndex + (command === "raw-next" ? 1 : -1)]; if (target) choosePhoto(target);
+      } else if (command === "raw-auto-levels") edit({ autoExposure: !automaticLevels, ...(automaticLevels ? { finishingStrength: 0 } : {}) });
+      else if (command === "raw-edit-scope") {
+        if (editingPhoto && photoDirty && !window.confirm("Discard the unsaved recipe changes for this photo? Its saved recipe and original file will remain unchanged.")) return;
+        setPhotoRecipe(savedPhotoRecipe || defaults); setEditingPhoto(!editingPhoto);
+      } else if (command.startsWith("raw-exposure-") && !automaticLevels) edit({ exposure: command.endsWith("reset") ? 0 : Math.max(-3, Math.min(3, Math.round((recipe.exposure + (command.endsWith("up") ? .05 : -.05)) * 100) / 100)) });
+      else if (command.startsWith("raw-finish-")) { const amount = command.endsWith("web") ? 65 : Math.max(0, Math.min(100, recipe.finishingStrength + (command.endsWith("up") ? 5 : -5))); edit({ finishingStrength: amount, autoExposure: amount > 0 }); }
+      else if (command.startsWith("raw-contrast-") && !automaticLevels) edit({ contrast: command.endsWith("reset") ? 0 : Math.max(-100, Math.min(100, recipe.contrast + (command.endsWith("up") ? 2 : -2))) });
+    },
+  }, expanded);
   return <section className="card mb-4 min-w-0" role="region" aria-label="RAW Development">
     <div className="flex items-start justify-between gap-3 flex-wrap">
       <div><h3 className="text-base font-semibold text-amber-200">RAW Development</h3><p className="text-xs text-gray-400 mt-1 max-w-3xl">Develop Canon CR3 originals into full-resolution photos. Camera previews are for quick review; finished exports always decode the RAW.</p></div>

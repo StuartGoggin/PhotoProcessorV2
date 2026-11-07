@@ -1,4 +1,5 @@
 pub mod files;
+pub mod controller;
 pub mod faces;
 pub mod import;
 mod import_safety;

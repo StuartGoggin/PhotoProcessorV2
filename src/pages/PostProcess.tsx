@@ -22,6 +22,7 @@ interface TaskConfig {
 
 interface PostProcessProps {
   onOpenJobs?: () => void;
+  controllerOpenRaw?: number;
 }
 
 const TASKS: TaskConfig[] = [
@@ -128,7 +129,7 @@ function Adjustment({ label, value, min, max, step = 0.05, onChange, hint }: {
   </label>;
 }
 
-export default function PostProcess({ onOpenJobs }: PostProcessProps) {
+export default function PostProcess({ onOpenJobs,controllerOpenRaw=0 }: PostProcessProps) {
   const { settings } = useSettings();
   const [initialRecipe] = useState(loadPhotoProcessRecipe);
 
@@ -344,7 +345,7 @@ export default function PostProcess({ onOpenJobs }: PostProcessProps) {
         </div>
       )}
 
-      <RawDevelopment stagingDir={scopeUnresolved ? "" : staging} scopeDir={effectiveScope} scopeMode={scopeMode} onOpenJobs={onOpenJobs} onNamingBlockChange={rawNamingStatus} refreshKey={rawRevision} />
+      <RawDevelopment autoOpen={controllerOpenRaw} stagingDir={scopeUnresolved ? "" : staging} scopeDir={effectiveScope} scopeMode={scopeMode} onOpenJobs={onOpenJobs} onNamingBlockChange={rawNamingStatus} refreshKey={rawRevision} />
 
       <div className="space-y-4">
         {TASKS.map((task) => {

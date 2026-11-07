@@ -17,6 +17,8 @@ import GooglePhotos from "./pages/GooglePhotos";
 import FaceIdentify from "./pages/FaceIdentify";
 import Settings from "./pages/Settings";
 import Logs from "./pages/Logs";
+import ControllerPanel from "./components/ControllerPanel";
+import { useControllerSurface } from "./controller/useControllerSurface";
 
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "import",      label: "Import",       icon: "📥" },
@@ -43,6 +45,7 @@ export default function App() {
   const [jobsView, setJobsView] = useState<JobsView>("active");
   const [focusedJobId, setFocusedJobId] = useState<string | null>(null);
   const [jobsNavigation, setJobsNavigation] = useState(0);
+  const [controllerOpenRaw,setControllerOpenRaw]=useState(0);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
@@ -56,6 +59,19 @@ export default function App() {
     setMenuOpen(false);
   }
   function openJob(jobId: string) { openJobs("active"); setFocusedJobId(jobId); }
+  useControllerSurface({
+    id: "app", title: "PhotoGoGo", contextKey: page, priority: 0,
+    keys: [
+      { id: "review", label: "LIGHTBOX", icon: "photo", enabled: true, active: page === "review" },
+      { id: "postprocess", label: "DEVELOP", icon: "sun", enabled: true, active: page === "postprocess" },
+      { id: "videosnapshots", label: "SNAPSHOTS", icon: "capture", enabled: true, active: page === "videosnapshots" },
+      { id: "videostudio", label: "STUDIO", icon: "play", enabled: true, active: page === "videostudio" },
+      { id: "jobs", label: "JOBS", icon: "jobs", enabled: true, active: page === "jobs" },
+      { id: "import", label: "HOME", icon: "menu", enabled: true, active: page === "import" },
+    ],
+    sideButtons: [{label:"Lightbox",id:"review"},{label:"Develop",id:"postprocess"},{label:"Snapshots",id:"videosnapshots"}],
+    execute: command => { if (document.querySelector('[role="dialog"][aria-modal="true"]:not([data-controller-mirror-dialog])')) return; if (command === "jobs") openJobs(); else if (["review","postprocess","videosnapshots","videostudio","import"].includes(command)) {if(command==="postprocess")setControllerOpenRaw(value=>value+1);setPage(command as Page);setMenuOpen(false);} },
+  });
 
   useEffect(() => {
     try {
@@ -113,7 +129,7 @@ export default function App() {
     nameevents: <NameEvents />,
     cleanup: <Cleanup />,
     jobs: <Jobs key={jobsNavigation} initialView={jobsView} monitor={monitor} focusJobId={focusedJobId} />,
-    postprocess: <PostProcess onOpenJobs={() => openJobs()} />,
+    postprocess: <PostProcess controllerOpenRaw={controllerOpenRaw} onOpenJobs={() => openJobs()} />,
     review: <Review />,
     transfer: <Transfer />,
     googlephotos: <GooglePhotos onViewJob={openJob} />,
@@ -152,7 +168,7 @@ export default function App() {
             </div> : (
               <button
                 key={item.id}
-                onClick={() => { setPage(item.id); if (item.id === "jobs") setJobsView("active"); setMenuOpen(false); }}
+                onClick={() => { if(item.id==="postprocess")setControllerOpenRaw(0);setPage(item.id); if (item.id === "jobs") setJobsView("active"); setMenuOpen(false); }}
                 aria-current={page === item.id ? "page" : undefined}
                 className={`nav-item w-full text-left ${page === item.id ? "active" : ""}`}
               >
@@ -161,6 +177,7 @@ export default function App() {
               </button>
             ))}
           </nav>
+          <div className="p-2 border-t border-surface-600"><ControllerPanel /></div>
         </aside>
 
         <div

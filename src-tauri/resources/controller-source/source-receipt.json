@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "modified": false,
+  "packages": [
+    {
+      "name": "ajazz-sdk",
+      "version": "0.2.1",
+      "file": "ajazz-sdk-0.2.1.crate",
+      "sha256": "10320f86148f1774e444c8fdb5ae2bbccdffee23abc2c3848cb291293590c54c",
+      "source": "https://crates.io/api/v1/crates/ajazz-sdk/0.2.1/download"
+    },
+    {
+      "name": "hidapi",
+      "version": "2.6.7",
+      "file": "hidapi-2.6.7.crate",
+      "sha256": "818c0e1d27887aaf76fe737042e27a66b796a7b099e6d2e1a72d106c2dff3fa6",
+      "source": "https://crates.io/api/v1/crates/hidapi/2.6.7/download"
+    }
+  ]
+}

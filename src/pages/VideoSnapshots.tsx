@@ -8,6 +8,7 @@ import { frameAtTime, MAX_SNAPSHOT_CLIPS, MAX_SNAPSHOTS, mergeSnapshotSession, p
 import { SnapshotSessionWriter } from "../utils/snapshotSessionWriter";
 import type { SnapshotSaveState } from "../utils/snapshotSessionWriter";
 import SnapshotSessionsHome from "./SnapshotSessionsHome";
+import { useControllerSurface } from "../controller/useControllerSurface";
 import "./VideoSnapshots.css";
 
 type QueueItem = { id: string; path: string; status: "queued" | "indexing" | "ready" | "cancelled" | "error"; error?: string; saved?: SnapshotSession["sources"][number]; photos?: SnapshotSession["selections"] };
@@ -262,6 +263,7 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
   useEffect(() => {
     if (!active) { stop(); return; }
     const key = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLElement && event.target.closest("[data-controller-mirror-dialog]")) return;
       if (sessionHomeRef.current || operationBusy.current || isField(event.target) || event.ctrlKey || event.metaKey || event.altKey || document.hidden) return;
       if (["ArrowLeft", "ArrowRight", " ", "j", "J", "k", "K", "l", "L"].includes(event.key)) event.preventDefault();
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") { stop(); step((event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 10 : 1)); }
@@ -735,6 +737,49 @@ export default function VideoSnapshots({ active = true }: { active?: boolean }) 
     return () => element.removeEventListener("wheel", onWheel);
   }, [active, sessionHome]);
 
+  const controllerReady = active && !sessionHome && !sessionBusy && !nameDialog && !exporting;
+  const controllerSourceIndex = sources.findIndex(item => item.clip.id === selectedClip);
+  useControllerSurface({
+    id: "video-snapshots", title: "Snapshots · Find the moment", priority: 100,
+    contextKey: JSON.stringify([currentSession?.id, source?.clip.id, source?.clip.identity]),
+    keys: [
+      { id: "snapshot-previous", label: "Previous frame", icon: "previous", enabled: controllerReady && !!source && index > 0 },
+      { id: "snapshot-capture", label: existing ? "Frame selected" : "Select photo", icon: "capture", enabled: controllerReady && exact && !existing && totalPhotoCount < MAX_SNAPSHOTS, active: !!existing, detail: source ? `FRAME ${index + 1}` : "" },
+      { id: "snapshot-next", label: "Next frame", icon: "next", enabled: controllerReady && !!source && index < source.clip.frameTimesMs.length - 1 },
+      { id: "snapshot-reverse", label: "Shuttle back", icon: "previous", enabled: controllerReady && !!source, active: shuttle < 0, detail: shuttle < 0 ? `${Math.abs(shuttle)}X` : "" },
+      { id: "snapshot-stop", label: "Stop", icon: "pause", enabled: controllerReady && !!source, active: shuttle === 0 },
+      { id: "snapshot-forward", label: "Shuttle ahead", icon: "play", enabled: controllerReady && !!source, active: shuttle > 0, detail: shuttle > 0 ? `${shuttle}X` : "" },
+    ],
+    dials: [
+      { label: "Frame · accelerated", left: "snapshot-previous", right: "snapshot-next", press: "snapshot-capture", enabled: controllerReady && !!source, accelerate: true },
+      { label: "10 frames · accelerated", left: "snapshot-jump-back", right: "snapshot-jump-forward", press: "snapshot-stop", enabled: controllerReady && !!source, accelerate: true },
+      { label: "Video · press before/after", left: "snapshot-previous-video", right: "snapshot-next-video", press: "snapshot-before-after", enabled: controllerReady && !!source },
+    ],
+    sideButtons: [
+      { id: "snapshot-previous-video", label: "Previous video", enabled: controllerReady && controllerSourceIndex > 0 },
+      { id: "snapshot-next-video", label: "Next video", enabled: controllerReady && controllerSourceIndex >= 0 && controllerSourceIndex < sources.length - 1 },
+      { id: "snapshot-before-after", label: showBefore ? "Show adjusted" : "Show original", enabled: controllerReady && editingCurrent },
+    ],
+    execute: (command, amount = 1) => {
+      if (!controllerReady || operationBusy.current || sessionHomeRef.current || !alive.current) return;
+      const current = sourcesRef.current.find(item => item.clip.id === selectedClipRef.current);
+      if (!current) return;
+      if (command === "snapshot-capture") {
+        // A fast turn may have changed the requested frame before React commits.
+        if (!display || display.clipId !== current.clip.id || display.frame.index !== current.position || !exact || selectionsRef.current.some(item => item.clipId === current.clip.id && item.index === current.position)) return;
+        selectFrame();
+      } else if (command === "snapshot-previous" || command === "snapshot-next") { stop(); step((command === "snapshot-previous" ? -1 : 1) * Math.min(8, Math.max(1, amount))); }
+      else if (command === "snapshot-jump-back" || command === "snapshot-jump-forward") { stop(); step((command === "snapshot-jump-back" ? -10 : 10) * Math.min(8, Math.max(1, amount))); }
+      else if (command === "snapshot-stop") stop();
+      else if (command === "snapshot-forward") startShuttle(1);
+      else if (command === "snapshot-reverse") startShuttle(-1);
+      else if (command === "snapshot-before-after" && editingCurrent) setShowBefore(value => !value);
+      else if (command === "snapshot-previous-video" || command === "snapshot-next-video") {
+        const at = sourcesRef.current.findIndex(item => item.clip.id === selectedClipRef.current);
+        const next = sourcesRef.current[at + (command === "snapshot-next-video" ? 1 : -1)]; if (next) chooseClip(next.clip.id);
+      }
+    },
+  }, active && !sessionHome);
   return <section className="snapshots-page" aria-label="Video Snapshots">
     <header className="snapshots-header">
       <div><div className="snapshots-eyebrow">ORIGINAL VIDEO · PRECISE PHOTOS</div><h1>Video Snapshots <span>PHOTO<span className="snapshots-wordmark">GOGO</span></span></h1><p>Find the moment. Keep the original detail.</p></div>

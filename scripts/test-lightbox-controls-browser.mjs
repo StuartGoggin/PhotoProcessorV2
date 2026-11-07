@@ -300,6 +300,84 @@ try {
     assert.ok(await help.evaluate(node=>node.scrollWidth<=node.clientWidth+1));await page.keyboard.press("Escape");await page.close();
   });
 
+  await group("Managed AKP03E rating saves the real reviewed original before advancing and ignores rapid extra decisions", async () => {
+    const page=await newFixture({__controlsManagedController:true,__controlsDeferRename:true});await select(page);
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[2]?.enabled);
+    await page.evaluate(()=>window.__controlsNativeInput({index:2}));
+    await page.waitForFunction(()=>window.__controlsRenames.length===1);
+    assert.equal(await page.evaluate(()=>window.__controllerAcks.length),0,"The rating input is not acknowledged before its native save finishes");
+    await page.evaluate(()=>window.__controlsNativeInput({index:3}));
+    await page.waitForFunction(()=>window.__controllerAcks.some(ack=>ack.result==="ignored"));
+    assert.equal(await count(page,"__controlsRenames"),1);
+    await page.evaluate(()=>{window.__controlsDeferRename=false;window.__controlsReleaseRename();});
+    await ready(page,"02-rider.jpg");
+    await page.waitForFunction(()=>window.__controllerAcks.some(ack=>ack.result==="handled"));
+    assert.match((await page.evaluate(()=>window.__controlsRenames[0])).newName,/\{Like ooo\}/);
+    assert.equal(await count(page,"__controlsRenames"),1);await page.close();
+  });
+
+  await group("Managed Versions page selects exact real outputs and help blocks hidden controller actions", async () => {
+    const page=await newFixture({__controlsManagedController:true});await select(page);
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.enabled);
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"side",index:1}));
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.label==="ORIGINAL"&&window.__controllerSurface.keys[0].enabled);
+    await page.evaluate(()=>window.__controlsNativeInput({index:0}));await expectChecked(page,"Original",true);
+    assert.deepEqual(await flags(page,"01-horse.jpg"),{selected:true,favourite:false});
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.active);
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"dial",index:2,delta:1}));
+    await page.waitForFunction(()=>window.__controllerSurface?.dials[2]?.label==="Active: B&W");
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"dial",index:2,delta:0}));await expectChecked(page,"B&W",true);
+    assert.deepEqual(await flags(page,"01-horse_bw.jpg"),{selected:true,favourite:false});
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[1]?.active);
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"side",index:2}));
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[5]?.label==="HELP");
+    await page.evaluate(()=>window.__controlsNativeInput({index:5}));await page.getByTestId("lightbox-help").waitFor();
+    await page.waitForFunction(()=>window.__controllerSurface?.keys.every(key=>!key.enabled));
+    const writes=await count(page,"__controlsSelectionWrites"),renames=await count(page,"__controlsRenames");
+    await page.evaluate(()=>window.__controlsNativeInput({index:0}));
+    await page.waitForFunction(()=>window.__controllerAcks.at(-1)?.result==="ignored");
+    assert.equal(await count(page,"__controlsSelectionWrites"),writes);assert.equal(await count(page,"__controlsRenames"),renames);
+    assert.equal(await page.getByTestId("lightbox-crop-editor").count(),0);await page.close();
+  });
+
+  await group("Managed crop dials frame the untouched original and one explicit Apply waits for regeneration", async () => {
+    const page=await newFixture({__controlsManagedController:true,__controlsDeferCrop:true});await select(page);
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.enabled);
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"side",index:2}));
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.label==="CROP");
+    await page.evaluate(()=>window.__controlsNativeInput({index:0}));await page.getByTestId("lightbox-crop-editor").waitFor();
+    await page.waitForFunction(()=>window.__controllerSurface?.title==="Crop · Frame and refine"&&window.__controllerSurface.keys[0].enabled);
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"dial",index:2,delta:1}));
+    await page.getByText("Controller: top-left corner · 10 pixel steps",{exact:true}).waitFor();
+    await page.waitForFunction(()=>window.__controllerSurface?.dials[2]?.label==="top-left corner");
+    await page.evaluate(()=>window.__controlsNativeInput({kind:"dial",index:0,delta:1}));
+    await page.getByTestId("crop-output-dimensions").getByText("890 × 600 pixels",{exact:true}).waitFor();
+    assert.equal(await count(page,"__controlsCropWrites"),0);assert.equal(await count(page,"__controlsRenames"),0);
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.enabled);
+    await page.evaluate(()=>window.__controlsNativeInput({index:0}));
+    await page.waitForFunction(()=>window.__controlsCropWrites.length===1);
+    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.enabled===false);
+    await page.evaluate(()=>window.__controlsNativeInput({index:0}));
+    await page.waitForFunction(()=>window.__controllerAcks.at(-1)?.result==="ignored");
+    assert.equal(await count(page,"__controlsCropWrites"),1);
+    await page.evaluate(()=>{window.__controlsDeferCrop=false;window.__controlsReleaseCrop();});
+    await page.getByTestId("lightbox-crop-editor").waitFor({state:"hidden"});
+    await page.waitForFunction(()=>window.__controllerAcks.at(-1)?.result==="handled");await page.close();
+  });
+
+  await group("Controller mirror keyboard focus cannot rate, trash or navigate the real Lightbox behind it", async () => {
+    const page=await newFixture({__controlsManagedController:true});await select(page);
+    await page.getByRole("button",{name:"AKP03E controller",exact:true}).click();
+    const dialog=page.getByRole("dialog",{name:"Your AKP03E, ready to work"});await dialog.waitFor();
+    const close=dialog.getByRole("button",{name:"Close Esc",exact:true});await close.focus();
+    for(const key of ["Delete","1","ArrowRight","ArrowLeft"])await page.keyboard.press(key);
+    assert.equal(await count(page,"__controlsRenames"),0);
+    assert.equal(await count(page,"__controlsSelectionWrites"),0);
+    await expectImage(page,"Original","01-horse.jpg");
+    await page.keyboard.press("Enter");await dialog.waitFor({state:"hidden"});
+    assert.equal(await page.getByRole("button",{name:"AKP03E controller",exact:true}).evaluate(element=>element===document.activeElement),true);await page.close();
+  });
+
   assert.deepEqual(pageErrors,[],"No browser runtime exceptions");
   report.complete=true;report.browserErrors=pageErrors;
 } catch(error) {

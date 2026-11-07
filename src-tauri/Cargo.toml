@@ -1,6 +1,6 @@
 [package]
 name = "photogogo-v2"
-version = "2.0.45"
+version = "2.0.46"
 description = "PhotoGoGo V2 - Desktop Photo Archiving App"
 authors = ["PhotoGoGo"]
 edition = "2021"
@@ -35,7 +35,9 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 futures = "0.3"
 log = "0.4"
 env_logger = "0.11"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_RestartManager", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_RestartManager", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_RemoteDesktop"] }
+ajazz-sdk = "=0.2.1"
+base64 = "=0.22.1"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

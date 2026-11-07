@@ -2,11 +2,22 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import Review from "../src/pages/Review";
+import ControllerPanel from "../src/components/ControllerPanel";
 import type { TreeNode } from "../src/types";
 import "../src/styles.css";
 import { lightboxCommands, lightboxCropCommands } from "../src/utils/lightboxCommands";
 
 const fixture = window as any;
+const controllerCallbacks = new Map<number, (event: unknown) => void>();
+const controllerListeners = new Map<number, number>();
+let controllerCallback = 0, controllerListener = 0, controllerClient = "", controllerSession = 0, controllerInput = 0, controllerEnabled = true;
+fixture.__controllerAcks = []; fixture.__controllerSurface = null;
+fixture.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: (_event: string, id: number) => controllerListeners.delete(id) };
+const controllerStatus = () => ({ enabled: controllerEnabled, phase: controllerEnabled ? "connected" : "disabled", message: "Synthetic AKP03E transport", client: controllerClient, session: "native-" + controllerSession, vendorStopped: true, brightness: 60 });
+fixture.__controlsNativeInput = (input: Record<string, unknown> = {}) => {
+  const payload = { session: "native-" + controllerSession, revision: fixture.__controllerSurface?.revision || 0, id: String(++controllerInput), kind: "key", index: 0, delta: 1, ...input };
+  for (const callback of controllerListeners.values()) controllerCallbacks.get(callback)?.({ event: "controller-input", id: callback, payload });
+};
 fixture.__controlsCommandReference=[...lightboxCommands,...lightboxCropCommands].map(({id,label,group,keys})=>({id,label,group,keys}));
 const untag = (value: string) => value.replace(/\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi, "");
 const file = (name: string, parent = ""): TreeNode => ({type:"file", name, path:parent ? `${parent}/${name}` : name, size:32768});
@@ -57,8 +68,15 @@ function source(oldPath:string) {
   if(!root)throw Error("Unknown synthetic source root");
   return {root,path:normalized.slice(root.length+1)};
 }
-fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",invoke:async(command:string,args:any)=>{
+fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(event:unknown)=>void)=>{const id=++controllerCallback;controllerCallbacks.set(id,callback);return id;},invoke:async(command:string,args:any)=>{
   fixture.__controlsCalls.push({command,args:structuredClone(args)});
+  if(command==="controller_claim_client") { if(controllerClient!==args.client){controllerClient=args.client;controllerSession++;} return controllerStatus(); }
+  if(command==="controller_status") return controllerStatus();
+  if(command==="controller_configure") {controllerEnabled=args.enabled;return controllerStatus();}
+  if(command==="controller_surface") {fixture.__controllerSurface=structuredClone(args.surface);return null;}
+  if(command==="controller_ack") {fixture.__controllerAcks.push(structuredClone(args));return null;}
+  if(command==="plugin:event|listen") {const id=++controllerListener;if(args.event==="controller-input")controllerListeners.set(id,args.handler);return id;}
+  if(command==="plugin:event|unlisten") {controllerListeners.delete(args.eventId);return null;}
   if(command==="load_settings") return {staging_dir:currentRoot,source_root:"",archive_dir:"",exiftool_dir:""};
   if(command==="list_staging_tree") {
     if(fixture.__controlsTreeError)throw Error(fixture.__controlsTreeError);
@@ -123,7 +141,7 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",invoke:async(command:string,a
 const root=createRoot(document.getElementById("root")!);
 let generation=0;
 // Mirror App's scroll container without mounting unrelated pages/jobs/accounts.
-function render() {root.render(<React.StrictMode><main id="app-main" className="app-main h-full min-w-0 min-h-0 overflow-auto"><Review key={generation}/></main></React.StrictMode>);}
+function render() {root.render(<React.StrictMode><main id="app-main" className="app-main h-full min-w-0 min-h-0 overflow-auto"><Review key={generation}/></main>{fixture.__controlsManagedController&&<div style={{position:"fixed",zIndex:40,top:8,right:8,width:224,background:"#0f0f0f",borderRadius:8}}><ControllerPanel/></div>}</React.StrictMode>);}
 fixture.__controlsSwitchRoot=(next:string)=>{currentRoot=next;generation++;render();};
 fixture.__controlsUnmount=()=>root.unmount();
 render();

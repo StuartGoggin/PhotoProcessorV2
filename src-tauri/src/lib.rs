@@ -64,6 +64,7 @@ use commands::{
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            if let Err(error)=commands::controller::init(app.handle()){log::warn!("Controller unavailable: {error}");}
             init_studio_recovery(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
@@ -71,6 +72,11 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            commands::controller::controller_status,
+            commands::controller::controller_claim_client,
+            commands::controller::controller_configure,
+            commands::controller::controller_surface,
+            commands::controller::controller_ack,
             metadata_tool_status,
             google_photos_status, google_photos_configure, google_photos_connect, google_photos_disconnect,
             google_photos_catalogue, google_photos_set_selection, google_photos_update_selection, google_photos_plan, google_photos_start,
@@ -194,6 +200,7 @@ pub fn run() {
             read_log_file,
             clear_log_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app,event| { if matches!(event,tauri::RunEvent::Exit) { use tauri::Manager; if let Some(manager)=app.try_state::<commands::controller::ControllerManager>(){ manager.shutdown(); } } });
 }

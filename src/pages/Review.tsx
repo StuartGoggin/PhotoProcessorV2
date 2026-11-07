@@ -8,6 +8,8 @@ import { useGooglePhotoCuration } from "../hooks/useGooglePhotoCuration";
 import { lightboxCommands, lightboxTypingTarget, matchLightboxCommand, shortcutFor, type LightboxCommandId } from "../utils/lightboxCommands";
 import { useEventNaming } from "../hooks/useEventNaming";
 import { namedEventPath } from "../utils/eventNamingContext";
+import { useControllerSurface } from "../controller/useControllerSurface";
+import type { ControllerKey } from "../controller/types";
 
 const emptyPan = () => [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
 const frameId = (context?: ReviewContext) => context ? JSON.stringify([context.root, context.path, context.epoch, context.cropped]) : "";
@@ -21,6 +23,7 @@ export default function Review() {
   const [cropMessage, setCropMessage] = useState("");
   const [feedback, setFeedback] = useState("");
   const [busy, setBusy] = useState(false);
+  const [controllerPage,setControllerPage]=useState<"review"|"versions"|"inspect">("review");
   const actionBusy = useRef(false), alive = useRef(true);
   const modal = useRef({ crop: false, help: false, naming: false });
   const reviewRoot = useRef<HTMLDivElement>(null);
@@ -59,7 +62,7 @@ export default function Review() {
   modal.current = { crop: cropOpen, help: helpOpen, naming: naming.isOpen };
 
   function focusReview() {
-    if (alive.current && !modal.current.crop && !modal.current.help && !modal.current.naming) reviewRoot.current?.focus({ preventScroll: true });
+    if (alive.current && !modal.current.crop && !modal.current.help && !modal.current.naming && !document.querySelector('[data-controller-mirror-dialog]')) reviewRoot.current?.focus({ preventScroll: true });
   }
   function activate(index: number) {
     if (actionBusy.current) return;
@@ -180,8 +183,31 @@ export default function Review() {
   }
   function activateDuringSave(index: number) { active.current = index; setActivePanel(index); }
   const executeLatest = useRef(execute); executeLatest.current = execute;
+  const controllerBlocked=disabled || helpOpen || naming.isOpen || cropOpen;
+  const controllerKeys:ControllerKey[]=controllerPage==="review" ? [
+    ...[1,2,3].map(value=>({id:`rate-${value}-next`,label:`${value} STAR${value===1?"":"S"}`,detail:"SAVE + NEXT",icon:"star",enabled:!controllerBlocked,active:stars===value})),
+    {id:"trash-next",label:"TRASH",detail:"SAVE + NEXT",icon:"trash",enabled:!controllerBlocked,active:trashed},
+    {id:"select-active-next",label:"SELECT",detail:"SAVE + NEXT",icon:"check",enabled:!controllerBlocked&&!curation.loading},
+    {id:"next",label:"SKIP",detail:"NEXT PHOTO",icon:"next",enabled:!controllerBlocked&&siblingIdx<siblings.length-1},
+  ] : controllerPage==="versions" ? [
+    ...["original","bw","enhanced"].map((variant,index)=>{const node=[version?.original,version?.bw,version?.improved][index];const asset=node?curation.assetForPath(node.path):null;return{id:`select-${variant}`,label:["ORIGINAL","B&W","ENHANCED"][index],detail:asset?.selected?"SELECTED":"GOOGLE PHOTOS",icon:["original","bw","enhanced"][index],enabled:!controllerBlocked&&!curation.loading&&!!asset&&!!renderedImages[index],active:!!asset?.selected,status:curation.pendingFor(asset?.id)?"saving" as const:"idle" as const};}),
+    ...["original","bw","enhanced"].map((variant,index)=>{const node=[version?.original,version?.bw,version?.improved][index];const asset=node?curation.assetForPath(node.path):null;return{id:`favourite-${variant}`,label:["ORIG FAV","B&W FAV","ENH FAV"][index],icon:"heart",enabled:!controllerBlocked&&!curation.loading&&!!asset&&!!renderedImages[index],active:!!asset?.favourite};}),
+  ] : [
+    {id:"crop",label:"CROP",icon:"crop",enabled:!controllerBlocked&&editable},
+    {id:"crop-version",label:cropped?"ORIGINAL":"CROPPED",icon:"photo",enabled:!controllerBlocked&&!!selectedPhoto?.crop,active:cropped},
+    {id:"fit",label:"FIT",icon:"zoom",enabled:!controllerBlocked},
+    {id:"clear-rating",label:"UNRATE",icon:"reset",enabled:!controllerBlocked&&stars>0},
+    {id:"refresh",label:"REFRESH",icon:"folder",enabled:!controllerBlocked},
+    {id:"help",label:"HELP",icon:"help",enabled:!controllerBlocked},
+  ];
+  useControllerSurface({id:"lightbox",title:`Lightbox · ${controllerPage}`,contextKey:JSON.stringify([renderFrame,activePanel,controllerPage,helpOpen,naming.isOpen,cropOpen]),keys:controllerKeys,
+    dials:[{label:"Browse originals",left:"previous",right:"next",press:"crop-version",enabled:!controllerBlocked},{label:"Zoom / fit",left:"zoom-out",right:"zoom-in",press:"fit",enabled:!controllerBlocked},{label:`Active: ${labels[activePanel]}`,left:"panel-previous",right:"panel-next",press:"select-active",enabled:!controllerBlocked}],
+    sideButtons:[{label:"Review",id:"mode-review",enabled:!controllerBlocked},{label:"Versions",id:"mode-versions",enabled:!controllerBlocked},{label:"Inspect",id:"mode-inspect",enabled:!controllerBlocked}],
+    execute:async command=>{if(command.startsWith("mode-")){if(!controllerBlocked)setControllerPage(command.slice(5) as "review"|"versions"|"inspect");return;}await executeLatest.current(command as LightboxCommandId);},
+  });
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
+      if (event.target instanceof HTMLElement && event.target.closest('[data-controller-mirror-dialog]')) return;
       if (event.defaultPrevented || modal.current.crop || modal.current.help || modal.current.naming) return;
       const command = matchLightboxCommand(event);
       if (!command) return;

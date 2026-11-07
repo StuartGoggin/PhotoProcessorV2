@@ -5,6 +5,7 @@ import { cropPixelSize, dragCrop, fitCropRatio, FULL_CROP, validCrop, type CropH
 import { loadPhotoProcessRecipe, savePhotoProcessRecipe, type PhotoProcessRecipe } from "../utils/photoProcessRecipe";
 import type { CropRect, LightboxCropInfo, LightboxCropResult } from "../types/lightboxCrop";
 import { lightboxCropCommands, lightboxTypingTarget, matchLightboxCropCommand, shortcutFor } from "../utils/lightboxCommands";
+import { useControllerSurface } from "../controller/useControllerSurface";
 
 interface Props {
   stagingDir: string; photo: LightboxPhoto;
@@ -46,6 +47,8 @@ export default function LightboxCropEditor({ stagingDir, photo, onClose, onSaved
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [controllerHandle, setControllerHandle] = useState<CropHandle>("move");
+  const [controllerFine, setControllerFine] = useState(false);
   const [available, setAvailable] = useState({ width: 1, height: 1 });
   const dialog = useRef<HTMLDivElement>(null);
   const area = useRef<HTMLDivElement>(null);
@@ -91,6 +94,7 @@ export default function LightboxCropEditor({ stagingDir, photo, onClose, onSaved
     const previouslyFocused = document.activeElement as HTMLElement | null;
     dialog.current?.focus();
     function key(event: KeyboardEvent) {
+      if (event.target instanceof HTMLElement && event.target.closest("[data-controller-mirror-dialog]")) return;
       const action = matchLightboxCropCommand(event);
       if (action && (["crop-close", "crop-help", "crop-apply"].includes(action) || !lightboxTypingTarget(event.target))) {
         event.preventDefault(); event.stopPropagation();
@@ -172,13 +176,60 @@ export default function LightboxCropEditor({ stagingDir, photo, onClose, onSaved
     finally { busyRef.current = false; if (alive.current) setBusy(false); }
   }
   applyRef.current = () => { void apply(); };
+  const controllerHandles: CropHandle[] = ["move", ...handles.map(handle => handle.id)];
+  const controllerHandleLabel = controllerHandle === "move" ? "Move frame" : handles.find(handle => handle.id === controllerHandle)?.label || "Move frame";
+  const controllerReady = !loading && !busy && !!info && !!source;
+  useControllerSurface({
+    id: "lightbox-crop", title: "Crop · Frame and refine", priority: 200,
+    contextKey: JSON.stringify([stagingDir, photo.original.path, info?.sourceFingerprint, crop]),
+    keys: [
+      { id: "crop-apply", label: "Apply crop", icon: "save", enabled: controllerReady, status: busy ? "saving" : "idle" },
+      { id: "crop-reset", label: "Full frame", icon: "reset", enabled: controllerReady },
+      { id: "crop-ratio", label: ratioName, icon: "crop", enabled: controllerReady },
+      { id: "crop-orientation", label: portrait ? "Portrait" : "Landscape", icon: "photo", enabled: controllerReady && !["Free", "Original", "Square"].includes(ratioName), active: portrait },
+      { id: "crop-bw", label: "B&W output", icon: "bw", enabled: controllerReady, active: bw },
+      { id: "crop-enhanced", label: "Enhanced", icon: "enhanced", enabled: controllerReady, active: enhanced },
+    ],
+    dials: [
+      { label: `Horizontal · ${controllerFine ? "1" : "10"} px`, left: "crop-left", right: "crop-right", press: "crop-move-frame", enabled: controllerReady },
+      { label: `Vertical · ${controllerFine ? "1" : "10"} px`, left: "crop-up", right: "crop-down", press: "crop-precision", enabled: controllerReady },
+      { label: controllerHandleLabel, left: "crop-handle-previous", right: "crop-handle-next", press: "crop-ratio", enabled: controllerReady },
+    ],
+    sideButtons: [
+      { id: "crop-move-frame", label: "Move whole frame", enabled: controllerReady },
+      { id: "crop-cancel", label: "Cancel crop", enabled: !busy },
+      { id: "crop-precision", label: controllerFine ? "1 pixel precision" : "10 pixel steps", enabled: controllerReady },
+    ],
+    execute: async command => {
+      if (!alive.current || busyRef.current) return;
+      if (command === "crop-cancel") { onClose(); return; }
+      if (!controllerReady || !info || drag.current) return;
+      if (command === "crop-apply") { await apply(); return; }
+      if (command === "crop-reset") resetFullFrame();
+      else if (command === "crop-ratio") chooseRatio(ratioOptions[(ratioOptions.indexOf(ratioName) + 1) % ratioOptions.length]);
+      else if (command === "crop-orientation") actionsRef.current["crop-orientation"]?.();
+      else if (command === "crop-bw") setBw(value => !value);
+      else if (command === "crop-enhanced") setEnhanced(value => !value);
+      else if (command === "crop-precision") setControllerFine(value => !value);
+      else if (command === "crop-move-frame") setControllerHandle("move");
+      else if (command === "crop-handle-next" || command === "crop-handle-previous") {
+        const next = (controllerHandles.indexOf(controllerHandle) + (command.endsWith("next") ? 1 : -1) + controllerHandles.length) % controllerHandles.length;
+        setControllerHandle(controllerHandles[next]);
+      } else if (["crop-left", "crop-right", "crop-up", "crop-down"].includes(command)) {
+        const pixels = controllerFine ? 1 : 10;
+        const next = dragCrop(crop, controllerHandle, (command === "crop-left" ? -pixels : command === "crop-right" ? pixels : 0) / info.width,
+          (command === "crop-up" ? -pixels : command === "crop-down" ? pixels : 0) / info.height, ratioFor(), info.width, info.height);
+        ratioFrame.current = next; setCrop(next);
+      }
+    },
+  });
   const scale = info ? Math.min(available.width / info.width, available.height / info.height) : 1;
   const width = info ? info.width * scale : 1, height = info ? info.height * scale : 1;
   const { width: outputWidth, height: outputHeight } = info ? cropPixelSize(crop, info.width, info.height) : { width: 0, height: 0 };
   const adjustment = (label: string, value: number, min: number, max: number, update: (value: number) => void, step = .05) => <label className="block text-xs text-gray-300 space-y-1"><span className="flex justify-between gap-2"><span>{label}</span><span className="tabular-nums text-cyan-200">{value.toFixed(2)}</span></span><input type="range" aria-label={label} min={min} max={max} step={step} value={value} disabled={busy} onChange={event => update(Number(event.target.value))} className="w-full accent-cyan-400" /></label>;
   return <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="crop-heading" tabIndex={-1} className="fixed inset-0 z-50 flex flex-col bg-surface-900 text-gray-200 outline-none" data-testid="lightbox-crop-editor">
     <header className="flex-shrink-0 border-b border-surface-600 p-3 sm:px-5 flex items-center justify-between gap-3">
-      <div className="min-w-0"><h2 id="crop-heading" className="text-lg font-semibold text-white">Crop photo</h2><p className="text-xs text-gray-400 truncate">{photo.original.name} · Original stays untouched</p></div>
+      <div className="min-w-0"><h2 id="crop-heading" className="text-lg font-semibold text-white">Crop photo</h2><p className="text-xs text-gray-400 truncate">{photo.original.name} · Original stays untouched</p><p className="text-[11px] text-cyan-200 mt-1">Controller: {controllerHandleLabel} · {controllerFine ? "1 pixel precision" : "10 pixel steps"}</p></div>
       <button ref={cancel} type="button" className="btn-secondary text-xs min-h-11" onClick={onClose} disabled={busy}>Cancel <kbd aria-hidden="true" className="ml-2 text-gray-400">{shortcutFor("crop-close")}</kbd></button>
     </header>
     <div className="flex-1 min-h-0 flex flex-col lg:flex-row">

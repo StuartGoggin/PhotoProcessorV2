@@ -66,6 +66,8 @@ Import-MsvcBuildEnvironment
 & (Join-Path $PSScriptRoot 'verify-raw-bundle.ps1') `
     -BundleDirectory (Join-Path $repoRoot 'src-tauri/tools/rawtherapee') -ForRelease
 
+& (Join-Path $PSScriptRoot 'verify-controller-bundle.ps1') -BundleDirectory (Join-Path $repoRoot 'src-tauri/resources/controller-source')
+
 $cargo = Get-Command cargo.exe -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1
 if (-not $cargo) {

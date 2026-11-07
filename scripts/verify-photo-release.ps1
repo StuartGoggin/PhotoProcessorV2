@@ -70,7 +70,7 @@ function Expand-MsiMetadataLayout([string]$packagePath,[string]$extractionRoot) 
     Get-ChildItem -LiteralPath $extractionRoot -Recurse -File | ForEach-Object { $cabFiles[$_.Name]=$_.FullName }
     foreach ($file in $files) {
         $directory=Get-InstalledDirectory $components[$file.component]
-        if ($null -eq $directory -or -not (($directory+'\').StartsWith('tools\exiftool\',[StringComparison]::OrdinalIgnoreCase) -or ($directory+'\').StartsWith('tools\rawtherapee\',[StringComparison]::OrdinalIgnoreCase))) { continue }
+        if ($null -eq $directory -or -not (($directory+'\').StartsWith('tools\exiftool\',[StringComparison]::OrdinalIgnoreCase) -or ($directory+'\').StartsWith('tools\rawtherapee\',[StringComparison]::OrdinalIgnoreCase) -or ($directory+'\').StartsWith('resources\controller-source\',[StringComparison]::OrdinalIgnoreCase))) { continue }
         if (-not $cabFiles.ContainsKey($file.id)) { throw 'MSI metadata file is missing from the extracted cabinet.' }
         $name=($file.name.Split('|'))[-1]
         $target=[IO.Path]::GetFullPath((Join-Path $layout (Join-Path $directory $name)))
@@ -115,6 +115,12 @@ if ($standalone.sha256 -ne $binaryHash) { throw 'Standalone application normaliz
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $repo 'src-tauri\tools\ffmpeg\build-manifest.json') | ConvertFrom-Json
 $manifestHash = (Get-FileHash -LiteralPath (Join-Path $repo 'src-tauri\tools\ffmpeg\build-manifest.json') -Algorithm SHA256).Hash
 $expected = @($manifestHash) + @($manifest.files | ForEach-Object sha256)
+$controllerSource=Join-Path $repo 'src-tauri/resources/controller-source'
+$controllerExpected=[version]$Version -ge [version]'2.0.46'
+if($controllerExpected){
+    & (Join-Path $PSScriptRoot 'verify-controller-bundle.ps1') -BundleDirectory $controllerSource
+    $expected += @(Get-ChildItem -LiteralPath $controllerSource -File | ForEach-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash })
+}
 $packages = @()
 foreach ($package in @(@{ kind='msi'; path=$msi },@{ kind='nsis'; path=$nsis })) {
     $extracted = [IO.Path]::GetFullPath((Join-Path $reportRoot $package.kind))
@@ -189,6 +195,11 @@ foreach ($package in @(@{ kind='msi'; path=$msi },@{ kind='nsis'; path=$nsis }))
         if($rawExecutables.Count -ne 1){throw 'Expected one bundled RAW CLI'}
         $rawDirectory=$rawExecutables[0].Directory.FullName
         & (Join-Path $PSScriptRoot 'verify-raw-bundle.ps1') -BundleDirectory $rawDirectory -ForRelease
+        if($controllerExpected){
+            $controllerReadme=@($payloadFiles | Where-Object { $_.Name -eq 'README.txt' -and $_.Directory.Name -eq 'controller-source' })
+            if($controllerReadme.Count -ne 1){throw 'Expected one bundled controller source/licence directory'}
+            & (Join-Path $PSScriptRoot 'verify-controller-bundle.ps1') -BundleDirectory $controllerReadme[0].Directory.FullName
+        }
         $smoke=$false
         if($RawSmokeSource){
             if(-not $RawSmokeProfile){throw 'Supply the accepted RAW smoke profile'}
@@ -198,6 +209,7 @@ foreach ($package in @(@{ kind='msi'; path=$msi },@{ kind='nsis'; path=$nsis }))
         $file = Get-Item -LiteralPath $package.path
         $packages += @{ path=$file.FullName; bytes=$file.Length; sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash; payloadsVerified=($expected.Count + 1); metadataRuntime=@{ version='13.59'; closureVerified=$true; relocatedWithoutPath=$true }; application=@{ sha256=(Get-FileHash -LiteralPath $applications[0].FullName -Algorithm SHA256).Hash; normalizedSha256=$application.sha256; bundleType=$application.bundleType; markerOffset=$application.markerOffset }; signature=(Get-AuthenticodeSignature -LiteralPath $file.FullName).Status.ToString() }
         $packages[-1].rawRuntime=@{version='5.13';closureVerified=$true;relocatedWithoutPath=$smoke;resources=@(Get-Content (Join-Path $rawDirectory 'runtime-manifest.json') -Raw|ConvertFrom-Json).files.Count}
+        if($controllerExpected){$packages[-1].controllerSources=@{sdk='ajazz-sdk 0.2.1';hid='hidapi 2.6.7';checksumsVerified=$true;licenceNoticesIncluded=$true}}
     } finally {
         # Only this new run's exact, validated extraction directory is disposable.
         if ($extracted -notin @((Join-Path $reportRoot 'msi'),(Join-Path $reportRoot 'nsis'))) { throw 'Unsafe extraction cleanup target' }
