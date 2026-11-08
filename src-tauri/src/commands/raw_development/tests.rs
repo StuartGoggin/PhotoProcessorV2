@@ -696,16 +696,25 @@ fn raw_real_file_library_and_cancel() {
     worker::publish(&raw, &[(out, "developed".into())], &r, &h, &recipe_hash).unwrap();
     assert_eq!(manifest::reusable(&raw, &recipe_hash, &r).unwrap(), Some(1));
     manifest::confirm_reuse(&raw, &h).unwrap();
-    let tagged = space.0.join("different-import-name{Like oo}.cr3");
+    let before_catalogue = catalogue::scan(&space.0).unwrap();
+    let before_ids: Vec<_> = before_catalogue.assets.iter().map(|a| (a.id.clone(), a.family_id.clone())).collect();
+    let tagged = space.0.join("different-import-name{Like ooo}{trash}.cr3");
     {
         let _lease = capture::guard_move(&raw, &tagged).unwrap();
         fs::rename(&raw, &tagged).unwrap();
     }
+    let jpeg_tagged = space.0.join("camera-name{Like oo}.jpg");
+    { let _lease = capture::guard_move(&jpeg, &jpeg_tagged).unwrap(); fs::rename(&jpeg, &jpeg_tagged).unwrap(); }
+    manifest::save_lightbox_choice(&space.0.to_string_lossy(), &tagged.to_string_lossy(), "raw").unwrap();
+    let request=Request { staging_dir:space.0.to_string_lossy().into(),scope_dir:space.0.to_string_lossy().into(),scope_mode:ProcessScopeMode::FolderOnly,selection:"minRating".into(),min_rating:2,selected_paths:vec![],recipe:RawRecipe::default(),use_photo_overrides:false };
+    assert_eq!(request.files().unwrap(),vec![tagged.canonicalize().unwrap()]);
     let catalogue = catalogue::scan(&space.0).unwrap();
+    let mut after_ids:Vec<_>=catalogue.assets.iter().map(|a|(a.id.clone(),a.family_id.clone())).collect();
+    let mut before_ids=before_ids;before_ids.sort();after_ids.sort();assert_eq!(before_ids,after_ids);
     let camera = catalogue
         .assets
         .iter()
-        .find(|a| a.relative_path == "camera-name.jpg")
+        .find(|a| a.relative_path == "camera-name{Like oo}.jpg")
         .unwrap();
     let master = catalogue
         .assets
@@ -714,6 +723,7 @@ fn raw_real_file_library_and_cancel() {
         .unwrap();
     assert_eq!(camera.family_id, master.family_id);
     assert_eq!(camera.stars, 2);
+    assert_eq!(master.stars, 2);assert!(!master.trashed);assert!(!camera.trashed);
     assert!(!camera.selected);
     assert_eq!(catalogue.assets.len(), 3);
     let id = "raw-real-cancel-fixture";

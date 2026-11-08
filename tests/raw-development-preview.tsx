@@ -27,7 +27,8 @@ function image(label: string, full: boolean) {
 fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any) => {
   fixture.__rawCalls.push({ command, args: structuredClone(args) });
   if (command === "raw_development_candidates") {
-    const paths = fixture.__rawEmpty ? [] : ["Rider.CR3", "Portrait.CR3", "Wide.CR3"].map((file) => `${args.request.scopeDir}\\${file}`);
+    const eligible = ["Rider.CR3", "Portrait.CR3", "Wide.CR3"].map((file) => `${args.request.scopeDir}\\${file}`);
+    const paths = fixture.__rawEmpty ? [] : args.request.selection === "selected" ? eligible.filter(path => args.request.selectedPaths.includes(path)) : eligible;
     return { paths, total: paths.length, truncated: false, runtime: { available: !fixture.__rawUnavailable, version: "Fixture worker", message: fixture.__rawUnavailable ? "Fixture worker unavailable" : "Synthetic adapter; no image-quality claim" } };
   }
   if (command === "get_raw_recipe") return { recipe: fixture.__rawOverrides[args.path] || null, lastAppliedRecipe: fixture.__rawLastApplied[args.path] || null };
@@ -37,6 +38,7 @@ fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any) => {
   }
   if (command === "clear_raw_recipe") { delete fixture.__rawOverrides[args.path]; return null; }
   if (command === "start_raw_development_job") { fixture.__rawQueue.push(structuredClone(args.request)); return "raw-fixture-job"; }
+  if (command === "read_lightbox_image") return { data: image("Camera JPEG", false).split(",")[1], mime: "image/jpeg", width: 400, height: 600 };
   if (command === "raw_development_preview") {
     fixture.__rawPreviewActive++; fixture.__rawPreviewMax = Math.max(fixture.__rawPreviewMax, fixture.__rawPreviewActive);
     try {
@@ -50,8 +52,11 @@ fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any) => {
 } };
 function Fixture() {
   const [scopeDir, setScope] = useState("D:\\Photos");
+  const [initialPath, setInitialPath] = useState("D:\\Photos\\Portrait.CR3");
+  const singlePhoto = new URLSearchParams(location.search).has("single");
   fixture.__rawSetScope = setScope;
-  return <div className="p-4 max-w-6xl mx-auto"><RawDevelopment stagingDir="D:\\Photos" scopeDir={scopeDir} scopeMode="folderRecursive" onOpenJobs={() => fixture.__rawOpenedJobs = true} /></div>;
+  fixture.__rawSetInitialPath = setInitialPath;
+  return <div className="p-4 max-w-6xl mx-auto"><RawDevelopment stagingDir="D:\\Photos" scopeDir={scopeDir} scopeMode="folderRecursive" onOpenJobs={() => fixture.__rawOpenedJobs = true} {...(singlePhoto ? {singlePhoto, initialPath, cameraJpegPath: "D:\\Photos\\Portrait.JPG", onNamingBlockChange: (reason: string | null) => fixture.__rawBlocked = reason, onQueued: (id: string) => fixture.__rawQueuedId = id} : {})} /></div>;
 }
 const root = createRoot(document.getElementById("root")!);
 fixture.__rawUnmount = () => root.unmount();

@@ -124,10 +124,10 @@ try {
   await page.evaluate(() => { window.__controlsDeferSelection = false; window.__controlsReleaseSelection(); }); await saved(page, 6);
   await page.getByRole("combobox", { name: "Original source", exact: true }).selectOption("cameraJpeg"); await ready(page, "Camera JPEG", "01-horse.JPG");
   await hotkey(page, "1");
-  await tree(page).getByText("01-horse{Like o}.CR3", { exact: true }).waitFor(); await ready(page, "Camera JPEG", "01-horse.JPG");
-  assert.equal(await page.evaluate(() => window.__controlsRenames.at(-1).oldPath), `${root}/01-horse.CR3`);
+  await tree(page).getByText("01-horse.CR3", { exact: true }).waitFor(); await ready(page, "Camera JPEG", "01-horse{Like o}.JPG");
+  assert.equal(await page.evaluate(() => window.__controlsRenames.at(-1).oldPath), `${root}/01-horse.JPG`);
   assert.equal(await tree(page).getByText("01-horse.JPG", { exact: true }).count(), 0);
-  report.checks.push("Source changes wait for pending persistence; rating still names the clearly identified RAW original, and refreshed ownership keeps the capture grouped while the displayed JPEG source remains pinned");
+  report.checks.push("Source changes wait for pending persistence; ratings preserve the verified Camera JPEG review anchor while RAW navigation and exact JPEG source remain grouped");
 
   const stale = await pageWith({ __controlsDeferImage: "01-horse.JPG" });
   await tree(stale).getByText("01-horse.CR3", { exact: true }).click();

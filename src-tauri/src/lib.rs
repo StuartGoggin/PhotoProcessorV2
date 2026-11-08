@@ -2,7 +2,7 @@ mod commands;
 mod utils;
 
 use commands::{
-    raw_development::{raw_development_candidates,raw_development_preview,start_raw_development_job,manifest::{get_raw_recipe,save_raw_recipe,clear_raw_recipe}},
+    raw_development::{raw_development_candidates,raw_development_preview,start_raw_development_job,manifest::{get_raw_recipe,save_raw_recipe,clear_raw_recipe,save_lightbox_source}},
     metadata_tools::metadata_tool_status,
     google_photos::{google_photos_status, google_photos_configure, google_photos_connect, google_photos_disconnect,
         google_photos_catalogue, google_photos_set_selection, google_photos_update_selection, google_photos_plan, google_photos_start,
@@ -176,7 +176,7 @@ pub fn run() {
             rename_file,
             read_image_base64,
             read_lightbox_image,
-            raw_development_candidates,raw_development_preview,start_raw_development_job,get_raw_recipe,save_raw_recipe,clear_raw_recipe,
+            raw_development_candidates,raw_development_preview,start_raw_development_job,get_raw_recipe,save_raw_recipe,clear_raw_recipe,save_lightbox_source,
             lightbox_crop_info,
             lightbox_apply_crop,
             read_image_thumbnail_base64,

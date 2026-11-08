@@ -51,6 +51,65 @@ pub struct Record {
     #[serde(default)]
     pub last_applied_recipe: Option<RawRecipe>,
     pub outputs: Vec<Output>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lightbox_choice: Option<LightboxChoice>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LightboxChoice {
+    pub source: String,
+    pub raw_bytes: u64,
+    pub raw_modified: u64,
+}
+
+/// Viewing metadata has its own admission stamp. It must never bless stale
+/// development lineage by updating the RAW source hash or publication stamp.
+pub fn lightbox_choices(dir: &Path, files: &[PathBuf]) -> Result<Vec<(usize, String)>, String> {
+    let m = load(dir)?;
+    let mut choices = vec![];
+    for (key, record) in m.records {
+        let Some(choice) = record.lightbox_choice else { continue };
+        if !["raw", "cameraJpeg"].contains(&choice.source.as_str()) { continue }
+        let matches: Vec<_> = files.iter().enumerate().filter(|(_, p)| super::is_raw(p) && catalogue::curation_key(p) == key).collect();
+        if matches.len() != 1 { continue }
+        let (index, p) = matches[0];
+        if super::reject_link(p).is_err() || std::fs::metadata(p).map(|m| m.len()).ok() != Some(choice.raw_bytes)
+            || modified(p).ok() != Some(choice.raw_modified) { continue }
+        choices.push((index, choice.source));
+    }
+    Ok(choices)
+}
+
+pub fn save_lightbox_choice(root: &str, path: &str, choice: &str) -> Result<(), String> {
+    if !["raw", "cameraJpeg"].contains(&choice) { return Err("Choose Camera JPEG or a developed RAW alternative".into()) }
+    let source = safe_source(root, path)?;
+    let dir = source.parent().ok_or("RAW parent missing")?;
+    let bytes = std::fs::metadata(&source).map_err(|e| e.to_string())?.len();
+    let stamp = modified(&source)?;
+    edit(&source, |record| {
+        if choice == "raw" {
+            if record.source_bytes != bytes || record.source_modified != stamp || record.source_hash.is_empty() {
+                return Err("Develop and refresh this photo's RAW alternative before choosing it as a finish".into());
+            }
+            let usable = record.outputs.iter().any(|o| {
+                o.active && ["developed", "bw"].contains(&o.kind.as_str()) && Path::new(&o.file).components().count() == 1
+                    && Path::new(&o.file).extension().is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"))
+                    && super::reject_link(&dir.join(&o.file)).is_ok()
+                    && super::worker::hash(&dir.join(&o.file)).ok().as_deref() == Some(o.hash.as_str())
+            });
+            if !usable { return Err("No validated RAW JPEG finish is available. Develop a JPEG and refresh the results first.".into()) }
+        }
+        if std::fs::metadata(&source).map_err(|e| e.to_string())?.len() != bytes || modified(&source)? != stamp {
+            return Err("The RAW original changed while saving. Refresh and try again.".into());
+        }
+        record.lightbox_choice = Some(LightboxChoice { source: choice.into(), raw_bytes: bytes, raw_modified: stamp });
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub async fn save_lightbox_source(staging_dir: String, path: String, source: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || save_lightbox_choice(&staging_dir, &path, &source)).await.map_err(|e| e.to_string())?
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

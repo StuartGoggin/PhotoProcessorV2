@@ -1,5 +1,23 @@
 # Canon CR3 originals and RAW Development
 
+## JPEG-first review with optional RAW alternatives (2.0.51)
+
+Camera JPEG remains the default when a CR3/JPEG pair is verified from camera capture metadata. A matching filename alone never establishes a pair. JPEG-only photos keep the ordinary workflow and show no RAW actions.
+
+1. Select a photo in **Photo Lightbox**. Existing JPEG Enhanced/B&W comparisons remain available.
+2. Choose **Develop RAW alternative** to open the existing developer for that exact CR3. This does not start a decode or a job. The camera JPEG is available as the reference when generating an explicit preview.
+3. Adjust the per-photo draft, inspect a preview or 100% detail, then **Queue this photo's RAW development**. Only that original is queued through core Jobs using the settings shown. Saving its override is optional. Colour and B&W remain independent RAW branches; camera JPEG and CR3 originals are untouched.
+4. Wait for Jobs to finish, return to Lightbox and **Refresh RAW results**. Choose the RAW source to compare its finished JPEG outputs against the camera reference. TIFF remains an export/archive format; Lightbox compares JPEG finishes.
+5. **Use this finish for this photo** remembers the JPEG/RAW viewing family in portable event metadata. Viewing a RAW alternative on one photo does not switch the next photo. Missing saved RAW finishes show a notice and fall back conservatively. The camera preview is never promoted to a full-resolution export.
+
+Creating, inspecting or choosing a finish does not select files for Google Photos, replace published photos, transfer crop geometry or change existing selection/favourite flags. Upload controls continue to target exact physical files. Crops remain specific to their source family.
+
+For a verified pair, the camera JPEG is the review-decision anchor for ratings and Trash in either view, preserving JPEG review work. RAW navigation and Google family/asset IDs remain stable. If old RAW and JPEG tags disagree, Lightbox shows a notice and preserves both files' existing tags; subsequent review actions update the JPEG anchor only. Transfer/archive capture decisions and RAW batch selection use the same verified JPEG anchor. An explicitly tagged generated file retains its own exclusion flag.
+
+Close/return is blocked during preview, recipe loading, saving and queue admission. Unsaved draft edits require a deliberate discard; queued jobs and saved recipes are kept. Changing staging removes the old pinned editor. No whole-folder development is started by the per-photo entry.
+
+Viewing preferences have their own source admission stamp and never refresh the source hash, recipes or output lineage. Preferences survive ordinary rating/trash renames and whole-event folder moves; changed or ambiguous sources cannot inherit a choice by guessing.
+
 Release: PhotoGoGo 2.0.43. Engine: the separately bundled, pinned RawTherapee 5.13 CLI. Canon software, an external editor and a separate RAW installation are not required.
 
 ## Workflow

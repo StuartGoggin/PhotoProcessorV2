@@ -4,6 +4,8 @@ pub mod capture;
 pub mod manifest;
 pub mod recipe;
 pub mod worker;
+#[cfg(test)]
+mod finish_tests;
 use super::{
     google_photos::store,
     process::{self, ProcessJobStatus, ProcessResult, ProcessScopeMode},
@@ -100,6 +102,9 @@ pub(crate) fn annotate_tree(children: &mut [serde_json::Value], dir: &Path, root
             return;
         }
     };
+    if let Ok(choices) = manifest::lightbox_choices(dir, &paths) {
+        for (index, source) in choices { children[child_indices[index]]["lightboxSource"] = source.into(); }
+    }
     let excluded: HashSet<usize> = associations.iter().map(|(index, _, _)| *index).collect();
     for (index, source, kind) in associations {
         let node = &mut children[child_indices[index]];
@@ -190,6 +195,7 @@ impl Request {
             .map(|p| safe_source(&self.staging_dir, p))
             .collect::<Result<_, _>>()?;
         let mut result = vec![];
+        let mut review_anchors = HashMap::new();
         let max_depth = if matches!(self.scope_mode, ProcessScopeMode::FolderOnly) {
             1
         } else {
@@ -222,15 +228,18 @@ impl Request {
                 continue;
             }
             let p = safe_source(&self.staging_dir, &e.path().to_string_lossy())?;
-            let name = p.file_name().unwrap().to_string_lossy().to_lowercase();
-            let rating = (1..=3)
-                .rev()
-                .find(|&n| name.contains(&format!("{{like {}}}", "o".repeat(n))))
-                .unwrap_or(0);
-            if self.selection != "all" && name.contains("{trash}") {
+            // Inspect each eligible folder once; explicit pair proof is cached
+            // by the existing metadata lane. All does not need review metadata.
+            let parent = p.parent().ok_or("RAW parent missing")?;
+            if self.selection != "all" && !review_anchors.contains_key(parent) {
+                review_anchors.insert(parent.to_path_buf(), capture::review_anchors(parent)?);
+            }
+            let jpeg = review_anchors.get(parent).and_then(|anchors| anchors.get(&p));
+            let (rating, trash) = capture::review_flags(&p, &p, jpeg.map(|p| p.as_path()));
+            if self.selection != "all" && trash {
                 continue;
             }
-            if self.selection == "minRating" && rating < usize::from(self.min_rating) {
+            if self.selection == "minRating" && rating < self.min_rating {
                 continue;
             }
             if self.selection == "selected" && !selected.contains(&p) {

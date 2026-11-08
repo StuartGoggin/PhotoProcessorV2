@@ -8,6 +8,11 @@ import { LightboxCache, type LightboxImage, type LightboxImageInfo } from "../ut
 import { LightboxFolderQueue } from "../utils/lightboxFolderQueue";
 
 const emptyImages = (): ImageSet => ({ original: null, improved: null, bw: null });
+const captureKey = (path: string) => {
+  const normalized = path.replace(/\\/g, "/");
+  const at = normalized.lastIndexOf("/");
+  return (normalized.slice(0, at + 1) + normalized.slice(at + 1).replace(/\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi, "")).toLowerCase();
+};
 type ImageKind = keyof ImageSet;
 const folderInspections = new LightboxFolderQueue();
 let inspectionOwnerSequence = 0;
@@ -28,6 +33,7 @@ export function useReview() {
   const [imageErrors, setImageErrors] = useState({ original: false, bw: false, improved: false });
   const [inspection, setInspection] = useState<{ folder: string; phase: "checking" | "incomplete" | "error"; files: number } | null>(null);
   const [error, setError] = useState("");
+  const [sourceNotice, setSourceNotice] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [stagingDir, setStagingDir] = useState("");
   const [cropped, setCropped] = useState(false);
@@ -37,6 +43,7 @@ export function useReview() {
   // null means JPEG-first when a verified camera pair is available. Keep the
   // preference separate from the actual displayed source for exact-file checks.
   const sourceChoice = useRef<OriginalSource | null>(null);
+  const sourceChoices = useRef(new Map<string, OriginalSource>());
   const displayedSource = useRef<OriginalSource>("raw");
   const physicalOriginal = useRef<string | null>(null);
   const [catalogueRevision, setCatalogueRevision] = useState(0);
@@ -182,26 +189,31 @@ export function useReview() {
     acceptImage(kind, node, null, context.root);
   }
 
-  async function show(photo: LightboxPhoto, direction: 1 | -1 = 1, useCrop = false, choice: OriginalSource | null = sourceChoice.current): Promise<boolean> {
+  async function show(photo: LightboxPhoto, direction: 1 | -1 = 1, useCrop = false, choice: OriginalSource | null = null): Promise<boolean> {
     if (!mounted.current || root.current !== configuredRoot.current) return false;
     ++pickRequest.current;metadataSelection.current=false;
     photo = catalogue.current.photos.get(photo.node.path) ?? photo;
     const request = ++selectionRequest.current, originalRoot = root.current;
     const group = catalogue.current.folders.get(photoFolder(photo.node.path)) ?? [];
     const index = group.findIndex(item => item.node.path === photo.node.path);
-    const source = choice ?? (photo.cameraJpeg ? "cameraJpeg" : "raw");
+    const remembered = sourceChoices.current.get(captureKey(photo.node.path)) ?? photo.node.lightboxSource;
+    // A remembered finish cannot turn a missing rendered file into a camera
+    // thumbnail. Explicit RAW inspection remains available without a finish.
+    const usable = photo.improved?.rawKind === "developed" || photo.bw?.rawKind === "bw";
+    const source = choice ?? (remembered === "raw" && !usable ? undefined : remembered) ?? (photo.cameraJpeg ? "cameraJpeg" : "raw");
     const display = photoForSource(photo, source);
     const activeCrop = useCrop && !!display.crop, version = activeCrop ? display.crop! : display;
     cache.current!.select(photoPaths(display, activeCrop).map(path => lightboxAbsolute(originalRoot, path)));
     selectedPath.current = photo.node.path; viewReady.current = false;
     intendedPath.current=photo.node.path;
     sourceChoice.current = choice;
+    if (choice) sourceChoices.current.set(captureKey(photo.node.path), choice);
     displayedSource.current = source === "cameraJpeg" && photo.cameraJpeg ? "cameraJpeg" : "raw";
     physicalOriginal.current = display.original.path;
     setOriginalSourceState(displayedSource.current);
     showingCrop.current = activeCrop; setCropped(activeCrop); setSelectedPhoto(display); setOriginalInfo(null);
     setSelected(photo.node); setSiblings(group.map(item => item.node)); setSiblingIdx(Math.max(0, index));
-    setZoom(1); setLoading(true); setError(""); setImages(emptyImages());
+    setZoom(1); setLoading(true); setError(""); setSourceNotice(photo.node.lightboxSource === "raw" && !usable && !choice ? "This photo's saved RAW finish is unavailable. " + (photo.cameraJpeg ? "Showing the Camera JPEG; develop or refresh the RAW alternative before choosing it again." : "Only a camera reference is available; develop or refresh a full-resolution RAW finish before exporting.") : ""); setImages(emptyImages());
     setImageErrors({ original: false, bw: false, improved: false });
     originalPending.current=true;
     const load = (node?: TreeNode) => node ? cache.current!.get(lightboxAbsolute(originalRoot, node.path)) : Promise.resolve(null);
@@ -260,7 +272,8 @@ export function useReview() {
       const fallback = selectedPath.current ? catalogue.current.photos.get(selectedPath.current) : undefined;
       if (preferred || fallback) {
         const photo=(preferred??fallback)!;
-        const shown=show(photo,1,preferCrop??showingCrop.current,companion?"cameraJpeg":sourceChoice.current);
+        const sameCapture = !!selectedPath.current && captureKey(photo.node.path) === captureKey(selectedPath.current);
+        const shown=show(photo,1,preferCrop??showingCrop.current,companion?"cameraJpeg":sameCapture ? sourceChoice.current : null);
         void loadFolder(photoFolder(photo.node.path),true,true);
         return await shown;
       }
@@ -277,6 +290,8 @@ export function useReview() {
 
   useEffect(() => {
     root.current = settings?.staging_dir ?? "";
+    sourceChoices.current.clear();
+    setSourceNotice("");
     setStagingDir(root.current); setCatalogueRevision(0);
     selectedPath.current = null;intendedPath.current=null; physicalOriginal.current=null; viewReady.current = false; showingCrop.current = false; sourceChoice.current = null; displayedSource.current = "raw";
     setOriginalSourceState("raw"); setOriginalInfo(null);
@@ -296,7 +311,7 @@ export function useReview() {
     const photo = catalogue.current.photos.get(node.path);
     const owner=[...catalogue.current.photos.values()].find(p=>p.cameraJpeg?.path===node.path);
     if(photo || owner) {
-      const shown=show((photo??owner)!,direction,false,owner?"cameraJpeg":sourceChoice.current);
+      const shown=show((photo??owner)!,direction,false,owner?"cameraJpeg":null);
       void loadFolder(photoFolder(node.path),true,true);
       return await shown;
     }
@@ -309,13 +324,29 @@ export function useReview() {
   async function setCropVersion(useCrop: boolean) {
     if (renameBusy.current || !isIdentityReady()) return false;
     const snapshot = getSnapshot();
-    return snapshot ? show(snapshot.photo, 1, useCrop) : false;
+    return snapshot ? show(snapshot.photo, 1, useCrop, displayedSource.current) : false;
   }
   async function setOriginalSource(source: OriginalSource) {
     if (renameBusy.current || !isIdentityReady()) return false;
     const snapshot = getSnapshot();
     if (!snapshot || (source === "cameraJpeg" && !snapshot.photo.cameraJpeg)) return false;
     return show(snapshot.photo, 1, false, source);
+  }
+  async function rememberOriginalSource() {
+    const snapshot = getSnapshot();
+    if (!snapshot || renameBusy.current || !isIdentityReady() || !/\.cr3$/i.test(snapshot.photo.node.name)) return false;
+    const source = displayedSource.current;
+    renameBusy.current = true; setRenaming(true);
+    try {
+      await invoke("save_lightbox_source", { stagingDir: snapshot.context.root, path: snapshot.context.path, source });
+      if (!isContextCurrent(snapshot.context)) return false;
+      const photo = catalogue.current.photos.get(snapshot.context.path);
+      if (photo) photo.node.lightboxSource = source;
+      sourceChoices.current.set(captureKey(snapshot.context.path), source);
+      setSelectedPhoto(current => current ? { ...current, node: { ...current.node, lightboxSource: source } } : current);
+      return true;
+    } catch(reason) { if (isContextCurrent(snapshot.context)) setError("Could not save this photo's viewing choice: " + String(reason)); return false; }
+    finally { renameBusy.current = false; if (mounted.current) setRenaming(false); }
   }
   async function navigate(direction: 1 | -1) {
     if (renameBusy.current) return false;
@@ -349,16 +380,19 @@ export function useReview() {
     const nextPath = advance && index >= 0 ? group[index + 1]?.node.path : undefined;
     renameBusy.current = true; setRenaming(true);
     try {
-      if (newName === photo.node.name) return nextPath ? await show(catalogue.current.photos.get(nextPath)!) : true;
-      await invoke("rename_file", { oldPath: lightboxAbsolute(context.root, context.path), newName });
+      const anchor = photo.cameraJpeg ?? photo.node;
+      if (newName === anchor.name) return nextPath ? await show(catalogue.current.photos.get(nextPath)!) : true;
+      await invoke("rename_file", { oldPath: lightboxAbsolute(context.root, anchor.path), newName });
       if (!isContextCurrent(context)) return false;
       const folder = photoFolder(context.path);
       const renamedPath = folder ? folder + "/" + newName : newName;
-      selectedPath.current = renamedPath;
-      setSelected({ ...photo.node, name: newName, path: renamedPath });
+      const capturePath = anchor.path === context.path ? renamedPath : context.path;
+      selectedPath.current = capturePath;
+      if (physicalOriginal.current === anchor.path) physicalOriginal.current = renamedPath;
+      setSelected(anchor.path === context.path ? { ...photo.node, name: newName, path: renamedPath } : photo.node);
       // Keep bounded, already-decoded neighbours warm for controller review.
       // An explicit Refresh still invalidates all cached images.
-      return await refreshTree(context.root, !nextPath && context.cropped, nextPath ?? renamedPath, true);
+      return await refreshTree(context.root, !nextPath && context.cropped, nextPath ?? capturePath, true);
     } catch (reason) {
       if (mounted.current && context.root === configuredRoot.current) setError("Could not save this photo decision: " + String(reason));
       return false;
@@ -369,19 +403,19 @@ export function useReview() {
   }
   async function handleStars(value: number, advance = false) {
     const snapshot = getSnapshot();
-    return snapshot ? renameSelected(applyStars(snapshot.photo.node.name, value), advance) : false;
+    return snapshot ? renameSelected(applyStars((snapshot.photo.cameraJpeg ?? snapshot.photo.node).name, value), advance) : false;
   }
   async function handleTrash(desired?: boolean, advance = false) {
     const snapshot = getSnapshot();
-    return snapshot ? renameSelected(applyTrash(snapshot.photo.node.name, desired ?? !isTrashed(snapshot.photo.node.name)), advance) : false;
+    return snapshot ? renameSelected(applyTrash((snapshot.photo.cameraJpeg ?? snapshot.photo.node).name, desired ?? !isTrashed((snapshot.photo.cameraJpeg ?? snapshot.photo.node).name)), advance) : false;
   }
 
   return {
-    tree, selected, siblings, siblingIdx, images, imageLoading, imageErrors, inspection, zoom, loading, error, renaming, stagingDir,
+    tree, selected, siblings, siblingIdx, images, imageLoading, imageErrors, inspection, zoom, loading, error, sourceNotice, renaming, stagingDir,
     cropped, selectedPhoto, catalogueRevision, originalSource, originalInfo,
-    trashed: selected ? isTrashed(selected.name) : false,
-    stars: selected ? parseStars(selected.name) : 0,
+    trashed: selectedPhoto ? isTrashed((selectedPhoto.cameraJpeg ?? selectedPhoto.node).name) : false,
+    stars: selectedPhoto ? parseStars((selectedPhoto.cameraJpeg ?? selectedPhoto.node).name) : 0,
     refreshTree, selectNode, loadFolder, retryImage, imageFailed, handleStars, handleTrash, navigate, navigateToEdge, setZoom, setCropVersion, setOriginalSource,
-    getSnapshot, isContextCurrent, isReady, isDisplayReady, isIdentityReady, advanceFromContext,
+    getSnapshot, isContextCurrent, isReady, isDisplayReady, isIdentityReady, advanceFromContext, rememberOriginalSource,
   };
 }

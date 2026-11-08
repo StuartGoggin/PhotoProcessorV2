@@ -1,0 +1,64 @@
+import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+const { chromium } = await import(process.env.PHOTOGOGO_PLAYWRIGHT_PATH ? pathToFileURL(process.env.PHOTOGOGO_PLAYWRIGHT_PATH).href : "playwright");
+const output = "test-output/raw-photo-editor-browser";
+await mkdir(output, { recursive: true });
+const url = process.env.RAW_PHOTO_EDITOR_TEST_URL || "http://127.0.0.1:1489/raw-development-preview.html?single";
+const server = process.env.RAW_PHOTO_EDITOR_TEST_URL ? null : spawn(process.execPath, ["node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "1489", "--strictPort"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+let serverLog = "", browser;
+server?.stdout.on("data", data => serverLog += data); server?.stderr.on("data", data => serverLog += data);
+const report = { complete: false, scope: "Production RAW editor embedded for one original with synthetic IPC; proves exact target, current recipe, preview lifetime and existing batch isolation, not decoder quality.", checks: [] };
+async function range(locator, value) { await locator.evaluate((node, amount) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(node, String(amount)); node.dispatchEvent(new Event("input", { bubbles: true })); }, value); }
+try {
+  if (server) for (let attempt=0; attempt<80; attempt++) { if (server.exitCode !== null) throw Error(serverLog); try { if ((await fetch(url)).ok) break; } catch {} await delay(250); }
+  browser = await chromium.launch({channel:"msedge", headless:true});
+  const page=await browser.newPage({viewport:{width:1200,height:950}}); page.setDefaultTimeout(10000);
+  const errors=[]; page.on("pageerror", error=>errors.push(error.message));
+  await page.goto(url,{waitUntil:"domcontentloaded"});
+  const queue=page.getByRole("button",{name:"Queue this photo's RAW development",exact:true});
+  await queue.waitFor(); await page.waitForFunction(()=>!Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="Queue this photo's RAW development")?.disabled);
+  assert.equal(await page.getByRole("combobox",{name:"RAW batch selection",exact:true}).count(),0);
+  assert.equal(await page.getByRole("button",{name:"Edit job defaults",exact:true}).count(),0);
+  assert.equal(await page.getByRole("button",{name:"Next RAW",exact:true}).count(),0);
+  const candidate=await page.evaluate(()=>window.__rawCalls.find(c=>c.command==="raw_development_candidates").args.request);
+  assert.equal(candidate.selection,"selected");assert.equal(candidate.scopeMode,"folderOnly");assert.deepEqual(candidate.selectedPaths,["D:\\Photos\\Portrait.CR3"]);
+  assert.equal(await page.evaluate(()=>window.__rawCalls.filter(c=>c.command==="raw_development_preview").length),0);
+  report.checks.push("Per-photo editor opens directly, validates the exact CR3 with selected/folder-only scope, offers no batch or target switching, and does not automatically decode RAW");
+  await range(page.getByRole("slider",{name:"RAW Exposure (EV)",exact:true}),1.25);
+  await page.waitForFunction(()=>!!window.__rawBlocked);
+  await queue.click();await page.waitForFunction(()=>window.__rawQueue.length===1);
+  const job=await page.evaluate(()=>window.__rawQueue[0]);
+  assert.equal(job.recipe.exposure,1.25);assert.equal(job.usePhotoOverrides,false);assert.equal(job.scopeMode,"folderOnly");assert.equal(job.selection,"selected");assert.deepEqual(job.selectedPaths,["D:\\Photos\\Portrait.CR3"]);
+  assert.equal(await page.evaluate(()=>window.__rawQueuedId),"raw-fixture-job");
+  assert.ok(await page.evaluate(()=>window.__rawBlocked),"Queueing a draft is not a saved recipe override");
+  assert.equal(await page.evaluate(()=>window.__rawCalls.filter(c=>c.command==="save_raw_recipe").length),0);
+  report.checks.push("Queue sends this photo's currently shown unsaved recipe directly to core Jobs, never batch defaults or unrelated saved overrides, and reports the job without saving an override");
+  await page.getByRole("button",{name:"Generate RAW preview",exact:true}).click();
+  await page.getByRole("img",{name:"RAW developed comparison",exact:true}).waitFor();
+  await page.getByRole("img",{name:"Camera JPEG reference",exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.__rawCalls.filter(c=>c.command==="read_lightbox_image").at(-1).args.path),"D:\\Photos\\Portrait.JPG");
+  report.checks.push("Explicit RAW preview compares against the verified Camera JPEG display copy without using it as the development source");
+  await page.evaluate(()=>{window.__rawHold=true;});
+  await page.getByRole("button",{name:"Generate RAW preview",exact:true}).click();
+  await page.waitForFunction(()=>window.__rawDeferred.length===1);
+  assert.match(await page.evaluate(()=>window.__rawBlocked),/wait.*(?:preview|save)/i,"An active preview must report a busy block even when its recipe has unsaved edits");
+  await page.evaluate(()=>window.__rawSetInitialPath("D:\\Photos\\Wide.CR3"));
+  await page.waitForFunction(()=>window.__rawCalls.some(c=>c.command==="get_raw_recipe"&&c.args.path.endsWith("Wide.CR3")));
+  await page.evaluate(()=>{window.__rawHold=false;window.__rawDeferred.shift()();});
+  await page.waitForTimeout(150);
+  assert.equal(await page.getByRole("img",{name:"RAW developed comparison",exact:true}).count(),0);
+  await queue.click();await page.waitForFunction(()=>window.__rawQueue.length===2);
+  assert.deepEqual(await page.evaluate(()=>window.__rawQueue.at(-1).selectedPaths),["D:\\Photos\\Wide.CR3"]);
+  report.checks.push("A dirty recipe's active preview reports a busy close block; changing the pinned photo revokes delayed old previews and the next job targets only the new original");
+  await page.evaluate(()=>window.__rawSetInitialPath("D:\\Photos\\Missing.CR3"));
+  await page.getByRole("alert").filter({hasText:"not available"}).waitFor();assert.equal(await queue.isDisabled(),true);
+  report.checks.push("A missing or ineligible pinned CR3 fails closed instead of silently substituting the first candidate");
+  await page.setViewportSize({width:390,height:844});
+  const widths=await page.evaluate(()=>({inner:innerWidth,scroll:document.documentElement.scrollWidth}));assert.ok(widths.scroll<=widths.inner+2,JSON.stringify(widths));
+  await page.screenshot({path:`${output}/compact.png`,fullPage:true});assert.deepEqual(errors,[]);report.complete=true;
+} catch(error) {report.error=error.stack||String(error);throw error;}
+finally{await writeFile(`${output}/report.json`,JSON.stringify(report,null,2));await browser?.close();server?.kill();}
+console.log(`RAW per-photo editor browser: ${report.checks.length} groups passed`);

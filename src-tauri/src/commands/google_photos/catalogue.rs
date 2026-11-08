@@ -87,18 +87,6 @@ pub(crate) fn untag(name: &str) -> String {
 pub(crate) fn curation_key(path: &Path) -> String {
     format!("{}.{}", untag(&stem(path)).to_lowercase(), extension(path))
 }
-fn stars(path: &Path) -> u8 {
-    let lower = stem(path).to_ascii_lowercase();
-    for count in (1..=3).rev() {
-        if lower.contains(&format!("{{like {}}}", "o".repeat(count))) {
-            return count as u8;
-        }
-    }
-    0
-}
-fn trashed(path: &Path) -> bool {
-    stem(path).to_ascii_lowercase().contains("{trash}")
-}
 fn remove_variant(raw: &str, suffix: &str) -> Option<String> {
     // The current process can put rating tags before or after its suffix.
     let mut end = raw.len();
@@ -453,11 +441,13 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
                 crops.insert(children[0], owner);
             }
         }
-        // One capture rating/trash state follows the RAW Lightbox entry. Upload
-        // flags stay keyed to the exact physical version, never to its family.
+        // Family/asset IDs remain RAW-owned; review decisions use the verified
+        // Camera JPEG to preserve existing JPEG review work. Upload flags stay
+        // keyed to the exact physical version, never to its viewing choice.
         let pair_excluded: HashSet<usize> = associations.keys().chain(crops.keys()).copied().collect();
         let camera_raw: HashMap<usize,usize> = super::super::raw_development::capture::pairs(&files,&pair_excluded)
             .into_iter().map(|(raw,jpeg)|(jpeg,raw)).collect();
+        let review_owner: HashMap<usize,usize> = camera_raw.iter().map(|(&jpeg,&raw)|(raw,jpeg)).collect();
         let mut duplicate_keys = HashMap::<String, usize>::new();
         for (index, path) in files.iter().enumerate() {
             if retired_raw.contains(&index)&&!archive{continue}
@@ -556,8 +546,8 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
                 selected: flags.is_some_and(|flag| flag.selected),
                 favourite: flags.is_some_and(|flag| flag.favourite),
                 upload_status: None,
-                stars: stars(path).max(stars(&files[owner])),
-                trashed: trashed(path) || trashed(&files[owner]),
+                stars: super::super::raw_development::capture::review_flags(path, &files[owner], review_owner.get(&owner).map(|&i| files[i].as_path())).0,
+                trashed: super::super::raw_development::capture::review_flags(path, &files[owner], review_owner.get(&owner).map(|&i| files[i].as_path())).1,
                 event_name: event_name.clone(),
                 event_date: event_date.clone(),
                 original_path: files[owner].to_string_lossy().into_owned(),

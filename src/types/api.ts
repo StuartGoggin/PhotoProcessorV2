@@ -280,6 +280,8 @@ export interface TreeNode {
   rawKind?: "developed" | "bw" | "retired";
   /** Same-folder camera JPEG companion proven by native capture metadata. */
   cameraJpeg?: string;
+  /** Portable per-capture viewing choice; never an upload selection. */
+  lightboxSource?: "raw" | "cameraJpeg";
   /** Recoverable ownership/recipe warning supplied by the native staging scan. */
   rawWarning?: string;
   captureMetadataPending?: boolean;

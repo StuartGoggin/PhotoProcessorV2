@@ -24,6 +24,12 @@ fixture.__controlsCommandReference=[...lightboxCommands,...lightboxCropCommands]
 const untag = (value: string) => value.replace(/\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi, "");
 const file = (name: string, parent = ""): TreeNode => ({type:"file", name, path:parent ? `${parent}/${name}` : name, size:32768});
 function makeTree(): TreeNode {
+  if (fixture.__controlsRawWorkflow) return {type:"dir",name:"RAW workflow",path:"",children:[
+    {...file("01-raw.CR3"),cameraJpeg:"01-camera{Like oo}.JPG"},file("01-camera{Like oo}.JPG"),file("01-camera_improved.jpg"),
+    {...file("01-finish.jpg"),rawSource:"01-raw.CR3",rawKind:"developed"},
+    {...file("02-raw.CR3"),cameraJpeg:"02-camera.JPG"},file("02-camera.JPG"),
+    {...file("02-finish.jpg"),rawSource:"02-raw.CR3",rawKind:"developed"},file("03-jpeg.jpg")
+  ]};
   if (fixture.__controlsPairedCrop) return { type:"dir",name:"Paired crop fixture",path:"",children:[
     { ...file("capture{Like oo}.CR3"), cameraJpeg:"camera-full.JPG" }, file("camera-full.JPG"),
     file("camera-full_BW.jpg"), file("camera-full_improved.jpg"),
@@ -92,6 +98,14 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(
   if(command==="plugin:event|listen") {const id=++controllerListener;if(args.event==="controller-input")controllerListeners.set(id,args.handler);return id;}
   if(command==="plugin:event|unlisten") {controllerListeners.delete(args.eventId);return null;}
   if(command==="load_settings") return {staging_dir:currentRoot,source_root:"",archive_dir:"",exiftool_dir:""};
+  if(command==="save_lightbox_source") {
+    if(fixture.__controlsFinishError) throw Error("Synthetic viewing choice save failure");
+    const src=source(`${args.stagingDir}/${args.path}`);const node=files(library(args.stagingDir).tree).find(n=>n.path===args.path);
+    if(!node)throw Error("Missing RAW source");node.lightboxSource=args.source;return null;
+  }
+  if(command==="raw_development_candidates") return {paths:args.request.selectedPaths,total:args.request.selectedPaths.length,truncated:false,runtime:{available:true,version:"Fixture",message:"Fixture developer"}};
+  if(command==="get_raw_recipe") return {recipe:null,lastAppliedRecipe:null};
+  if(command==="start_raw_development_job") { fixture.__controlsRawJobs??=[];fixture.__controlsRawJobs.push(structuredClone(args.request));return "raw-photo-job"; }
   if(command==="list_staging_tree") {
     if(fixture.__controlsTreeError)throw Error(fixture.__controlsTreeError);
     const value=structuredClone(library(args.stagingDir).tree);
@@ -141,7 +155,7 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(
     const photo=files(lib.tree).find(node=>node.path===src.path);if(!photo)throw Error("Missing synthetic rename source");
     const parent=photo.path.includes("/")?photo.path.slice(0,photo.path.lastIndexOf("/")+1):"";const next=parent+args.newName;
     if(files(lib.tree).some(node=>node!==photo&&node.path.toLowerCase()===next.toLowerCase()))throw Error("Destination already exists; source and destination preserved");
-    for (const node of files(lib.tree)) if (node.rawSource === photo.path) node.rawSource = next;
+    for (const node of files(lib.tree)) { if (node.rawSource === photo.path) node.rawSource = next; if (node.cameraJpeg === photo.path) node.cameraJpeg = next; }
     photo.path=next;photo.name=args.newName;return null;
   }
   if(command==="lightbox_crop_info") {
@@ -166,7 +180,7 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(
 const root=createRoot(document.getElementById("root")!);
 let generation=0;
 // Mirror App's scroll container without mounting unrelated pages/jobs/accounts.
-function render() {root.render(<React.StrictMode><main id="app-main" className="app-main h-full min-w-0 min-h-0 overflow-auto"><Review key={generation}/></main>{fixture.__controlsManagedController&&<div style={{position:"fixed",zIndex:40,top:8,right:8,width:224,background:"#0f0f0f",borderRadius:8}}><ControllerPanel/></div>}</React.StrictMode>);}
+function render() {root.render(<React.StrictMode><main id="app-main" className="app-main h-full min-w-0 min-h-0 overflow-auto"><Review key={generation} onOpenJobs={id => { fixture.__controlsViewedJob=id; }}/></main>{fixture.__controlsManagedController&&<div style={{position:"fixed",zIndex:40,top:8,right:8,width:224,background:"#0f0f0f",borderRadius:8}}><ControllerPanel/></div>}</React.StrictMode>);}
 fixture.__controlsSwitchRoot=(next:string)=>{currentRoot=next;generation++;render();};
 fixture.__controlsUnmount=()=>root.unmount();
 render();

@@ -130,7 +130,7 @@ export default function App() {
     cleanup: <Cleanup />,
     jobs: <Jobs key={jobsNavigation} initialView={jobsView} monitor={monitor} focusJobId={focusedJobId} />,
     postprocess: <PostProcess controllerOpenRaw={controllerOpenRaw} onOpenJobs={() => openJobs()} />,
-    review: <Review />,
+    review: <Review onOpenJobs={openJob} />,
     transfer: <Transfer />,
     googlephotos: <GooglePhotos onViewJob={openJob} />,
     faceidentify: <FaceIdentify onOpenJobs={() => openJobs()} />,

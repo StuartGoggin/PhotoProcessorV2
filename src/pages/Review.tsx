@@ -4,6 +4,9 @@ import { FileTree, ImagePanel, StarRating } from "../components";
 import LightboxCropEditor from "../components/LightboxCropEditor";
 import LightboxHelp from "../components/LightboxHelp";
 import LightboxVersionControls from "../components/LightboxVersionControls";
+import LightboxRawEditor from "../components/LightboxRawEditor";
+import { lightboxAbsolute } from "../utils/lightboxCatalogue";
+import { parseStars, isTrashed } from "../utils";
 import { useGooglePhotoCuration } from "../hooks/useGooglePhotoCuration";
 import { lightboxCommands, lightboxTypingTarget, matchLightboxCommand, shortcutFor, type LightboxCommandId } from "../utils/lightboxCommands";
 import { useEventNaming } from "../hooks/useEventNaming";
@@ -15,19 +18,20 @@ import type { ControllerKey } from "../controller/types";
 const emptyPan = () => [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
 const frameId = (context?: ReviewContext) => context ? JSON.stringify([context.root, context.path, context.epoch, context.cropped]) : "";
 
-export default function Review() {
+export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => void } = {}) {
   const review = useReview();
   const { tree, selected, siblings, siblingIdx, images, imageLoading, imageErrors, inspection, zoom, loading, trashed, stars, error, renaming,
     stagingDir, cropped, selectedPhoto, catalogueRevision, originalSource, originalInfo } = review;
   const [cropOpen, setCropOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [rawTarget, setRawTarget] = useState<{root: string; path: string; jpeg?: string} | null>(null);
   const [cropMessage, setCropMessage] = useState("");
   const [feedback, setFeedback] = useState("");
   const [busy, setBusy] = useState(false);
   const [controllerPage,setControllerPage]=useState<"review"|"versions"|"inspect">("review");
   const controllerBindings=useLightboxBindings();
   const actionBusy = useRef(false), alive = useRef(true);
-  const modal = useRef({ crop: false, help: false, naming: false });
+  const modal = useRef({ crop: false, help: false, naming: false, raw: false });
   const reviewRoot = useRef<HTMLDivElement>(null);
   const [activePanel, setActivePanel] = useState(0);
   const active = useRef(0);
@@ -56,22 +60,24 @@ export default function Review() {
   const displayReady = !!renderFrame && visibleFrame === renderFrame && !loading && review.isDisplayReady();
   const renderedImages = [images.original, images.bw, images.improved];
   const disabled = busy || renaming || !ready || curation.saving;
+  const rawEntryDisabled = busy || renaming || loading || !identityReady || curation.saving;
   // A paired capture retains its RAW navigation identity; crop the explicitly
   // displayed full JPEG source, never the RAW camera preview or a derivative.
   const cropSource = selectedPhoto?.original;
   const editable = !!cropSource && /\.jpe?g$/i.test(cropSource.name) && !/_(crop|bw|improved)(?:\{[^}]+\})*\.jpe?g$/i.test(cropSource.name);
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => { if (rawTarget && rawTarget.root !== stagingDir) { modal.current.raw = false; setRawTarget(null); } }, [stagingDir, rawTarget]);
   useEffect(() => { setFeedback(""); }, [renderFrame]);
   useEffect(() => {
     if (!loading && renderedImages.some(Boolean) && !renderedImages[active.current]) {
       const first = renderedImages.findIndex(Boolean); active.current = first; setActivePanel(first);
     }
   }, [loading, images.original, images.bw, images.improved]);
-  modal.current = { crop: cropOpen, help: helpOpen, naming: naming.isOpen };
+  modal.current = { crop: cropOpen, help: helpOpen, naming: naming.isOpen, raw: !!rawTarget };
 
   function focusReview() {
-    if (alive.current && !modal.current.crop && !modal.current.help && !modal.current.naming && !document.querySelector('[data-controller-mirror-dialog]')) reviewRoot.current?.focus({ preventScroll: true });
+    if (alive.current && !modal.current.crop && !modal.current.help && !modal.current.naming && !modal.current.raw && !document.querySelector('[data-controller-mirror-dialog]')) reviewRoot.current?.focus({ preventScroll: true });
   }
   function activate(index: number) {
     if (actionBusy.current) return;
@@ -86,6 +92,17 @@ export default function Review() {
     setFeedback("");
     if (await review.setOriginalSource(source)) focusReview();
   }
+  async function rememberFinish() {
+    if (actionBusy.current || disabled || curation.hasPending()) { setFeedback("Wait for the current decisions to finish saving."); return; }
+    actionBusy.current = true; setBusy(true);
+    try { if (await review.rememberOriginalSource()) setFeedback("Viewing choice saved for this photo. Upload selections are unchanged."); }
+    finally { actionBusy.current = false; setBusy(false); }
+  }
+  function openRaw() {
+    if (actionBusy.current || rawEntryDisabled || curation.hasPending() || !selectedPhoto || !/\.cr3$/i.test(selectedPhoto.node.name)) return;
+    modal.current.raw = true;
+    setRawTarget({root: stagingDir, path: lightboxAbsolute(stagingDir, selectedPhoto.node.path), jpeg: selectedPhoto.cameraJpeg ? lightboxAbsolute(stagingDir, selectedPhoto.cameraJpeg.path) : undefined});
+  }
   function markVisible(context?: ReviewContext) {
     if (!context || !review.isContextCurrent(context)) return;
     visible.current = frameId(context); setVisibleFrame(visible.current);
@@ -96,7 +113,7 @@ export default function Review() {
   }
 
   async function execute(id: LightboxCommandId, desired?: boolean) {
-    if (!alive.current || modal.current.crop || modal.current.help || modal.current.naming || actionBusy.current) return;
+    if (!alive.current || modal.current.crop || modal.current.help || modal.current.naming || modal.current.raw || actionBusy.current) return;
     if (id === "help") { modal.current.help = true; setHelpOpen(true); return; }
     const selectionCommand = id.startsWith("select-") || id.startsWith("favourite-");
     const inspection = id.startsWith("panel-") || id.startsWith("zoom-") || id.startsWith("pan-") || id === "fit";
@@ -220,7 +237,7 @@ export default function Review() {
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (event.target instanceof HTMLElement && event.target.closest('[data-controller-mirror-dialog]')) return;
-      if (event.defaultPrevented || modal.current.crop || modal.current.help || modal.current.naming) return;
+      if (event.defaultPrevented || modal.current.crop || modal.current.help || modal.current.naming || modal.current.raw) return;
       const command = matchLightboxCommand(event);
       if (!command) return;
       if (lightboxTypingTarget(event.target) && event.key !== "F1") return;
@@ -290,12 +307,16 @@ export default function Review() {
       </div>}
       {selectedPhoto?.cameraJpeg && <div className="px-3 py-2 border-b border-surface-700 bg-surface-800 text-xs text-gray-300 flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2">Original source<select aria-label="Original source" className="input-field w-auto text-xs py-1.5" value={originalSource} disabled={busy || renaming || loading || !identityReady || curation.saving} onChange={(event) => void chooseOriginalSource(event.target.value === "cameraJpeg" ? "cameraJpeg" : "raw")}><option value="raw">Camera RAW preview</option><option value="cameraJpeg">Camera JPEG</option></select></label>
-        <span>Upload / favourite controls target the displayed original file. Ratings and trash apply to the RAW original. {originalSource === "cameraJpeg" ? "Crop creates a separate _crop from the full Camera JPEG; both originals stay untouched." : "Select Camera JPEG to crop its full image; the RAW preview cannot be cropped."}</span>
+        <span>This photo only · JPEG is the default. Upload / favourite controls target exact displayed files. Ratings and Trash use the Camera JPEG in both views. {originalSource === "cameraJpeg" ? "Crop creates a separate _crop from the full Camera JPEG." : "Camera RAW preview is a reference; finished RAW photos appear in the comparison panels."}</span>
+        <button className="btn-secondary min-h-11 text-xs" disabled={disabled || (originalSource === "raw" && !selectedPhoto.improved && !selectedPhoto.bw)} onClick={() => void rememberFinish()}>Use this finish for this photo</button>
       </div>}
+      {selectedPhoto && /\.cr3$/i.test(selectedPhoto.node.name) && <div className="px-3 py-2 border-b border-surface-700 flex gap-3 items-center flex-wrap text-xs text-gray-300"><span className="text-amber-200">RAW available{selectedPhoto.improvedLabel === "Developed RAW" || selectedPhoto.node.lightboxSource === "raw" ? " · Alternative developed" : ""}</span><button className="btn-secondary min-h-11 text-xs" disabled={rawEntryDisabled} onClick={openRaw}>Develop RAW alternative</button><button className="btn-secondary min-h-11 text-xs" disabled={rawEntryDisabled} onClick={() => void review.refreshTree()}>Refresh RAW results</button><span>Full-resolution development runs only when queued. Choosing or creating a finish never changes upload selections.</span></div>}
+      {selectedPhoto?.cameraJpeg && (parseStars(selectedPhoto.node.name) !== parseStars(selectedPhoto.cameraJpeg.name) || isTrashed(selectedPhoto.node.name) !== isTrashed(selectedPhoto.cameraJpeg.name)) && <div role="status" className="px-3 py-2 text-xs text-amber-200 bg-amber-950/20">The RAW and Camera JPEG have different review tags. Camera JPEG decisions are used for this capture; existing RAW tags are preserved.</div>}
       {rawOriginal && <div className="px-3 py-1.5 border-b border-surface-700 bg-amber-950/20 text-xs text-amber-200">
         Camera preview — not full RAW development{originalInfo ? ` · ${originalInfo.width} × ${originalInfo.height} displayed pixels` : ""}{originalInfo?.sourceWidth && originalInfo.sourceHeight ? ` · Embedded camera image ${originalInfo.sourceWidth} × ${originalInfo.sourceHeight}` : ""}. Use Photo Process → RAW Development for finished full-resolution photos. RAW upload selections never export this preview.
       </div>}
       {error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800">{error}</div>}
+      {review.sourceNotice && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800">{review.sourceNotice}</div>}
       {sourceWarning && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-amber-950/20">RAW metadata needs attention: {sourceWarning} Images remain available for inspection; ownership and saved recipes require repair before transfer.</div>}
       {selected && !identityReady && !sourceWarning && <div role="status" data-testid="lightbox-capture-checks" className="px-4 py-2 text-xs text-amber-200 bg-amber-950/20 flex items-center justify-between gap-3">
         <span>{currentInspection && currentInspection.phase !== "checking"
@@ -329,6 +350,7 @@ export default function Review() {
       </div>
     </div>
     {helpOpen && <LightboxHelp onClose={() => { modal.current.help = false; setHelpOpen(false); }} />}
+    {rawTarget && rawTarget.root === stagingDir && <LightboxRawEditor root={rawTarget.root} path={rawTarget.path} cameraJpeg={rawTarget.jpeg} onOpenJobs={onOpenJobs} onClose={refresh => { modal.current.raw = false; setRawTarget(null); if (refresh) void review.refreshTree(); else focusReview(); }} />}
     {cropOpen && selectedPhoto && <LightboxCropEditor stagingDir={stagingDir} photo={selectedPhoto}
       onClose={() => { closeCrop(); void review.refreshTree(); }}
       onSaved={result => {

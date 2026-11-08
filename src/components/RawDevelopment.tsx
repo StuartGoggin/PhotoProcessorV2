@@ -4,11 +4,13 @@ import type { ProcessScopeMode } from "../types";
 import type { RawCandidates, RawHistogram, RawPreviewResult, RawRecipe, RawRecipeRecord, RawScope, RawSelection } from "../types/rawDevelopment";
 import { loadRawDefaults, normalizeRawRecipe, rawPreset, saveRawDefaults } from "../utils/rawRecipe";
 import { useControllerSurface } from "../controller/useControllerSurface";
+import type { LightboxImage } from "../utils/lightboxCache";
 
-interface Props { stagingDir: string; scopeDir: string; scopeMode: ProcessScopeMode; onOpenJobs?: () => void; onNamingBlockChange?: (reason: string | null) => void; refreshKey?: number; autoOpen?: number }
+interface Props { stagingDir: string; scopeDir: string; scopeMode: ProcessScopeMode; onOpenJobs?: () => void; onNamingBlockChange?: (reason: string | null) => void; refreshKey?: number; autoOpen?: number; initialPath?: string; cameraJpegPath?: string; singlePhoto?: boolean; onQueued?: (id: string) => void }
 type DisplayPreview = RawPreviewResult & { urls: string[]; previewVariant: "colour" | "bw" };
 let previewLane: Promise<void> = Promise.resolve();
 const name = (path: string) => path.split(/[\\/]/).pop() || path;
+const pathKey = (path: string) => path.replace(/^\\\\\?\\/, "").replace(/\\/g, "/").toLowerCase();
 const AUTO_LEVEL_KEYS: Array<keyof RawRecipe> = ["exposure", "blackPoint", "contrast", "highlights"];
 const sliders: Array<{ key: keyof RawRecipe; label: string; min: number; max: number; step?: number; hint: string }> = [
   { key: "exposure", label: "Exposure (EV)", min: -3, max: 3, step: .05, hint: "0 preserves recorded exposure" },
@@ -48,14 +50,14 @@ function Histogram({ data }: { data: RawHistogram }) {
 }
 
 /** RAW controls remain separate from legacy JPEG jobs and share the core Jobs queue. */
-export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpenJobs, onNamingBlockChange, refreshKey = 0, autoOpen = 0 }: Props) {
-  const [expanded, setExpanded] = useState(false);
+export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpenJobs, onNamingBlockChange, refreshKey = 0, autoOpen = 0, initialPath = "", cameraJpegPath, singlePhoto = false, onQueued }: Props) {
+  const [expanded, setExpanded] = useState(singlePhoto);
   useEffect(() => { if (autoOpen > 0) setExpanded(true); }, [autoOpen]);
   const [defaults, setDefaults] = useState(loadRawDefaults);
   const [photoRecipe, setPhotoRecipe] = useState<RawRecipe>(defaults);
   const [savedPhotoRecipe, setSavedPhotoRecipe] = useState<RawRecipe | null>(null);
   const [lastAppliedRecipe, setLastAppliedRecipe] = useState<RawRecipe | null>(null);
-  const [editingPhoto, setEditingPhoto] = useState(false);
+  const [editingPhoto, setEditingPhoto] = useState(singlePhoto);
   const [usePhotoOverrides, setUsePhotoOverrides] = useState(true);
   const [selection, setSelection] = useState<RawSelection>("nonTrash");
   const [minRating, setMinRating] = useState(1);
@@ -86,20 +88,26 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
   const alive = useRef(true);
   const sourceScroll = useRef<HTMLDivElement>(null);
   const resultScroll = useRef<HTMLDivElement>(null);
-  const scopeKey = JSON.stringify([stagingDir, scopeDir, scopeMode]);
+  const processingDir = singlePhoto ? initialPath.replace(/[\\/][^\\/]+$/, "") : scopeDir;
+  const processingMode: ProcessScopeMode = singlePhoto ? "folderOnly" : scopeMode;
+  const scopeKey = JSON.stringify([stagingDir, processingDir, processingMode, singlePhoto, initialPath, cameraJpegPath]);
   const recipe = editingPhoto ? photoRecipe : defaults;
   const recipeKey = JSON.stringify(recipe);
   const automaticLevels=recipe.autoExposure||recipe.finishingStrength>0;
   const finishLabel=recipe.finishingStrength===0?(recipe.autoExposure?"Custom Auto levels · extra finish off":"Off"):recipe.finishingStrength<=25?"Auto balance":recipe.finishingStrength<=50?"Bright":recipe.finishingStrength<=75?"Web pop":"Vivid";
   const effectivePreviewVariant = !recipe.colour && recipe.bw ? "bw" : !recipe.bw && recipe.colour ? "colour" : previewVariant;
   const photoDirty = editingPhoto && JSON.stringify(photoRecipe) !== JSON.stringify(savedPhotoRecipe || defaults);
-  const namingBlock = photoDirty ? "Close this event editor and save or discard the unsaved RAW photo override before renaming its folder."
-    : previewPendingCount > 0 || saving || queueing ? "Wait for the current RAW preview/save to finish before renaming its folder." : null;
+  const namingBlock = previewPendingCount > 0 || saving || queueing
+    ? "Wait for the current RAW preview/save to finish before closing the editor or renaming its folder."
+    : singlePhoto && (loading || loadingRecipe) ? "Wait for this photo's original and saved RAW settings to finish loading before closing the editor."
+    : photoDirty ? singlePhoto ? "Save or discard this photo's unsaved RAW settings before closing the editor." : "Close this event editor and save or discard the unsaved RAW photo override before renaming its folder." : null;
   useLayoutEffect(() => { onNamingBlockChange?.(namingBlock); }, [namingBlock, onNamingBlockChange]);
   useEffect(() => () => onNamingBlockChange?.(null), [onNamingBlockChange]);
   const unavailable = candidates?.runtime?.available === false;
-  const noOutput = !defaults.colour && !defaults.bw;
-  const scope: RawScope = { stagingDir, scopeDir, scopeMode, selection, minRating, ...(selection === "selected" ? { selectedPaths } : {}) };
+  const noOutput = singlePhoto ? !recipe.colour && !recipe.bw : !defaults.colour && !defaults.bw;
+  const scope: RawScope = singlePhoto
+    ? { stagingDir, scopeDir: processingDir, scopeMode: processingMode, selection: "selected", minRating: 0, selectedPaths: path ? [path] : [] }
+    : { stagingDir, scopeDir, scopeMode, selection, minRating, ...(selection === "selected" ? { selectedPaths } : {}) };
 
   function clearPreview() {
     for (const url of previewRef.current?.urls || []) URL.revokeObjectURL(url);
@@ -117,15 +125,18 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
     const current = ++candidateGeneration.current;
     actionGeneration.current++; previewGeneration.current++; recipeGeneration.current++;
     clearPreview(); setPath(""); setSelectedPaths([]); setCandidates(null); setError(null); setMessage(null); setJobId(null);
-    setRecipeLoaded(false); setEditingPhoto(false); setSavedPhotoRecipe(null); setLastAppliedRecipe(null); setLoadingRecipe(false); setSaving(false); setQueueing(false);
+    setRecipeLoaded(false); setEditingPhoto(singlePhoto); setSavedPhotoRecipe(null); setLastAppliedRecipe(null); setLoadingRecipe(false); setSaving(false); setQueueing(false);
     if (!expanded || !stagingDir) { setLoading(false); return; }
     setLoading(true);
     // Explicit selection is chosen from the scoped original list; viewing a photo never selects it for a batch.
-    invoke<RawCandidates>("raw_development_candidates", { request: { stagingDir, scopeDir, scopeMode, selection: selection === "selected" ? "all" : selection, minRating } })
+    invoke<RawCandidates>("raw_development_candidates", { request: singlePhoto
+      ? { stagingDir, scopeDir: processingDir, scopeMode: processingMode, selection: "selected", selectedPaths: initialPath ? [initialPath] : [], minRating: 0 }
+      : { stagingDir, scopeDir, scopeMode, selection: selection === "selected" ? "all" : selection, minRating } })
       .then((data) => {
         if (current !== candidateGeneration.current) return;
         if (!Array.isArray(data.paths) || !Number.isFinite(data.total)) throw new Error("Invalid RAW candidate response");
-        setCandidates(data); setPath(data.paths[0] || ""); setCandidateRevision((value) => value + 1);
+        if (singlePhoto && (data.total !== 1 || data.paths.length !== 1 || pathKey(data.paths[0]) !== pathKey(initialPath))) throw new Error("This photo's original CR3 is not available in the selected staging folder. Refresh the Lightbox; no other photo was substituted.");
+        setCandidates(data); setPath(singlePhoto ? data.paths[0] : data.paths[0] || ""); setCandidateRevision((value) => value + 1);
       }).catch((reason) => { if (current === candidateGeneration.current) setError(String(reason)); })
       .finally(() => { if (current === candidateGeneration.current) setLoading(false); });
     return () => { candidateGeneration.current++; };
@@ -133,7 +144,7 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
 
   useEffect(() => {
     const current = ++recipeGeneration.current;
-    actionGeneration.current++; setSavedPhotoRecipe(null); setLastAppliedRecipe(null); setRecipeLoaded(false); setPhotoRecipe(defaults); setEditingPhoto(false); setSaving(false);
+    actionGeneration.current++; setSavedPhotoRecipe(null); setLastAppliedRecipe(null); setRecipeLoaded(false); setPhotoRecipe(defaults); setEditingPhoto(singlePhoto); setSaving(false);
     if (!path || !expanded) { setLoadingRecipe(false); return; }
     setLoadingRecipe(true);
     invoke<RawRecipeRecord>("get_raw_recipe", { stagingDir, path }).then((data) => {
@@ -182,9 +193,9 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
     finally { if (current === actionGeneration.current) setSaving(false); }
   }
   function generate(fullResolution: boolean) {
-    if (!path || unavailable || (!recipe.colour && !recipe.bw)) return;
+    if (!path || unavailable || (singlePhoto && !recipeLoaded) || (!recipe.colour && !recipe.bw)) return;
     const current = ++previewGeneration.current;
-    const request = { stagingDir, scopeDir, scopeMode, selection: "all", minRating: 0, path, recipe: normalizeRawRecipe(recipe), fullResolution, previewVariant: effectivePreviewVariant };
+    const request = { stagingDir, scopeDir: processingDir, scopeMode: processingMode, selection: "all", minRating: 0, path, recipe: normalizeRawRecipe(recipe), fullResolution, previewVariant: effectivePreviewVariant };
     clearPreview(); setPreviewBusy(true); setPreviewPendingCount((value) => value + 1); setError(null);
     previewLane = previewLane.catch(() => {}).then(async () => {
       const urls: string[] = [];
@@ -193,6 +204,18 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
         const result = await invoke<RawPreviewResult>("raw_development_preview", { request });
         if (current !== previewGeneration.current) return;
         if (result.path !== request.path || !Number.isFinite(result.width) || !Number.isFinite(result.height) || result.width <= 0 || result.height <= 0) throw new Error("RAW preview identity or dimensions did not match the requested photo.");
+        if (singlePhoto && cameraJpegPath) {
+          try {
+            const camera = await invoke<LightboxImage>("read_lightbox_image", { path: cameraJpegPath });
+            if (current !== previewGeneration.current) return;
+            if (camera.mime !== "image/jpeg" || !Number.isSafeInteger(camera.width) || !Number.isSafeInteger(camera.height) || camera.width <= 0 || camera.height <= 0) throw new Error("Invalid camera JPEG display");
+            result.original = `data:${camera.mime};base64,${camera.data}`;
+            result.originalWidth = camera.width; result.originalHeight = camera.height; result.sourceLabel = "Camera JPEG reference";
+          } catch {
+            result.warning = `${result.warning ? result.warning + " " : ""}Camera JPEG comparison could not be read; the camera RAW preview is shown where available.`;
+          }
+        }
+        if (current !== previewGeneration.current) return;
         const display = { ...result, original: imageBlob(result.original, urls), processed: imageBlob(result.processed, urls)!, urls, previewVariant: request.previewVariant };
         if (!display.processed) throw new Error("The RAW worker returned no developed preview.");
         previewRef.current = display; setPreview(display); setActualPixels(fullResolution && result.fullResolution);
@@ -207,14 +230,15 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
     return previewLane;
   }
   async function queue() {
-    if (queueing || previewPendingCount > 0 || unavailable || noOutput || !candidates?.total || (selection === "selected" && !selectedPaths.length)) return;
-    if (usePhotoOverrides && photoDirty) { setError("Save or discard this photo's unsaved override before queueing with per-photo overrides."); return; }
+    if (queueing || previewPendingCount > 0 || unavailable || noOutput || !candidates?.total || (singlePhoto ? !path || !recipeLoaded : selection === "selected" && !selectedPaths.length)) return;
+    if (!singlePhoto && usePhotoOverrides && photoDirty) { setError("Save or discard this photo's unsaved override before queueing with per-photo overrides."); return; }
     const current = ++actionGeneration.current;
     setQueueing(true); setError(null); setMessage(null); setJobId(null);
     try {
-      const id = await invoke<string>("start_raw_development_job", { request: { ...scope, recipe: normalizeRawRecipe(defaults), usePhotoOverrides } });
+      const id = await invoke<string>("start_raw_development_job", { request: { ...scope, recipe: normalizeRawRecipe(singlePhoto ? recipe : defaults), usePhotoOverrides: singlePhoto ? false : usePhotoOverrides } });
       if (current !== actionGeneration.current) return;
       setJobId(id); setMessage(`RAW Development queued in Jobs. Job ID: ${id}.`);
+      onQueued?.(id);
     } catch (reason) { if (current === actionGeneration.current) setError(String(reason)); }
     finally { if (current === actionGeneration.current) setQueueing(false); }
   }
@@ -241,7 +265,7 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
     sideButtons: [
       { id: "raw-previous", label: "Previous original", enabled: controllerReady && controllerPathIndex > 0 },
       { id: "raw-auto-levels", label: automaticLevels ? "Auto levels on" : "Auto levels off", enabled: controllerReady },
-      { id: "raw-edit-scope", label: editingPhoto ? "Edit job defaults" : "Edit this photo", enabled: controllerReady && !!path && recipeLoaded },
+      { id: "raw-edit-scope", label: editingPhoto ? "Edit job defaults" : "Edit this photo", enabled: !singlePhoto && controllerReady && !!path && recipeLoaded },
     ],
     execute: async command => {
       if (!controllerReady || !alive.current) return;
@@ -254,7 +278,7 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
       else if (command === "raw-next" || command === "raw-previous") {
         const target = visiblePaths[controllerPathIndex + (command === "raw-next" ? 1 : -1)]; if (target) choosePhoto(target);
       } else if (command === "raw-auto-levels") edit({ autoExposure: !automaticLevels, ...(automaticLevels ? { finishingStrength: 0 } : {}) });
-      else if (command === "raw-edit-scope") {
+      else if (command === "raw-edit-scope" && !singlePhoto) {
         if (editingPhoto && photoDirty && !window.confirm("Discard the unsaved recipe changes for this photo? Its saved recipe and original file will remain unchanged.")) return;
         setPhotoRecipe(savedPhotoRecipe || defaults); setEditingPhoto(!editingPhoto);
       } else if (command.startsWith("raw-exposure-") && !automaticLevels) edit({ exposure: command.endsWith("reset") ? 0 : Math.max(-3, Math.min(3, Math.round((recipe.exposure + (command.endsWith("up") ? .05 : -.05)) * 100) / 100)) });
@@ -265,13 +289,13 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
   return <section className="card mb-4 min-w-0" role="region" aria-label="RAW Development">
     <div className="flex items-start justify-between gap-3 flex-wrap">
       <div><h3 className="text-base font-semibold text-amber-200">RAW Development</h3><p className="text-xs text-gray-400 mt-1 max-w-3xl">Develop Canon CR3 originals into full-resolution photos. Camera previews are for quick review; finished exports always decode the RAW.</p></div>
-      <button type="button" className="btn-secondary text-xs" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "Close RAW controls" : "Set up RAW Development"}</button>
+      {!singlePhoto && <button type="button" className="btn-secondary text-xs" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "Close RAW controls" : "Set up RAW Development"}</button>}
     </div>
     {expanded && <div className="space-y-4 mt-4">
       <div className="rounded border border-amber-800/60 bg-amber-950/15 p-2 text-xs text-amber-100">CR3 originals remain untouched. Settings are saved as recipes; colour and B&W are developed independently. Existing camera JPEGs are preserved.</div>
-      <details className="rounded border border-surface-600 px-3 py-2 text-xs text-gray-400"><summary className="cursor-pointer text-gray-300">How RAW settings are applied</summary><ol className="list-decimal ml-4 mt-2 space-y-1"><li>Edit job defaults for the current batch. Save defaults on this computer to reuse them later.</li><li>Save a photo's override to keep its own settings with staging metadata. The queue uses it only when Use saved per-photo overrides is checked.</li><li>Recall last applied recipe loads the settings from the photo's previous development into an editable draft. It changes neither defaults nor the saved override until you deliberately save.</li><li>Preview uses the controls currently shown. Queue RAW Development writes full-quality outputs; follow progress in Jobs, then inspect JPEG results in Photo Lightbox.</li></ol></details>
+      {singlePhoto ? <p className="text-xs text-gray-300">Adjust this photo, compare it with the Camera JPEG, then queue a full-resolution alternative using the settings shown. Saving the recipe is optional. Review the finished output in Lightbox after Jobs completes; neither development nor your viewing choice selects files for upload.</p> : <details className="rounded border border-surface-600 px-3 py-2 text-xs text-gray-400"><summary className="cursor-pointer text-gray-300">How RAW settings are applied</summary><ol className="list-decimal ml-4 mt-2 space-y-1"><li>Edit job defaults for the current batch. Save defaults on this computer to reuse them later.</li><li>Save a photo's override to keep its own settings with staging metadata. The queue uses it only when Use saved per-photo overrides is checked.</li><li>Recall last applied recipe loads the settings from the photo's previous development into an editable draft. It changes neither defaults nor the saved override until you deliberately save.</li><li>Preview uses the controls currently shown. Queue RAW Development writes full-quality outputs; follow progress in Jobs, then inspect JPEG results in Photo Lightbox.</li></ol></details>}
       {candidates?.runtime && <p className={`text-xs ${unavailable ? "text-red-300" : "text-gray-400"}`}>{candidates.runtime.version && `${candidates.runtime.version} · `}{candidates.runtime.message}</p>}
-      <div className="grid gap-3 md:grid-cols-2 items-start">
+      {!singlePhoto ? <div className="grid gap-3 md:grid-cols-2 items-start">
         <div className="space-y-2 min-w-0">
           <label className="text-xs text-gray-300 block">RAW batch selection<select aria-label="RAW batch selection" className="input-field w-full mt-1" value={selection} disabled={blocked} onChange={(event) => setSelection(event.target.value as RawSelection)}>
             <option value="nonTrash">All non-trash CR3 originals</option><option value="all">All CR3 originals, including trash-marked</option><option value="minRating">Minimum rating, excluding trash</option><option value="selected">Only originals I select below</option>
@@ -292,13 +316,13 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
           <p className="text-xs text-gray-400">{loadingRecipe ? "Reading saved recipe…" : savedPhotoRecipe ? "This photo has a saved override." : path && recipeLoaded ? "This photo uses job defaults until an override is saved." : "Choose an original to inspect its recipe."}</p>
           {lastAppliedRecipe && <p className="text-xs text-gray-500">A last-applied recipe is available to recall in this photo's editor.</p>}
         </div>
-      </div>
+      </div> : <div className="rounded border border-surface-600 p-3 text-xs text-gray-300 min-w-0"><strong className="text-white">This photo only</strong><p className="mt-1 break-all">{initialPath}</p><p className="mt-1 text-gray-400">{loading ? "Checking this original…" : loadingRecipe ? "Reading saved recipe…" : savedPhotoRecipe ? "Saved photo settings loaded." : "Starting from your saved job defaults."}</p>{lastAppliedRecipe && <p className="mt-1 text-gray-400">Last applied settings are available to recall below.</p>}</div>}
       <div className="flex gap-2 flex-wrap items-center border-b border-surface-600 pb-2">
-        <button type="button" className={editingPhoto ? "btn-secondary text-xs" : "btn-primary text-xs"} aria-pressed={!editingPhoto} disabled={saving} onClick={() => { if (photoDirty && !window.confirm("Discard the unsaved recipe changes for this photo? Its saved recipe and original file will remain unchanged.")) return; setPhotoRecipe(savedPhotoRecipe || defaults); setEditingPhoto(false); }}>Edit job defaults</button>
-        <button type="button" className={editingPhoto ? "btn-primary text-xs" : "btn-secondary text-xs"} aria-pressed={editingPhoto} disabled={!path || !recipeLoaded || saving} onClick={() => { if (!editingPhoto) setPhotoRecipe(savedPhotoRecipe || defaults); setEditingPhoto(true); }}>Edit this photo's override</button>
+        {!singlePhoto && <><button type="button" className={editingPhoto ? "btn-secondary text-xs" : "btn-primary text-xs"} aria-pressed={!editingPhoto} disabled={saving} onClick={() => { if (photoDirty && !window.confirm("Discard the unsaved recipe changes for this photo? Its saved recipe and original file will remain unchanged.")) return; setPhotoRecipe(savedPhotoRecipe || defaults); setEditingPhoto(false); }}>Edit job defaults</button>
+        <button type="button" className={editingPhoto ? "btn-primary text-xs" : "btn-secondary text-xs"} aria-pressed={editingPhoto} disabled={!path || !recipeLoaded || saving} onClick={() => { if (!editingPhoto) setPhotoRecipe(savedPhotoRecipe || defaults); setEditingPhoto(true); }}>Edit this photo's override</button></>}
         <span className="text-xs text-gray-400">{editingPhoto ? `${name(path)} · ${photoDirty ? "unsaved changes" : savedPhotoRecipe ? "saved override" : "no saved override"}` : "Used for each eligible original unless it has a saved override"}</span>
       </div>
-      <fieldset disabled={saving || queueing} className="space-y-3 min-w-0">
+      <fieldset disabled={saving || queueing || (singlePhoto && !recipeLoaded)} className="space-y-3 min-w-0">
         <div className="flex items-center gap-2 flex-wrap"><span className="text-xs text-gray-300">Starting preset</span>{([['natural', 'Natural'], ['neutral', 'Neutral'], ['highIso', 'High ISO'], ['webBright', 'Internet ready']] as const).map(([value, label]) => <button type="button" key={value} className="btn-secondary text-xs" aria-pressed={recipe.preset === value} onClick={() => preset(value)}>{label}</button>)}<span className="text-xs text-gray-500">{recipe.preset === "custom" ? "Custom adjustments" : "Refine below; inspect at 100%"}</span></div>
         <div className="rounded-lg border border-amber-700/50 bg-amber-950/15 p-3 space-y-2">
           <label className="block"><span className="flex justify-between gap-3 text-sm text-amber-100"><strong>Auto finish</strong><span className="tabular-nums">{finishLabel} · {recipe.finishingStrength}%</span></span>
@@ -342,7 +366,7 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
           <div className="flex items-center gap-2 flex-wrap"><button type="button" className="btn-secondary text-xs" aria-pressed={!actualPixels} onClick={() => setActualPixels(false)}>Fit RAW comparison</button><button type="button" className="btn-secondary text-xs" aria-pressed={actualPixels} disabled={!preview.fullResolution} onClick={() => setActualPixels(true)}>Actual developed pixels</button><span className="text-xs text-gray-400">{preview.width} × {preview.height} · {preview.fullResolution ? "Full-resolution RAW development" : "Draft display"} · {(preview.elapsedMs / 1000).toFixed(2)} s</span></div>
           {preview.warning && <p className="text-xs text-amber-200">{preview.warning}</p>}
           <div className={`grid gap-2 min-w-0 ${preview.original ? "lg:grid-cols-2" : "grid-cols-1"}`}>
-            {[{ label: preview.sourceLabel || "Camera preview · rendering may differ", src: preview.original, width: preview.originalWidth, height: preview.originalHeight, own: sourceScroll, other: resultScroll, original: true }, { label: `${preview.previewVariant === "bw" ? "B&W" : "Colour"} RAW-developed result`, src: preview.processed, width: preview.width, height: preview.height, own: resultScroll, other: sourceScroll, original: false }].filter((image) => image.src).map((image) => <figure key={image.label} className="rounded overflow-hidden border border-surface-600 min-w-0"><figcaption className="bg-surface-800 text-xs px-2 py-1 text-gray-300">{image.label}{image.width && image.height ? ` · ${image.width} × ${image.height}` : ""}</figcaption><div ref={image.own} className="h-80 overflow-auto bg-black/50 flex" onScroll={(event) => { if (!actualPixels || !image.other.current) return; image.other.current.scrollLeft = event.currentTarget.scrollLeft; image.other.current.scrollTop = event.currentTarget.scrollTop; }}><img draggable={false} title="Display preview only. Queue RAW Development to save full-quality photos beside the original." onContextMenu={(event) => event.preventDefault()} alt={image.original ? "RAW camera reference preview" : "RAW developed comparison"} src={image.src!} className={actualPixels ? "shrink-0 self-start" : "w-full h-full object-contain"} style={actualPixels ? { width: image.width, maxWidth: "none" } : undefined} /></div></figure>)}
+            {[{ label: preview.sourceLabel || "Camera preview · rendering may differ", src: preview.original, width: preview.originalWidth, height: preview.originalHeight, own: sourceScroll, other: resultScroll, original: true }, { label: `${preview.previewVariant === "bw" ? "B&W" : "Colour"} RAW-developed result`, src: preview.processed, width: preview.width, height: preview.height, own: resultScroll, other: sourceScroll, original: false }].filter((image) => image.src).map((image) => <figure key={image.label} className="rounded overflow-hidden border border-surface-600 min-w-0"><figcaption className="bg-surface-800 text-xs px-2 py-1 text-gray-300">{image.label}{image.width && image.height ? ` · ${image.width} × ${image.height}` : ""}</figcaption><div ref={image.own} className="h-80 overflow-auto bg-black/50 flex" onScroll={(event) => { if (!actualPixels || !image.other.current) return; image.other.current.scrollLeft = event.currentTarget.scrollLeft; image.other.current.scrollTop = event.currentTarget.scrollTop; }}><img draggable={false} title="Display preview only. Queue RAW Development to save full-quality photos beside the original." onContextMenu={(event) => event.preventDefault()} alt={image.original ? preview.sourceLabel === "Camera JPEG reference" ? "Camera JPEG reference" : "RAW camera reference preview" : "RAW developed comparison"} src={image.src!} className={actualPixels ? "shrink-0 self-start" : "w-full h-full object-contain"} style={actualPixels ? { width: image.width, maxWidth: "none" } : undefined} /></div></figure>)}
           </div>
           {preview.histogram && <Histogram data={preview.histogram} />}
           <p className="text-xs text-gray-500">Inspect fine fur, mane, edge halos and smooth background areas. A camera preview can be smaller than the RAW and uses a different rendering. The preview images are display copies.</p>
@@ -351,10 +375,10 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
       {error && <p role="alert" className="rounded border border-red-800 bg-red-950/20 p-3 text-sm text-red-300 break-words">{error}</p>}
       {message && <div role="status" className="rounded border border-emerald-800 bg-emerald-950/20 p-3 text-xs text-emerald-200 flex items-center gap-2 flex-wrap"><span className="break-words">{message}</span>{jobId && onOpenJobs && <button type="button" className="btn-secondary text-xs" onClick={onOpenJobs}>Open Jobs</button>}</div>}
       <div className="border-t border-surface-600 pt-3 space-y-3">
-        <label className="flex gap-2 items-center text-xs text-gray-200"><input type="checkbox" className="w-5 h-5 accent-amber-400" checked={usePhotoOverrides} disabled={queueing} onChange={(event) => setUsePhotoOverrides(event.target.checked)} />Use saved per-photo overrides where present</label>
-        <div className="flex gap-3 items-center flex-wrap"><button type="button" className="btn-primary text-sm" disabled={blocked || previewPendingCount > 0 || unavailable || noOutput || !candidates?.total || (selection === "selected" && !selectedPaths.length) || (usePhotoOverrides && photoDirty)} onClick={() => void queue()}>{queueing ? "Queueing RAW Development…" : "Queue RAW Development"}</button><p className="text-xs text-gray-400 max-w-2xl">{selection === "selected" ? `${selectedPaths.length} explicitly selected original${selectedPaths.length === 1 ? "" : "s"}` : "Every eligible CR3 original in the current processing scope"} · {usePhotoOverrides ? "job defaults plus saved photo overrides" : "job defaults only"}. Full-resolution outputs; originals and unrelated files are preserved.</p></div>
+        {!singlePhoto && <label className="flex gap-2 items-center text-xs text-gray-200"><input type="checkbox" className="w-5 h-5 accent-amber-400" checked={usePhotoOverrides} disabled={queueing} onChange={(event) => setUsePhotoOverrides(event.target.checked)} />Use saved per-photo overrides where present</label>}
+        <div className="flex gap-3 items-center flex-wrap"><button type="button" className="btn-primary text-sm" disabled={blocked || previewPendingCount > 0 || unavailable || noOutput || !candidates?.total || (singlePhoto ? !path || !recipeLoaded : (selection === "selected" && !selectedPaths.length) || (usePhotoOverrides && photoDirty))} onClick={() => void queue()}>{queueing ? "Queueing RAW Development…" : singlePhoto ? "Queue this photo's RAW development" : "Queue RAW Development"}</button><p className="text-xs text-gray-400 max-w-2xl">{singlePhoto ? "Only this photo · the settings currently shown" : <>{selection === "selected" ? `${selectedPaths.length} explicitly selected original${selectedPaths.length === 1 ? "" : "s"}` : "Every eligible CR3 original in the current processing scope"} · {usePhotoOverrides ? "job defaults plus saved photo overrides" : "job defaults only"}</>}. Full-resolution outputs; originals and unrelated files are preserved.</p></div>
         {previewPendingCount > 0 && <p className="text-xs text-amber-200">Wait for the active or queued preview to finish before queueing a full development job.</p>}
-        {usePhotoOverrides && photoDirty && <p className="text-xs text-amber-300">Save or discard the unsaved photo override before queueing.</p>}
+        {!singlePhoto && usePhotoOverrides && photoDirty && <p className="text-xs text-amber-300">Save or discard the unsaved photo override before queueing.</p>}
         <p className="text-xs text-gray-500">Follow progress, pause or cancel through core Jobs. Preview quality and batch throughput depend on the source and recipe; developing does not use the camera thumbnail as its final output.</p>
       </div>
     </div>}

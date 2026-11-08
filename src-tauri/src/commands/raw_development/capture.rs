@@ -271,6 +271,34 @@ pub fn pairs(files: &[PathBuf], excluded: &HashSet<usize>) -> Vec<(usize, usize)
     let values = read_tokens(&candidates);
     pairs_from_tokens(files, excluded, &values)
 }
+/// Only verified camera pairs share decisions. Keep the RAW family/asset
+/// identity stable, while preserving the established Camera JPEG review work.
+pub fn review_flags(file: &Path, owner: &Path, camera_jpeg: Option<&Path>) -> (u8, bool) {
+    let flags = |p: &Path| {
+        let name = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+        let rating = (1..=3).rev().find(|&n| name.contains(&format!("{{like {}}}", "o".repeat(n)))).unwrap_or(0) as u8;
+        (rating, name.contains("{trash}"))
+    };
+    let anchor = camera_jpeg.unwrap_or(owner);
+    let inherited = flags(anchor);
+    // Old tags on the RAW master must not veto an explicit JPEG untrash.
+    if camera_jpeg.is_some() && (file == owner || file == anchor) { return inherited }
+    let own = flags(file);
+    (own.0.max(inherited.0), own.1 || inherited.1)
+}
+pub fn review_anchors(dir: &Path) -> Result<HashMap<PathBuf, PathBuf>, String> {
+    let mut files = vec![];
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if super::is_raw(&path) || path.extension().is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg")) {
+            super::reject_link(&path)?;
+            if path.is_file() { files.push(path); }
+        }
+        if files.len() > 100_000 { return Err("Choose a smaller RAW folder before reviewing its capture decisions".into()) }
+    }
+    let excluded = manifest::associations(dir, &files)?.into_iter().map(|(i, _, _)| i).collect();
+    Ok(pairs(&files, &excluded).into_iter().map(|(raw, jpeg)| (files[raw].clone(), files[jpeg].clone())).collect())
+}
 /// A maintenance operation may keep stable rating/trash tags, or move the
 /// entire event folder. It cannot strand RAW recipes by moving one member.
 pub fn guard_move(source: &Path, target: &Path) -> Result<worker::FolderLease, String> {
@@ -280,7 +308,7 @@ fn protected(m: &manifest::Manifest, source: &Path) -> bool {
     let key = catalogue::curation_key(source);
     m.records.iter().any(|(k, r)| {
         (*k == key
-            && (r.recipe.is_some() || r.last_applied_recipe.is_some() || !r.outputs.is_empty()))
+            && (r.recipe.is_some() || r.last_applied_recipe.is_some() || !r.outputs.is_empty() || r.lightbox_choice.is_some()))
             || r.outputs
                 .iter()
                 .any(|o| catalogue::curation_key(Path::new(&o.file)) == key)
