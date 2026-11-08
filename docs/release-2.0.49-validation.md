@@ -77,3 +77,36 @@ schema, original-file edits, implicit RAW development or export changes.
 No physical-device speed, network-share speed or controller acceptance is
 claimed from the fixtures. Prior released installers remain available for
 rollback. No render-PC installation, process access or user-media changes occur.
+
+## Built source
+
+Application source is `603e2819165f8f1ae084005506ac707b4864aece`, based on
+released `origin/master` at `da0ea7c5b772618f645ca6749485871749dcb84f`.
+All application changes/tests/version/guide were committed before building.
+The production frontend identifies
+`2.0.49 / 20261108T060621075Z-603e2819+local`.
+The literal `+local` records four unrelated untracked cleanup artifacts and
+Vite's temporary configuration module; those files remain untouched/excluded.
+Subsequent package/delivery documentation does not change the compiled source.
+
+## Finished packages
+
+The optimized native build completed in **6m 10s**, with five existing unused-code
+warnings and the existing frontend Browserslist/chunk-size notices. Both EXE and
+MSI were extracted without installing them. Inspection reports `complete: true`;
+the application payload matches the built executable after normalizing only
+Tauri's expected three-byte bundle marker. Pinned media/source payloads, all
+2,205 ExifTool 13.59 files, all 440 RawTherapee 5.13 resources and all 28 modified
+controller SDK source files/notices passed.
+
+Both relocated packages decoded the supplied CR3 at **6014 × 4016**, RTv4_sRGB,
+with PATH empty and the original hash unchanged. MSI ProductVersion is 2.0.49;
+UpgradeCode remains `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` from 2.0.48.
+These are unsigned test installers. Physical folder/storage performance remains
+Stuart's retest; the fixture measurements do not establish that result.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| PhotoGoGoV2_2.0.49_x64-setup.exe | 130,887,175 | FE7A10848B864D818C3BB7BC188AA47EC85AB99C7F3A3E3BBC89D7D4C537753D |
+| PhotoGoGoV2_2.0.49_x64_en-US.msi | 222,163,668 | B7925FA20B4E52A3481B78C9F99FCDCF86F955F6BCF7340A43289D905266C820 |
+| photogogo-v2.exe | 30,244,864 | 543F83B0E1BB246B01B499A04CBF46E5648C4E0E7B17858059489EF0A4D5E7F3 |
