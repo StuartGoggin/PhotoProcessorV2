@@ -7,7 +7,7 @@ import { curationWriter as writer } from "../utils/curationPersistence";
 type Changes = { selected?: boolean; favourite?: boolean };
 interface Intent { id: number; assetId: string; changes: Changes }
 const createModel = (root: string, scope: string) => ({ root, scope, assets: new Map<string, GooglePhotoAsset>(), paths: new Map<string, string | null>(),
-  pending: [] as Intent[], warnings: [] as string[], loading: false, error: "", generation: 0, scanning: false, deferred: false, deferredClear: false });
+  pending: [] as Intent[], warnings: [] as string[], loading: false, error: "", generation: 0, scanning: false, scanPath: undefined as string | undefined, deferred: false, deferredClear: false });
 
 /** Requested flags paint immediately. Only compact native acknowledgements
  * update confirmed flags; older completions cannot erase newer queued intent. */
@@ -31,6 +31,7 @@ export function useGooglePhotoCuration(root: string, refreshKey?: unknown, relat
     if (!root) { model.assets.clear(); model.paths.clear(); model.loading = false; notify(model); return; }
     model.loading = true; model.error = ""; model.scanning = true; notify(model);
     const capturedPath=pathRef.current;
+    model.scanPath=capturedPath;
     try {
       // A prior Review can have accepted writes still draining after unmount.
       await writer.settled();
@@ -60,6 +61,16 @@ export function useGooglePhotoCuration(root: string, refreshKey?: unknown, relat
   refreshLatest.current = refresh;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; modelRef.current.generation++; }; }, []);
   useEffect(() => { void refresh(); return () => { modelRef.current.generation++; }; }, [refresh, refreshKey]);
+  const catalogueError=modelRef.current.error;
+  useEffect(() => {
+    const model=modelRef.current;
+    if(!relativePath || model.root!==root || (catalogueError && model.scanPath===relativePath))return;
+    // A rating/trash rename can finish between the tree refresh and publishing
+    // its replacement photo. Retire any read pinned to the removed filename.
+    // Ordinary same-folder navigation reuses the confirmed catalogue.
+    const missing=!model.paths.has(googlePhotoPathKey(relativePath));
+    if((missing && (!model.scanning || model.scanPath!==relativePath)) || (model.error && model.scanPath!==relativePath))void refresh();
+  },[relativePath,root,refresh,catalogueError]);
 
   function effective(asset: GooglePhotoAsset) {
     let view = asset;

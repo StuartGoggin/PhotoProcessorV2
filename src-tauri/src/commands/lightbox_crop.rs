@@ -781,6 +781,45 @@ mod tests {
         }
     }
     #[test]
+    fn camera_jpeg_crop_preserves_raw_pair_and_uses_full_jpeg_for_each_output() {
+        let w = Work::new();
+        let raw = w.0.join("capture{Like oo}.CR3");
+        let raw_bytes = b"Synthetic RAW sentinel, never a crop source";
+        fs::write(&raw, raw_bytes).unwrap();
+        let jpeg = w.photo("camera-full.JPG");
+        let jpeg_bytes_before = fs::read(&jpeg).unwrap();
+        let info = inspect(w.0.to_str().unwrap(), "camera-full.JPG").unwrap();
+        assert_eq!((info.width, info.height), (120, 80));
+        assert_eq!(info.source_fingerprint, fingerprint(&jpeg_bytes_before));
+        // A RAW preview or another source's fingerprint cannot authorize a crop.
+        let mut wrong = request(&w, &jpeg);
+        wrong.source_fingerprint = fingerprint(raw_bytes);
+        assert!(apply(wrong).is_err());
+        assert!(!w.0.join("camera-full_crop.jpg").exists());
+        assert!(inspect(w.0.to_str().unwrap(), "capture{Like oo}.CR3").is_err());
+        let req = request(&w, &jpeg);
+        let bw_params = req.bw_params.clone();
+        let contrast = req.enhance_contrast_level;
+        let sharpness = req.enhance_sharpness_level;
+        let result = apply(req).unwrap();
+        assert_eq!((result.width, result.height), (96, 64));
+        let cropped = decode(&fs::read(&result.crop_path).unwrap()).unwrap();
+        assert_eq!(
+            fs::read(w.0.join("camera-full_crop_BW.jpg")).unwrap(),
+            jpeg_bytes(&DynamicImage::ImageLuma8(render_bw(&cropped, &bw_params))).unwrap()
+        );
+        assert_eq!(
+            fs::read(w.0.join("camera-full_crop_improved.jpg")).unwrap(),
+            jpeg_bytes(&DynamicImage::ImageRgb8(render_enhanced(
+                &cropped, contrast, sharpness
+            )))
+            .unwrap()
+        );
+        assert_eq!(fs::read(&raw).unwrap(), raw_bytes);
+        assert_eq!(fs::read(&jpeg).unwrap(), jpeg_bytes_before);
+        assert!(!w.0.join("capture_crop.jpg").exists());
+    }
+    #[test]
     fn crop_success_retains_files_and_source_and_recrops_from_original() {
         let w = Work::new();
         let p = w.photo("photo.jpg");

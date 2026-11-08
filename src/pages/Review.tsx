@@ -52,7 +52,10 @@ export default function Review() {
   const ready = !!renderFrame && visibleFrame === renderFrame && !loading && review.isReady();
   const renderedImages = [images.original, images.bw, images.improved];
   const disabled = busy || renaming || !ready || curation.saving;
-  const editable = !!selected && /\.jpe?g$/i.test(selected.name) && !/_(crop|bw|improved)(?:\{[^}]+\})*\.jpe?g$/i.test(selected.name);
+  // A paired capture retains its RAW navigation identity; crop the explicitly
+  // displayed full JPEG source, never the RAW camera preview or a derivative.
+  const cropSource = selectedPhoto?.original;
+  const editable = !!cropSource && /\.jpe?g$/i.test(cropSource.name) && !/_(crop|bw|improved)(?:\{[^}]+\})*\.jpe?g$/i.test(cropSource.name);
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => { setFeedback(""); }, [renderFrame]);
@@ -280,7 +283,7 @@ export default function Review() {
       </div>}
       {selectedPhoto?.cameraJpeg && <div className="px-3 py-2 border-b border-surface-700 bg-surface-800 text-xs text-gray-300 flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2">Original source<select aria-label="Original source" className="input-field w-auto text-xs py-1.5" value={originalSource} disabled={busy || renaming || loading || curation.saving} onChange={(event) => void chooseOriginalSource(event.target.value === "cameraJpeg" ? "cameraJpeg" : "raw")}><option value="raw">Camera RAW preview</option><option value="cameraJpeg">Camera JPEG</option></select></label>
-        <span>Upload / favourite controls target the displayed original file. Ratings and trash apply to the RAW original. Cropping is unavailable for this paired RAW capture.</span>
+        <span>Upload / favourite controls target the displayed original file. Ratings and trash apply to the RAW original. {originalSource === "cameraJpeg" ? "Crop creates a separate _crop from the full Camera JPEG; both originals stay untouched." : "Select Camera JPEG to crop its full image; the RAW preview cannot be cropped."}</span>
       </div>}
       {rawOriginal && <div className="px-3 py-1.5 border-b border-surface-700 bg-amber-950/20 text-xs text-amber-200">
         Camera preview — not full RAW development{originalInfo ? ` · ${originalInfo.width} × ${originalInfo.height} displayed pixels` : ""}{originalInfo?.sourceWidth && originalInfo.sourceHeight ? ` · Embedded camera image ${originalInfo.sourceWidth} × ${originalInfo.sourceHeight}` : ""}. Use Photo Process → RAW Development for finished full-resolution photos. RAW upload selections never export this preview.

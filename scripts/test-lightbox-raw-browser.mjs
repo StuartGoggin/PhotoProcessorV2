@@ -20,7 +20,7 @@ async function pageWith(options = {}) {
   page.setDefaultTimeout(12000); page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript((values) => Object.assign(window, { __controlsRawFixture: true, ...values }), options);
   await page.goto(url, { timeout: 45000, waitUntil: "domcontentloaded" });
-  await tree(page).getByText(options.__controlsLazyMetadata ? "Event" : "01-horse.CR3", { exact: true }).waitFor();
+  await tree(page).getByText(options.__controlsLazyMetadata ? "Event" : options.__controlsPairedCrop ? "capture{Like oo}.CR3" : "01-horse.CR3", { exact: true }).waitFor();
   if(options.__controlsLazyMetadata)await tree(page).getByText("Elsewhere",{exact:true}).click();
   return page;
 }
@@ -46,6 +46,38 @@ try {
     assert.ok(started, `Fixture failed to start: ${serverLog}`);
   }
   browser = await chromium.launch({ channel: "msedge", headless: true });
+  const pairedCrop = await pageWith({ __controlsPairedCrop:true, __controlsManagedController:true });
+  await tree(pairedCrop).getByText("capture{Like oo}.CR3", {exact:true}).click();
+  await ready(pairedCrop,"Original RAW","capture{Like oo}.CR3");
+  assert.equal(await pairedCrop.getByRole("button",{name:"Crop",exact:true}).isDisabled(),true);
+  await hotkey(pairedCrop,"c");
+  assert.equal(await pairedCrop.getByRole("dialog",{name:"Crop photo"}).count(),0,"RAW embedded preview cannot be cropped");
+  await pairedCrop.getByRole("combobox",{name:"Original source",exact:true}).selectOption("cameraJpeg");
+  await ready(pairedCrop,"Camera JPEG","camera-full.JPG");
+  assert.equal(await pairedCrop.getByRole("button",{name:"Crop",exact:true}).isEnabled(),true,"Explicit full Camera JPEG must be editable despite RAW navigation identity");
+  await pairedCrop.waitForFunction(()=>window.__controllerSurface?.keys[3]?.enabled);
+  await pairedCrop.evaluate(()=>window.__controlsNativeInput({kind:"side",index:2}));
+  await pairedCrop.waitForFunction(()=>window.__controllerSurface?.title==="Lightbox · inspect"&&window.__controllerSurface.keys.some(key=>key.label==="CROP"&&key.enabled));
+  await pairedCrop.getByRole("button",{name:"Crop",exact:true}).click();
+  const crop=pairedCrop.getByRole("dialog",{name:"Crop photo"});
+  await crop.getByRole("img",{name:"Uncropped original for crop selection"}).waitFor();
+  assert.equal(await pairedCrop.evaluate(()=>window.__controlsCalls.filter(call=>call.command==="lightbox_crop_info").at(-1).args.path),"camera-full.JPG");
+  await crop.getByRole("button",{name:/Apply crop/}).click();
+  await crop.waitFor({state:"detached"});
+  await ready(pairedCrop,"Cropped","camera-full_crop.jpg");
+  await displayed(pairedCrop,"B&W","camera-full_crop_BW.jpg");await displayed(pairedCrop,"Enhanced","camera-full_crop_improved.jpg");
+  await pairedCrop.getByText("1 / 2",{exact:true}).waitFor();
+  const pairedRequest=await pairedCrop.evaluate(()=>window.__controlsCropWrites[0]);
+  assert.equal(pairedRequest.path,"camera-full.JPG");assert.equal(pairedRequest.sourceFingerprint,`${root}:camera-full.JPG`);
+  assert.equal(pairedRequest.regenerateBw,true);assert.equal(pairedRequest.regenerateEnhanced,true);
+  for(const hidden of ["camera-full.JPG","camera-full_crop.jpg","raw-developed.jpg"])assert.equal(await tree(pairedCrop).getByText(hidden,{exact:true}).count(),0);
+  assert.equal(await tree(pairedCrop).getByText("capture{Like oo}.CR3",{exact:true}).count(),1);
+  await pairedCrop.getByRole("combobox",{name:"Original source",exact:true}).selectOption("raw");
+  await ready(pairedCrop,"Original RAW","capture{Like oo}.CR3");await displayed(pairedCrop,"Developed RAW","raw-developed.jpg");
+  assert.equal(await pairedCrop.getByRole("button",{name:"Crop",exact:true}).isDisabled(),true);
+  assert.equal(await pairedCrop.evaluate(()=>window.__controlsRenames.length),0);
+  report.checks.push("Paired RAW capture crops only its explicitly selected full Camera JPEG; RAW preview stays ineligible, exact source fingerprint is retained, JPEG crop variants stay grouped, and RAW navigation/ratings/development are preserved");
+  await pairedCrop.close();
   const page = await pageWith({ __controlsRawWarning: "Synthetic damaged recipe metadata" });
   for (const hidden of ["01-horse.JPG", "01-horse_BW.jpg", "01-horse_improved.jpg", "01-owned-colour.jpg", "01-owned-bw.jpg", "01-retired.jpg"]) assert.equal(await tree(page).getByText(hidden, { exact: true }).count(), 0);
   await tree(page).getByText("01-horse.CR3", { exact: true }).click();

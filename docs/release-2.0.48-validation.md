@@ -1,4 +1,4 @@
-# PhotoGoGo 2.0.48 — readable, upright AKP03E keys
+# PhotoGoGo 2.0.48 — readable AKP03E keys and Lightbox corrections
 
 ## Scope and implementation
 
@@ -6,9 +6,11 @@ Stuart reported that key images were rotated 90 degrees counter-clockwise
 (written "count clockwise"), faint and difficult to see. He requested a 100%
 default brightness and stronger artwork contrast. The interpretation and
 clockwise correction were stated before implementation. This is a bounded
-continuation of the approved controller test/release workflow; no new helper
-workflow, dependencies, native SDK patch, firmware or vendor-profile change is
-introduced.
+continuation of the approved controller test/release workflow. Stuart then added
+the Trash/upload-selection error and disabled Crop in paired RAW Camera JPEG
+view before publication. The two already approved bounded helpers resumed for
+that diagnosis and safety review. No dependencies, native SDK patch, firmware or
+vendor-profile change is introduced.
 
 The SDK still specifies zero rotation for AKP03E key images. PhotoGoGo now
 rotates only the device-output image **90 degrees clockwise** before the
@@ -26,8 +28,27 @@ The existing atomic save path records the marker on a deliberate settings save.
 Both artwork renderers use black backgrounds, bright white idle icons/labels,
 heavier 2.6-unit glyph strokes, bold text, stronger borders and vivid state
 accents. Disabled states remain identifiable. Frontend JPEG quality rises from
-0.90 to 0.98 at the same bounded 60 × 60 size. There is no change to input
-handling, Google selection, trash/navigation, dial assignments or takeover.
+0.90 to 0.98 at the same bounded 60 × 60 size. Input transport, dial assignments
+and takeover are unchanged.
+
+## Added Lightbox fixes before publication
+
+Trash/rating renames can publish a fresh tree revision before the replacement
+selected photo is published. The folder-scoped curation hook could consequently
+scan the retired filename and leave upload controls unavailable. Its refresh now
+reconciles the current selected path when absent from the confirmed map, fences
+stale reads, and recovers a late old-path read failure after navigation. Ordinary
+same-folder browsing still reuses the map. Pending-write barriers and retained
+failed-write receipts remain authoritative; recovery never silently clears them.
+Trash remains a reversible filename tag, without deletion or automatic advance.
+The existing X shortcut marks trash, saves and advances.
+
+Crop eligibility now follows the explicitly displayed original source rather
+than the RAW capture's navigation filename. Camera JPEG can open Crop and save
+its own _crop/B&W/Enhanced family under the same capture. RAW preview cannot.
+The existing native JPEG crop transaction, bounds, orientation, same-byte source
+fingerprint and original-preservation checks are retained. No RAW decoding,
+embedded-preview crop or implicit source substitution is added.
 
 ## Validation
 
@@ -55,11 +76,57 @@ Physical image orientation and perceived readability remain a retest on Stuart's
 unit; development has no attached AKP03E. The new user feedback establishes that
 images reached the physical keys, not that every control or state was accepted.
 
+For the added crop case, the new browser regression first failed because Crop
+was disabled for the explicitly selected full Camera JPEG. After correction,
+all nine RAW Lightbox browser groups passed. The paired fixture uses a rated RAW
+capture, a differently named full Camera JPEG and a separate developed RAW
+output. It verifies RAW preview ineligibility, enabled controller Inspect/Crop,
+exact JPEG inspect/apply paths and fingerprint, grouped crop comparisons after
+refresh, and preserved RAW navigation/rating/development identity.
+
+All 12 native crop tests passed, including a new synthetic RAW/JPEG-pair case
+that checks retained source bytes, source-fingerprint rejection, full JPEG crop
+dimensions and independent B&W/Enhanced generation from the cropped JPEG. The
+complete serial native run then passed **382 tests, zero failed, 29 opt-in
+tests ignored** in 88.15 seconds. Controller units again passed 22 checks and
+the panel passed nine groups. Final browser runs passed the actual Lightbox
+controls (21 groups), general Lightbox/crop (13 groups), and RAW source workflow
+(nine groups); TypeScript and whitespace checks passed.
+
+The native-rule curation fixture first reproduced the real retired-path error
+after a successful Trash rename. Eight targeted real-UI groups now pass:
+Trash and rating reconciliation, same-folder cache reuse, retained failed-write
+receipts and exact retry, pending-save fences, read-failure recovery, held stale
+completion, late A-to-B failure and bounded persistent same-photo failure. The
+late-error test was corrected to use a single Reload read (a tree Refresh
+already schedules another read); it failed before the dependency correction.
+The retry-bound regression then failed at three automatic reads before the
+same-path guard. Final independent source review found no remaining issue in
+those changes. Existing selection/transfer barriers passed 11 browser groups
+with zero browser errors; queue (four), command (seven) and Lightbox unit
+(20) checks passed. Reports are retained locally; no Google API or user-media
+operations occurred.
+
 ## Packaging boundary
 
 The modified SDK source remains the same 28-file closure, with original pinned
-archives and notices. Only the app's controller-output boundary, preferences,
-artwork and their checks change. Prior installers remain available; Release and
+archives and notices. The app's controller output, preferences, artwork,
+Lightbox eligibility and curation read reconciliation change. Prior installers
+remain available; Release and
 close PhotoGoGo before rollback, and restart AJAZZ manually. No user-media or
 staging schema changes occur. Built-source, package and delivery receipts follow
 after validation.
+
+## Intermediate build (superseded before publication)
+
+Display-only checkpoint source: `80dbc408043e95c74df6269dd01ce21cb5d8b767`, based on
+`origin/master` at `dc967642340a6c786bd6f97ada76bcb9d2079649`. All application
+changes/tests/version were committed before building. Four unrelated cleanup
+scripts/JSON summaries remain untracked, untouched and excluded from the release.
+No tracked application source changed during packaging.
+
+That intermediate frontend identifies `2.0.48 / 20261108T024815254Z-80dbc408+local`.
+The literal `+local` is retained because of those unrelated untracked files and
+Vite's temporary configuration module. This is the committed application source
+above, not a wholly clean-checkout claim. It was held and never published after
+Stuart added the two Lightbox bugs. The combined final build and receipts follow.

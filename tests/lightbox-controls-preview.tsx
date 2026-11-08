@@ -24,6 +24,11 @@ fixture.__controlsCommandReference=[...lightboxCommands,...lightboxCropCommands]
 const untag = (value: string) => value.replace(/\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi, "");
 const file = (name: string, parent = ""): TreeNode => ({type:"file", name, path:parent ? `${parent}/${name}` : name, size:32768});
 function makeTree(): TreeNode {
+  if (fixture.__controlsPairedCrop) return { type:"dir",name:"Paired crop fixture",path:"",children:[
+    { ...file("capture{Like oo}.CR3"), cameraJpeg:"camera-full.JPG" }, file("camera-full.JPG"),
+    file("camera-full_BW.jpg"), file("camera-full_improved.jpg"),
+    { ...file("raw-developed.jpg"), rawSource:"capture{Like oo}.CR3",rawKind:"developed" }, file("02-rider.jpg"),
+  ] };
   if (fixture.__controlsLazyMetadata) return {type:"dir",name:"Lazy RAW fixture",path:"",children:["Event","Elsewhere"].map(parent=>({type:"dir",name:parent,path:parent,children:[
     {...file("01-horse.CR3",parent),captureMetadataPending:true}, {...file("01-horse.JPG",parent),captureMetadataPending:true}, file("02-rider.jpg",parent),
   ]}))};
@@ -138,11 +143,21 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(
     for (const node of files(lib.tree)) if (node.rawSource === photo.path) node.rawSource = next;
     photo.path=next;photo.name=args.newName;return null;
   }
-  if(command==="lightbox_crop_info")return {width:900,height:600,sourceFingerprint:`${args.stagingDir}:${args.path}`,original:`data:image/jpeg;base64,${image(args.stagingDir,args.path).data}`,crop:null,hasCrop:true};
+  if(command==="lightbox_crop_info") {
+    if(fixture.__controlsPairedCrop && args.path!=="camera-full.JPG")throw Error("Crop must inspect the full Camera JPEG only");
+    return {width:900,height:600,sourceFingerprint:`${args.stagingDir}:${args.path}`,original:`data:image/jpeg;base64,${image(args.stagingDir,args.path).data}`,crop:null,hasCrop:!fixture.__controlsPairedCrop};
+  }
   if(command==="lightbox_apply_crop") {
     fixture.__controlsCropWrites.push(structuredClone(args.request));
     if(fixture.__controlsCropError)throw Error(fixture.__controlsCropError);
     if(fixture.__controlsDeferCrop)await new Promise<void>(resolve=>{fixture.__controlsReleaseCrop=resolve;});
+    if(fixture.__controlsPairedCrop) {
+      const req=args.request;
+      if(req.path!=="camera-full.JPG" || req.sourceFingerprint!==`${req.stagingDir}:camera-full.JPG`)throw Error("Crop must apply the inspected full Camera JPEG only");
+      const names=["camera-full_crop.jpg",...(req.regenerateBw?["camera-full_crop_BW.jpg"]:[]),...(req.regenerateEnhanced?["camera-full_crop_improved.jpg"]:[])];
+      library(req.stagingDir).tree.children!.push(...names.map(name=>file(name)));
+      return {cropPath:`${req.stagingDir}\\camera-full_crop.jpg`,width:900,height:600,outputs:names,errors:[]};
+    }
     return {cropPath:`${args.request.stagingDir}\\01-horse_crop.jpg`,width:900,height:600,outputs:[],errors:[]};
   }
   throw Error(`Unexpected controller fixture command: ${command}`);

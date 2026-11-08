@@ -44,6 +44,17 @@ Controller actions use PhotoGoGo's real editing commands. Save-and-next, where u
 
 Button and dial-press release reports consume input without executing the action again. Turns retain their direction. This avoids an acknowledged Google/Trash toggle being undone when the physical button is released.
 
+After a trash or rating rename, saved upload selections follow the new filename.
+Pending or failed checkbox writes still require acknowledgement or a deliberate
+retry. Trash marks the original and keeps it visible so it can be restored;
+keyboard **X** marks trash and advances after saving.
+
+For a paired RAW capture, choose **Original source → Camera JPEG** to enable
+**Crop** (also on the controller's Inspect page). The crop and chosen B&W/Enhanced
+outputs are created from that full JPEG and remain grouped under the capture.
+Both the RAW and Camera JPEG originals stay untouched. Camera RAW preview stays
+ineligible for cropping; no embedded thumbnail or RAW development is substituted.
+
 Only one controller action is admitted at a time. Extra presses during saves are discarded, not replayed on the next photo. Layout revisions, renderer ownership and USB sessions fence stale input. Inputs queued during repaint/re-arm are drained. Hidden pages and inactive editors cannot own the layout. Dialogs retain their keyboard behaviour; opening the controller mirror does not let ordinary review shortcuts act behind it.
 
 If an action is not acknowledged within 30 seconds, controller input fails closed until Retry. The underlying application job is not cancelled or resubmitted by that timeout. If a layout heartbeat is absent for ten seconds, inputs are disarmed and a neutral display replaces it. The page's existing save/loading checks remain authoritative.
@@ -63,7 +74,7 @@ Development checks use synthetic controller input and generated media. No AKP03E
 1. Finish any AJAZZ configuration work, connect the AKP03E and launch 2.0.48. Confirm the controller panel reaches Connected and the vendor app has stopped. If it fails, send the exact operation/error shown; the earlier screenshot alone does not identify the failed operation.
 2. Check all six faces are in the expected positions, upright and readable. Version 2.0.48 applies the clockwise correction for Stuart's reported counter-clockwise rotation; the physical result still needs confirmation. Check that the old 70% default now shows 100%; a different saved custom brightness is intentionally retained.
 3. Open a small copied test event in Lightbox. Identify the large dial and Apply. Confirm that turning it moves between originals. Hold and release each lower Google key: it must toggle exactly once, retain its state on release and affect only its displayed version. Toggle Trash and verify it does not advance. Check all three saved dial turns/presses and side buttons, then reopen to check preferences persist.
-4. Try a crop, RAW preview/adjustments and a Snapshot capture. Rapid scrubbing must not capture the previous displayed frame. A crop Apply must execute once.
+4. On a paired RAW capture, choose Camera JPEG, open Crop and Apply once. Confirm the cropped versions appear under the same capture and both originals remain unchanged. Switch back to Camera RAW preview: Crop must be disabled. Try RAW adjustments and a Snapshot capture; rapid scrubbing must not capture the previous displayed frame.
 5. Unplug/replug, Release, close PhotoGoGo and manually restart AJAZZ. Confirm its normal layout returns. Re-enable automatic control only when wanted.
 
 ## Sources and licences
