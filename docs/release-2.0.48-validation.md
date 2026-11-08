@@ -130,3 +130,42 @@ The literal `+local` is retained because of those unrelated untracked files and
 Vite's temporary configuration module. This is the committed application source
 above, not a wholly clean-checkout claim. It was held and never published after
 Stuart added the two Lightbox bugs. The combined final build and receipts follow.
+
+## Combined built source
+
+The final combined application is built from
+`2ddd0c82386139d17a1484da8b89ad43d78c867d`, including the display correction
+commit `80dbc408043e95c74df6269dd01ce21cb5d8b767` and both Lightbox fixes.
+The production frontend identifies
+`2.0.48 / 20261108T031540275Z-2ddd0c82+local`.
+All application changes, checks, version and guide updates were committed before
+this build. The four unrelated untracked cleanup scripts/JSON summaries remain
+excluded and untouched. Subsequent package/delivery documentation does not alter
+the compiled application source. The `+local` suffix accurately records those
+untracked files and the Vite temporary configuration module.
+
+## Finished combined packages
+
+The final optimized native build completed in **4m 25s**, with five existing
+native unused-code warnings and the existing frontend Browserslist/chunk-size
+notices. Both installer formats completed successfully.
+
+`test-output/release-2.0.48-inspection-20261108T032430586Z/report.json` reports
+`complete: true`. Both packages were extracted without installation. Their app
+payloads match the built executable after normalizing only Tauri's expected
+three-byte bundle marker. All pinned media/source payloads, the 2,205-file
+ExifTool 13.59 closure, 440-resource RawTherapee 5.13 closure and all 28 modified
+controller SDK source files/notices passed inspection. Both relocated packages
+ran the supplied CR3 conversion with the accepted Auto-finish-65 profile and
+PATH empty; the source hashes stayed unchanged. This validates packaging and
+runtime relocation, not physical controller acceptance.
+
+MSI ProductVersion is 2.0.48. UpgradeCode remains
+`{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` from 2.0.47. These are unsigned test
+installers; prior released packages remain available for rollback.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| PhotoGoGoV2_2.0.48_x64-setup.exe | 130,881,999 | 6A2352E640B814CBCAAA394D543D0C78DA5831E70D0257B576A404462C4D78E4 |
+| PhotoGoGoV2_2.0.48_x64_en-US.msi | 222,163,668 | 83A07E9AC5AF50619DF32249CDF312EDB174D7C18255DC95074A735B4830DD10 |
+| photogogo-v2.exe | 30,182,912 | 5B72F50CB09D04E1BB39A7A55D7B05AF5EAA6541059BDD021C572C3AAA0BB3F2 |
