@@ -25,38 +25,41 @@ const paths: Record<string, string> = {
 };
 
 function appearance(key: ControllerKey) {
-  const accent = !key.enabled ? "#64748b" : key.status === "error" ? "#fb7185" : key.status === "saving" ? "#fbbf24" : key.active ? "#e5c478" : "#67e8f9";
+  const accent = !key.enabled ? "#9da8b8" : key.status === "error" ? "#ff647a" : key.status === "saving" ? "#ffdf57" : key.active ? "#ffe066" : "#ffffff";
+  const ink = key.enabled ? "#ffffff" : "#c1c9d4";
+  const border = key.enabled ? accent : "#68778c";
+  const borderWidth = key.enabled ? key.active ? 3 : 2 : 1.5;
   const words = key.label.trim().split(/\s+/), lines: string[] = [];
   for (const word of words) {
     const last = lines.length - 1;
     if (last >= 0 && (lines[last] + " " + word).length <= 12) lines[last] += " " + word;
     else if (lines.length < 2) lines.push(word.slice(0, 12));
   }
-  return { accent, lines, detail: key.status === "saving" ? "SAVING" : key.status === "error" ? "RETRY" : key.detail?.slice(0, 12) || (key.status === "saved" ? "SAVED" : ""), path: paths[key.icon || ""] || paths[key.id.split("-")[0]] || paths.menu };
+  return { accent, ink, border, borderWidth, lines, detail: key.status === "saving" ? "SAVING" : key.status === "error" ? "RETRY" : key.detail?.slice(0, 12) || (key.status === "saved" ? "SAVED" : ""), path: paths[key.icon || ""] || paths[key.id.split("-")[0]] || paths.menu };
 }
 
 const xml = (value: string) => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[c]!));
 
 /** Vector artwork for the mirror; generated from the same geometry as hardware JPEGs. */
 export function controllerKeySvg(key: ControllerKey): string {
-  const { accent, lines, detail, path } = appearance(key);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 60 60"><rect width="60" height="60" rx="7" fill="#101a2b"/><rect x="1" y="1" width="58" height="58" rx="6" fill="none" stroke="${key.active ? accent : "#293850"}" stroke-width="${key.active ? 2 : 1}"/><path d="M8 4h44" stroke="${accent}" opacity=".6"/><g transform="translate(19 7) scale(.92)" fill="none" stroke="${accent}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></g>${lines.map((line, i) => `<text x="30" y="${38 + i * 9}" fill="${key.enabled ? "#f8fafc" : "#94a3b8"}" font-family="Segoe UI,Arial,sans-serif" font-size="8" font-weight="600" text-anchor="middle">${xml(line)}</text>`).join("")}${detail ? `<text x="30" y="56" fill="${accent}" font-family="Segoe UI,Arial,sans-serif" font-size="5.5" font-weight="600" letter-spacing=".5" text-anchor="middle">${xml(detail)}</text>` : ""}</svg>`;
+  const { accent, ink, border, borderWidth, lines, detail, path } = appearance(key);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 60 60"><rect width="60" height="60" rx="7" fill="#000000"/><rect x="1" y="1" width="58" height="58" rx="6" fill="none" stroke="${border}" stroke-width="${borderWidth}"/><path d="M8 4h44" stroke="${accent}"/><g transform="translate(19 7) scale(.92)" fill="none" stroke="${accent}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></g>${lines.map((line, i) => `<text x="30" y="${38 + i * 9}" fill="${ink}" font-family="Segoe UI,Arial,sans-serif" font-size="8.5" font-weight="700" text-anchor="middle">${xml(line)}</text>`).join("")}${detail ? `<text x="30" y="56" fill="${accent}" font-family="Segoe UI,Arial,sans-serif" font-size="6" font-weight="700" letter-spacing=".4" text-anchor="middle">${xml(detail)}</text>` : ""}</svg>`;
 }
 
 export function controllerKeyPreview(key: ControllerKey): string { return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(controllerKeySvg(key)); }
 
 /** A 60px high-contrast frame; no remote images, fonts, paths or media enter the device. */
 export function controllerKeyJpeg(key: ControllerKey): string {
-  const { accent, lines, detail, path } = appearance(key);
+  const { accent, ink, border, borderWidth, lines, detail, path } = appearance(key);
   const canvas = document.createElement("canvas"); canvas.width = 60; canvas.height = 60;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("Controller artwork could not be drawn.");
-  context.fillStyle = "#101a2b"; context.fillRect(0, 0, 60, 60);
-  context.strokeStyle = key.active ? accent : "#293850"; context.lineWidth = key.active ? 2 : 1; context.strokeRect(1, 1, 58, 58);
-  context.strokeStyle = accent; context.globalAlpha = .6; context.beginPath(); context.moveTo(8, 4); context.lineTo(52, 4); context.stroke(); context.globalAlpha = 1;
-  context.save(); context.translate(19, 7); context.scale(.92, .92); context.strokeStyle = accent; context.lineWidth = 1.8; context.lineCap = "round"; context.lineJoin = "round"; context.stroke(new Path2D(path)); context.restore();
-  context.textAlign = "center"; context.fillStyle = key.enabled ? "#f8fafc" : "#94a3b8"; context.font = "600 8px Segoe UI, Arial, sans-serif";
+  context.fillStyle = "#000000"; context.fillRect(0, 0, 60, 60);
+  context.strokeStyle = border; context.lineWidth = borderWidth; context.strokeRect(1, 1, 58, 58);
+  context.strokeStyle = accent; context.beginPath(); context.moveTo(8, 4); context.lineTo(52, 4); context.stroke();
+  context.save(); context.translate(19, 7); context.scale(.92, .92); context.strokeStyle = accent; context.lineWidth = 2.6; context.lineCap = "round"; context.lineJoin = "round"; context.stroke(new Path2D(path)); context.restore();
+  context.textAlign = "center"; context.fillStyle = ink; context.font = "700 8.5px Segoe UI, Arial, sans-serif";
   lines.forEach((line, i) => context.fillText(line, 30, 38 + i * 9, 54));
-  if (detail) { context.font = "600 5.5px Segoe UI, Arial, sans-serif"; context.fillStyle = accent; context.fillText(detail, 30, 56, 54); }
-  return canvas.toDataURL("image/jpeg", .9);
+  if (detail) { context.font = "700 6px Segoe UI, Arial, sans-serif"; context.fillStyle = accent; context.fillText(detail, 30, 56, 54); }
+  return canvas.toDataURL("image/jpeg", .98);
 }

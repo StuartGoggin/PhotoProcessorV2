@@ -27,12 +27,15 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct Config {
     enabled: bool,
     brightness: u8,
+    #[serde(default)]
+    brightness_profile: u8,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
-            brightness: 70,
+            brightness: 100,
+            brightness_profile: 1,
         }
     }
 }
@@ -160,6 +163,11 @@ fn record_io_failure(core: &Core, generation: u64, error: &str, blocked: bool) {
 fn usb_failure(stage: &str, error: impl std::fmt::Display) -> String {
     format!("AKP03E {stage} failed: {error}.")
 }
+fn hardware_artwork(image: DynamicImage) -> DynamicImage {
+    // The AKP03E panel displays its uncorrected image 90 degrees CCW.
+    // Compensate only at the hardware boundary; previews remain upright.
+    image.rotate90()
+}
 pub fn init(app: &AppHandle) -> Result<(), String> {
     let directory = app
         .path()
@@ -174,7 +182,8 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     let error = loaded.as_ref().err().cloned();
     let config = loaded.unwrap_or(Config {
         enabled: false,
-        brightness: 70,
+        brightness: 100,
+        brightness_profile: 1,
     });
     let phase_name = if config.enabled {
         "searching"
@@ -285,6 +294,7 @@ pub fn controller_configure(
     let config = Config {
         enabled,
         brightness: value,
+        brightness_profile: 1,
     };
     let bytes = serde_json::to_vec(&config).map_err(|e| e.to_string())?;
     let path = manager.0.directory.join("preferences.json");
@@ -325,9 +335,15 @@ fn load_config(path: &std::path::Path) -> Result<Config, String> {
     if bytes.len() > 4096 {
         return Err("Controller preferences exceed the size limit; automation is off.".into());
     }
-    let config:Config=serde_json::from_slice(&bytes).map_err(|_|"Controller preferences are damaged; automation is off. Use Retry to save fresh preferences.")?;
+    let mut config:Config=serde_json::from_slice(&bytes).map_err(|_|"Controller preferences are damaged; automation is off. Use Retry to save fresh preferences.")?;
     if config.brightness > 100 {
         return Err("Controller brightness is invalid; automation is off.".into());
+    }
+    if config.brightness_profile == 0 {
+        if config.brightness == 70 {
+            config.brightness = 100;
+        }
+        config.brightness_profile = 1;
     }
     Ok(config)
 }
@@ -829,7 +845,7 @@ fn worker(app: AppHandle, core: Arc<Core>) {
                 let mut changed = false;
                 for (i, image) in images.into_iter().enumerate() {
                     if force || painted_faces.get(i) != faces.get(i) {
-                        d.set_button_image(i as u8, image)
+                        d.set_button_image(i as u8, hardware_artwork(image))
                             .map_err(|e| usb_failure("button artwork", e))?;
                         changed = true;
                     }

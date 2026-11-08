@@ -24,6 +24,28 @@ async function page(width = 1360, initial = {}) {
 try {
   for (let attempt = 0; ; attempt++) { try { if ((await fetch(url)).ok) break; } catch {} if (attempt > 80) throw new Error("Controller fixture did not start: " + serverLog); await new Promise(resolve => setTimeout(resolve, 250)); }
   browser = await chromium.launch({ channel: "msedge", headless: true });
+  await group("Hardware JPEG and upright mirror use a black background and bright white icon strokes", async () => {
+    const p=await page();
+    const contrast=await p.evaluate(async()=>{
+      const sources=[window.__controllerFrames.at(-1).keys[0].imageData,document.querySelector('[aria-label="Six display buttons"] img').src];
+      return Promise.all(sources.map(source=>new Promise(resolve=>{
+        const image=new Image();image.onload=()=>{
+          const canvas=document.createElement('canvas');canvas.width=60;canvas.height=60;
+          const context=canvas.getContext('2d');context.drawImage(image,0,0);
+          const pixels=context.getImageData(0,0,60,60).data;
+          let whiteIconPixels=0,background=0,samples=0;
+          for(let y=7;y<31;y++)for(let x=18;x<44;x++){const i=(y*60+x)*4;if(pixels[i]>=235&&pixels[i+1]>=235&&pixels[i+2]>=235)whiteIconPixels++;}
+          for(let y=12;y<20;y++)for(let x=7;x<14;x++){const i=(y*60+x)*4;background+=Math.max(pixels[i],pixels[i+1],pixels[i+2]);samples++;}
+          resolve({whiteIconPixels,background:background/samples});
+        };image.src=source;
+      })));
+    });
+    for(const [index,result] of contrast.entries()){
+      assert.ok(result.whiteIconPixels>=50,`Artwork ${index} icon is too faint: ${JSON.stringify(result)}`);
+      assert.ok(result.background<=4,`Artwork ${index} background reduces contrast: ${JSON.stringify(result)}`);
+    }
+    await p.screenshot({path:new URL('controller-high-contrast.png',output).pathname.replace(/^\/([A-Za-z]:\/)/,'$1'),fullPage:true});await p.close();
+  });
   await group("Automatic controller mirror draws six exact 60px JPEGs and exposes all controls with live state", async () => {
     const p = await page();
     assert.equal(await p.locator('[aria-label="Six display buttons"] button').count(), 6);

@@ -1,6 +1,6 @@
 # Automatic AJAZZ AKP03E control
 
-PhotoGoGo 2.0.47 includes a native AKP03E controller mode. There is no AJAZZ scene to create, no plugin to install and no button hotkeys to assign. Open PhotoGoGo with one AKP03E connected; the app loads its own button graphics and uses the current page's controls.
+PhotoGoGo 2.0.48 includes a native AKP03E controller mode. There is no AJAZZ scene to create, no plugin to install and no button hotkeys to assign. Open PhotoGoGo with one AKP03E connected; the app loads its own button graphics and uses the current page's controls.
 
 Automatic mode starts enabled, as requested. Before opening the device, PhotoGoGo detects the exact AKP03E model, obtains its exclusive controller lease, and stops only the verified `Stream Dock AJAZZ.exe` process in the current Windows session. It does not terminate arbitrary AJAZZ-branded processes or process trees. If that process cannot be identified or stopped safely, the controller panel explains the problem and offers Retry. Multiple connected AKP03E units require choosing one physically for this version.
 
@@ -11,6 +11,10 @@ Automatic mode starts enabled, as requested. Before opening the device, PhotoGoG
 The sidebar's **AKP03E controller** button opens connection status and a live mirror of the current six display keys, three dials and three side buttons. Use **Connect / retry**, **Release controller**, the remembered automatic-mode checkbox and display brightness. Last control identifies the most recent admitted input. The mirror calls the same application actions as the physical controls; it is not a keyboard macro editor.
 
 Release turns automatic acquisition off until re-enabled or retried, including after a restart. Disconnecting and reconnecting while automatic mode remains on starts a fresh USB session. Another PhotoGoGo instance cannot take the controller lease or stop AJAZZ behind the current owner.
+
+Display brightness defaults to **100%**. The previous, unmarked 70% default is upgraded to 100%; other remembered values are preserved. After you choose a brightness in this version, including 70%, it is retained on later launches. Upgrading brightness does not re-enable a released controller. The slider remains available for adjustment.
+
+Keys use a black background, bright white icons/labels, heavier strokes and borders, and strong gold/yellow/red state accents. Hardware images receive a **90-degree clockwise correction** for the reported counter-clockwise panel orientation; the app's mirror remains upright. This changes controller artwork only, not photo/video orientation or the physical key positions.
 
 ### Configure the three Lightbox dials
 
@@ -56,8 +60,8 @@ The connection now selects the unique AKP03E control collection (VID 0300, PID 3
 
 Development checks use synthetic controller input and generated media. No AKP03E is connected to the development machine, so physical acceptance remains required:
 
-1. Finish any AJAZZ configuration work, connect the AKP03E and launch 2.0.47. Confirm the controller panel reaches Connected and the vendor app has stopped. If it fails, send the exact operation/error shown; the earlier screenshot alone does not identify the failed operation.
-2. Check all six faces are in the expected positions, upright and readable. The chosen Rust SDK specifies zero rotation for this model; another independent implementation describes a different rotation, so this detail is explicitly unverified on Stuart's unit.
+1. Finish any AJAZZ configuration work, connect the AKP03E and launch 2.0.48. Confirm the controller panel reaches Connected and the vendor app has stopped. If it fails, send the exact operation/error shown; the earlier screenshot alone does not identify the failed operation.
+2. Check all six faces are in the expected positions, upright and readable. Version 2.0.48 applies the clockwise correction for Stuart's reported counter-clockwise rotation; the physical result still needs confirmation. Check that the old 70% default now shows 100%; a different saved custom brightness is intentionally retained.
 3. Open a small copied test event in Lightbox. Identify the large dial and Apply. Confirm that turning it moves between originals. Hold and release each lower Google key: it must toggle exactly once, retain its state on release and affect only its displayed version. Toggle Trash and verify it does not advance. Check all three saved dial turns/presses and side buttons, then reopen to check preferences persist.
 4. Try a crop, RAW preview/adjustments and a Snapshot capture. Rapid scrubbing must not capture the previous displayed frame. A crop Apply must execute once.
 5. Unplug/replug, Release, close PhotoGoGo and manually restart AJAZZ. Confirm its normal layout returns. Re-enable automatic control only when wanted.

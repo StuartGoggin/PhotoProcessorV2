@@ -57,6 +57,85 @@ fn key(s: &mut Session) -> Option<Input> {
     admit(s, "key", 0, 1, 2, "controller-test-owner", Some(7), false)
 }
 #[test]
+fn hardware_jpeg_rotates_clockwise_to_compensate_the_counterclockwise_display() {
+    // Hand-derived clockwise mapping: BL->TL, TL->TR, TR->BR, BR->BL.
+    let pixels = RgbImage::from_fn(60, 60, |x, y| match (x < 30, y < 30) {
+        (true, true) => Rgb([255, 0, 0]),
+        (false, true) => Rgb([0, 255, 0]),
+        (false, false) => Rgb([0, 0, 255]),
+        (true, false) => Rgb([255, 255, 255]),
+    });
+    let upright = DynamicImage::ImageRgb8(pixels);
+    let bytes = ajazz_sdk::convert_image(Kind::Akp03E, hardware_artwork(upright.clone())).unwrap();
+    let sent = image::load_from_memory(&bytes).unwrap().to_rgb8();
+    for (x, y, want) in [
+        (12, 12, [255, 255, 255]),
+        (47, 12, [255, 0, 0]),
+        (47, 47, [0, 255, 0]),
+        (12, 47, [0, 0, 255]),
+    ] {
+        let got = sent.get_pixel(x, y).0;
+        assert!(
+            got.iter()
+                .zip(want)
+                .all(|(a, b)| (*a as i16 - b as i16).abs() < 25),
+            "Encoded hardware corner ({x},{y}) has {got:?}, expected {want:?}"
+        );
+    }
+    assert_eq!(
+        upright.to_rgb8().get_pixel(12, 12).0,
+        [255, 0, 0],
+        "The upright preview input must not be altered"
+    );
+}
+#[test]
+fn fresh_preferences_start_the_display_at_full_brightness() {
+    let absent = std::env::temp_dir().join(format!(
+        "photogogo-display-absent-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+    ));
+    assert_eq!(load_config(&absent).unwrap().brightness, 100);
+    assert!(
+        !absent.exists(),
+        "Reading defaults does not write a preference file"
+    );
+}
+#[test]
+fn previous_default_brightness_upgrades_without_enabling_a_released_controller() {
+    let root = std::env::temp_dir().join(format!(
+        "photogogo-display-settings-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+    ));
+    fs::create_dir(&root).unwrap();
+    let path = root.join("preferences.json");
+    let old = br#"{"enabled":false,"brightness":70}"#;
+    fs::write(&path, old).unwrap();
+    let upgraded = load_config(&path).unwrap();
+    assert_eq!(upgraded.brightness, 100);
+    assert!(!upgraded.enabled);
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        old,
+        "Reading migration must not rewrite preferences"
+    );
+    for (data, wanted) in [
+        (br#"{"enabled":false,"brightness":45}"#.as_slice(), 45),
+        (
+            br#"{"enabled":false,"brightness":70,"brightness_profile":1}"#.as_slice(),
+            70,
+        ),
+    ] {
+        fs::write(&path, data).unwrap();
+        let saved = load_config(&path).unwrap();
+        assert_eq!(saved.brightness, wanted);
+        assert!(!saved.enabled);
+    }
+    fs::remove_file(path).unwrap();
+    fs::remove_dir(root).unwrap();
+}
+#[test]
 fn physical_button_and_dial_release_reports_never_repeat_the_action() {
     for action in [
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x25, 0x30, 0x31, 0x33, 0x35, 0x34,

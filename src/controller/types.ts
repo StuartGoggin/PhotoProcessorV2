@@ -97,5 +97,5 @@ export interface ControllerSnapshot {
 
 export const initialControllerStatus: ControllerStatus = {
   enabled: true, phase: "searching", message: "Checking for your AKP03E…",
-  vendorStopped: false, brightness: 60,
+  vendorStopped: false, brightness: 100,
 };
