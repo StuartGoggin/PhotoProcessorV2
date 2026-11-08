@@ -50,11 +50,11 @@
 
 ### Task 3: Integration and release
 
-**Files:** Existing Lightbox/RAW/curation/controller regression scripts, release version files, guide and `docs/release-2.0.49-validation.md`.
+**Files:** Existing Lightbox/RAW/curation/controller regression scripts, release version files, guide and `docs/release-2.0.49-validation.md` / `docs/release-2.0.50-validation.md`.
 
 - [x] Independent reviewer checks identity/cache/error safety; repair actionable findings.
 - [x] Run appropriate units, browser groups and serial native suite; compare first-preview dependency behavior.
-- [ ] Commit final source, build 2.0.49 EXE/MSI and inspect both complete payloads/runtime/source closures.
+- [ ] Commit final source, build final 2.0.50 EXE/MSI and inspect both complete payloads/runtime/source closures.
 - [ ] Merge/push master and annotated release tag; post EXE + MSI to #swghermes and read both back.
 
 ## Execution ledger
@@ -65,3 +65,4 @@
 - Task 1: complete — nine new browser groups, 21 controller/Lightbox groups, 13 general Lightbox groups, nine RAW-source groups, eight rename-recovery groups and 11 selection/barrier groups green. TypeScript, 20 Lightbox units, 22 controller units and four curation queue checks green.
 - Task 2: complete — bounded-two metadata overlap passes six focused tests and an explicit real-tool probe; generated fixture cold 2,610 ms / warm 46 ms with unchanged bytes. Full serial native suite green (386 passed, 30 opt-in ignored).
 - Review: same-root remount, foreground inspection priority, missing Camera JPEG fallback and unresolved-selection cleanup repaired. Original-read action readiness retained after legacy regression caught early rating. Independent final source review has no remaining material findings.
+- Ruling: 2.0.49 tag/package checkpoint stays unchanged, but its uploads were never finalized/shared. A final failure-path test caught unrelated expansion overwriting selected-folder Retry status; the surgical phase-ownership fix and tenth regression pass. Deliver 2.0.50 instead of rewriting a published tag. Native implementation is unchanged.

@@ -2,6 +2,12 @@
 
 ## Approved scope
 
+**Superseded before Slack sharing by 2.0.50.** The source/tag/package receipt are
+retained. A final failure-path regression found that expansion-only work could
+overwrite the selected folder's progress and hide Retry after an incomplete
+result. No 2.0.49 installer was finalized/shared to Slack. The 2.0.50 receipt
+records the correction and final delivery.
+
 Stuart reported first-image waits sometimes exceeding a minute in folders with
 over 700 photos. Approved scope: display the exact selected original before
 folder inspection finishes, load comparison versions independently, bound and

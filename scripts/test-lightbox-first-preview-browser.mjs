@@ -30,7 +30,7 @@ async function image(page,path,label) {
 async function hotkey(page,key){await page.locator('[aria-label="Photo Lightbox review"]').focus();await page.keyboard.press(key);}
 async function settled(page,label="Original"){await page.waitForFunction(label=>{const input=document.querySelector(`input[aria-label="Upload ${label} to Google Photos"]`);return input&&!input.disabled;},label);}
 async function mutationCounts(page){return page.evaluate(()=>[window.__controlsRenames.length,window.__controlsSelectionWrites.length,window.__controlsCropWrites.length]);}
-async function group(name,test){check=name;await test();report.checks.push(name);console.log("PASS "+name);}
+async function group(name,test){if(process.env.FIRST_PREVIEW_CASE&&!name.includes(process.env.FIRST_PREVIEW_CASE))return;check=name;await test();report.checks.push(name);console.log("PASS "+name);}
 try {
   let started=false;for(let i=0;i<100;i++){try{if((await fetch(base+"/lightbox-controls-preview.html")).ok){started=true;break;}}catch{}if(server.exitCode!==null)throw Error(serverLog);await delay(100);}assert.ok(started,serverLog);
   browser=await chromium.launch({channel:"msedge",headless:true});
@@ -116,6 +116,20 @@ try {
     const page=await fixture({__controlsRawFixture:true,__controlsDeferImage:"01-owned-bw.jpg"});await tree(page).getByText("01-horse.CR3",{exact:true}).click();await image(page,"01-horse.CR3","Original RAW");await settled(page,"Original RAW");
     await page.getByRole("combobox",{name:"Original source",exact:true}).selectOption("cameraJpeg");await image(page,"01-horse.JPG","Camera JPEG");await image(page,"01-horse_BW.jpg","B&W");
     await page.evaluate(()=>{window.__controlsDeferImage=null;window.__controlsReleaseImage();});await image(page,"01-horse_BW.jpg","B&W");await settled(page,"Camera JPEG");assert.deepEqual(await mutationCounts(page),[0,0,0]);await page.close();
+  });
+  await group("Unrelated expansion cannot hide Retry after the selected inspection is incomplete",async()=>{
+    const page=await fixture({__controlsLazyMetadata:true,__controlsDeferMetadata:true,__controlsMetadataIncomplete:true});
+    await page.evaluate(()=>{window.__controlsLibraries.get("D:\\Controller photos").tree.children.push({type:"dir",name:"Browse only",path:"Browse only",children:[{type:"file",name:"browse.CR3",path:"Browse only/browse.CR3",size:32,captureMetadataPending:true}]});});
+    await page.getByRole("button",{name:"Refresh photos",exact:true}).click();await tree(page).getByText("Browse only",{exact:true}).waitFor();
+    await tree(page).getByText("01-horse.JPG",{exact:true}).nth(0).click();await image(page,"Event/01-horse.JPG");
+    await tree(page).getByText("01-horse.JPG",{exact:true}).nth(1).click();await image(page,"Elsewhere/01-horse.JPG");
+    await tree(page).getByText("Browse only",{exact:true}).click();await tree(page).getByText("Browse only",{exact:true}).click();
+    await page.evaluate(()=>{window.__controlsDeferMetadata=false;window.__controlsReleaseMetadata();});
+    await page.getByRole("button",{name:"Retry capture checks",exact:true}).waitFor({timeout:2000});
+    assert.equal(await upload(page).isDisabled(),true);assert.deepEqual(await mutationCounts(page),[0,0,0]);
+    await page.evaluate(()=>{window.__controlsMetadataIncomplete=false;});await page.getByRole("button",{name:"Retry capture checks",exact:true}).click();
+    await image(page,"Elsewhere/01-horse.JPG","Camera JPEG");await settled(page,"Camera JPEG");
+    assert.ok(await page.evaluate(()=>window.__controlsCalls.filter(c=>c.command==="read_lightbox_folder").every(c=>c.args.relativeDir!=="Browse only")));await page.close();
   });
   assert.deepEqual(errors,[]);report.complete=true;
 }catch(error){report.error=String(error.stack||error);report.failedCheck=check;process.exitCode=1;}

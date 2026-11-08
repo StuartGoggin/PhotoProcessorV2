@@ -93,9 +93,10 @@ export function useReview() {
     const target=find(rawTree.current);
     if (!target?.children?.some(node=>node.captureMetadataPending)) { folderReady.current.add(folder); return true; }
     const key=inspectionOwner.current+":"+JSON.stringify([originalRoot,epoch,folder]);
-    const prior=folderLoads.current.get(folder);if(prior){if(foreground)folderQueue.current.promote(key);return prior;}
     const files = target.children?.filter(node => node.type === "file").length ?? 0;
-    setInspection({ folder, phase: "checking", files });
+    const markChecking=()=>{if(foreground || !selectedPath.current || photoFolder(selectedPath.current)===folder)setInspection({folder,phase:"checking",files});};
+    const prior=folderLoads.current.get(folder);if(prior){if(foreground){folderQueue.current.promote(key);markChecking();}return prior;}
+    markChecking();
     const pending=folderQueue.current.run(key,async()=>{
       try {
         if(!mounted.current||epoch!==treeRequest.current||originalRoot!==root.current||originalRoot!==configuredRoot.current)return false;

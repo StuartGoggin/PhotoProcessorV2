@@ -2,7 +2,7 @@
 
 Photo Lightbox uses one command map for keyboard dispatch, button hints and in-app help. Open **Keyboard & Controller Help** from the toolbar, or press **F1** or **?**. Help keeps the current photo open and restores focus when closed. Its keyboard, controller and crop sections show the current keymap. Search by command, action or key.
 
-## First preview in large folders (2.0.49)
+## First preview in large folders (2.0.50)
 
 Selecting a photo starts its exact preview before folder-wide capture checks
 finish. Original, B&W and Enhanced appear independently; a slower version says
