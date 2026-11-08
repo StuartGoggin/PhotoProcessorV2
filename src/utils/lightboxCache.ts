@@ -70,6 +70,11 @@ export class LightboxCache {
   }
 
   stats() { return { entries: this.entries.size, bytes: this.bytes, decodedBytes: this.decoded, running: this.running, queued: this.queue.length }; }
+  invalidate(path: string) {
+    const entry = this.entries.get(path);
+    if (!entry) return;
+    this.entries.delete(path); this.bytes -= entry.bytes; this.release(entry);
+  }
   info(path: string): LightboxImageInfo | null { return this.entries.get(path)?.info ?? null; }
 
   private release(entry: Loaded) {

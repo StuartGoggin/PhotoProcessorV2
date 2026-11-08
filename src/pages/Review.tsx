@@ -17,7 +17,7 @@ const frameId = (context?: ReviewContext) => context ? JSON.stringify([context.r
 
 export default function Review() {
   const review = useReview();
-  const { tree, selected, siblings, siblingIdx, images, imageLoading, inspection, zoom, loading, trashed, stars, error, renaming,
+  const { tree, selected, siblings, siblingIdx, images, imageLoading, imageErrors, inspection, zoom, loading, trashed, stars, error, renaming,
     stagingDir, cropped, selectedPhoto, catalogueRevision, originalSource, originalInfo } = review;
   const [cropOpen, setCropOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -309,9 +309,13 @@ export default function Review() {
       <div className="review-images flex-1 flex min-h-0">
         {loading ? <div className="flex-1 flex items-center justify-center text-gray-500">Loading...</div> : renderedImages.map((src, index) => {
           const offset = pan.frame === renderFrame ? pan.offsets[index] : { x: 0, y: 0 };
+          const kind = (["original", "bw", "improved"] as const)[index];
           return <div key={index} className={"flex-1 min-w-0 " + (index < 2 ? "border-r border-surface-700" : "")}>
             <ImagePanel key={renderFrame + "-" + index} src={src} label={labels[index]} zoom={zoom}
               loading={[imageLoading.original,imageLoading.bw,imageLoading.improved][index]}
+              error={imageErrors[kind] ? `Could not load ${labels[index]} image.` : undefined}
+              onRetry={() => void review.retryImage(kind)} retryDisabled={busy || renaming || curation.saving || imageLoading[kind]}
+              onFailure={() => review.imageFailed(renderContext, kind)}
               previewOnly={index === 0 && rawOriginal}
               panX={offset.x} panY={offset.y} resetKey={resetKey} active={activePanel === index}
               onActivate={() => activate(index)} onReady={() => markVisible(renderContext)} headerAction={controls(index)} />

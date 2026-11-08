@@ -16,9 +16,13 @@ interface ImagePanelProps {
   /** Display-only RAW/thumbnail data must not be mistaken for a saved photo. */
   previewOnly?: boolean;
   loading?: boolean;
+  error?: string;
+  onRetry?: () => void;
+  retryDisabled?: boolean;
+  onFailure?: () => void;
 }
 
-export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, headerAction, active, onActivate, resetKey, onReady, previewOnly = false, loading = false }: ImagePanelProps) {
+export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, headerAction, active, onActivate, resetKey, onReady, previewOnly = false, loading = false, error, onRetry, retryDisabled = false, onFailure }: ImagePanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [localPanX, setLocalPanX] = useState(0);
@@ -76,12 +80,13 @@ export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, h
         onMouseUp={onMouseUp}
         onMouseLeave={onMouseUp}
       >
-        {src ? (
+        {src && !error ? (
           <img
             src={src}
             alt={label}
             draggable={false}
             onLoad={onReady}
+            onError={onFailure}
             data-preview-only={previewOnly || undefined}
             title={previewOnly ? "Display preview only. Use Photo Process → RAW Development to export a full-quality photo." : undefined}
             onContextMenu={previewOnly ? (event) => event.preventDefault() : undefined}
@@ -98,7 +103,8 @@ export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, h
         ) : (
           <div className="text-gray-600 text-sm flex flex-col items-center gap-2">
             <span className="text-4xl">🖼️</span>
-            <span role={loading ? "status" : undefined}>{loading ? "Loading image…" : "No image"}</span>
+            <span role={loading || error ? "status" : undefined}>{loading ? "Loading image…" : error || "No image"}</span>
+            {error && onRetry && <button type="button" className="btn-secondary min-h-11 px-3 text-gray-200" disabled={retryDisabled} onClick={onRetry}>Retry {label ?? "photo"} image</button>}
           </div>
         )}
       </div>

@@ -22,6 +22,21 @@ still a labelled reference image.
 
 ## Review a folder
 
+Verified RAW+camera-JPEG captures start in **Camera JPEG** view, showing that
+JPEG's existing B&W, Enhanced and cropped versions. RAW is an alternate source:
+choose **Camera RAW preview** deliberately to see the RAW preview and any
+explicitly developed RAW versions. Your explicit source choice is retained while
+browsing and refreshing in the current view. JPEG-only photos need no RAW step;
+standalone/unverified RAW files remain separate. Browsing never develops RAW.
+
+A version that exists but fails to read or display says **Could not load … image**
+and offers its own **Retry … image**. Retry reads that exact physical version,
+keeps other comparisons visible, and cannot repaint a later photo/source or
+staging folder. While an original retry is pending, decisions remain paused.
+**No image** means no comparison is available in that source family; for an
+undeveloped CR3, missing RAW B&W/colour versions are expected. Camera JPEG and
+RAW developments never borrow each other's comparison files.
+
 Choose an original from the keyboard-operable folder tree. Up/Down move focus, Right expands a folder, Left collapses it or returns to the parent, and Enter or Space opens a focused photo. The tree is one Tab stop and keeps its own arrow-key behaviour.
 
 In the image review, Left/Right browse originals; Home/End reach the first/last original in that folder. Set one to three stars with 1/2/3 and clear the rating with Backspace. Delete marks or restores trash. The physical original is not deleted. Rating and trash changes use the existing filename tags.

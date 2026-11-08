@@ -708,7 +708,12 @@ fn verify_receipts(
                 remember(store, job, index, false)?;
                 cleanup_copy(job, index, workspace)?;
             }
-            Err(ReadbackError::Unavailable(error)) => return Err(error),
+            Err(ReadbackError::Unavailable(error)) => {
+                // The saved ID remains unresolved, but independent photos may
+                // still finish. Never discard its receipt or re-upload it.
+                if !job.errors.contains(&error) { job.errors.push(error); }
+                job.save(store)?;
+            },
             Err(ReadbackError::ItemRejected(error)) => {
                 rejected_receipt(store, job, index, true)?;
                 if !job.errors.contains(&error) {
@@ -718,18 +723,6 @@ fn verify_receipts(
             }
             Err(ReadbackError::RequestFailed(error)) => return Err(error),
         }
-    }
-    let remaining = job
-        .items
-        .iter()
-        .filter(|p| p.media.is_some() && !resolved_receipt(p))
-        .count();
-    if remaining > 0 {
-        let error = format!("Google accepted these photos, but {remaining} registered photo(s) still need verification. Review the existing album and use Resume/Retry on this saved job; its media receipts are retained and will not be uploaded again.");
-        // Aggregation belongs to the job, never to the last healthy sibling.
-        diagnostics::note(job, Stage::Job, None, Outcome::Failed, Some(&error));
-        job.save(store)?;
-        return Err(error);
     }
     Ok(())
 }
@@ -1224,6 +1217,11 @@ pub fn drive(
                     .media
                     .as_ref()
                     .ok_or("Selected cover was not successfully uploaded.")?;
+                if !resolved_receipt(&job.items[index]) {
+                    // Keep the reviewed cover intent for a later successful
+                    // saved-ID check; do not apply an unresolved photo.
+                    continue;
+                }
                 stop_requested(stop)?;
                 let media_id = media.id.clone();
                 diagnostics::note(job, Stage::AlbumCover, Some(index), Outcome::Started, None);
@@ -1238,12 +1236,17 @@ pub fn drive(
     complete(store, job)
 }
 fn complete(store: &GoogleStore, job: &mut Job) -> Result<(), String> {
-    if job
+    let remaining = job
         .items
         .iter()
-        .any(|p| p.media.is_some() && !resolved_receipt(p))
-    {
-        return Err("Registered Google photos still need verification. Resume the saved job; no registered photo will be uploaded again.".into());
+        .filter(|p| p.media.is_some() && !resolved_receipt(p))
+        .count();
+    if remaining > 0 {
+        let error = format!("Other safe upload work has finished, but {remaining} registered photo(s) still need verification. Resume this saved job to recheck their stored IDs; registered photos will not be uploaded again.");
+        // Attribute unresolved proof to the job, never the last healthy photo.
+        diagnostics::note(job, Stage::Job, None, Outcome::Failed, Some(&error));
+        job.save(store)?;
+        return Err(error);
     }
     job.status = if job
         .items

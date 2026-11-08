@@ -218,6 +218,17 @@ pub fn report(job: &Job) -> String {
         if let Some(error) = &item.error {
             let (rpc, http, reason) = error_codes(error);
             let _ = writeln!(text, "  {}", explain(rpc, http, reason.as_deref()));
+            if let Some(media) = &item.media {
+                let prepared = item.prepared.as_ref().map(|value| {
+                    format!("{}x{}", value.width, value.height)
+                }).unwrap_or_else(|| "missing".into());
+                let _ = writeln!(text,
+                    "  Verification evidence: prepared {prepared}; saved receipt {}x{}; prepared fingerprint {}; item dimension rejection {}",
+                    media.width, media.height,
+                    if item.prepared.as_ref().is_some_and(|value| !value.sha256.is_empty()) { "saved" } else { "missing" },
+                    if item.readback_rejected { "recorded" } else { "not recorded" },
+                );
+            }
         }
     }
     if job.items.len() > 200 {

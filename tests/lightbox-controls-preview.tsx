@@ -130,8 +130,9 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(
   if(command==="read_lightbox_image") {
     const src=source(args.path);if(!files(library(src.root).tree).some(node=>node.path===src.path))throw Error("Missing synthetic image");
     const value=image(src.root,src.path);
+    if(fixture.__controlsFailImage && src.path.includes(fixture.__controlsFailImage))throw Error("Synthetic image read failure");
     if(fixture.__controlsDeferImage && src.path.includes(fixture.__controlsDeferImage))await new Promise<void>(resolve=>{fixture.__controlsReleaseImage=resolve;});
-    return value;
+    return fixture.__controlsMalformedImage && src.path.includes(fixture.__controlsMalformedImage) ? {...value,data:btoa("invalid synthetic image bytes")} : value;
   }
   if(command==="rename_file") {
     fixture.__controlsRenames.push(structuredClone(args));const src=source(args.oldPath);const lib=library(src.root);

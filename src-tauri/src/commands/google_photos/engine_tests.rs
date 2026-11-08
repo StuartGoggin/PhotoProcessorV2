@@ -730,6 +730,7 @@ impl Drop for Fixture {
 #[derive(Default)]
 struct FakeGoogle {
     registration_dimensions: Option<(u64, u64)>,
+    registration_dimension_override: Option<(usize, u64, u64)>,
     albums_created: usize,
     begins: usize,
     queries: usize,
@@ -842,6 +843,7 @@ impl GoogleApi for FakeGoogle {
         self.registrations += 1;
         let partial = self.partial_registration_once;
         self.partial_registration_once = false;
+        let batch_start = self.registered.len();
         Ok(items
             .iter()
             .enumerate()
@@ -856,6 +858,12 @@ impl GoogleApi for FakeGoogle {
                 if let Some((width, height)) = self.registration_dimensions {
                     value.width = width;
                     value.height = height;
+                }
+                if let Some((item, width, height)) = self.registration_dimension_override {
+                    if batch_start + index == item {
+                        value.width = width;
+                        value.height = height;
+                    }
                 }
                 self.registered.insert(value.id.clone(), value.clone());
                 Registration {
@@ -980,6 +988,117 @@ fn rejected_third_readback_still_verifies_fourth_and_resumes_without_uploading_a
     assert_eq!(api.registrations, 1);
     assert_eq!(api.begins, 4);
     assert_eq!(api.verifies, 5);
+}
+
+#[test]
+fn isolated_readback_failure_finishes_later_batches_and_defers_unresolved_cover() {
+    for unavailable in [true, false] {
+        let mut fixture = Fixture::new(10);
+        fixture.job.albums[0].cover_item_id = Some(fixture.job.items[0].id.clone());
+        let failure = || if unavailable {
+            ReadbackError::Unavailable("Google media read-back failed: INVALID_ARGUMENT (code 3).".into())
+        } else {
+            ReadbackError::ItemRejected(DIMENSION_MISMATCH.into())
+        };
+        let mut api = FakeGoogle {
+            registration_dimension_override: unavailable.then_some((0, 0, 0)),
+            verify_error_on_call: Some((1, failure())),
+            ..Default::default()
+        };
+        let stop = AtomicBool::new(false);
+        let error = fixture.drive(&mut api, &stop).unwrap_err();
+        finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+        fixture.reload();
+        assert_eq!(api.begins, 10, "one unresolved photo cannot block later upload batches");
+        assert_eq!(api.registrations, 2);
+        assert_eq!(api.verifies, 10, "healthy saved IDs still require verification");
+        assert_eq!(fixture.job.status, "needs_attention");
+        assert_eq!(fixture.job.summary().accepted, 10);
+        assert_eq!(fixture.job.summary().uploaded, 9);
+        assert_eq!(fixture.job.items[0].state, "registered");
+        assert!(fixture.job.items[1..].iter().all(|item| item.state == "verified"));
+        assert_eq!(api.covers, 0);
+        assert!(!fixture.job.albums[0].cover_done);
+        let ids = fixture.job.items.iter().map(|item| item.media.as_ref().unwrap().id.clone()).collect::<Vec<_>>();
+        let report = diagnostics::report(&fixture.job);
+        assert!(!report.lines().any(|line| line.contains("Failed | photo 10")));
+        assert!(report.contains("Job | Failed"));
+        assert!(report.contains("Verification evidence: prepared 40x60; saved receipt"));
+        // Retry only the unresolved saved ID; never upload/register it again.
+        api.verify_error_on_call = Some((api.verifies + 1, failure()));
+        let error = fixture.drive(&mut api, &stop).unwrap_err();
+        finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+        fixture.reload();
+        assert_eq!(api.begins, 10);
+        assert_eq!(api.registrations, 2);
+        assert_eq!(api.verifies, 11);
+        assert_eq!(api.covers, 0);
+        assert_eq!(fixture.job.items.iter().map(|item| item.media.as_ref().unwrap().id.clone()).collect::<Vec<_>>(), ids);
+        // A later dimension-validated read resolves the warning and cover intent.
+        let media = api.registered.get_mut(&ids[0]).unwrap();
+        media.width = 40; media.height = 60;
+        fixture.drive(&mut api, &stop).unwrap();
+        fixture.reload();
+        assert_eq!(fixture.job.status, "completed");
+        assert_eq!(api.covers, 1);
+        assert!(fixture.job.albums[0].cover_done);
+        assert_eq!(api.begins, 10);
+        assert_eq!(api.registrations, 2);
+    }
+}
+
+#[test]
+fn isolated_saved_receipt_failure_allows_remaining_pending_photos_after_restart() {
+    let mut fixture = Fixture::new(10);
+    let mut api = FakeGoogle { fail_verify_once: true, ..Default::default() };
+    let stop = AtomicBool::new(false);
+    let error = fixture.drive(&mut api, &stop).unwrap_err();
+    finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+    assert_eq!(api.begins, 8);
+    fixture.reload();
+    let saved = fixture.job.items[0].media.as_ref().unwrap().id.clone();
+    fixture.job.items[0].media.as_mut().unwrap().width = 0;
+    api.verify_error_on_call = Some((api.verifies + 1, ReadbackError::Unavailable("INVALID_ARGUMENT (code 3).".into())));
+    let error = fixture.drive(&mut api, &stop).unwrap_err();
+    finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+    fixture.reload();
+    assert_eq!(api.begins, 10);
+    assert_eq!(api.registrations, 2);
+    assert_eq!(fixture.job.items[0].media.as_ref().unwrap().id, saved);
+    assert_eq!(fixture.job.summary().uploaded, 9);
+    assert!(fixture.job.items.iter().all(|item| item.media.is_some()));
+}
+
+#[test]
+fn isolated_rejection_does_not_block_a_later_album_or_its_healthy_cover() {
+    let mut fixture = Fixture::new(10);
+    let mut plan = fixture.job.plan.clone();
+    let mut second = plan.albums[0].clone();
+    second.key = "second-reviewed-album".into();
+    second.title = "Second reviewed album".into();
+    second.item_ids = plan.albums[0].item_ids.split_off(8);
+    for item in &mut plan.items[8..] { item.album_key = second.key.clone(); }
+    plan.albums.push(second);
+    let edits = plan.albums.iter().enumerate().map(|(index, album)| AlbumEdit {
+        key: album.key.clone(), title: album.title.clone(),
+        cover_item_id: Some(plan.items[if index == 0 { 0 } else { 8 }].id.clone()),
+    }).collect();
+    fixture.job = Job::new(plan, edits, fixture.job.original_hashes.clone(), &[]).unwrap();
+    let mut api = FakeGoogle {
+        verify_error_on_call: Some((1, ReadbackError::ItemRejected(DIMENSION_MISMATCH.into()))),
+        ..Default::default()
+    };
+    let error = fixture.drive(&mut api, &AtomicBool::new(false)).unwrap_err();
+    finish_error(&fixture.store, &mut fixture.job, error, false).unwrap();
+    fixture.reload();
+    assert_eq!(api.albums_created, 2);
+    assert_eq!(api.begins, 10);
+    assert_eq!(api.registrations, 2);
+    assert_eq!(fixture.job.summary().uploaded, 9);
+    assert!(!fixture.job.albums[0].cover_done);
+    assert!(fixture.job.albums[1].cover_done);
+    assert_eq!(api.covers, 1);
+    assert_eq!(fixture.job.status, "needs_attention");
 }
 
 #[test]

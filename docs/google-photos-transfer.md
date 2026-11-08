@@ -229,8 +229,17 @@ Google's exact reason. No extra permissions, modified images or replacement
 albums are used to bypass it.
 
 Missing or different registration dimensions cannot use this warning path.
-Read-back dimension mismatches, malformed/ambiguous receipts, HTTP, account,
-network and quota failures still require attention; rate limits keep their delay.
+Such a saved photo stays unresolved and requires attention, while healthy saved
+IDs, later upload batches and other albums may finish. A saved media ID is never
+sent through upload/registration again. Final job status stays **Needs attention**
+when any registered photo remains unresolved; no success is inferred from bytes
+sent or from another photo's verification. An unresolved selected cover is left
+pending for a successful later saved-ID check.
+
+Read-back dimension mismatches remain unresolved. Malformed/ambiguous responses,
+HTTP, account, network and quota failures stop further requests; rate limits keep
+their delay. Diagnostics include only safe prepared/saved-receipt dimensions and
+proof-presence flags, without identifiers or credentials.
 
 For an existing 2.0.36 job, install 2.0.37 and choose **Jobs → Needs attention →
 Retry** once. Saved IDs are checked before source access or new uploads, so an
