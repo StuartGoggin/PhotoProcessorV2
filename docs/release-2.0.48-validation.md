@@ -169,3 +169,37 @@ installers; prior released packages remain available for rollback.
 | PhotoGoGoV2_2.0.48_x64-setup.exe | 130,881,999 | 6A2352E640B814CBCAAA394D543D0C78DA5831E70D0257B576A404462C4D78E4 |
 | PhotoGoGoV2_2.0.48_x64_en-US.msi | 222,163,668 | 83A07E9AC5AF50619DF32249CDF312EDB174D7C18255DC95074A735B4830DD10 |
 | photogogo-v2.exe | 30,182,912 | 5B72F50CB09D04E1BB39A7A55D7B05AF5EAA6541059BDD021C572C3AAA0BB3F2 |
+
+## Publication and verified delivery
+
+Package receipt commit `9de8c9330556ccc76a5c71d5d80a9272c0d66d13` was
+atomically published to GitHub `master` and `SWG/akp03e-display`, with annotated
+tag `v2.0.48` pointing to it. Remote read-back verified both heads and the peeled
+tag. The compiled application remains source `2ddd0c82`; later delivery
+documentation does not alter it. Other local worktrees remain untouched.
+
+Published through Personal to GoggoVille **#swghermes** on **8 November 2026**:
+
+- EXE parent `1794108700.761529`, file `F0CFT5E70JJ`. HTTP 200 acknowledged
+  exactly **130,881,999 bytes**, in **191.6 seconds**, using the direct route.
+  [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794108700761529).
+- MSI reply `1794108724.659829`, file `F0CFPR725EH`. HTTP 200 acknowledged
+  exactly **222,163,668 bytes**, in **224.5 seconds**, using the direct route.
+  [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794108724659829).
+
+Local bytes and SHA-256 were rechecked immediately before upload. Complete
+thread read-back verified both file IDs, filenames, hashes, byte counts,
+combined fixes, paired Camera JPEG instructions, Trash/X distinction, manual
+AJAZZ restart and physical retest boundary. No thread pages remain. A literal
+case-sensitive instruction check initially rejected "Both originals" against
+"both originals"; case-insensitive read-back then passed without resending or
+duplicating either upload. Local receipt is
+`test-output/release-2.0.48-delivery.json`; no signed upload URLs or credentials
+are stored in that receipt or this note. These checks establish local hashes,
+exact upload acknowledgements and accessible Slack metadata, without claiming
+an independent download/hash of the Slack-hosted files.
+
+The physical unit still requires orientation, readability and control retests.
+Trash remains a reversible tag that keeps the photo visible; X saves the tag
+and advances. Camera JPEG crops retain both originals. No render-PC installation,
+controller/vendor process access or user-media changes were performed here.
