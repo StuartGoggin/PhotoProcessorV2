@@ -10,15 +10,16 @@ interface Props {
   disabled: boolean;
   saving: boolean;
   error?: string;
+  paused?: string;
   onSelected: (value: boolean) => void;
   onFavourite: (value: boolean) => void;
 }
 
 /** The checkmark is requested state; Saving distinguishes it from durable state. */
-export default function LightboxVersionControls({ label, shortcut, favouriteShortcut, asset, loading, disabled, saving, error, onSelected, onFavourite }: Props) {
+export default function LightboxVersionControls({ label, shortcut, favouriteShortcut, asset, loading, disabled, saving, error, paused, onSelected, onFavourite }: Props) {
   const statusId = useId();
-  const blocked = disabled || loading || !asset;
-  const state = saving ? (asset?.selected ? "Selected · Saving…" : "Not selected · Saving…") : error ? "Save not confirmed" : loading ? "Loading selection…" : !asset ? "Selection unavailable" : asset.selected ? "Selected · Saved" : "Not selected · Saved";
+  const blocked = disabled || loading || !!paused || !asset;
+  const state = saving ? (asset?.selected ? "Selected · Saving…" : "Not selected · Saving…") : error ? "Save not confirmed" : paused || (loading ? "Loading selection…" : !asset ? "Selection unavailable" : asset.selected ? "Selected · Saved" : "Not selected · Saved");
   return <div className="w-full space-y-1" data-testid={`lightbox-version-controls-${label.toLowerCase().replace(/\s+/g, "-")}`}>
     <div className="flex flex-wrap items-center gap-2 min-w-0">
       <label className={`flex flex-1 items-center gap-2 rounded-lg border px-2 py-1 min-w-0 ${blocked ? "cursor-default opacity-60" : "cursor-pointer hover:border-cyan-400/70"} ${asset?.selected ? "bg-cyan-950/50 border-cyan-500/70 text-cyan-100" : "bg-surface-900/50 border-surface-600 text-gray-200"}`}

@@ -17,7 +17,7 @@ const frameId = (context?: ReviewContext) => context ? JSON.stringify([context.r
 
 export default function Review() {
   const review = useReview();
-  const { tree, selected, siblings, siblingIdx, images, zoom, loading, trashed, stars, error, renaming,
+  const { tree, selected, siblings, siblingIdx, images, imageLoading, inspection, zoom, loading, trashed, stars, error, renaming,
     stagingDir, cropped, selectedPhoto, catalogueRevision, originalSource, originalInfo } = review;
   const [cropOpen, setCropOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -36,7 +36,8 @@ export default function Review() {
   const [pan, setPan] = useState({ frame: "", offsets: emptyPan() });
   const panRef = useRef(pan);
   const [resetKey, setResetKey] = useState(0);
-  const curation = useGooglePhotoCuration(selectedPhoto ? stagingDir : "", catalogueRevision, selectedPhoto?.node.path);
+  const identityReady = review.isIdentityReady();
+  const curation = useGooglePhotoCuration(selectedPhoto && identityReady ? stagingDir : "", catalogueRevision, selectedPhoto?.node.path);
   const naming = useEventNaming(stagingDir, async result => {
     const before = review.getSnapshot();
     await review.refreshTree(result.root, before?.context.cropped, before ? namedEventPath(before.context.path, result) : null);
@@ -44,12 +45,15 @@ export default function Review() {
   const version = cropped && selectedPhoto?.crop ? selectedPhoto.crop : selectedPhoto;
   const rawOriginal = !!version && /\.(cr3|dng)$/i.test(version.original.name);
   const sourceWarning = version?.original.rawWarning || selected?.rawWarning;
+  const selectedFolder=selected?.path.replace(/\\/g,"/").split("/").slice(0,-1).join("/");
+  const currentInspection=inspection?.folder===selectedFolder?inspection:null;
   const labels = [cropped ? "Cropped" : rawOriginal && selectedPhoto?.cameraJpeg ? "Original RAW" : selectedPhoto?.cameraJpeg && originalSource === "cameraJpeg" ? "Camera JPEG" : "Original",
     "B&W", version?.improvedLabel || "Enhanced"];
   const snapshot = review.getSnapshot();
   const renderContext = snapshot?.context.path === selected?.path && snapshot?.context.root === stagingDir ? snapshot.context : undefined;
   const renderFrame = frameId(renderContext);
   const ready = !!renderFrame && visibleFrame === renderFrame && !loading && review.isReady();
+  const displayReady = !!renderFrame && visibleFrame === renderFrame && !loading && review.isDisplayReady();
   const renderedImages = [images.original, images.bw, images.improved];
   const disabled = busy || renaming || !ready || curation.saving;
   // A paired capture retains its RAW navigation identity; crop the explicitly
@@ -76,7 +80,7 @@ export default function Review() {
   function openCrop() { modal.current.crop = true; setCropOpen(true); }
   function closeCrop() { modal.current.crop = false; setCropOpen(false); }
   async function chooseOriginalSource(source: "raw" | "cameraJpeg") {
-    if (actionBusy.current || renaming || loading || curation.hasPending()) {
+    if (actionBusy.current || renaming || loading || !review.isIdentityReady() || curation.hasPending()) {
       setFeedback("Wait for the current photo decisions to finish saving before changing the original source."); return;
     }
     setFeedback("");
@@ -88,7 +92,7 @@ export default function Review() {
   }
   function inspectable() {
     const current = review.getSnapshot();
-    return current && review.isReady() && visible.current === frameId(current.context) ? current : null;
+    return current && review.isDisplayReady() && visible.current === frameId(current.context) ? current : null;
   }
 
   async function execute(id: LightboxCommandId, desired?: boolean) {
@@ -142,6 +146,7 @@ export default function Review() {
       next.offsets[active.current].y += id === "pan-up" ? -amount : id === "pan-down" ? amount : 0;
       panRef.current = next; setPan(next); return;
     }
+    if (!review.isReady()) { setFeedback("Preview is available. Wait for capture checks before editing or saving photo decisions."); return; }
     if (id === "crop") { if (editable) openCrop(); else setFeedback("Cropping supports JPEG originals; this photo is not editable here."); return; }
     if (id === "crop-version") {
       if (photo.crop && await review.setCropVersion(!context.cropped)) focusReview();
@@ -189,11 +194,12 @@ export default function Review() {
   function activateDuringSave(index: number) { active.current = index; setActivePanel(index); }
   const executeLatest = useRef(execute); executeLatest.current = execute;
   const controllerBlocked=disabled || helpOpen || naming.isOpen || cropOpen;
+  const controllerBrowseBlocked=busy || renaming || curation.saving || !renderFrame || helpOpen || naming.isOpen || cropOpen;
   const googleControllerKeys:ControllerKey[]=["original","bw","enhanced"].map((variant,index)=>{const node=[version?.original,version?.bw,version?.improved][index];const asset=node?curation.assetForPath(node.path):null;return{id:`select-${variant}`,label:["ORIGINAL","B&W","ENHANCED"][index],detail:asset?.selected?"SELECTED":"GOOGLE PHOTOS",icon:["original","bw","enhanced"][index],enabled:!controllerBlocked&&!curation.loading&&!!asset&&!!renderedImages[index],active:!!asset?.selected,status:curation.pendingFor(asset?.id)?"saving":"idle"};});
   const controllerKeys:ControllerKey[]=controllerPage==="review" ? [
-    {id:"previous",label:"PREVIOUS",detail:"ORIGINAL PHOTO",icon:"previous",enabled:!controllerBlocked&&siblingIdx>0},
+    {id:"previous",label:"PREVIOUS",detail:"ORIGINAL PHOTO",icon:"previous",enabled:!controllerBrowseBlocked&&siblingIdx>0},
     {id:"trash",label:trashed?"RESTORE":"TRASH",detail:"STAY ON THIS PHOTO",icon:"trash",enabled:!controllerBlocked,active:trashed},
-    {id:"next",label:"NEXT",detail:"ORIGINAL PHOTO",icon:"next",enabled:!controllerBlocked&&siblingIdx<siblings.length-1},
+    {id:"next",label:"NEXT",detail:"ORIGINAL PHOTO",icon:"next",enabled:!controllerBrowseBlocked&&siblingIdx<siblings.length-1},
     ...googleControllerKeys,
   ] : controllerPage==="versions" ? [
     ...googleControllerKeys,
@@ -201,15 +207,15 @@ export default function Review() {
   ] : [
     {id:"crop",label:"CROP",icon:"crop",enabled:!controllerBlocked&&editable},
     {id:"crop-version",label:cropped?"ORIGINAL":"CROPPED",icon:"photo",enabled:!controllerBlocked&&!!selectedPhoto?.crop,active:cropped},
-    {id:"fit",label:"FIT",icon:"zoom",enabled:!controllerBlocked},
+    {id:"fit",label:"FIT",icon:"zoom",enabled:!controllerBrowseBlocked&&displayReady},
     {id:"clear-rating",label:"UNRATE",icon:"reset",enabled:!controllerBlocked&&stars>0},
-    {id:"refresh",label:"REFRESH",icon:"folder",enabled:!controllerBlocked},
-    {id:"help",label:"HELP",icon:"help",enabled:!controllerBlocked},
+    {id:"refresh",label:"REFRESH",icon:"folder",enabled:!controllerBrowseBlocked},
+    {id:"help",label:"HELP",icon:"help",enabled:!controllerBrowseBlocked},
   ];
   useControllerSurface({id:"lightbox",title:`Lightbox · ${controllerPage}`,contextKey:JSON.stringify([renderFrame,activePanel,controllerPage,helpOpen,naming.isOpen,cropOpen]),keys:controllerKeys,
-    dials:lightboxDials(controllerBindings,!controllerBlocked,labels[activePanel]),
-    sideButtons:[{label:"Review",id:"mode-review",enabled:!controllerBlocked},{label:"Versions",id:"mode-versions",enabled:!controllerBlocked},{label:"Inspect",id:"mode-inspect",enabled:!controllerBlocked}],
-    execute:async command=>{if(command.startsWith("mode-")){if(!controllerBlocked)setControllerPage(command.slice(5) as "review"|"versions"|"inspect");return;}await executeLatest.current(command as LightboxCommandId);},
+    dials:lightboxDials(controllerBindings,!controllerBrowseBlocked,labels[activePanel]),
+    sideButtons:[{label:"Review",id:"mode-review",enabled:!controllerBrowseBlocked},{label:"Versions",id:"mode-versions",enabled:!controllerBrowseBlocked},{label:"Inspect",id:"mode-inspect",enabled:!controllerBrowseBlocked}],
+    execute:async command=>{if(command.startsWith("mode-")){if(!controllerBrowseBlocked)setControllerPage(command.slice(5) as "review"|"versions"|"inspect");return;}await executeLatest.current(command as LightboxCommandId);},
   });
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -238,6 +244,7 @@ export default function Review() {
     const asset = curation.assetForPath(node.path);
     return <LightboxVersionControls label={label} shortcut={shortcutFor(selectIds[index])} favouriteShortcut={shortcutFor(favouriteIds[index])}
       asset={asset ?? null} loading={curation.loading} disabled={busy || renaming || !ready || !renderedImages[index]}
+      paused={!identityReady ? sourceWarning ? "Metadata needs attention" : "Capture checks pending" : undefined}
       saving={curation.pendingFor(asset?.id)} error={curation.errorFor(asset?.id)}
       onSelected={value => void execute(selectIds[index], value)} onFavourite={() => void execute(favouriteIds[index])} />;
   }
@@ -263,7 +270,7 @@ export default function Review() {
           <button className="btn-secondary min-h-11 min-w-11 text-sm" aria-label="Next original photo" disabled={busy || renaming || curation.saving || !siblings.length || siblingIdx >= siblings.length - 1} onClick={() => void execute("next")} title="Next original (→)">→</button>
         </div>
         <div className="flex items-center gap-1">
-          {button("zoom-out", "−", !ready)}<span className="text-xs text-gray-400 w-10 text-center">{Math.round(zoom * 100)}%</span>{button("zoom-in", "+", !ready)}{button("fit", "Fit", !ready)}
+          {button("zoom-out", "−", !displayReady)}<span className="text-xs text-gray-400 w-10 text-center">{Math.round(zoom * 100)}%</span>{button("zoom-in", "+", !displayReady)}{button("fit", "Fit", !displayReady)}
         </div>
         {selected && <>
           {button("crop", "Crop", disabled || !editable)}
@@ -279,10 +286,10 @@ export default function Review() {
       {selected && <div className="px-3 py-1.5 bg-surface-800 text-xs text-gray-400 flex flex-wrap items-center gap-2 border-b border-surface-700">
         <span className="truncate flex-1 min-w-0" title={selected.name}>{selected.name}</span>
         <span className="text-cyan-200">Active: {labels[activePanel]}</span>
-        <span role="status" aria-live="polite" className={busy ? "text-amber-200" : "text-cyan-200"}>{busy ? "Saving decision…" : curation.saving ? "Saving selections… wait before closing" : feedback || (ready ? "Ready to review" : "Loading photo…")}</span>
+        <span role="status" aria-live="polite" className={busy ? "text-amber-200" : "text-cyan-200"}>{busy ? "Saving decision…" : curation.saving ? "Saving selections… wait before closing" : feedback || (ready ? "Ready to review" : displayReady ? "Preview ready · decisions paused" : "Loading photo…")}</span>
       </div>}
       {selectedPhoto?.cameraJpeg && <div className="px-3 py-2 border-b border-surface-700 bg-surface-800 text-xs text-gray-300 flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2">Original source<select aria-label="Original source" className="input-field w-auto text-xs py-1.5" value={originalSource} disabled={busy || renaming || loading || curation.saving} onChange={(event) => void chooseOriginalSource(event.target.value === "cameraJpeg" ? "cameraJpeg" : "raw")}><option value="raw">Camera RAW preview</option><option value="cameraJpeg">Camera JPEG</option></select></label>
+        <label className="flex items-center gap-2">Original source<select aria-label="Original source" className="input-field w-auto text-xs py-1.5" value={originalSource} disabled={busy || renaming || loading || !identityReady || curation.saving} onChange={(event) => void chooseOriginalSource(event.target.value === "cameraJpeg" ? "cameraJpeg" : "raw")}><option value="raw">Camera RAW preview</option><option value="cameraJpeg">Camera JPEG</option></select></label>
         <span>Upload / favourite controls target the displayed original file. Ratings and trash apply to the RAW original. {originalSource === "cameraJpeg" ? "Crop creates a separate _crop from the full Camera JPEG; both originals stay untouched." : "Select Camera JPEG to crop its full image; the RAW preview cannot be cropped."}</span>
       </div>}
       {rawOriginal && <div className="px-3 py-1.5 border-b border-surface-700 bg-amber-950/20 text-xs text-amber-200">
@@ -290,7 +297,12 @@ export default function Review() {
       </div>}
       {error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800">{error}</div>}
       {sourceWarning && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-amber-950/20">RAW metadata needs attention: {sourceWarning} Images remain available for inspection; ownership and saved recipes require repair before transfer.</div>}
-      {version?.original.captureMetadataPending && <div role="status" className="px-4 py-2 text-xs text-amber-200">Capture pairing is not fully verified. Originals remain separate; refresh to retry.</div>}
+      {selected && !identityReady && !sourceWarning && <div role="status" data-testid="lightbox-capture-checks" className="px-4 py-2 text-xs text-amber-200 bg-amber-950/20 flex items-center justify-between gap-3">
+        <span>{currentInspection && currentInspection.phase !== "checking"
+          ? "Some capture checks could not finish. Preview and browsing remain available; editing and upload choices are paused."
+          : `Checking capture pairs${currentInspection?.files ? ` · ${currentInspection.files.toLocaleString()} files` : ""}. Preview and browsing are available; editing and upload choices will unlock when verified.`}</span>
+        {currentInspection && currentInspection.phase !== "checking" && <button type="button" className="btn-secondary min-h-11 px-3" disabled={busy || renaming || curation.saving} onClick={()=>void review.loadFolder(selectedFolder??"")}>Retry capture checks</button>}
+      </div>}
       {curation.error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800 flex items-center justify-between gap-3"><span>{curation.error} Photos remain available for review.</span><button className="btn-secondary min-h-11 px-2 text-xs" disabled={busy} onClick={() => void curation.refresh(true)}>Reload selections</button></div>}
       {curation.warnings.length > 0 && <details className="px-4 py-2 text-xs text-amber-200 bg-surface-800"><summary className="cursor-pointer">Upload selection notes ({curation.warnings.length})</summary><ul className="mt-1 ml-4 list-disc">{curation.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
       {cropMessage && <div role="status" className="px-4 py-2 text-xs text-cyan-100 bg-surface-800 flex gap-3 justify-between"><span>{cropMessage}</span><button type="button" aria-label="Dismiss crop result" onClick={() => setCropMessage("")}>×</button></div>}
@@ -299,6 +311,7 @@ export default function Review() {
           const offset = pan.frame === renderFrame ? pan.offsets[index] : { x: 0, y: 0 };
           return <div key={index} className={"flex-1 min-w-0 " + (index < 2 ? "border-r border-surface-700" : "")}>
             <ImagePanel key={renderFrame + "-" + index} src={src} label={labels[index]} zoom={zoom}
+              loading={[imageLoading.original,imageLoading.bw,imageLoading.improved][index]}
               previewOnly={index === 0 && rawOriginal}
               panX={offset.x} panY={offset.y} resetKey={resetKey} active={activePanel === index}
               onActivate={() => activate(index)} onReady={() => markVisible(renderContext)} headerAction={controls(index)} />

@@ -73,6 +73,43 @@ pub fn candidate_paths(files: &[PathBuf], excluded: &HashSet<usize>) -> Vec<Path
 /// A snapshot distinguishes successful missing tags (None) from failed reads
 /// (absent key). Incomplete folders can never become apparently unique pairs.
 pub fn read_tokens(files: &[PathBuf]) -> HashMap<PathBuf, Option<String>> {
+    let tool = OnceLock::new();
+    read_tokens_using(files, &|batch| {
+        read_batch(tool.get_or_init(|| metadata_tools::resolve("").0), batch)
+    })
+}
+type CaptureFile = (PathBuf, u64, u64);
+type MetadataRows = HashMap<String, Vec<serde_json::Value>>;
+
+fn read_batch(tool: &Path, batch: &[CaptureFile]) -> Option<MetadataRows> {
+    let mut args = vec![
+        "-j".into(),
+        "-n".into(),
+        "-Model".into(),
+        "-SerialNumber".into(),
+        "-BodySerialNumber".into(),
+        "-DateTimeOriginal".into(),
+        "-SubSecTimeOriginal".into(),
+    ];
+    args.extend(batch.iter().map(|(p, _, _)| p.as_os_str().to_owned()));
+    let bytes = metadata_tools::run_limited(tool, &args, 4 * 1024 * 1024).ok()?;
+    let rows = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).ok()?;
+    if rows.len() > batch.len() {
+        return None;
+    }
+    let mut by_path = HashMap::<String, Vec<serde_json::Value>>::new();
+    for row in rows {
+        if let Some(path) = row.get("SourceFile").and_then(|v| v.as_str()) {
+            by_path.entry(normal(path)).or_default().push(row);
+        }
+    }
+    Some(by_path)
+}
+
+fn read_tokens_using(
+    files: &[PathBuf],
+    read: &(impl Fn(&[CaptureFile]) -> Option<MetadataRows> + Sync),
+) -> HashMap<PathBuf, Option<String>> {
     fn collect(
         files: &[PathBuf],
         values: &mut HashMap<PathBuf, Option<String>>,
@@ -114,8 +151,8 @@ pub fn read_tokens(files: &[PathBuf]) -> HashMap<PathBuf, Option<String>> {
     };
     // Another caller may have filled these entries while this one waited.
     let missing = collect(files, &mut values);
-    let (tool, _) = metadata_tools::resolve("");
     let mut position = 0;
+    let mut batches = vec![];
     while position < missing.len() {
         let start = position;
         let mut argument_bytes = 0;
@@ -127,67 +164,60 @@ pub fn read_tokens(files: &[PathBuf]) -> HashMap<PathBuf, Option<String>> {
             argument_bytes += n;
             position += 1;
         }
-        let batch = &missing[start..position];
-        let mut args = vec![
-            "-j".into(),
-            "-n".into(),
-            "-Model".into(),
-            "-SerialNumber".into(),
-            "-BodySerialNumber".into(),
-            "-DateTimeOriginal".into(),
-            "-SubSecTimeOriginal".into(),
-        ];
-        args.extend(batch.iter().map(|(p, _, _)| p.as_os_str().to_owned()));
-        let Ok(bytes) = metadata_tools::run_limited(&tool, &args, 4 * 1024 * 1024) else {
-            continue;
+        batches.push(&missing[start..position]);
+    }
+    // Keep one folder request in flight globally, with at most two bounded
+    // ExifTool processes inside it. Small folders stay on the calling thread.
+    for group in batches.chunks(2) {
+        let responses = if let [first, second] = group {
+            std::thread::scope(|scope| {
+                let first = scope.spawn(|| read(first));
+                let second = read(second);
+                vec![first.join().unwrap_or(None), second]
+            })
+        } else {
+            vec![read(group[0])]
         };
-        let Ok(rows) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
-            continue;
-        };
-        if rows.len() > batch.len() {
-            continue;
-        }
-        let mut by_path = HashMap::<String, Vec<serde_json::Value>>::new();
-        for row in rows {
-            if let Some(path) = row.get("SourceFile").and_then(|v| v.as_str()) {
-                by_path.entry(normal(path)).or_default().push(row);
-            }
-        }
-        let Ok(mut cache) = cache().lock() else {
-            continue;
-        };
-        for (path, bytes, modified) in batch {
-            let Some(rows) = by_path.get(&normal(&path.to_string_lossy())) else {
+        for (batch, response) in group.iter().zip(responses) {
+            let Some(by_path) = response else {
                 continue;
             };
-            if rows.len() != 1 || rows[0].get("Error").is_some() {
+            let Ok(mut cache) = cache().lock() else {
                 continue;
-            }
-            if std::fs::metadata(path)
-                .map(|m| m.len() != *bytes)
-                .unwrap_or(true)
-                || manifest::modified(path).ok() != Some(*modified)
-            {
-                continue;
-            }
-            let value = token(&rows[0]);
-            values.insert(path.clone(), value.clone());
-            if !cache.entries.contains_key(path) {
-                cache.order.push_back(path.clone());
-            }
-            cache.entries.insert(
-                path.clone(),
-                Entry {
-                    bytes: *bytes,
-                    modified: *modified,
-                    token: value,
-                },
-            );
-            while cache.entries.len() > 50_000 {
-                if let Some(old) = cache.order.pop_front() {
-                    cache.entries.remove(&old);
-                } else {
-                    break;
+            };
+            for (path, bytes, modified) in batch.iter() {
+                let Some(rows) = by_path.get(&normal(&path.to_string_lossy())) else {
+                    continue;
+                };
+                if rows.len() != 1 || rows[0].get("Error").is_some() {
+                    continue;
+                }
+                if std::fs::metadata(path)
+                    .map(|m| m.len() != *bytes)
+                    .unwrap_or(true)
+                    || manifest::modified(path).ok() != Some(*modified)
+                {
+                    continue;
+                }
+                let value = token(&rows[0]);
+                values.insert(path.clone(), value.clone());
+                if !cache.entries.contains_key(path) {
+                    cache.order.push_back(path.clone());
+                }
+                cache.entries.insert(
+                    path.clone(),
+                    Entry {
+                        bytes: *bytes,
+                        modified: *modified,
+                        token: value,
+                    },
+                );
+                while cache.entries.len() > 50_000 {
+                    if let Some(old) = cache.order.pop_front() {
+                        cache.entries.remove(&old);
+                    } else {
+                        break;
+                    }
                 }
             }
         }
@@ -304,6 +334,210 @@ pub fn preflight_reprocess(files: &[PathBuf]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn fixture(count: usize) -> (worker::Workspace, Vec<PathBuf>) {
+        let space = worker::Workspace::new().unwrap();
+        let files: Vec<_> = (0..count)
+            .map(|i| {
+                space.0.join(format!(
+                    "shot-{:04}.{}",
+                    i / 2,
+                    if i % 2 == 0 { "cr3" } else { "jpg" }
+                ))
+            })
+            .collect();
+        for path in &files {
+            std::fs::write(path, b"owned metadata scheduling fixture").unwrap();
+        }
+        (space, files)
+    }
+    fn fixture_rows(batch: &[CaptureFile]) -> MetadataRows {
+        batch.iter().map(|(path, _, _)| (normal(&path.to_string_lossy()), vec![serde_json::json!({
+            "SourceFile": path.to_string_lossy(), "Model": "fixture camera", "SerialNumber": "123",
+            "DateTimeOriginal": "2026:11:08 12:00:00", "SubSecTimeOriginal": path.file_stem().unwrap().to_string_lossy(),
+        })])).collect()
+    }
+
+    #[test]
+    fn cold_batches_overlap_with_at_most_two_reads_and_warm_cache_skips_reader() {
+        let (_space, files) = fixture(700);
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let calls = AtomicUsize::new(0);
+        let values = read_tokens_using(&files, &|batch| {
+            assert!(batch.len() <= 128);
+            assert!(
+                batch
+                    .iter()
+                    .map(|(p, _, _)| p.as_os_str().len() + 1)
+                    .sum::<usize>()
+                    <= 64 * 1024
+            );
+            calls.fetch_add(1, Ordering::SeqCst);
+            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let result = fixture_rows(batch);
+            active.fetch_sub(1, Ordering::SeqCst);
+            Some(result)
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 6);
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            2,
+            "Independent cold batches should overlap, without more than two readers"
+        );
+        assert_eq!(values.len(), 700);
+        assert_eq!(
+            pairs_from_tokens(&files, &HashSet::new(), &values).len(),
+            350
+        );
+        let warm = read_tokens_using(&files, &|_| {
+            panic!("Unchanged cached files must not invoke metadata reader")
+        });
+        assert_eq!(warm, values);
+    }
+
+    #[test]
+    fn single_batch_is_serial_and_failed_rows_remain_distinct_from_missing_tags() {
+        let (_space, files) = fixture(4);
+        let caller = std::thread::current().id();
+        let values = read_tokens_using(&files, &|batch| {
+            assert_eq!(std::thread::current().id(), caller);
+            let mut rows = fixture_rows(batch);
+            rows.get_mut(&normal(&files[0].to_string_lossy())).unwrap()[0]
+                .as_object_mut()
+                .unwrap()
+                .remove("SerialNumber");
+            rows.get_mut(&normal(&files[1].to_string_lossy())).unwrap()[0]["Error"] =
+                "controlled read failure".into();
+            let duplicate = rows[&normal(&files[2].to_string_lossy())][0].clone();
+            rows.get_mut(&normal(&files[2].to_string_lossy()))
+                .unwrap()
+                .push(duplicate);
+            Some(rows)
+        });
+        assert_eq!(values.get(&files[0]), Some(&None));
+        assert!(!values.contains_key(&files[1]));
+        assert!(!values.contains_key(&files[2]));
+        assert!(pairs_from_tokens(&files, &HashSet::new(), &values).is_empty());
+        let complete = read_tokens_using(&files, &|batch| {
+            assert_eq!(
+                batch.len(),
+                2,
+                "Only failed rows are reread; successfully missing tags stay cached"
+            );
+            Some(fixture_rows(batch))
+        });
+        assert_eq!(complete.len(), 4);
+        assert_eq!(
+            pairs_from_tokens(&files, &HashSet::new(), &complete),
+            vec![(2, 3)]
+        );
+    }
+
+    #[test]
+    fn source_mutation_during_read_is_not_cached_and_size_mtime_changes_are_rechecked() {
+        let (_space, files) = fixture(2);
+        let values = read_tokens_using(&files, &|batch| {
+            let rows = fixture_rows(batch);
+            std::fs::write(&files[0], b"changed fixture content during metadata read").unwrap();
+            Some(rows)
+        });
+        assert!(!values.contains_key(&files[0]));
+        assert!(pairs_from_tokens(&files, &HashSet::new(), &values).is_empty());
+        let complete = read_tokens_using(&files, &|batch| {
+            assert_eq!(batch.len(), 1);
+            assert_eq!(batch[0].0, files[0]);
+            Some(fixture_rows(batch))
+        });
+        assert_eq!(complete.len(), 2);
+        std::fs::write(&files[0], b"a new size").unwrap();
+        let changed = read_tokens_using(&files, &|batch| {
+            assert_eq!(batch.len(), 1);
+            assert_eq!(batch[0].0, files[0]);
+            Some(fixture_rows(batch))
+        });
+        assert_eq!(changed.len(), 2);
+        let time = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&files[1])
+            .unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(time))
+            .unwrap();
+        let changed = read_tokens_using(&files, &|batch| {
+            assert_eq!(batch.len(), 1);
+            assert_eq!(batch[0].0, files[1]);
+            Some(fixture_rows(batch))
+        });
+        assert_eq!(changed.len(), 2);
+    }
+
+    #[test]
+    fn failed_batch_does_not_allow_partial_snapshot_pairing_and_is_retried() {
+        let (_space, files) = fixture(130);
+        let values = read_tokens_using(&files, &|batch| {
+            if batch[0].0 == files[0] {
+                None
+            } else {
+                Some(fixture_rows(batch))
+            }
+        });
+        assert_eq!(values.len(), 2);
+        assert!(pairs_from_tokens(&files, &HashSet::new(), &values).is_empty());
+        let complete = read_tokens_using(&files, &|batch| {
+            assert_eq!(batch.len(), 128);
+            Some(fixture_rows(batch))
+        });
+        assert_eq!(
+            pairs_from_tokens(&files, &HashSet::new(), &complete).len(),
+            65
+        );
+    }
+
+    #[test]
+    #[ignore = "Explicit generated metadata fixture throughput; set PHOTOGOGO_CAPTURE_METADATA_FIXTURE"]
+    fn controlled_metadata_fixture_throughput() {
+        let folder = PathBuf::from(
+            std::env::var_os("PHOTOGOGO_CAPTURE_METADATA_FIXTURE")
+                .expect("Set generated metadata fixture folder"),
+        );
+        let files: Vec<_> = (0..700)
+            .map(|i| {
+                folder.join(format!(
+                    "capture-{i:04}.{}",
+                    if i % 2 == 0 { "cr3" } else { "jpg" }
+                ))
+            })
+            .collect();
+        let original: Vec<_> = files
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect();
+        let calls = &metadata_tools::DIAGNOSTIC_READ_CALLS;
+        let before = calls.load(Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        let cold = read_tokens(&files);
+        let cold_ms = started.elapsed().as_millis();
+        let after_cold = calls.load(Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        let warm = read_tokens(&files);
+        let warm_ms = started.elapsed().as_millis();
+        assert_eq!(cold.len(), 700);
+        assert!(cold.values().all(Option::is_some));
+        assert_eq!(cold, warm);
+        assert_eq!(after_cold - before, 6);
+        assert_eq!(calls.load(Ordering::SeqCst), after_cold);
+        for (path, bytes) in files.iter().zip(original) {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+        println!(
+            "CONTROLLED_CAPTURE_METADATA {}",
+            serde_json::json!({"files":700,"coldMs":cold_ms,"warmMs":warm_ms,"coldToolCalls":6,"warmToolCalls":0,"sourceBytesUnchanged":true,"generatedJpegPayloadsNotRealRawDecode":true})
+        );
+    }
     #[test]
     fn capture_proof_requires_serial_subseconds_and_model() {
         assert!(token(

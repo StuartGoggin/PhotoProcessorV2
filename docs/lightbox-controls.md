@@ -2,6 +2,24 @@
 
 Photo Lightbox uses one command map for keyboard dispatch, button hints and in-app help. Open **Keyboard & Controller Help** from the toolbar, or press **F1** or **?**. Help keeps the current photo open and restores focus when closed. Its keyboard, controller and crop sections show the current keymap. Search by command, action or key.
 
+## First preview in large folders (2.0.49)
+
+Selecting a photo starts its exact preview before folder-wide capture checks
+finish. Original, B&W and Enhanced appear independently; a slower version says
+**Loading image…**. Preview browsing, fit and zoom remain available while checks
+run. **Checking capture pairs** explains why editing and upload choices are
+temporarily paused. Unverified RAW/JPEG entries may initially appear separately;
+verified pairs become one capture without changing a clicked JPEG into a RAW
+preview. A missing selected Camera JPEG asks you to choose an original again.
+
+Rating, Trash, Crop and Google selection/favourite decisions unlock after capture
+identity and the selected original read are resolved. Incomplete checks offer
+**Retry capture checks**; damaged lineage remains display-only until repaired.
+The existing save acknowledgement rules still apply. Background work is bounded,
+and unchanged metadata/image reads are reused during the app session. Full RAW
+development and export remain explicit operations; the RAW camera preview is
+still a labelled reference image.
+
 ## Review a folder
 
 Choose an original from the keyboard-operable folder tree. Up/Down move focus, Right expands a folder, Left collapses it or returns to the parent, and Enter or Space opens a focused photo. The tree is one Tab stop and keeps its own arrow-key behaviour.

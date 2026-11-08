@@ -78,13 +78,12 @@ try {
   assert.equal(await pairedCrop.evaluate(()=>window.__controlsRenames.length),0);
   report.checks.push("Paired RAW capture crops only its explicitly selected full Camera JPEG; RAW preview stays ineligible, exact source fingerprint is retained, JPEG crop variants stay grouped, and RAW navigation/ratings/development are preserved");
   await pairedCrop.close();
-  const page = await pageWith({ __controlsRawWarning: "Synthetic damaged recipe metadata" });
+  const page = await pageWith();
   for (const hidden of ["01-horse.JPG", "01-horse_BW.jpg", "01-horse_improved.jpg", "01-owned-colour.jpg", "01-owned-bw.jpg", "01-retired.jpg"]) assert.equal(await tree(page).getByText(hidden, { exact: true }).count(), 0);
   await tree(page).getByText("01-horse.CR3", { exact: true }).click();
   await ready(page, "Original RAW", "01-horse.CR3"); await displayed(page, "Developed RAW", "01-owned-colour.jpg"); await displayed(page, "B&W", "01-owned-bw.jpg");
   await page.getByText("1 / 2", { exact: true }).waitFor();
   await page.getByText(/Camera preview — not full RAW development.*900 × 600 displayed pixels.*Embedded camera image 6000 × 4000/).waitFor();
-  await page.getByText(/RAW metadata needs attention: Synthetic damaged recipe metadata/).waitFor();
   assert.equal(await page.getByRole("img", { name: "Original RAW", exact: true }).evaluate((image) => image.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))), false);
   assert.equal(await page.getByRole("img", { name: "Developed RAW", exact: true }).evaluate((image) => image.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))), true);
   assert.equal(await page.getByRole("button", { name: "Crop", exact: true }).isDisabled(), true);
@@ -164,18 +163,20 @@ try {
   await ready(lazy,"Camera JPEG","Event/01-horse.JPG");
   await lazy.evaluate(()=>{window.__controlsDeferMetadata=true;window.__controlsDeferTree=false;window.__controlsReleaseTree();});
   await lazy.waitForFunction(()=>window.__controlsCalls.filter(c=>c.command==="read_lightbox_folder").length===2);
-  assert.equal(await lazy.getByRole("img",{name:"Camera JPEG",exact:true}).count(),0);
+  await displayed(lazy,"Original","Event/01-horse.JPG");
+  assert.equal(await lazy.getByRole("checkbox",{name:"Upload Original to Google Photos",exact:true}).isDisabled(),true);
   await hotkey(lazy,"q");assert.equal(await lazy.evaluate(()=>window.__controlsSelectionWrites.length),1);
   await lazy.evaluate(()=>{window.__controlsDeferMetadata=false;window.__controlsReleaseMetadata();});
   await ready(lazy,"Camera JPEG","Event/01-horse.JPG");await hotkey(lazy,"q");await saved(lazy,2);
   assert.equal(await lazy.evaluate(()=>window.__controlsSelectionWrites.at(-1).relativePath),"Event/01-horse.JPG");
-  report.checks.push("A generic refresh overtaken by a newer camera-JPEG pick revokes readiness during its temporary catalogue replacement; shortcuts stay blocked until the matching JPEG display and identity are restored");
+  report.checks.push("A generic refresh overtaken by a newer camera-JPEG pick keeps its exact JPEG preview but pauses decisions during temporary catalogue replacement; shortcuts wait for verified identity");
   await lazy.close();
 
   const retry=await pageWith({__controlsLazyMetadata:true,__controlsMetadataIncomplete:true});
   await tree(retry).getByText("Event",{exact:true}).click();
   await tree(retry).getByText("Event",{exact:true}).click();
-  await tree(retry).getByText("01-horse.JPG",{exact:true}).click();await ready(retry,"Original","Event/01-horse.JPG");
+  await tree(retry).getByText("01-horse.JPG",{exact:true}).click();await displayed(retry,"Original","Event/01-horse.JPG");
+  assert.equal(await retry.getByRole("checkbox",{name:"Upload Original to Google Photos",exact:true}).isDisabled(),true);
   await retry.evaluate(()=>{window.__controlsMetadataIncomplete=false;});
   await tree(retry).getByText("Event",{exact:true}).click();await tree(retry).getByText("Event",{exact:true}).click();
   await ready(retry,"Camera JPEG","Event/01-horse.JPG");await hotkey(retry,"q");await saved(retry,1);

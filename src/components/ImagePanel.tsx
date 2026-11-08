@@ -15,9 +15,10 @@ interface ImagePanelProps {
   onReady?: () => void;
   /** Display-only RAW/thumbnail data must not be mistaken for a saved photo. */
   previewOnly?: boolean;
+  loading?: boolean;
 }
 
-export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, headerAction, active, onActivate, resetKey, onReady, previewOnly = false }: ImagePanelProps) {
+export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, headerAction, active, onActivate, resetKey, onReady, previewOnly = false, loading = false }: ImagePanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [localPanX, setLocalPanX] = useState(0);
@@ -97,7 +98,7 @@ export default function ImagePanel({ src, label, zoom = 1, panX = 0, panY = 0, h
         ) : (
           <div className="text-gray-600 text-sm flex flex-col items-center gap-2">
             <span className="text-4xl">🖼️</span>
-            <span>No image</span>
+            <span role={loading ? "status" : undefined}>{loading ? "Loading image…" : "No image"}</span>
           </div>
         )}
       </div>

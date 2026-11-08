@@ -5,8 +5,11 @@ import { useSettings } from "./useSettings";
 import { parseStars, isTrashed, applyStars, applyTrash } from "../utils";
 import { lightboxCatalogue, lightboxAbsolute, neighborPaths, photoFolder, photoPaths, photoForSource, type LightboxPhoto, type OriginalSource } from "../utils/lightboxCatalogue";
 import { LightboxCache, type LightboxImage, type LightboxImageInfo } from "../utils/lightboxCache";
+import { LightboxFolderQueue } from "../utils/lightboxFolderQueue";
 
 const emptyImages = (): ImageSet => ({ original: null, improved: null, bw: null });
+const folderInspections = new LightboxFolderQueue();
+let inspectionOwnerSequence = 0;
 export interface ReviewContext { root: string; path: string; epoch: number; cropped: boolean }
 
 /** The view and writes share a pinned selection identity. Failed writes never
@@ -20,6 +23,8 @@ export function useReview() {
   const [images, setImages] = useState<ImageSet>(emptyImages);
   const [zoom, setZoom] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [imageLoading, setImageLoading] = useState({ original: false, bw: false, improved: false });
+  const [inspection, setInspection] = useState<{ folder: string; phase: "checking" | "incomplete" | "error"; files: number } | null>(null);
   const [error, setError] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [stagingDir, setStagingDir] = useState("");
@@ -28,6 +33,7 @@ export function useReview() {
   const [originalSource, setOriginalSourceState] = useState<OriginalSource>("raw");
   const [originalInfo, setOriginalInfo] = useState<LightboxImageInfo | null>(null);
   const sourceChoice = useRef<OriginalSource>("raw");
+  const physicalOriginal = useRef<string | null>(null);
   const [catalogueRevision, setCatalogueRevision] = useState(0);
   const showingCrop = useRef(false);
   const root = useRef("");
@@ -37,6 +43,10 @@ export function useReview() {
   const rawTree = useRef<TreeNode | null>(null);
   const folderLoads = useRef(new Map<string, Promise<boolean>>());
   const folderReady = useRef(new Set<string>());
+  const folderQueue = useRef(folderInspections);
+  const inspectionOwner = useRef(0);
+  if (!inspectionOwner.current) inspectionOwner.current = ++inspectionOwnerSequence;
+  const originalPending = useRef(false);
   const pickRequest = useRef(0);
   const metadataSelection = useRef(false);
   const selectedPath = useRef<string | null>(null);
@@ -53,7 +63,7 @@ export function useReview() {
     mounted.current = true;
     return () => {
       mounted.current = false; viewReady.current = false;
-      ++selectionRequest.current; ++treeRequest.current; cache.current!.clear();
+      ++selectionRequest.current; ++treeRequest.current; cache.current!.clear(); folderQueue.current.clear(inspectionOwner.current+":");
     };
   }, []);
 
@@ -67,18 +77,28 @@ export function useReview() {
     return mounted.current && context.root === root.current && context.root === configuredRoot.current
       && context.path === selectedPath.current && context.epoch === selectionRequest.current && context.cropped === showingCrop.current;
   }
-  function isReady() { return !!getSnapshot() && viewReady.current && !renameBusy.current; }
+  function isIdentityReady() {
+    const snapshot = getSnapshot();
+    return !!snapshot && !metadataSelection.current && !snapshot.photo.node.captureMetadataPending && !snapshot.photo.original.captureMetadataPending
+      && !snapshot.photo.node.rawWarning && !snapshot.photo.original.rawWarning;
+  }
+  function isDisplayReady() { return !!getSnapshot() && viewReady.current && !renameBusy.current; }
+  function isReady() { return isDisplayReady() && isIdentityReady() && !originalPending.current; }
 
-  async function loadFolder(folder: string, reconcile = true): Promise<boolean> {
+  async function loadFolder(folder: string, reconcile = true, foreground = false): Promise<boolean> {
     const originalRoot=root.current, epoch=treeRequest.current;
     if (!mounted.current || !rawTree.current || originalRoot!==configuredRoot.current) return false;
     if (folderReady.current.has(folder)) return true;
     const find=(node:TreeNode):TreeNode|undefined=>node.path===folder?node:node.children?.map(find).find(Boolean);
     const target=find(rawTree.current);
     if (!target?.children?.some(node=>node.captureMetadataPending)) { folderReady.current.add(folder); return true; }
-    const prior=folderLoads.current.get(folder);if(prior)return prior;
-    const pending=(async()=>{
+    const key=inspectionOwner.current+":"+JSON.stringify([originalRoot,epoch,folder]);
+    const prior=folderLoads.current.get(folder);if(prior){if(foreground)folderQueue.current.promote(key);return prior;}
+    const files = target.children?.filter(node => node.type === "file").length ?? 0;
+    setInspection({ folder, phase: "checking", files });
+    const pending=folderQueue.current.run(key,async()=>{
       try {
+        if(!mounted.current||epoch!==treeRequest.current||originalRoot!==root.current||originalRoot!==configuredRoot.current)return false;
         const result=await invoke<TreeNode>("read_lightbox_folder",{stagingDir:originalRoot,relativeDir:folder});
         if(!mounted.current||epoch!==treeRequest.current||originalRoot!==root.current||originalRoot!==configuredRoot.current)return false;
         if(result?.type!=="dir"||result.path!==folder||!Array.isArray(result.children))throw new Error("Invalid folder metadata response");
@@ -89,9 +109,11 @@ export function useReview() {
         const before = getSnapshot();
         rawTree.current=merge(rawTree.current!);catalogue.current=lightboxCatalogue(rawTree.current.children??[]);
         setTree(catalogue.current.tree);setCatalogueRevision(value=>value+1);
-        if(result.captureMetadataComplete!==false)folderReady.current.add(folder);
-        else setError("Some capture metadata could not be read. Originals remain separate; refresh this folder to retry.");
-        if (before && !metadataSelection.current && photoFolder(before.context.path) === folder) {
+        if(result.captureMetadataComplete!==false) {
+          folderReady.current.add(folder);
+          setInspection(current => current?.folder === folder ? null : current);
+        } else setInspection(current => current?.folder === folder ? { folder, phase: "incomplete", files } : current);
+        if (before && photoFolder(before.context.path) === folder) {
           const pairedOwner = [...catalogue.current.photos.values()].find(photo => photo.cameraJpeg?.path === before.context.path);
           const next = catalogue.current.photos.get(before.context.path) ?? pairedOwner;
           // Pairing can retire a formerly standalone JPEG from navigation.
@@ -104,9 +126,8 @@ export function useReview() {
           }
         }
         return true;
-      } catch(reason){if(mounted.current&&epoch===treeRequest.current&&originalRoot===configuredRoot.current)setError("Could not inspect this folder: "+String(reason));return false;}
-      finally{if(epoch===treeRequest.current)folderLoads.current.delete(folder);}
-    })();
+      } catch(reason){if(mounted.current&&epoch===treeRequest.current&&originalRoot===configuredRoot.current){setInspection(current=>current?.folder===folder?{folder,phase:"error",files}:current);if(photoFolder(selectedPath.current??"")===folder)setError("Could not inspect this folder: "+String(reason));}return false;}
+    },foreground).finally(()=>{if(folderLoads.current.get(folder)===pending)folderLoads.current.delete(folder);});
     folderLoads.current.set(folder,pending);return pending;
   }
 
@@ -123,21 +144,38 @@ export function useReview() {
     selectedPath.current = photo.node.path; viewReady.current = false;
     intendedPath.current=photo.node.path;
     sourceChoice.current = source;
+    physicalOriginal.current = display.original.path;
     setOriginalSourceState(source === "cameraJpeg" && photo.cameraJpeg ? "cameraJpeg" : "raw");
     showingCrop.current = activeCrop; setCropped(activeCrop); setSelectedPhoto(display); setOriginalInfo(null);
     setSelected(photo.node); setSiblings(group.map(item => item.node)); setSiblingIdx(Math.max(0, index));
     setZoom(1); setLoading(true); setError(""); setImages(emptyImages());
+    originalPending.current=true;
     const load = (node?: TreeNode) => node ? cache.current!.get(lightboxAbsolute(originalRoot, node.path)) : Promise.resolve(null);
-    const [original, bw, improved] = await Promise.all([load(version.original), load(version.bw), load(version.improved)]);
-    if (!mounted.current || request !== selectionRequest.current || originalRoot !== root.current || originalRoot !== configuredRoot.current) return false;
-    viewReady.current = !!(original || bw || improved);
-    setOriginalInfo(original ? cache.current!.info(lightboxAbsolute(originalRoot, version.original.path)) : null);
-    setImages({ original, bw, improved }); setLoading(false);
-    if (!original) setError(/\.(cr3|dng)$/i.test(photo.node.name)
-      ? "The RAW camera preview is unavailable. Its available developed versions are shown; try Photo Process → RAW Development for a full-quality decode."
-      : "Could not display this original. It may be missing, unreadable or exceed the Lightbox safety limits. Refresh to retry.");
-    cache.current!.prefetch(neighborPaths(group, index, direction).map(path => lightboxAbsolute(originalRoot, path)));
-    return viewReady.current;
+    setImageLoading({ original: true, bw: !!version.bw, improved: !!version.improved });
+    let resolveFirst!: (value: boolean) => void;
+    const first = new Promise<boolean>(resolve => { resolveFirst = resolve; });
+    const current = () => mounted.current && request === selectionRequest.current && selectedPath.current === photo.node.path
+      && originalRoot === root.current && originalRoot === configuredRoot.current;
+    const panels = (["original", "bw", "improved"] as const).map(async kind => {
+      const image = await load(version[kind]);
+      if (!current()) { resolveFirst(false); return; }
+      setImageLoading(value => ({ ...value, [kind]: false }));
+      setImages(value => ({ ...value, [kind]: image }));
+      if (kind === "original") {
+        originalPending.current=false;
+        setOriginalInfo(image ? cache.current!.info(lightboxAbsolute(originalRoot, version.original.path)) : null);
+        if (!image) setError(/\.(cr3|dng)$/i.test(version.original.name)
+          ? "The RAW camera preview is unavailable. Its available developed versions are shown; try Photo Process → RAW Development for a full-quality decode."
+          : "Could not display this original. It may be missing, unreadable or exceed the Lightbox safety limits. Refresh to retry.");
+      }
+      if (image) { viewReady.current = true; setLoading(false); resolveFirst(true); }
+    });
+    void Promise.all(panels).then(() => {
+      if (!current()) { resolveFirst(false); return; }
+      setLoading(false); resolveFirst(viewReady.current);
+      if (isIdentityReady()) cache.current!.prefetch(neighborPaths(group, index, direction).map(path => lightboxAbsolute(originalRoot, path)));
+    });
+    return first;
   }
 
   async function refreshTree(dir?: string, preferCrop?: boolean, preferPath?: string | null, keepCache = false): Promise<boolean> {
@@ -153,24 +191,33 @@ export function useReview() {
       // Replacing its catalogue must revoke that exact displayed identity.
       request=++treeRequest.current;++selectionRequest.current;viewReady.current=false;
       const replacementPick=++pickRequest.current;metadataSelection.current=false;setLoading(true);setImages(emptyImages());
-      rawTree.current=result;folderLoads.current.clear();folderReady.current.clear();
+      rawTree.current=result;folderLoads.current.clear();folderReady.current.clear();folderQueue.current.clear(inspectionOwner.current+":");setInspection(null);
       catalogue.current = lightboxCatalogue(result?.children ?? []);
       setCatalogueRevision(value => value + 1); setTree(catalogue.current.tree);
       // Ordinary refresh follows a newer dial selection made during its scan.
       // Save-and-next supplies an explicit target that remains pinned.
       const targetPath = preferPath === undefined ? intendedPath.current??selectedPath.current : preferPath;
-      if(targetPath) {
-        if(!await loadFolder(photoFolder(targetPath), false)) {
-          if (mounted.current && request === treeRequest.current && target === configuredRoot.current && replacementPick === pickRequest.current) setLoading(false);
-          return false;
-        }
-        if(!mounted.current||request!==treeRequest.current||target!==configuredRoot.current)return false;
-        if(replacementPick!==pickRequest.current)return false;
+      if(!mounted.current||request!==treeRequest.current||target!==configuredRoot.current||replacementPick!==pickRequest.current)return false;
+      const basename=(path:string)=>path.replace(/\\/g,"/").split("/").pop();
+      const preserveCameraJpeg=targetPath && sourceChoice.current==="cameraJpeg" && physicalOriginal.current
+        && (targetPath===selectedPath.current || basename(targetPath)===basename(selectedPath.current??""));
+      const physicalPath=preserveCameraJpeg ? [photoFolder(targetPath!),basename(physicalOriginal.current!)].filter(Boolean).join("/") : targetPath;
+      const companion=physicalPath?[...catalogue.current.photos.values()].find(p=>p.cameraJpeg?.path===physicalPath):undefined;
+      if(preserveCameraJpeg && physicalPath && !catalogue.current.photos.has(physicalPath) && !companion) {
+        selectedPath.current=null;intendedPath.current=null;physicalOriginal.current=null;sourceChoice.current="raw";
+        setSelected(null);setSelectedPhoto(null);setSiblings([]);setLoading(false);
+        setError("The selected Camera JPEG is missing or unavailable. Choose an original in the photo list to continue; the RAW preview was not substituted.");
+        if(targetPath)void loadFolder(photoFolder(targetPath));
+        return false;
       }
-      const companion=targetPath?[...catalogue.current.photos.values()].find(p=>p.cameraJpeg?.path===targetPath):undefined;
-      const preferred = targetPath ? catalogue.current.photos.get(targetPath)??companion : undefined;
+      const preferred = physicalPath ? catalogue.current.photos.get(physicalPath)??companion??(targetPath?catalogue.current.photos.get(targetPath):undefined) : undefined;
       const fallback = selectedPath.current ? catalogue.current.photos.get(selectedPath.current) : undefined;
-      if (preferred || fallback) return await show((preferred ?? fallback)!, 1, preferCrop ?? showingCrop.current,companion?"cameraJpeg":sourceChoice.current);
+      if (preferred || fallback) {
+        const photo=(preferred??fallback)!;
+        const shown=show(photo,1,preferCrop??showingCrop.current,companion?"cameraJpeg":sourceChoice.current);
+        void loadFolder(photoFolder(photo.node.path),true,true);
+        return await shown;
+      }
       selectedPath.current = null; setSelected(null); setSelectedPhoto(null); setSiblings([]); setSiblingIdx(0); setLoading(false);
       void loadFolder("");
       return false;
@@ -185,61 +232,63 @@ export function useReview() {
   useEffect(() => {
     root.current = settings?.staging_dir ?? "";
     setStagingDir(root.current); setCatalogueRevision(0);
-    selectedPath.current = null;intendedPath.current=null; viewReady.current = false; showingCrop.current = false; sourceChoice.current = "raw";
+    selectedPath.current = null;intendedPath.current=null; physicalOriginal.current=null; viewReady.current = false; showingCrop.current = false; sourceChoice.current = "raw";
     setOriginalSourceState("raw"); setOriginalInfo(null);
     setSelected(null); setSelectedPhoto(null); setSiblings([]); setSiblingIdx(0); setCropped(false);
     ++selectionRequest.current; ++treeRequest.current; cache.current!.clear(); setImages(emptyImages()); setError("");
-    ++pickRequest.current;rawTree.current=null;folderLoads.current.clear();folderReady.current.clear();
+    ++pickRequest.current;rawTree.current=null;folderLoads.current.clear();folderReady.current.clear();folderQueue.current.clear(inspectionOwner.current+":");setInspection(null);
     metadataSelection.current=false;
     if (root.current) void refreshTree(root.current);
     else { setTree([]); setLoading(false); catalogue.current = lightboxCatalogue([]); }
   }, [settings?.staging_dir]);
 
-  async function selectNode(node: TreeNode) {
+  async function selectNode(node: TreeNode, direction: 1 | -1 = 1) {
     if (renameBusy.current) return false;
-    const pick=++pickRequest.current, originalRoot=root.current;
+    ++pickRequest.current;
     intendedPath.current=node.path;
-    metadataSelection.current=true;viewReady.current=false;++selectionRequest.current;setLoading(true);setImages(emptyImages());
-    const loaded=await loadFolder(photoFolder(node.path), false);
-    if(pick!==pickRequest.current||originalRoot!==configuredRoot.current)return false;
     metadataSelection.current=false;
-    if(!loaded){setLoading(false);return false;}
     const photo = catalogue.current.photos.get(node.path);
-    if(photo)return show(photo);
     const owner=[...catalogue.current.photos.values()].find(p=>p.cameraJpeg?.path===node.path);
-    if (owner) return show(owner,1,false,"cameraJpeg");
-    setLoading(false);setSelected(null);setSelectedPhoto(null);selectedPath.current=null;
+    if(photo || owner) {
+      const shown=show((photo??owner)!,direction,false,owner?"cameraJpeg":sourceChoice.current);
+      void loadFolder(photoFolder(node.path),true,true);
+      return await shown;
+    }
+    ++selectionRequest.current;viewReady.current=false;originalPending.current=false;cache.current!.select([]);
+    selectedPath.current=null;intendedPath.current=null;
+    setLoading(false);setImages(emptyImages());setImageLoading({original:false,bw:false,improved:false});setOriginalInfo(null);
+    setSelected(null);setSelectedPhoto(null);setSiblings([]);setSiblingIdx(0);
     return false;
   }
   async function setCropVersion(useCrop: boolean) {
-    if (renameBusy.current) return false;
+    if (renameBusy.current || !isIdentityReady()) return false;
     const snapshot = getSnapshot();
     return snapshot ? show(snapshot.photo, 1, useCrop) : false;
   }
   async function setOriginalSource(source: OriginalSource) {
-    if (renameBusy.current) return false;
+    if (renameBusy.current || !isIdentityReady()) return false;
     const snapshot = getSnapshot();
     if (!snapshot || (source === "cameraJpeg" && !snapshot.photo.cameraJpeg)) return false;
     return show(snapshot.photo, 1, false, source);
   }
   async function navigate(direction: 1 | -1) {
-    if (renameBusy.current || metadataSelection.current) return false;
+    if (renameBusy.current) return false;
     const snapshot = getSnapshot();
     if (!snapshot) return false;
     const group = catalogue.current.folders.get(photoFolder(snapshot.context.path)) ?? [];
     const index = group.findIndex(photo => photo.node.path === snapshot.context.path);
-    return index >= 0 && group[index + direction] ? show(group[index + direction], direction) : false;
+    return index >= 0 && group[index + direction] ? selectNode(group[index + direction].node, direction) : false;
   }
   async function navigateToEdge(edge: "first" | "last") {
-    if (renameBusy.current || metadataSelection.current) return false;
+    if (renameBusy.current) return false;
     const snapshot = getSnapshot();
     if (!snapshot) return false;
     const group = catalogue.current.folders.get(photoFolder(snapshot.context.path)) ?? [];
     const photo = edge === "first" ? group[0] : group[group.length - 1];
-    return photo ? show(photo, edge === "first" ? -1 : 1) : false;
+    return photo ? selectNode(photo.node, edge === "first" ? -1 : 1) : false;
   }
   async function advanceFromContext(context: ReviewContext) {
-    if (!isContextCurrent(context)) return false;
+    if (!isReady() || !isContextCurrent(context)) return false;
     const group = catalogue.current.folders.get(photoFolder(context.path)) ?? [];
     const index = group.findIndex(photo => photo.node.path === context.path);
     return index >= 0 && group[index + 1] ? show(group[index + 1]) : true;
@@ -282,11 +331,11 @@ export function useReview() {
   }
 
   return {
-    tree, selected, siblings, siblingIdx, images, zoom, loading, error, renaming, stagingDir,
+    tree, selected, siblings, siblingIdx, images, imageLoading, inspection, zoom, loading, error, renaming, stagingDir,
     cropped, selectedPhoto, catalogueRevision, originalSource, originalInfo,
     trashed: selected ? isTrashed(selected.name) : false,
     stars: selected ? parseStars(selected.name) : 0,
     refreshTree, selectNode, loadFolder, handleStars, handleTrash, navigate, navigateToEdge, setZoom, setCropVersion, setOriginalSource,
-    getSnapshot, isContextCurrent, isReady, advanceFromContext,
+    getSnapshot, isContextCurrent, isReady, isDisplayReady, isIdentityReady, advanceFromContext,
   };
 }
