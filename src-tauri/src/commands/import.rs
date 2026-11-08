@@ -30,6 +30,10 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
     "cr3", "jpg", "jpeg", "avi", "mp4", "mkv", "mov", "dng", "mts",
 ];
 
+#[cfg(test)]
+#[path = "import_reimport_tests.rs"]
+mod reimport_tests;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportProgress {
     pub total: usize,
@@ -670,7 +674,6 @@ fn parse_datetime_from_filename(path: &Path) -> Option<chrono::NaiveDateTime> {
 fn is_path_in_matching_date_dir(path: &Path, dt: &chrono::NaiveDateTime) -> bool {
     let expected_year = dt.format("%Y").to_string();
     let expected_month = dt.format("%m").to_string();
-    let expected_day = dt.format("%d").to_string();
 
     let day = path
         .parent()
@@ -690,7 +693,8 @@ fn is_path_in_matching_date_dir(path: &Path, dt: &chrono::NaiveDateTime) -> bool
 
     match (year, month, day) {
         (Some(y), Some(m), Some(d)) => {
-            y == expected_year && m == expected_month && d == expected_day
+            y == expected_year && m == expected_month
+                && matching_day_name(d, chrono::Datelike::day(dt))
         }
         _ => false,
     }
@@ -812,17 +816,77 @@ fn set_file_times(_path: &Path, _dt: &chrono::NaiveDateTime) -> Result<(), Strin
     Ok(())
 }
 
+/// Only established numeric/day-event leaf names are import destinations. The
+/// naming browser also recognises legacy numeric prefixes such as `24backup`;
+/// those must not silently become write destinations.
+fn matching_day_name(name: &str, day: u32) -> bool {
+    let number = match name.split_once(" - ") {
+        Some((number, title)) if !title.trim().is_empty() => number,
+        Some(_) => return false,
+        None => name,
+    };
+    (1..=2).contains(&number.len())
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && number.parse::<u32>().ok() == Some(day)
+}
+
+fn existing_import_directory(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("Cannot inspect import folder '{}': {error}", path.display())),
+        Ok(metadata) => {
+            super::naming_workflow::reject_link(path)?;
+            if !metadata.is_dir() {
+                return Err(format!("Import destination is not a folder: {}", path.display()));
+            }
+            Ok(true)
+        }
+    }
+}
+
 fn destination_path(
     staging_dir: &Path,
     dt: &chrono::NaiveDateTime,
     src_path: &Path,
-) -> PathBuf {
-    use chrono::Timelike;
+) -> Result<PathBuf, String> {
+    use chrono::{Datelike, Timelike};
 
-    let date_subdir = staging_dir
-        .join(format!("{}", dt.format("%Y")))
-        .join(format!("{}", dt.format("%m")))
-        .join(format!("{}", dt.format("%d")));
+    if !existing_import_directory(staging_dir)? {
+        return Err("Staging directory is unavailable.".into());
+    }
+    let year = staging_dir.join(dt.format("%Y").to_string());
+    let month = year.join(dt.format("%m").to_string());
+    let mut date_subdir = month.join(dt.format("%d").to_string());
+    if existing_import_directory(&year)? && existing_import_directory(&month)? {
+        let mut matches = Vec::new();
+        for entry in fs::read_dir(&month).map_err(|error| {
+            format!("Cannot read import date folders '{}': {error}", month.display())
+        })? {
+            let entry = entry.map_err(|error| format!("Cannot inspect import date folder: {error}"))?;
+            let name = entry.file_name();
+            if !name.to_str().is_some_and(|name| matching_day_name(name, dt.day())) {
+                continue;
+            }
+            let path = entry.path();
+            if existing_import_directory(&path)?
+                && super::naming::is_candidate_day_directory(staging_dir, &path)
+                    == Some((dt.year() as u32, dt.month(), dt.day()))
+            {
+                matches.push(super::naming_workflow::checked_day(staging_dir, &path)?.0);
+            }
+        }
+        matches.sort();
+        if matches.len() > 1 {
+            let names = matches.iter().map(|path| {
+                path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+            }).collect::<Vec<_>>().join(", ");
+            return Err(format!(
+                "Multiple staging folders match {}: {names}. Resolve this date's folder conflict before importing it; no folder was chosen.",
+                dt.format("%Y-%m-%d"),
+            ));
+        }
+        if let Some(existing) = matches.pop() { date_subdir = existing; }
+    }
     let stem = if dt.nanosecond() > 0 {
         format!("{}_{:03}", dt.format("%Y%m%d_%H%M%S"), dt.nanosecond() / 1_000_000)
     } else {
@@ -833,7 +897,39 @@ fn destination_path(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    date_subdir.join(format!("{}.{}", stem, ext))
+    Ok(date_subdir.join(format!("{}.{}", stem, ext)))
+}
+
+/// Create each date component separately so create_dir_all cannot follow an
+/// existing junction. Concurrent imports may create the same ordinary directory.
+fn prepare_destination_parent(staging_dir: &Path, parent: &Path) -> Result<(), String> {
+    if !existing_import_directory(staging_dir)? {
+        return Err("Staging directory is unavailable.".into());
+    }
+    let relative = parent.strip_prefix(staging_dir)
+        .map_err(|_| "Import destination is outside staging")?;
+    if relative.components().count() != 3 {
+        return Err("Import destination must be a year / month / day folder.".into());
+    }
+    let mut current = staging_dir.to_path_buf();
+    for component in relative.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err("Invalid import destination component.".into());
+        }
+        current.push(component);
+        if !existing_import_directory(&current)? {
+            match fs::create_dir(&current) {
+                Ok(()) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+                Err(error) => return Err(format!("Cannot create import folder '{}': {error}", current.display())),
+            }
+            if !existing_import_directory(&current)? {
+                return Err("Import destination disappeared before copying.".into());
+            }
+        }
+    }
+    super::naming_workflow::checked_day(staging_dir, parent)?;
+    Ok(())
 }
 
 fn with_collision_suffix(base: &Path, suffix: u32) -> PathBuf {
@@ -1492,12 +1588,22 @@ fn run_import(
             let base_dest = if keep_existing_name {
                 src_path.to_path_buf()
             } else {
-                destination_path(&staging_clone, &dt, src_path)
+                match destination_path(&staging_clone, &dt, src_path) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        let message = format!("{}: {error}", src_path.display());
+                        if let Some(id) = job_id_clone.as_deref() { append_job_log(id, message.clone()); }
+                        let _ = append_app_log(&app_clone, format!("{mode} destination_error {message}"));
+                        errors_clone.lock().unwrap().push(message);
+                        done_clone.fetch_add(1, Ordering::Relaxed);
+                        return None;
+                    }
+                }
             };
 
             // Create destination directory
             if let Some(parent) = base_dest.parent() {
-                if let Err(e) = fs::create_dir_all(parent) {
+                if let Err(e) = prepare_destination_parent(&staging_clone, parent) {
                     errors_clone
                         .lock()
                         .unwrap()

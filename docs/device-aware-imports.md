@@ -65,6 +65,27 @@ card read. Up to eight files across four cards may be staged at once, so staging
 needs free space for those files. Full/failed destinations fail the copy without
 publishing it. Source media are not deleted or modified by this pipeline.
 
+## Importing again after naming an event
+
+Import resolves the photo's capture date against existing day folders in the
+matching year/month. A day such as `2026/11/24 - AMGA Champs` is reused instead
+of creating another bare `24`. Legacy named days do not require an event sidecar.
+Existing event descriptions, review selections and generated photos stay in place.
+
+Duplicate detection still checks actual bytes across staging, independent of the
+folder or filename. Verified identical contents are skipped; the same destination
+filename with different contents receives a collision suffix. Embedded metadata
+changes also change file contents and therefore the MD5. Source media and existing
+photos are never overwritten by a normal import.
+
+If both `24` and `24 - AMGA Champs` exist, or two named folders represent that
+date, the import reports the conflicting folders for that date rather than
+choosing one. Other dates can continue. Resolve the existing folder conflict
+before retrying; this change does not merge or delete duplicate folders.
+Linked/reparse destination components and matching non-directory entries are
+rejected before copying. In-place maintenance recognises canonical filenames
+inside named day folders so their reviewed names are retained.
+
 ## Optional timeline previews
 
 Timeline video motion previews are **off by default**, including previously saved
