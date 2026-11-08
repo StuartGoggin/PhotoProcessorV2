@@ -35,3 +35,36 @@ Final targeted legacy browser checks passed: 21 Lightbox/controller controls,
 nine RAW-source groups and 11 saved-selection/transfer-barrier groups. The
 independent reviewer confirmed the final five-line correction and its regression
 with no findings. No other implementation changes are included in this cut.
+
+## Built source
+
+Final application source: `766bde5ca4bd7cdc733197cd35ab67f43f228ab9`, including
+the original preview-first implementation `603e2819` and the final progress-state
+correction. The production frontend identifies
+`2.0.50 / 20261108T062854364Z-766bde5c+local`.
+All application changes/tests/version/guide were committed before building.
+Four unrelated untracked cleanup scripts/JSON summaries remain untouched and
+excluded. The `+local` suffix retains that boundary and the temporary Vite
+configuration module; later package/delivery notes do not alter the built source.
+
+## Finished packages
+
+The final optimized build completed in **5m 10s**, with five existing unused-code
+warnings and the existing frontend Browserslist/chunk-size notices. Inspection
+reports `complete: true` after extracting both installers without installation.
+The application payloads match the built binary after normalizing only Tauri's
+expected three-byte bundle marker. All pinned media/source payloads, 2,205
+ExifTool 13.59 files, 440 RawTherapee 5.13 resources and all 28 modified controller
+SDK source files/notices passed.
+
+Both relocated packages decoded the supplied CR3 at **6014 × 4016**, RTv4_sRGB,
+with PATH empty and the original hash unchanged. MSI ProductVersion is 2.0.50;
+UpgradeCode remains `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` from the last
+delivered 2.0.48. These are unsigned test installers. Prior 2.0.48 packages
+remain available for rollback; actual large-folder/drive performance is a retest.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| PhotoGoGoV2_2.0.50_x64-setup.exe | 130,876,509 | 73FD455F960F5A98BD78B57147B0AD468C1BD6448C465C94B2F4517C4CB90B3D |
+| PhotoGoGoV2_2.0.50_x64_en-US.msi | 222,184,148 | 16A643D2773018595E675E36C93D0F0A2C7367E199C8861D48DBF7B7806B55B7 |
+| photogogo-v2.exe | 30,244,864 | 198440585EDD78A4100473DA96C9CE8D6D45E6642DF32BFC0B19F58653FC876C |
