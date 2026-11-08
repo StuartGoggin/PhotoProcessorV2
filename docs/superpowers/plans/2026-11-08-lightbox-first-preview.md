@@ -54,8 +54,8 @@
 
 - [x] Independent reviewer checks identity/cache/error safety; repair actionable findings.
 - [x] Run appropriate units, browser groups and serial native suite; compare first-preview dependency behavior.
-- [ ] Commit final source, build final 2.0.50 EXE/MSI and inspect both complete payloads/runtime/source closures.
-- [ ] Merge/push master and annotated release tag; post EXE + MSI to #swghermes and read both back.
+- [x] Commit final source, build final 2.0.50 EXE/MSI and inspect both complete payloads/runtime/source closures.
+- [x] Merge/push master and annotated release tag; post EXE + MSI to #swghermes and read both back.
 
 ## Execution ledger
 
@@ -66,3 +66,4 @@
 - Task 2: complete — bounded-two metadata overlap passes six focused tests and an explicit real-tool probe; generated fixture cold 2,610 ms / warm 46 ms with unchanged bytes. Full serial native suite green (386 passed, 30 opt-in ignored).
 - Review: same-root remount, foreground inspection priority, missing Camera JPEG fallback and unresolved-selection cleanup repaired. Original-read action readiness retained after legacy regression caught early rating. Independent final source review has no remaining material findings.
 - Ruling: 2.0.49 tag/package checkpoint stays unchanged, but its uploads were never finalized/shared. A final failure-path test caught unrelated expansion overwriting selected-folder Retry status; the surgical phase-ownership fix and tenth regression pass. Deliver 2.0.50 instead of rewriting a published tag. Native implementation is unchanged.
+- Task 3: complete — 2.0.50 built source `766bde5c`, package receipt/tag `072148ac`, both extracted packages/runtime/source closures and relocated RAW smoke verified. EXE parent `1794120372.112779` and MSI reply `1794120394.219089` read back with exact hashes/byte counts. Actual PC/storage speed is a user retest, not a claimed fixture result.
