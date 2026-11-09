@@ -61,5 +61,6 @@ export function useLightboxFacts(root:string,folder:string,refreshKey:unknown){
   const current=model.current;
   return {data:current.data,version:current.version,loading:current.loading,saving:current.saving,error:current.error||reviewWriter.error(root),refresh,mark,
     prepareAutomatic:(node:TreeNode)=>prepare(node,true),
+    failedValue:(node:TreeNode)=>reviewWriter.failedValue(root,node.path),
     failedFor:(node?:TreeNode)=>!!node&&reviewWriter.failedFor(root,node.path),getData:()=>model.current.data};
 }

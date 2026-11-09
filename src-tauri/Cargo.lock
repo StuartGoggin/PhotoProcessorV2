@@ -2983,7 +2983,7 @@ dependencies = [
 
 [[package]]
 name = "photogogo-v2"
-version = "2.0.52"
+version = "2.0.53"
 dependencies = [
  "ajazz-sdk",
  "anyhow",

@@ -10,6 +10,7 @@ export class ReviewWriteQueue {
   private failures=new Map<string,{request:ReviewWriteRequest;message:string}>();
   constructor(private persist:(request:ReviewWriteRequest)=>Promise<ReviewWriteReceipt>){}
   private key(root:string,path:string){return JSON.stringify([root,neutralPath(path)]);}
+  failedValue(root:string,path:string){return this.failures.get(this.key(root,path))?.request.reviewed;}
   failedFor(root:string,path:string){return this.failures.has(this.key(root,path));}
   error(root:string,path?:string){return [...this.failures.values()].filter(f=>f.request.root===root&&(!path||neutralPath(f.request.relativePath)===neutralPath(path))).slice(-1)[0]?.message??"";}
   async settled(){let current:Promise<void>;do{current=this.tail;await current;}while(current!==this.tail);}

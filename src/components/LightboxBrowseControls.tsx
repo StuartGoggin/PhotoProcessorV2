@@ -1,7 +1,7 @@
 import type {LightboxBrowse,QuickView} from "../utils/lightboxBrowse";
 
-export default function LightboxBrowseControls({value,onChange,disabled,shown,total,folder,pending,onReset}:{
-  value:LightboxBrowse;onChange:(value:LightboxBrowse)=>void;disabled:boolean;shown:number;total:number;folder:string;pending:boolean;onReset:()=>void;
+export default function LightboxBrowseControls({value,onChange,disabled,shown,total,folder,pending,unpairedRaw,onReset}:{
+  value:LightboxBrowse;onChange:(value:LightboxBrowse)=>void;disabled:boolean;shown:number;total:number;folder:string;pending:boolean;unpairedRaw:number;onReset:()=>void;
 }){
   const patch=(changes:Partial<LightboxBrowse>)=>onChange({...value,...changes});
   const presets:[QuickView,string][]=[["all","All"],["needsReview","Needs review"],["reviewed","Reviewed"],["selected","Google-selected"],["rated","Rated"],["favourites","Favourites"]];
@@ -14,6 +14,7 @@ export default function LightboxBrowseControls({value,onChange,disabled,shown,to
       <button type="button" className="min-h-11 px-3 text-xs text-cyan-200 hover:text-white" disabled={disabled} onClick={onReset}>Reset view</button>
     </div>
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400"><strong className="text-gray-200" role="status" aria-label="Matching photo count">Showing {shown.toLocaleString()} of {total.toLocaleString()} originals</strong><span title={folder}>{folder?"In this folder · "+folder.split("/").slice(-1)[0]:"Staging root · choose a photo/folder to narrow the view"}</span>{pending&&<span className="text-amber-200">Filter information incomplete · uncertain photos stay visible</span>}<span title="Capture time is taken from timestamped imported filenames. Unknown dates and sizes stay last. Rated uses the verified Camera JPEG owner. Filters apply to this folder; other folders remain available.">ⓘ Folder view only · remembered on this PC</span></div>
-    {value.quick==="needsReview"&&<p className="text-[11px] text-gray-400">Saved ratings, Trash and selection/favourite changes mark a capture Reviewed. Older decisions are not migrated. Use M to mark as needing review again, or Reviewed &amp; next to record progress.</p>}
+    <label className="flex items-center gap-2 text-xs text-gray-300 min-h-9"><input type="checkbox" aria-label="Show unpaired RAW files" className="w-5 h-5 accent-cyan-400" checked={value.showUnpairedRaw} disabled={disabled} onChange={e=>patch({showUnpairedRaw:e.target.checked})}/>Show unpaired RAW files<span className="text-gray-400">{unpairedRaw>0?`${unpairedRaw.toLocaleString()} ${value.showUnpairedRaw?"available":"hidden"} in this folder · paired RAW is available from its JPEG row`:"RAW-only folders are always shown"}</span></label>
+    {value.quick==="needsReview"&&<p className="text-[11px] text-gray-400">Saved ratings, Trash and selection/favourite changes mark a capture Reviewed. Existing positive ratings, Trash and Google selections also count as Reviewed. An explicit Reviewed choice takes priority; uncertain records stay visible. Use M to mark as needing review again, or Reviewed &amp; next to record progress.</p>}
   </section>;
 }

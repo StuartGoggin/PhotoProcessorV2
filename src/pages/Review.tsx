@@ -16,7 +16,7 @@ import { lightboxDials } from "../controller/lightboxBindings";
 import type { ControllerKey } from "../controller/types";
 import LightboxBrowseControls from "../components/LightboxBrowseControls";
 import {useLightboxFacts} from "../hooks/useLightboxFacts";
-import {readLightboxBrowse,defaultLightboxBrowse,LIGHTBOX_BROWSE_KEY,projectLightboxCatalogue,photoReviewState,relatedNodes,type LightboxBrowse} from "../utils/lightboxBrowse";
+import {readLightboxBrowse,defaultLightboxBrowse,LIGHTBOX_BROWSE_KEY,projectLightboxCatalogue,photoReviewState,photoReviewEvidence,reviewIdentityCounts,unpairedRawCount,relatedNodes,type LightboxBrowse} from "../utils/lightboxBrowse";
 
 const emptyPan = () => [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
 const frameId = (context?: ReviewContext) => context ? JSON.stringify([context.root, context.path, context.epoch, context.cropped]) : "";
@@ -49,7 +49,9 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
   const curation = useGooglePhotoCuration(selectedPhoto && identityReady ? stagingDir : "", catalogueRevision, selectedPhoto?.node.path);
   const facts = useLightboxFacts(stagingDir,review.browseFolder,catalogueRevision);
   const browseProjection = useMemo(()=>(base:Parameters<typeof projectLightboxCatalogue>[0])=>projectLightboxCatalogue(base,browse,facts.data,review.browseFolder,node=>pinFailures.current&&facts.failedFor(node)),[browse,facts.version,review.browseFolder,stagingDir]);
-  const reviewStatus = selectedPhoto ? photoReviewState(selectedPhoto,facts.data,review.reviewAliases(selectedPhoto.node)) : "unknown";
+  const reviewCounts=useMemo(()=>reviewIdentityCounts(review.folderCaptures),[catalogueRevision,review.browseFolder,stagingDir]);
+  const reviewEvidence=review.selectedCapture?photoReviewEvidence(review.selectedCapture,facts.data,review.reviewAliases(review.selectedCapture.node),reviewCounts):null;
+  const reviewStatus=reviewEvidence?.state??"unknown";
   function changeBrowse(value:LightboxBrowse){pinFailures.current=false;manualView.current++;setBrowse(value);}
   useEffect(()=>{try{localStorage.setItem(LIGHTBOX_BROWSE_KEY,JSON.stringify(browse));}catch{}},[browse]);
   useEffect(()=>{if(curation.confirmedVersion)void facts.refresh();},[curation.confirmedVersion,facts.refresh]);
@@ -188,7 +190,7 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
     if(id==="reviewed-toggle"||id==="reviewed-next"){
       if(curation.hasPending()||facts.loading||!facts.data?.review||!photo.node.sourceStamp||review.reviewAliases(photo.node)!==1){setFeedback("Wait for this original's review information and identity checks, or retry folder information.");return;}
       const next=id==="reviewed-next"?review.nextBrowsePath(context):undefined;
-      const reviewed=id==="reviewed-next"||photoReviewState(photo,facts.getData(),review.reviewAliases(photo.node))!=="reviewed";
+      const reviewed=desired??(id==="reviewed-next"||photoReviewState(review.selectedCapture??photo,facts.getData(),review.reviewAliases(photo.node),reviewCounts)!=="reviewed");
       actionBusy.current=true;setBusy(true);
       try{
         const saved=await facts.mark(photo.node,reviewed);
@@ -238,7 +240,7 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
           : { selected: id === "select-active-next" ? true : desired ?? !asset.selected },()=>afterSaved());
         if (saved && id === "select-active-next" && review.isContextCurrent(context)) review.applyBrowseProjection(base=>projectLightboxCatalogue(base,browse,facts.getData(),review.browseFolder),false,capturedNext,context.root);
       }
-      if(primarySaved&&!reviewedSaved&&alive.current&&review.getSnapshot()?.context.root===context.root)setFeedback("Decision saved; Reviewed status was not saved. Use Mark reviewed to retry.");
+      if(primarySaved&&!reviewedSaved&&alive.current&&review.getSnapshot()?.context.root===context.root)setFeedback("Decision saved; Reviewed status was not saved. Use Retry Reviewed to retry.");
       else if (sequential && alive.current && review.isContextCurrent(context)) {
         setFeedback(saved ? "Saved" : "Review did not advance. Check the error or reload this photo before retrying.");
       }
@@ -317,7 +319,7 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
         <button className="min-h-11 min-w-11 text-gray-400" disabled={busy || renaming} onClick={() => void execute("refresh")} title="Refresh photos (R)" aria-label="Refresh photos">↺</button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        <FileTree nodes={tree} keyboardNavigation disabled={busy || renaming || curation.saving || facts.saving} selected={selected?.path}
+        <FileTree nodes={tree} describeFile={review.describeFile} keyboardNavigation disabled={busy || renaming || curation.saving || facts.saving} selected={selected?.path}
           onFolderMenu={(node, anchor, point) => { if (!actionBusy.current && !curation.hasPending() && !facts.saving) naming.openMenu(node.path, anchor, point); }}
           onExpand={node=>{if(!actionBusy.current&&!curation.hasPending()&&!facts.saving){if(!selectedPhoto)review.setBrowseFolder(node.path);void review.loadFolder(node.path);}}}
           onSelect={node => { if (!actionBusy.current && !curation.hasPending() && !facts.saving) void review.selectNode(node).then(shown => { if (shown) focusReview(); }); }} />
@@ -346,13 +348,15 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
         </>}
         <button type="button" className="btn-secondary min-h-11 px-3 text-xs ml-auto" disabled={busy} onClick={() => void execute("help")} aria-label="Keyboard and controller help" title="Keyboard & Controller Help (F1 / ?)">⌨ Keys & controller</button>
       </div>
+      {reviewEvidence?.source==="history"&&<p className="px-3 py-1 text-xs text-emerald-200" data-testid="lightbox-legacy-reviewed">Reviewed from existing rating, Trash or Google selections · M can mark it as needing review.</p>}
+      {selectedPhoto&&facts.failedFor(selectedPhoto.node)&&<div className="px-3 py-2 text-xs text-amber-200 flex gap-3 items-center border-b border-surface-600" role="status"><span>The review update was not saved. Retry the intended flag only; M still toggles it manually.</span><button type="button" className="btn-secondary min-h-11 text-xs" disabled={disabled||facts.loading||facts.saving||!facts.data?.review||!selectedPhoto.node.sourceStamp||review.reviewAliases(selectedPhoto.node)!==1} onClick={()=>void execute("reviewed-toggle",facts.failedValue(selectedPhoto.node))}>{facts.failedValue(selectedPhoto.node)===false?"Retry Needs review":"Retry Reviewed"}</button></div>}
       {facts.saving&&<p role="status" className="px-3 py-1 text-xs text-cyan-200">Saving Reviewed status…</p>}
-      <LightboxBrowseControls value={browse} onChange={changeBrowse} disabled={busy||renaming||curation.saving||facts.saving||interactionSuspended} shown={review.shownInFolder} total={review.totalInFolder} folder={review.browseFolder} pending={facts.loading||!!currentInspection} onReset={()=>changeBrowse({...defaultLightboxBrowse})}/>
+      <LightboxBrowseControls value={browse} onChange={changeBrowse} disabled={busy||renaming||curation.saving||facts.saving||interactionSuspended} shown={review.shownInFolder} total={review.totalInFolder} folder={review.browseFolder} pending={facts.loading||!!currentInspection} unpairedRaw={unpairedRawCount(review.folderCaptures)} onReset={()=>changeBrowse({...defaultLightboxBrowse})}/>
       {selectedPhoto&&review.reviewAliases(selectedPhoto.node)>1&&<p className="px-3 py-2 text-xs text-amber-200 border-b border-surface-600" role="status">Several originals share this review identity. Ambiguous photos stay visible; resolve the duplicate before marking Reviewed or relying on selection filters.</p>}
       {(facts.error||facts.data?.reviewWarning||facts.data?.selectionWarning)&&<div className="px-3 py-2 text-xs text-amber-200 border-b border-surface-600 flex gap-3 items-center flex-wrap" aria-label="Folder review information"><span>{facts.error||facts.data?.reviewWarning||facts.data?.selectionWarning} Uncertain photos stay visible; other photo decisions remain available.</span><button type="button" className="btn-secondary min-h-11 text-xs" disabled={facts.loading||facts.saving||curation.saving} onClick={()=>void facts.refresh()}>Retry folder information</button></div>}
       {!selected&&review.totalInFolder>0&&review.shownInFolder===0&&<div className="p-6 text-sm text-gray-300" role="status">No photos match this folder view. Change a filter or use Reset view; no files were removed.</div>}
       {selected && <div className="px-3 py-1.5 bg-surface-800 text-xs text-gray-400 flex flex-wrap items-center gap-2 border-b border-surface-700">
-        <span className="truncate flex-1 min-w-0" title={selected.name}>{selected.name}</span>
+        <span className="truncate flex-1 min-w-0" title={selectedPhoto?.original.name??selected.name}>{selectedPhoto?.original.name??selected.name}</span>
         <span className="text-cyan-200">Active: {labels[activePanel]}</span>
         <span role="status" aria-live="polite" className={busy ? "text-amber-200" : "text-cyan-200"}>{busy ? "Saving decision…" : curation.saving ? "Saving selections… wait before closing" : feedback || (ready ? "Ready to review" : displayReady ? "Preview ready · decisions paused" : "Loading photo…")}</span>
       </div>}

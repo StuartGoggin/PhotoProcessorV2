@@ -463,6 +463,9 @@ export function useReview() {
   return {
     tree, selected, siblings, siblingIdx, images, imageLoading, imageErrors, inspection, zoom, loading, error, sourceNotice, renaming, stagingDir,
     cropped, selectedPhoto, catalogueRevision, originalSource, originalInfo,
+    selectedCapture:selected ? baseCatalogue.current.photos.get(selected.path) ?? null : null,
+    folderCaptures:folderPhotos,
+    describeFile:(node:TreeNode)=>{const photo=baseCatalogue.current.photos.get(node.path);const jpeg=photo?.cameraJpeg;return jpeg?{name:jpeg.name,size:jpeg.size,badge:"RAW",hint:"Camera JPEG · RAW alternative available"}:undefined;},
     trashed: selectedPhoto ? isTrashed((selectedPhoto.cameraJpeg ?? selectedPhoto.node).name) : false,
     stars: selectedPhoto ? parseStars((selectedPhoto.cameraJpeg ?? selectedPhoto.node).name) : 0,
     refreshTree, selectNode, loadFolder, retryImage, imageFailed, handleStars, handleTrash, navigate, navigateToEdge, setZoom, setCropVersion, setOriginalSource,

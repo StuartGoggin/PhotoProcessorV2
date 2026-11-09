@@ -31,6 +31,15 @@ const untag = (value: string) => value.replace(/\{(?:Like o{1,3}|trash|Out of Fo
 const file = (name: string, parent = ""): TreeNode => {const size=fixture.__controlsFileSizes?.[name]??32768;return {type:"file", name, path:parent ? `${parent}/${name}` : name, size,sourceStamp:`${size}:1`,curationKey:neutralPhotoName(name)};};
 function makeTree(): TreeNode {
   if(fixture.__controlsLargeCount)return {type:"dir",name:"Large demo library",path:"",children:Array.from({length:fixture.__controlsLargeCount},(_,i)=>({...file(`20261109_100000_frame-${String(i).padStart(4,"0")}.jpg`),size:i+1,sourceStamp:`${i+1}:1`}))};
+  if(fixture.__controlsJpegFirstPairs)return {type:"dir",name:"JPEG-first pairing fixture",path:"",children:[
+    ...["Event","Elsewhere"].map(parent=>({type:"dir" as const,name:parent,path:parent,children:[
+      {...file("01-horse.CR3",parent),captureMetadataPending:true}, {...file("01-horse.JPG",parent),captureMetadataPending:true},
+      file("01-horse_BW.jpg",parent),file("01-horse_improved.jpg",parent),file("02-rider.jpg",parent),
+      {...file("03-raw-only.CR3",parent),captureMetadataPending:true},
+      {...file("04-unmatched.CR3",parent),captureMetadataPending:true},{...file("04-different.JPG",parent),captureMetadataPending:true},
+    ]})),
+    {type:"dir",name:"RawOnly",path:"RawOnly",children:[{...file("only.CR3","RawOnly"),captureMetadataPending:true}]},
+  ]};
   if (fixture.__controlsRawWorkflow) return {type:"dir",name:"RAW workflow",path:"",children:[
     {...file("01-raw.CR3"),cameraJpeg:"01-camera{Like oo}.JPG"},file("01-camera{Like oo}.JPG"),file("01-camera_improved.jpg"),
     {...file("01-finish.jpg"),rawSource:"01-raw.CR3",rawKind:"developed"},

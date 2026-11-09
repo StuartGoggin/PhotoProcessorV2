@@ -22,3 +22,5 @@ const order=[],serial=new ReviewWriteQueue(async r=>{order.push(r.reviewed);retu
 console.log("PASS rapid intents remain ordered and an explicit later manual clear wins");
 const bounded=new ReviewWriteQueue(async r=>receipt(r));const held=Array.from({length:64},()=>bounded.defer(identity));assert.throws(()=>bounded.defer(identity),/pending/);await Promise.all(held.map(t=>t.complete(false)));await bounded.settled();
 console.log("PASS admission is bounded and cancelling every primary releases the read barrier");
+for(const reviewed of [false,true]){const failed=new ReviewWriteQueue(async()=>{throw Error("cannot save");});await assert.rejects(failed.enqueue({...identity,reviewed}));assert.equal(failed.failedValue("root-a","event/horse{trash}.jpg"),reviewed);assert.equal(failed.failedValue("root-b","event/horse.jpg"),undefined);assert.equal(failed.failedValue("root-a","elsewhere/horse.jpg"),undefined);}
+console.log("PASS failure retries preserve the intended true or false value and exact root/folder identity");

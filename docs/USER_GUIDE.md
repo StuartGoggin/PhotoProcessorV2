@@ -1,10 +1,10 @@
 # PhotoGoGo User Guide
 
-Windows desktop edition • Version 2.0.52 • 9 November 2026
+Windows desktop edition • Version 2.0.53 • 9 November 2026
 
 PhotoGoGo helps you copy camera media into a working library, organise events, review and develop photographs, assemble videos, extract still photographs from video, and transfer selected results to Google Photos or an archive.
 
-This guide covers PhotoGoGo 2.0.52. It is organised around tasks rather than development history. The normal photo path uses camera JPEGs; RAW development is optional for individual photographs or a deliberate batch. The video paths are separate: Video Studio creates finished videos, while Video snapshots creates photographs from original video frames.
+This guide covers PhotoGoGo 2.0.53. It is organised around tasks rather than development history. The normal photo path uses camera JPEGs; RAW development is optional for individual photographs or a deliberate batch. The video paths are separate: Video Studio creates finished videos, while Video snapshots creates photographs from original video frames.
 
 **Start with the quick workflows in chapter 1.** Use the later chapters for settings, detailed controls and recovery. Examples use imaginary event names and folders. Screen labels are written in bold. Generated previews help you make choices; the full export or render is the deliverable.
 
@@ -212,7 +212,7 @@ An MP4 task preview is a short, muted draft, up to five seconds at reduced resol
 
 The folder tree and next/previous controls visit originals or verified captures. Matching generated versions appear in the comparison panels instead of becoming extra navigation stops. A suffix alone is not proof of ownership: ambiguous and orphan files are not silently hidden.
 
-For a verified CR3/JPEG pair, **Camera JPEG** is the normal view, with that JPEG’s B&W, Enhanced and crop versions. Choose **Camera RAW preview** deliberately to inspect the RAW reference and its own developed versions. The choice belongs to that photograph, not the whole event.
+For a verified CR3/JPEG pair, the tree shows the **camera JPEG filename and size**, with a **RAW** badge. **Camera JPEG** is the normal view, with that JPEG’s B&W, Enhanced and crop versions. Choose **Camera RAW preview** deliberately to inspect the RAW reference and its own developed versions. The choice belongs to that photograph, not the whole event.
 
 ### Review an event
 
@@ -227,21 +227,23 @@ The cyan active border identifies the panel affected by active-panel commands. *
 
 For verified pairs, ratings and Trash use the Camera JPEG review file in both views. If older RAW and JPEG review tags disagree, a notice explains the difference and both existing tags remain. A source-family switch never transfers crop geometry or changes upload selections.
 
+In a folder containing camera JPEG originals, unpaired RAW files are hidden from normal browsing, including while capture checks run. **Show unpaired RAW files** reveals them; its count explains how many are hidden. RAW-only folders are always shown, even when they contain developed JPEG outputs. This is a view preference: no original is deleted, no files are paired by filename, and **Develop RAW alternative** stays available on each verified JPEG/RAW capture.
+
 ### Find your next photograph
 
 The **Folder view** bar applies to the current folder. Choose **All**, **Needs review**, **Reviewed**, **Google-selected**, **Rated** or **Favourites**. Google-selected and Favourites match a capture when any of its verified Original, B&W, Enhanced or cropped versions has that saved flag. Generated versions remain in their comparison panels.
 
-Use **Trash** independently: **Hide Trash** is the initial setting, **Include Trash** shows both states, and **Only Trash** helps inspect rejected photographs. The matching count compares visible photographs with all originals in this folder. Other folders stay available in the tree. **Reset view** returns to All, Hide Trash, capture time ascending. Your view preferences are remembered on this PC.
+Use **Trash** independently: **Hide Trash** is the initial setting, **Include Trash** shows both states, and **Only Trash** helps inspect rejected photographs. The matching count compares visible photographs with all originals in this folder. Other folders stay available in the tree. **Reset view** returns to All, Hide Trash, capture time ascending, with unpaired RAW hidden in mixed folders. Your view preferences are remembered on this PC.
 
-Sort by **Capture time**, **Filename**, **Rating** or **Original size**, then change the direction. Capture time uses the imported `YYYYMMDD_HHMMSS` filename, avoiding a slow metadata scan; unknown dates and sizes sort last. The tree, Previous/Next, Home/End and controller navigation use the same filtered order.
+Sort by **Capture time**, **Filename**, **Rating** or **Original size**, then change the direction. Capture time uses the imported `YYYYMMDD_HHMMSS` filename, avoiding a slow metadata scan; unknown dates and sizes sort last. Filename and original-size sorting use the displayed camera JPEG for verified pairs. The tree, Previous/Next, Home/End and controller navigation use the same filtered order.
 
 ### Record a review decision
 
 **Reviewed** records your progress. A successfully saved rating/tag, Trash or restore action, or Google selection/favourite change on any Original, B&W, Enhanced or cropped version automatically marks the capture Reviewed. Clearing a rating or unchecking a selection also counts as a deliberate review action. Press **M** or **Mark reviewed** to toggle the flag manually, including returning a capture to Needs review. Use **Shift+M** or **Reviewed & next** to save the decision and move to the next matching photograph. Browsing, zooming, choosing RAW/JPEG or opening an editor never marks a photograph as reviewed.
 
-Older photographs without an explicit review decision start in Needs review, even if they already have ratings or Google flags. New actions mark Reviewed; existing decisions are not retrospectively migrated. Decisions live beside their originals in `.photogogo-review.json`, so a normal event-folder rename carries them with the folder. The Archive option to include **PhotoGoGo library metadata** controls whether this record is backed up; it is excluded from a media-only archive.
+Older photographs with a positive rating, Trash tag or saved Google selection/favourite on a verified version are recognised as Reviewed. A notice says when this comes from existing decisions. A valid explicit Reviewed choice takes priority, including a manual Needs review choice. No metadata is rewritten in bulk; an unselected/unrated photograph alone cannot prove that you previously reviewed it. Decisions live beside their originals in `.photogogo-review.json`, so a normal event-folder rename carries them with the folder. The Archive option to include **PhotoGoGo library metadata** controls whether this record is backed up; it is excluded from a media-only archive.
 
-A save must be acknowledged before the current photograph leaves a filtered view. A failed primary save does not mark Reviewed. If the decision saves but its Reviewed update fails, the decision stays saved and the photograph stays open: use **Mark reviewed** to retry only that flag. While capture identity or folder information is uncertain, photographs remain visible with a notice; they are never silently labelled Reviewed. If an original was replaced or its identity is ambiguous, refresh and resolve the warning before recording a new decision. A newly established RAW/JPEG pair does not inherit a previous JPEG-only review decision automatically.
+A save must be acknowledged before the current photograph leaves a filtered view. A failed primary save does not mark Reviewed. If the decision saves but its Reviewed update fails, the decision stays saved and the photograph stays open: use **Retry Reviewed** to save only that flag as Reviewed, without repeating the photo action or advancing. **M** keeps its manual toggle meaning. A failed manual clear offers **Retry Needs review**, preserving that intended clear. While capture identity or folder information is uncertain, photographs remain visible with a notice; they are never silently labelled Reviewed. If an original was replaced or its identity is ambiguous, refresh and resolve the warning before recording a new decision. A newly verified RAW/JPEG pair retains a valid previous JPEG-only Reviewed decision when no canonical decision exists. Stale or ambiguous records remain uncertain. A matching filename alone never transfers a decision.
 
 ### Understand missing and delayed images
 
@@ -716,7 +718,7 @@ A selection, approval, preview, queued job and verified result are different sta
 
 ### Version and evidence
 
-The media workflows in this guide were checked against released PhotoGoGo 2.0.51, application source **8ffa47b**, with package record **6bcf6ee** and release delivery recorded on 9 November 2026. The embedded illustrated Help centre is added in 2.0.52; its validation is recorded separately in the 2.0.52 validation note. This guide describes application behavior; it does not substitute for testing your own media, account permissions, hardware or storage. The paired-camera, controller and optional-environment conditions described above still apply. Screenshots use demo settings and illustrative media, with no private photographs or accounts.
+The media workflows in this guide were checked against released PhotoGoGo 2.0.51, application source **8ffa47b**, with package record **6bcf6ee** and release delivery recorded on 9 November 2026. The embedded illustrated Help centre is added in 2.0.53; its validation is recorded separately in the 2.0.53 validation note. This guide describes application behavior; it does not substitute for testing your own media, account permissions, hardware or storage. The paired-camera, controller and optional-environment conditions described above still apply. Screenshots use demo settings and illustrative media, with no private photographs or accounts.
 
 Application reference notes are in the repository’s docs folder: **lightbox-controls.md**, **cr3-raw-development.md**, **PHOTO_PROCESS_AND_LIGHTBOX.md**, **LIGHTBOX_CROPPING.md**, **device-aware-imports.md**, **name-events-workflow.md**, **STUDIO_FINISHING.md**, **studio-camera-audio.md**, **studio-prevent-rotation.md**, **STUDIO_RELINK_AND_PREVIEW.md**, **STUDIO_REVIEW_AND_SCORE_DEFAULTS.md**, **VIDEO_SNAPSHOT_SESSIONS.md**, **google-photos-transfer.md**, **archive-transfer.md**, and **akp03e-controller.md**. Historical release/checkpoint notes can describe older behavior; use this guide’s version boundary and the current screen labels.
 

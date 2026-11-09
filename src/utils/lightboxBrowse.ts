@@ -6,7 +6,7 @@ import { parseStars, isTrashed } from "./fileNaming";
 export type QuickView = "all" | "needsReview" | "reviewed" | "selected" | "rated" | "favourites";
 export interface LightboxBrowse {
   quick: QuickView; trash: "hide" | "include" | "only";
-  sort: "capture" | "name" | "rating" | "size"; direction: "asc" | "desc";
+  sort: "capture" | "name" | "rating" | "size"; direction: "asc" | "desc"; showUnpairedRaw: boolean;
 }
 export interface ReviewEntry { reviewed: boolean; sourceStamp: string }
 export interface FolderFacts {
@@ -14,7 +14,7 @@ export interface FolderFacts {
   selections: Record<string, {selected: boolean; favourite: boolean}> | null;
   reviewWarning?: string | null; selectionWarning?: string | null;
 }
-export const defaultLightboxBrowse: LightboxBrowse = {quick:"all",trash:"hide",sort:"capture",direction:"asc"};
+export const defaultLightboxBrowse: LightboxBrowse = {quick:"all",trash:"hide",sort:"capture",direction:"asc",showUnpairedRaw:false};
 export const LIGHTBOX_BROWSE_KEY = "photogogo.lightbox.browse.v1";
 const tags = /\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi;
 export const neutralPhotoName = (name: string) => name.replace(tags, "").toLowerCase();
@@ -29,18 +29,54 @@ export function parseLightboxBrowse(input: unknown): LightboxBrowse {
     trash: ["hide","include","only"].includes(value.trash ?? "") ? value.trash! : defaultLightboxBrowse.trash,
     sort: ["capture","name","rating","size"].includes(value.sort ?? "") ? value.sort! : defaultLightboxBrowse.sort,
     direction: value.direction === "desc" ? "desc" : "asc",
+    showUnpairedRaw: value.showUnpairedRaw === true,
   };
 }
 export function readLightboxBrowse(): LightboxBrowse {
   try {return parseLightboxBrowse(JSON.parse(localStorage.getItem(LIGHTBOX_BROWSE_KEY) ?? "null"));}
   catch {return {...defaultLightboxBrowse};}
 }
-export function photoReviewState(photo: LightboxPhoto, facts: FolderFacts | null, aliases = 1): "reviewed" | "needsReview" | "unknown" {
-  if (!facts?.review || aliases !== 1 || photo.node.captureMetadataPending || photo.node.rawWarning) return "unknown";
-  const entry = facts.review.entries[reviewKey(photo.node)];
-  if (!entry) return "needsReview";
-  if (!photo.node.sourceStamp || entry.sourceStamp !== photo.node.sourceStamp || typeof entry.reviewed !== "boolean") return "unknown";
-  return entry.reviewed ? "reviewed" : "needsReview";
+export type ReviewEvidence = {state:"reviewed"|"needsReview"|"unknown"; source:"explicit"|"history"|"none"|"unknown"};
+/** Counts exact loaded files once, including related versions; a neutral key is not a unique file ID. */
+export function reviewIdentityCounts(photos: Iterable<LightboxPhoto>): Map<string,number> {
+  const paths=new Map<string,TreeNode>();
+  for(const photo of photos)for(const node of relatedNodes(photo))paths.set(node.path,node);
+  const counts=new Map<string,number>();
+  for(const node of paths.values()){const key=reviewKey(node);counts.set(key,(counts.get(key)??0)+1);}
+  return counts;
+}
+export function photoReviewEvidence(photo:LightboxPhoto,facts:FolderFacts|null,aliases=1,counts=reviewIdentityCounts([photo])):ReviewEvidence {
+  const unknown:ReviewEvidence={state:"unknown",source:"unknown"};
+  if(!facts?.review||aliases!==1||photo.node.captureMetadataPending||photo.node.rawWarning)return unknown;
+  // Canonical decisions win. A proven JPEG decision can predate discovery of its RAW companion.
+  for(const node of [photo.node,photo.cameraJpeg]){
+    if(!node||!Object.prototype.hasOwnProperty.call(facts.review.entries,reviewKey(node)))continue;
+    const entry=facts.review.entries[reviewKey(node)];
+    if(counts.get(reviewKey(node))!==1||!node.sourceStamp||!entry||entry.sourceStamp!==node.sourceStamp||typeof entry.reviewed!=="boolean")return unknown;
+    return {state:entry.reviewed?"reviewed":"needsReview",source:"explicit"};
+  }
+  const nodes=relatedNodes(photo);
+  if(nodes.some(node=>parseStars(node.name)>0||isTrashed(node.name)))return {state:"reviewed",source:"history"};
+  if(!facts.selections)return unknown;
+  let ambiguous=false;
+  for(const node of nodes){
+    const flag=facts.selections[reviewKey(node)];
+    if(flag?.selected===true||flag?.favourite===true){
+      if(counts.get(reviewKey(node))===1)return {state:"reviewed",source:"history"};
+      ambiguous=true;
+    }
+  }
+  return ambiguous?unknown:{state:"needsReview",source:"none"};
+}
+export function photoReviewState(photo:LightboxPhoto,facts:FolderFacts|null,aliases=1,counts?:Map<string,number>):ReviewEvidence["state"] {
+  return photoReviewEvidence(photo,facts,aliases,counts).state;
+}
+/** Presentation only: physical identity and all writes continue to use the catalogue node. */
+export const lightboxDisplayNode=(photo:LightboxPhoto)=>photo.cameraJpeg??photo.node;
+const isRaw=(photo:LightboxPhoto)=>/\.(cr3|dng)$/i.test(photo.node.name);
+export function unpairedRawCount(photos:LightboxPhoto[]):number {
+  const mixed=photos.some(photo=>!!photo.cameraJpeg||/\.jpe?g$/i.test(photo.node.name));
+  return mixed?photos.filter(photo=>isRaw(photo)&&!photo.cameraJpeg).length:0;
 }
 export function relatedNodes(photo: LightboxPhoto): TreeNode[] {
   const nodes = new Map<string, TreeNode>(), seen = new Set<LightboxPhoto>();
@@ -65,10 +101,13 @@ export function projectLightboxCatalogue(base: Catalogue, options: LightboxBrows
   const scoped = base.folders.get(folder) ?? [];
   const aliases = new Map<string,number>();
   for(const photo of scoped){const key=reviewKey(photo.node);aliases.set(key,(aliases.get(key)??0)+1);}
-  const owner = (photo:LightboxPhoto) => photo.cameraJpeg ?? photo.node;
+  const counts=reviewIdentityCounts(scoped);
+  const mixedFolders=new Set([...base.folders].filter(([,photos])=>unpairedRawCount(photos)>0).map(([key])=>key));
+  const owner = lightboxDisplayNode;
   const matches = (photo:LightboxPhoto) => {
-    if (photoFolder(photo.node.path) !== folder) return true;
     if (keepVisible?.(photo.node)) return true; // A confirmed primary change can coexist with a failed Reviewed update.
+    if(!options.showUnpairedRaw&&mixedFolders.has(photoFolder(photo.node.path))&&isRaw(photo)&&!photo.cameraJpeg)return false;
+    if (photoFolder(photo.node.path) !== folder) return true;
     const pending = photo.node.captureMetadataPending || photo.node.rawWarning || owner(photo).captureMetadataPending || owner(photo).rawWarning;
     if (pending) return true; // No silent hiding before native ownership checks finish.
     const trash = isTrashed(owner(photo).name);
@@ -76,7 +115,7 @@ export function projectLightboxCatalogue(base: Catalogue, options: LightboxBrows
     if (options.quick === "all") return true;
     if (options.quick === "rated") return parseStars(owner(photo).name)>0;
     if (options.quick === "reviewed" || options.quick === "needsReview") {
-      const state = photoReviewState(photo,facts,aliases.get(reviewKey(photo.node)));
+      const state = photoReviewState(photo,facts,aliases.get(reviewKey(photo.node)),counts);
       return state === "unknown" || state === (options.quick === "reviewed" ? "reviewed" : "needsReview");
     }
     if (!facts?.selections || (aliases.get(reviewKey(photo.node)) ?? 0) > 1) return true;
@@ -87,14 +126,14 @@ export function projectLightboxCatalogue(base: Catalogue, options: LightboxBrows
   };
   const compare = (a:LightboxPhoto,b:LightboxPhoto) => {
     let difference=0;
-    if(options.sort === "name")difference=collator.compare(neutralPhotoName(a.node.name),neutralPhotoName(b.node.name));
+    if(options.sort === "name")difference=collator.compare(neutralPhotoName(owner(a).name),neutralPhotoName(owner(b).name));
     else {
-      const value=(photo:LightboxPhoto)=> options.sort === "capture" ? captureTime(photo) : options.sort === "rating" ? parseStars(owner(photo).name) : photo.node.sourceStamp===null?undefined:photo.node.size;
+      const value=(photo:LightboxPhoto)=> options.sort === "capture" ? captureTime(photo) : options.sort === "rating" ? parseStars(owner(photo).name) : owner(photo).sourceStamp===null?undefined:owner(photo).size;
       const left=value(a),right=value(b);
       if(left===undefined&&right!==undefined)return 1;if(right===undefined&&left!==undefined)return -1;
       if(left!==undefined&&right!==undefined)difference=left-right;
     }
-    return difference*(options.direction === "desc" ? -1 : 1) || collator.compare(neutralPhotoName(a.node.name),neutralPhotoName(b.node.name)) || a.node.path.localeCompare(b.node.path);
+    return difference*(options.direction === "desc" ? -1 : 1) || collator.compare(neutralPhotoName(owner(a).name),neutralPhotoName(owner(b).name)) || a.node.path.localeCompare(b.node.path);
   };
   const folders=new Map([...base.folders].map(([key,photos])=>[key,photos.filter(matches).sort(compare)]));
   const visible=new Set([...folders.values()].flatMap(photos=>photos.map(photo=>photo.node.path)));

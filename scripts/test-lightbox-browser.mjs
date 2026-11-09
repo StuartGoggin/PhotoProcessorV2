@@ -23,7 +23,8 @@ async function newFixture(options = {}) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10000);
   page.on("pageerror", (error) => failures.push(error.message));
-  await page.addInitScript((initial) => Object.assign(window, initial), options);
+  // This legacy association suite deliberately browses unpaired RAW originals too.
+  await page.addInitScript((initial) => {Object.assign(window, initial);localStorage.setItem("photogogo.lightbox.browse.v1",JSON.stringify({showUnpairedRaw:true}));}, options);
   await page.goto(url, { timeout: 45000, waitUntil: "domcontentloaded" });
   await page.locator(".review-file-tree").getByText("01-rider.jpg", { exact: true }).waitFor();
   return page;

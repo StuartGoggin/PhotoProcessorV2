@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { TreeNode } from "../types";
 
 interface FileTreeProps {
+  describeFile?: (node:TreeNode)=>{name:string;size?:number;badge?:string;hint?:string}|undefined;
   nodes: TreeNode[];
   onSelect?: (node: TreeNode) => void;
   onExpand?: (node: TreeNode) => void;
@@ -16,6 +17,7 @@ function TreeItem({
   depth,
   onSelect,
   onFolderMenu,
+  describeFile,
   selected,
   disabled,
 }: {
@@ -23,12 +25,14 @@ function TreeItem({
   depth: number;
   onSelect?: (n: TreeNode) => void;
   onFolderMenu?: FileTreeProps["onFolderMenu"];
+  describeFile?: FileTreeProps["describeFile"];
   selected?: string;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(depth < 2);
   const isDir = node.type === "dir";
   const isSelected = node.path === selected;
+  const display=(!isDir&&describeFile?.(node))||node;
   useEffect(() => { if (isDir && selected?.startsWith(node.path + "/")) setOpen(true); }, [selected, node.path, isDir]);
 
   return (
@@ -55,14 +59,15 @@ function TreeItem({
         }}
       >
         <span className="flex-shrink-0 text-xs">
-          {isDir ? (open ? "📂" : "📁") : fileIcon(node.name)}
+          {isDir ? (open ? "📂" : "📁") : fileIcon(display.name)}
         </span>
-        <span className="truncate">{node.name}</span>
+        <span className="truncate" title={"hint" in display?display.hint:undefined}>{display.name}</span>
+        {"badge" in display&&display.badge&&<span className="shrink-0 rounded border border-amber-800 px-1 text-[10px] text-amber-200">{display.badge}</span>}
         {isDir && onFolderMenu && <button type="button" className="event-folder-action ml-auto" aria-label={`Event actions for ${node.name}`} title="Event actions (Shift+F10)" disabled={disabled}
           onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onFolderMenu(node, event.currentTarget); }}>⋯</button>}
-        {!isDir && node.size !== undefined && (
+        {!isDir && display.size !== undefined && (
           <span className="ml-auto flex-shrink-0 text-xs text-gray-500">
-            {formatSize(node.size)}
+            {formatSize(display.size!)}
           </span>
         )}
       </div>
@@ -74,7 +79,7 @@ function TreeItem({
               node={child}
               depth={depth + 1}
               onSelect={onSelect}
-              onFolderMenu={onFolderMenu}
+              onFolderMenu={onFolderMenu} describeFile={describeFile}
               selected={selected}
               disabled={disabled}
             />
@@ -85,13 +90,13 @@ function TreeItem({
   );
 }
 
-export default function FileTree({ nodes, onSelect, onExpand, onFolderMenu, selected, disabled = false, keyboardNavigation = false }: FileTreeProps) {
+export default function FileTree({ nodes, onSelect, onExpand, onFolderMenu, describeFile, selected, disabled = false, keyboardNavigation = false }: FileTreeProps) {
   if (nodes.length === 0) {
     return (
       <div className="text-gray-500 text-sm p-4 text-center">No files found</div>
     );
   }
-  if (keyboardNavigation) return <KeyboardFileTree nodes={nodes} onSelect={onSelect} onExpand={onExpand} onFolderMenu={onFolderMenu} selected={selected} disabled={disabled} />;
+  if (keyboardNavigation) return <KeyboardFileTree nodes={nodes} onSelect={onSelect} onExpand={onExpand} onFolderMenu={onFolderMenu} describeFile={describeFile} selected={selected} disabled={disabled} />;
   return (
     <div className="overflow-y-auto h-full py-1">
       {nodes.map((node) => (
@@ -100,7 +105,7 @@ export default function FileTree({ nodes, onSelect, onExpand, onFolderMenu, sele
           node={node}
           depth={0}
           onSelect={onSelect}
-          onFolderMenu={onFolderMenu}
+          onFolderMenu={onFolderMenu} describeFile={describeFile}
           selected={selected}
           disabled={disabled}
         />
@@ -110,7 +115,7 @@ export default function FileTree({ nodes, onSelect, onExpand, onFolderMenu, sele
 }
 
 /** One tab stop, explicit file activation, and folder-local arrow navigation. */
-function KeyboardFileTree({ nodes, onSelect, onExpand, onFolderMenu, selected, disabled }: FileTreeProps) {
+function KeyboardFileTree({ nodes, onSelect, onExpand, onFolderMenu, describeFile, selected, disabled }: FileTreeProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [focused, setFocused] = useState<string | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
@@ -133,7 +138,7 @@ function KeyboardFileTree({ nodes, onSelect, onExpand, onFolderMenu, selected, d
   const tabStop = visible.some(row => row.node.path === focused) ? focused : visible.some(row => row.node.path === selected) ? selected : visible[0]?.node.path;
   function focus(path?: string) { if (path) { setFocused(path); rows.current.get(path)?.focus(); } }
   return <div role="tree" aria-label="Original photo folders" aria-disabled={disabled} className="overflow-y-auto h-full py-1">
-    {visible.map(({ node, depth, parent, open }, index) => <div key={node.path}
+    {visible.map(({ node, depth, parent, open }, index) => {const display=(node.type!=="dir"&&describeFile?.(node))||node;return <div key={node.path}
       ref={element => { if (element) rows.current.set(node.path, element); else rows.current.delete(node.path); }}
       role="treeitem" aria-level={depth + 1} aria-expanded={node.type === "dir" ? open : undefined}
       data-event-folder={node.type === "dir" ? node.path : undefined}
@@ -159,12 +164,13 @@ function KeyboardFileTree({ nodes, onSelect, onExpand, onFolderMenu, selected, d
           if (node.type === "dir") {setExpanded(current => ({ ...current, [node.path]: !open }));if(!open)onExpand?.(node);} else onSelect?.(node);
         }
       }}>
-      <span className="shrink-0 text-xs" aria-hidden="true">{node.type === "dir" ? open ? "📂" : "📁" : fileIcon(node.name)}</span>
-      <span className="truncate">{node.name}</span>
+      <span className="shrink-0 text-xs" aria-hidden="true">{node.type === "dir" ? open ? "📂" : "📁" : fileIcon(display.name)}</span>
+      <span className="truncate" title={"hint" in display?display.hint:undefined}>{display.name}</span>
+        {"badge" in display&&display.badge&&<span className="shrink-0 rounded border border-amber-800 px-1 text-[10px] text-amber-200">{display.badge}</span>}
       {node.type === "dir" && onFolderMenu && <button type="button" className="event-folder-action ml-auto" aria-label={`Event actions for ${node.name}`} title="Event actions (Shift+F10)" disabled={disabled}
         onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onFolderMenu(node, event.currentTarget); }}>⋯</button>}
-      {node.type !== "dir" && node.size !== undefined && <span className="ml-auto shrink-0 text-xs text-gray-500">{formatSize(node.size)}</span>}
-    </div>)}
+      {node.type !== "dir" && display.size !== undefined && <span className="ml-auto shrink-0 text-xs text-gray-500">{formatSize(display.size!)}</span>}
+    </div>})}
   </div>;
 }
 

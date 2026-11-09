@@ -20,7 +20,7 @@ async function pageWith(options = {}) {
   page.setDefaultTimeout(12000); page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript((values) => Object.assign(window, { __controlsRawFixture: true, ...values }), options);
   await page.goto(url, { timeout: 45000, waitUntil: "domcontentloaded" });
-  await tree(page).getByText(options.__controlsLazyMetadata ? "Event" : options.__controlsPairedCrop ? "capture{Like oo}.CR3" : "01-horse.CR3", { exact: true }).waitFor();
+  await tree(page).getByText(options.__controlsLazyMetadata ? "Event" : options.__controlsPairedCrop ? "camera-full.JPG" : "01-horse.JPG", { exact: true }).waitFor();
   if(options.__controlsLazyMetadata)await tree(page).getByText("Elsewhere",{exact:true}).click();
   return page;
 }
@@ -47,7 +47,7 @@ try {
   }
   browser = await chromium.launch({ channel: "msedge", headless: true });
   const pairedCrop = await pageWith({ __controlsPairedCrop:true, __controlsManagedController:true });
-  await tree(pairedCrop).getByText("capture{Like oo}.CR3", {exact:true}).click();
+  await tree(pairedCrop).getByText("camera-full.JPG", {exact:true}).click();
   await pairedCrop.getByRole("combobox",{name:"Original source",exact:true}).selectOption("raw");
   await ready(pairedCrop,"Original RAW","capture{Like oo}.CR3");
   assert.equal(await pairedCrop.getByRole("button",{name:"Crop",exact:true}).isDisabled(),true);
@@ -67,12 +67,12 @@ try {
   await crop.waitFor({state:"detached"});
   await ready(pairedCrop,"Cropped","camera-full_crop.jpg");
   await displayed(pairedCrop,"B&W","camera-full_crop_BW.jpg");await displayed(pairedCrop,"Enhanced","camera-full_crop_improved.jpg");
-  await pairedCrop.getByText("1 / 2",{exact:true}).waitFor();
+  await pairedCrop.getByText("2 / 2",{exact:true}).waitFor();
   const pairedRequest=await pairedCrop.evaluate(()=>window.__controlsCropWrites[0]);
   assert.equal(pairedRequest.path,"camera-full.JPG");assert.equal(pairedRequest.sourceFingerprint,`${root}:camera-full.JPG`);
   assert.equal(pairedRequest.regenerateBw,true);assert.equal(pairedRequest.regenerateEnhanced,true);
-  for(const hidden of ["camera-full.JPG","camera-full_crop.jpg","raw-developed.jpg"])assert.equal(await tree(pairedCrop).getByText(hidden,{exact:true}).count(),0);
-  assert.equal(await tree(pairedCrop).getByText("capture{Like oo}.CR3",{exact:true}).count(),1);
+  for(const hidden of ["capture{Like oo}.CR3","camera-full_crop.jpg","raw-developed.jpg"])assert.equal(await tree(pairedCrop).getByText(hidden,{exact:true}).count(),0);
+  assert.equal(await tree(pairedCrop).getByText("camera-full.JPG",{exact:true}).count(),1);
   await pairedCrop.getByRole("combobox",{name:"Original source",exact:true}).selectOption("raw");
   await ready(pairedCrop,"Original RAW","capture{Like oo}.CR3");await displayed(pairedCrop,"Developed RAW","raw-developed.jpg");
   assert.equal(await pairedCrop.getByRole("button",{name:"Crop",exact:true}).isDisabled(),true);
@@ -80,8 +80,8 @@ try {
   report.checks.push("Paired RAW capture crops only its explicitly selected full Camera JPEG; RAW preview stays ineligible, exact source fingerprint is retained, JPEG crop variants stay grouped, and RAW navigation/ratings/development are preserved");
   await pairedCrop.close();
   const page = await pageWith();
-  for (const hidden of ["01-horse.JPG", "01-horse_BW.jpg", "01-horse_improved.jpg", "01-owned-colour.jpg", "01-owned-bw.jpg", "01-retired.jpg"]) assert.equal(await tree(page).getByText(hidden, { exact: true }).count(), 0);
-  await tree(page).getByText("01-horse.CR3", { exact: true }).click();
+  for (const hidden of ["01-horse.CR3", "01-horse_BW.jpg", "01-horse_improved.jpg", "01-owned-colour.jpg", "01-owned-bw.jpg", "01-retired.jpg"]) assert.equal(await tree(page).getByText(hidden, { exact: true }).count(), 0);
+  await tree(page).getByText("01-horse.JPG", { exact: true }).click();
   await page.getByRole("combobox", { name: "Original source", exact: true }).selectOption("raw");
   await ready(page, "Original RAW", "01-horse.CR3"); await displayed(page, "Developed RAW", "01-owned-colour.jpg"); await displayed(page, "B&W", "01-owned-bw.jpg");
   await page.getByText("1 / 2", { exact: true }).waitFor();
@@ -111,7 +111,7 @@ try {
   report.checks.push("Q / Shift+Q target exact RAW or camera-JPEG originals independently; changing source switches its own comparison family, and E targets the shown JPEG enhancement or explicitly developed RAW file");
 
   const advancing = await pageWith();
-  await tree(advancing).getByText("01-horse.CR3", { exact: true }).click(); await ready(advancing, "Camera JPEG", "01-horse.JPG");
+  await tree(advancing).getByText("01-horse.JPG", { exact: true }).click(); await ready(advancing, "Camera JPEG", "01-horse.JPG");
   await advancing.getByRole("combobox", { name: "Original source", exact: true }).selectOption("cameraJpeg"); await ready(advancing, "Camera JPEG", "01-horse.JPG");
   await hotkey(advancing, "g"); await ready(advancing, "Original", "02-rider.jpg");
   assert.equal(await advancing.evaluate(() => window.__controlsSelectionWrites.at(-1).relativePath), "01-horse.JPG");
@@ -124,13 +124,13 @@ try {
   await page.evaluate(() => { window.__controlsDeferSelection = false; window.__controlsReleaseSelection(); }); await saved(page, 6);
   await page.getByRole("combobox", { name: "Original source", exact: true }).selectOption("cameraJpeg"); await ready(page, "Camera JPEG", "01-horse.JPG");
   await hotkey(page, "1");
-  await tree(page).getByText("01-horse.CR3", { exact: true }).waitFor(); await ready(page, "Camera JPEG", "01-horse{Like o}.JPG");
+  await tree(page).getByText("01-horse{Like o}.JPG", { exact: true }).waitFor(); await ready(page, "Camera JPEG", "01-horse{Like o}.JPG");
   assert.equal(await page.evaluate(() => window.__controlsRenames.at(-1).oldPath), `${root}/01-horse.JPG`);
   assert.equal(await tree(page).getByText("01-horse.JPG", { exact: true }).count(), 0);
   report.checks.push("Source changes wait for pending persistence; ratings preserve the verified Camera JPEG review anchor while RAW navigation and exact JPEG source remain grouped");
 
   const stale = await pageWith({ __controlsDeferImage: "01-horse.JPG" });
-  await tree(stale).getByText("01-horse.CR3", { exact: true }).click();
+  await tree(stale).getByText("01-horse.JPG", { exact: true }).click();
   await stale.getByRole("combobox", { name: "Original source", exact: true }).selectOption("raw");
   await ready(stale, "Original RAW", "01-horse.CR3");
   await stale.getByRole("combobox", { name: "Original source", exact: true }).selectOption("cameraJpeg");
@@ -163,7 +163,7 @@ try {
   await lazy.evaluate(()=>{window.__controlsDeferTree=true;});
   await lazy.getByRole("button",{name:"Refresh photos",exact:true}).click();
   await lazy.waitForFunction(()=>typeof window.__controlsReleaseTree==="function");
-  await tree(lazy).getByText("01-horse.CR3",{exact:true}).click();
+  await tree(lazy).getByText("01-horse.JPG",{exact:true}).click();
   await ready(lazy,"Camera JPEG","Event/01-horse.JPG");
   await lazy.evaluate(()=>{window.__controlsDeferMetadata=true;window.__controlsDeferTree=false;window.__controlsReleaseTree();});
   await lazy.waitForFunction(()=>window.__controlsCalls.filter(c=>c.command==="read_lightbox_folder").length===2);
