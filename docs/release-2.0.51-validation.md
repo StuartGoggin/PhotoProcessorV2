@@ -45,4 +45,15 @@ Both installers were extracted without installing. Application payload hashes ma
 | PhotoGoGoV2_2.0.51_x64_en-US.msi | 222,188,244 | F8BDABB7CEC2501605CB009D0D73D0D157F6AB2C29BFA4F9D93AF72AA26A5DED |
 | photogogo-v2.exe | — | F0AD5ABE3C563AB18658B6112E5FA34904963D031348D4C7D4E9B0387C724607 |
 
-These are unsigned test installers. The 2.0.50 packages are retained for rollback. Source is committed; GitHub publication and Slack delivery receipts follow after those actions are verified.
+These are unsigned test installers. The 2.0.50 packages are retained for rollback.
+
+## Verified publication and delivery
+
+Package receipt commit `6bcf6eed5f7473b502e61388d3f81f7a8c96c03f` was atomically pushed to GitHub `master` and `SWG/photo-review-upload-recovery`. Annotated tag `v2.0.51` points to that receipt. Remote read-back verified both branch heads and the peeled tag. Built application source remains `8ffa47b`; later delivery notes do not change it. Other worktrees and unrelated cleanup artifacts remain untouched.
+
+Delivered through **Personal / GoggoVille #swghermes**, 9 November 2026:
+
+- EXE parent `1794183999.414139`, file `F0CFWSMNW06`; HTTP 200 acknowledged exactly **130,910,478 bytes** in **114.6 seconds**. [Release post and EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794183999414139).
+- MSI reply `1794184311.438769`, file `F0CG0P46TL1`; HTTP 200 acknowledged exactly **222,188,244 bytes** in **157.5 seconds**. [MSI alternative](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794184311438769).
+
+The sender hashes the actual byte array before sending and requires an exact server byte-count acknowledgement. Full thread read-back verified both file IDs/names, package hashes, byte counts, source/receipt identities, test instructions and links; there were no further pages or user replies at that read-back. This proves local byte hashes, server acknowledgements and visible Slack delivery, not an independent download/hash of Slack-hosted files. No signed upload addresses or credentials are retained. Local receipt: `test-output/release-2.0.51-delivery.json`.

@@ -13,7 +13,7 @@
 - [x] Replace global viewing preference with per-photo choices; preserve exact file targets and JPEG review decisions.
 - [x] Embed existing RAW editor, scoped to one CR3, with dirty/busy close barriers, explicit queueing and a refresh-results action.
 - [x] Run focused and full native/frontend regressions, independent safety review and actual RAW/package smoke checks.
-- [ ] Commit, merge with current upstream, build the next unused version, inspect both installers, push/tag and deliver to Personal #swghermes with read-back receipts.
+- [x] Commit, merge with current upstream, build the next unused version, inspect both installers, push/tag and deliver to Personal #swghermes with read-back receipts. Version 2.0.51; see docs/release-2.0.51-validation.md for the source and delivery boundaries.
 
 **Validation:** Unchanged source hashes; exact one-photo job selection; no decode on browsing; independent colour/B&W pipeline retained; pending selection writes fenced; missing/changed lineage fails conservatively; saved choices do not alter Google flags; source-specific crops remain isolated. Existing import and per-item upload recovery fixes are included in this release.
 
