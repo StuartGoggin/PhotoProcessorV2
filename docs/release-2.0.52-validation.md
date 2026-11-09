@@ -1,6 +1,6 @@
 # PhotoGoGo 2.0.52 validation and publication
 
-Status: release approved; final packages for the automatic-Reviewed amendment are being rebuilt. No 2.0.52 release has been published yet.
+Status: source and final automatic-Reviewed packages validated. Approved GitHub/Slack publication is proceeding; verified delivery will be recorded below after read-back.
 
 ## Final scope
 
@@ -31,3 +31,18 @@ Test a small event: mark a rating, Trash/restore and each version's selection/fa
 ## Workspace
 
 Source checkout: C:/creations/PhotoGoGoV2, branch SWG/photo-review-upload-recovery, initial base bed2a76b57fcb922c701efb48746e860acd31a72. Four unrelated cleanup files remain untouched and excluded from commits. Other pre-existing worktrees remain untouched. The chat's initially unused illustrated-user-guide worktree was not used to build this source.
+
+## Final automatic-Reviewed packages
+
+Built source commit: `675aaad4005e0be7f797a54dcbddb9436844d4e0`. Both Windows x64 installers completed successfully. The release-mode compiled-assets test passed against the new guide and manifest without launching the application. Frontend/type build and fresh native suite passed (416 passed, 30 opt-in ignored, zero failed). All source inputs are committed; four unrelated untracked cleanup artifacts cause the existing build-label logic to append `+local`, and are excluded from the release source.
+
+Inspection: `test-output/release-2.0.52-inspection-20261109T093143206Z/report.json`. Both extracted packages match normalized application SHA-256 `6AACA059A6CF4138157BB5980B9E1F83EE0FFE7F70FC835883935DB207B96AC1` (only Tauri's three expected bundle-marker bytes are normalized). ProductVersion is 2.0.52; UpgradeCode `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` is unchanged from 2.0.51. Each package verified 35 payload hashes, ExifTool's 2,205 files with relocated runtime check, RAW's 440 resources, media pair/source and controller source/licence closure. Packages remain unsigned. No new RAW/image-quality benchmark was run for these review/UI changes.
+
+| Download | Bytes | SHA-256 |
+|---|---:|---|
+| PhotoGoGoV2_2.0.52_x64-setup.exe | 131,750,645 | `8767b36b38c1f38a6f328a08dbc2fec612f5a77d3fa5b273def768e2a2b395b2` |
+| PhotoGoGoV2_2.0.52_x64_en-US.msi | 222,986,964 | `69fd76547f11029663e1ca91c347ef78ace70721a1da65afac1b423cbbb0bd81` |
+| PhotoGoGo_User_Guide_2.0.52.html | 1,087,888 | `4f5e833dd7cf53de0476c61542eeb91718a280cc6c258a7a9b9d2685dca35faa` |
+| PhotoGoGo-FFmpeg-rowtest1-source.tar.gz | 49,570,807 | `27f7cd21a21e661314d76fe4689f7e4d92b0c0e13bc101376e8443e10eec8fd8` |
+
+The portable, public and production-dist HTML are byte-identical: 18 chapters, 11 figures, 1,087,888 bytes. `SHA256SUMS-2.0.52.txt` lists the hashes for release downloads. Source and both installer variants will be published under tag v2.0.52; the post-publication receipt on master records remote and Slack read-back.

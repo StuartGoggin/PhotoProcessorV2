@@ -5,6 +5,7 @@
 - Filter the current folder by All, Needs review, Reviewed, Google-selected, Rated or Favourites. Control Trash separately and sort by capture time, filename, rating or original size. Counts, reset and remembered view preferences keep your place.
 - A saved rating/tag, Trash/restore or Google selection/favourite change marks its capture Reviewed automatically. This includes Original, B&W, Enhanced and cropped versions. Browsing and zooming leave the flag unchanged.
 - Press **M** to change Reviewed manually or **Shift+M** for Reviewed & next. Older photographs start Needs review without migrating historical ratings/selections.
+- In **Needs review**, a saved action can move the photo out of the filtered view; choose **All** when adjusting several versions before moving on.
 - Navigation and controller browsing follow the same filtered order. Failed saves retain the current photograph. If the original decision saved but Reviewed did not, retry only Reviewed; the original change remains saved.
 
 ## Help beside your work
