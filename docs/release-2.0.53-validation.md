@@ -1,6 +1,6 @@
 # PhotoGoGo 2.0.53 validation and publication
 
-Status: source and package validation passed; publication pending.
+Status: published and delivered. Both validated installer formats are available in the requested Slack channel. GitHub also hosts the EXE and supporting downloads.
 
 ## Final scope
 
@@ -41,3 +41,18 @@ Inspection receipt: `test-output/release-2.0.53-inspection-20261109T111252686Z/r
 | PhotoGoGo-FFmpeg-rowtest1-source.tar.gz | 49,570,807 | `27f7cd21a21e661314d76fe4689f7e4d92b0c0e13bc101376e8443e10eec8fd8` |
 
 `SHA256SUMS-2.0.53.txt` lists the four download hashes. The annotated release tag will identify this package receipt; the built application source remains fecc03a. Verified remote and Slack delivery details follow after publication.
+
+## Verified publication and delivery
+
+Package receipt `25e2b84025f5987ee5e5973a66c60358c2b24ce4` was atomically pushed to GitHub master and SWG/jpeg-first-review-recovery. Annotated tag v2.0.53 peels to that receipt; both remote branches/tag were read back. Built application source remains `fecc03a0ea518f4c28d1f5123519f318e5bf7c90`. This chat's formerly detached clean checkout was fast-forwarded to the release; unrelated worktrees and four pre-existing untracked cleanup files were preserved.
+
+Published GitHub test release: https://github.com/StuartGoggin/PhotoProcessorV2/releases/tag/v2.0.53 (release 439037811), published 2026-11-09T11:47:31Z; draft=false, prerelease=true. All four published assets—EXE, portable HTML guide, matching FFmpeg source and checksum list—have server SHA-256 digests and byte sizes matching the local files. The duplicate MSI GitHub transfer timed out and was reconciled as absent; the release notes explicitly link its verified Slack attachment. No incomplete MSI is advertised as a GitHub download. Both installer hashes, including MSI, are in SHA256SUMS. A slow initial GitHub CLI upload was stopped only after verifying its own process identity; the draft's completed assets were preserved. No application source changed during transfer recovery.
+
+Personal / GoggoVille #swghermes:
+
+- Release parent and EXE: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794223196230139; file F0CFWHFS7EX. HTTP200 acknowledged 131759725 bytes in 239.2 seconds.
+- MSI reply: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794223311409119; file F0CFMD65UB1. HTTP200 acknowledged 222978772 bytes in 357.9 seconds.
+- Published download/guide links and explicit MSI fallback: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794224899784619.
+- Final thread read-back verified both file IDs, version, installer hashes, published release/guide links and MSI distribution explanation.
+
+GitHub server digests match local hashes for its four published assets. Slack evidence consists of sender byte hashes, HTTP200 exact-byte acknowledgements and visible file/thread metadata; no independent Slack-hosted download/hash was performed. Signed upload addresses and credentials were not persisted. Structured local receipt: test-output/release-2.0.53-delivery.json.
