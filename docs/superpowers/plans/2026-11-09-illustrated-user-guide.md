@@ -62,3 +62,5 @@ Ruling: the native managed checkout was created, but this session denied writes 
 Checkpoint: approved Lightbox filtering/explicit Reviewed status is included in the same 2.0.52 test build. Fresh Help reports pass 7 host groups, 4 actual-page/capture groups and 7 document groups (503 substantive fragments, 18 chapters, 11 embedded figures). The 29-page print proof was visually inspected. See release-2.0.52-validation.md for packaging results once complete. Browser DOM isolation and compiled asset parity are distinct from live native WebView privilege-boundary testing.
 
 Final: both 2.0.52 installers built and inspected without installation; compiled-guide parity test passed. Local delivery links and acceptance steps are ready. No publication/merge/push.
+
+Publication complete: source 675aaad, package receipt/tag 11edc83, GitHub master and v2.0.52 verified. Both installer files and release/guide links were read back in Personal/GoggoVille #swghermes: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794217444323699 . See docs/release-2.0.52-validation.md for the final delivery receipt.

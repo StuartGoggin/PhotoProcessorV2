@@ -1,6 +1,6 @@
 # PhotoGoGo 2.0.52 validation and publication
 
-Status: source and final automatic-Reviewed packages validated. Approved GitHub/Slack publication is proceeding; verified delivery will be recorded below after read-back.
+Status: published and delivered. Final automatic-Reviewed packages, GitHub downloads and Slack thread were verified.
 
 ## Final scope
 
@@ -46,3 +46,17 @@ Inspection: `test-output/release-2.0.52-inspection-20261109T093143206Z/report.js
 | PhotoGoGo-FFmpeg-rowtest1-source.tar.gz | 49,570,807 | `27f7cd21a21e661314d76fe4689f7e4d92b0c0e13bc101376e8443e10eec8fd8` |
 
 The portable, public and production-dist HTML are byte-identical: 18 chapters, 11 figures, 1,087,888 bytes. `SHA256SUMS-2.0.52.txt` lists the hashes for release downloads. Source and both installer variants will be published under tag v2.0.52; the post-publication receipt on master records remote and Slack read-back.
+
+## Verified publication and delivery
+
+Package receipt 11edc8329ba968ea434865ddb842b5755a6d954c was atomically pushed to GitHub master and SWG/photo-review-upload-recovery; annotated tag v2.0.52 peels to that receipt. Built source remains 675aaad4005e0be7f797a54dcbddb9436844d4e0. Both branch heads and tag were read back.
+
+GitHub test release: https://github.com/StuartGoggin/PhotoProcessorV2/releases/tag/v2.0.52 (release 438945091). Published 2026-11-09T09:45:59Z; draft=false and prerelease=true. All five assets are uploaded, with GitHub server SHA-256 digests and byte sizes matching the local installers, guide, corresponding source archive and checksum list.
+
+Personal / GoggoVille #swghermes:
+
+- Release parent and EXE: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794217444323699; file F0CFVR8PTK5. HTTP200 acknowledged 131750645 bytes in 154.6 seconds.
+- MSI thread reply: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794217500046139; file F0CG5PFMXV2. HTTP200 acknowledged 222986964 bytes in 254.4 seconds.
+- Thread read-back verified both file IDs, version, hashes and the published GitHub/guide links.
+
+GitHub server digests match local hashes. Slack proves the actual sender byte hashes, HTTP200 exact byte acknowledgements and visible file/thread metadata; no independent Slack-hosted download/hash was performed. No signed upload addresses or credentials are retained. Local structured receipt: test-output/release-2.0.52-delivery.json.

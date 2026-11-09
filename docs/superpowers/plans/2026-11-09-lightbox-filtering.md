@@ -46,3 +46,5 @@ Windows test EXE/MSI packaging, release-mode compiled-guide parity and both inst
 ## Approved publication amendment
 
 Stuart approved commit/merge/push and publication to GitHub and Personal/GoggoVille #swghermes, then requested automatic Reviewed for successful photo review actions before release. This supersedes earlier local-test-only/explicit-only scope. The automatic writer is view independent, bounded and separately retryable; exact next and failed-capture pinning are tested. Final source commit and rebuilt installer/guide receipts will be recorded in docs/release-2.0.52-validation.md.
+
+Publication complete: source 675aaad, package receipt/tag 11edc83, GitHub master and v2.0.52 verified. Both installer files and release/guide links were read back in Personal/GoggoVille #swghermes: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794217444323699 . See docs/release-2.0.52-validation.md for the final delivery receipt.
