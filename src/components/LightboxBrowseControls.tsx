@@ -1,0 +1,19 @@
+import type {LightboxBrowse,QuickView} from "../utils/lightboxBrowse";
+
+export default function LightboxBrowseControls({value,onChange,disabled,shown,total,folder,pending,onReset}:{
+  value:LightboxBrowse;onChange:(value:LightboxBrowse)=>void;disabled:boolean;shown:number;total:number;folder:string;pending:boolean;onReset:()=>void;
+}){
+  const patch=(changes:Partial<LightboxBrowse>)=>onChange({...value,...changes});
+  const presets:[QuickView,string][]=[["all","All"],["needsReview","Needs review"],["reviewed","Reviewed"],["selected","Google-selected"],["rated","Rated"],["favourites","Favourites"]];
+  return <section className="border-b border-surface-600 bg-surface-800 px-3 py-2 space-y-2" aria-label="Lightbox filters and sorting">
+    <div className="flex flex-wrap items-center gap-1.5">
+      <div role="group" aria-label="Photo quick views" className="flex flex-wrap gap-1">{presets.map(([quick,label])=><button key={quick} type="button" className={"min-h-11 px-3 rounded-lg border text-xs "+(quick===value.quick?"bg-cyan-950 border-cyan-500 text-cyan-100":"bg-surface-700 border-surface-500 text-gray-300 hover:text-white")} disabled={disabled} aria-pressed={quick===value.quick} onClick={()=>patch({quick})}>{label}</button>)}</div>
+      <label className="flex items-center gap-1.5 text-xs text-gray-400">Trash<select aria-label="Trash visibility" className="input-field w-auto text-xs min-h-11 py-1" value={value.trash} disabled={disabled} onChange={e=>patch({trash:e.target.value as LightboxBrowse["trash"]})}><option value="hide">Hide trash</option><option value="include">Include trash</option><option value="only">Only trash</option></select></label>
+      <label className="flex items-center gap-1.5 text-xs text-gray-400">Sort<select aria-label="Sort photos by" className="input-field w-auto text-xs min-h-11 py-1" value={value.sort} disabled={disabled} onChange={e=>patch({sort:e.target.value as LightboxBrowse["sort"]})}><option value="capture">Capture time (filename)</option><option value="name">Filename</option><option value="rating">Rating</option><option value="size">Original file size</option></select></label>
+      <button type="button" className="btn-secondary min-h-11 px-3 text-xs" disabled={disabled} onClick={()=>patch({direction:value.direction==="asc"?"desc":"asc"})} aria-label="Reverse photo sort order">{value.direction==="asc"?"↑ Ascending":"↓ Descending"}</button>
+      <button type="button" className="min-h-11 px-3 text-xs text-cyan-200 hover:text-white" disabled={disabled} onClick={onReset}>Reset view</button>
+    </div>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400"><strong className="text-gray-200" role="status" aria-label="Matching photo count">Showing {shown.toLocaleString()} of {total.toLocaleString()} originals</strong><span title={folder}>{folder?"In this folder · "+folder.split("/").slice(-1)[0]:"Staging root · choose a photo/folder to narrow the view"}</span>{pending&&<span className="text-amber-200">Filter information incomplete · uncertain photos stay visible</span>}<span title="Capture time is taken from timestamped imported filenames. Unknown dates and sizes stay last. Rated uses the verified Camera JPEG owner. Filters apply to this folder; other folders remain available.">ⓘ Folder view only · remembered on this PC</span></div>
+    {value.quick==="needsReview"&&<p className="text-[11px] text-gray-400">Saved ratings, Trash and selection/favourite changes mark a capture Reviewed. Older decisions are not migrated. Use M to mark as needing review again, or Reviewed &amp; next to record progress.</p>}
+  </section>;
+}

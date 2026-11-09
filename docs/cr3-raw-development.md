@@ -58,12 +58,12 @@ RAW B&W runs independently from the source RAW through the engine's high-precisi
 Everyday review defaults to the camera JPEG when a verified pair exists. Its
 JPEG B&W/Enhanced family stays visible even when an undeveloped CR3 is also
 present. **Camera RAW preview** remains an explicit alternate source; it does
-not run a development job. Use the existing **Photo Process → RAW Development**
-workflow when you deliberately want a full-resolution RAW alternative. The
-larger proposal to open that editor directly from Lightbox is not implemented
-in this correction.
+not run a development job. In 2.0.51, **Develop RAW alternative** opens the
+existing editor directly from Lightbox for one CR3. **Photo Process → RAW
+Development** remains the batch route. Source inspection is per photo;
+**Use this finish for this photo** saves its portable viewing preference.
 
-RAW plus camera JPEG is paired only when camera model, serial and exact capture timestamp/subseconds identify one unambiguous pair in the same folder. Different filenames are allowed. Missing proof or ambiguous duplicates leave separate entries visible. A source selector makes the currently shown physical version explicit. Capture rating/trash is anchored to the RAW entry; Google Photos selection remains specific to the displayed physical version.
+RAW plus camera JPEG is paired only when camera model, serial and exact capture timestamp/subseconds identify one unambiguous pair in the same folder. Different filenames are allowed. Missing proof or ambiguous duplicates leave separate entries visible. A source selector makes the currently shown physical version explicit. In 2.0.51, the verified Camera JPEG is the rating/Trash review anchor in either view; RAW remains the navigation identity. Old tag disagreements are visible and preserved. Google Photos selection remains specific to each displayed version.
 
 The first folder list reads filenames and portable ownership metadata without launching capture probes. Opening/selecting a mixed RAW/JPEG folder inspects that folder on demand. Entries may remain separate until proof is available; failed metadata reads remain retryable. Pairing never guesses from filenames. Folder loads, displayed images and upload decisions share a pinned selection identity, so late reads cannot retarget a keyboard action. Runtime integrity is verified before preview/export rather than before listing RAW candidates.
 

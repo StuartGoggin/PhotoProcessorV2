@@ -1,0 +1,91 @@
+[
+  {
+    "chapter": 2,
+    "file": "settings-screen.png",
+    "title": "Set up the three locations",
+    "alt": "Actual Settings screen with demo paths. Callout 1 is Source Root for the camera card, 2 is Local Staging Directory, and 3 is Archive or NAS Directory.",
+    "caption": "1 Camera/card source. 2 Your working staging library. 3 Archive destination. These are demo paths; choose the folders on your own computer."
+  },
+  {
+    "chapter": 5,
+    "file": "photo-process-screen.png",
+    "title": "Preview a B&W finish before queuing",
+    "alt": "Actual B&W Conversion controls with illustrative demo media. Callout 1 identifies S-curve strength and 2 identifies the separate result preview beside the original.",
+    "caption": "1 Adjust the tonal curve and other controls. 2 Compare the sample result with its original. The illustration demonstrates the controls, not a calibrated processing result; use 100% to judge your own photograph."
+  },
+  {
+    "chapter": 6,
+    "file": "lightbox-screen.png",
+    "title": "Choose the exact versions to share",
+    "alt": "Actual Lightbox review controls with illustrative demo media. Callouts 1, 2 and 3 identify the independent Google Photos checkboxes for Original, B&W and Enhanced.",
+    "caption": "Use the Folder view bar to find the next photograph, then choose each exact version separately: 1 Original, 2 B&W, 3 Enhanced. These local selections do not start an upload. The screenshot uses an illustrative demo library."
+  },
+  {
+    "chapter": 11,
+    "file": "snapshots-screen.png",
+    "title": "Find and select a source frame",
+    "alt": "Actual Video snapshots workspace with illustrative demo media. Callout 1 identifies the exact video frame position slider and 2 the Frame selected confirmation.",
+    "caption": "1 Move through the original video. 2 Select the moment into the Photo Tray. Demo artwork is used here; the preview is for browsing, while export reads the original full-resolution frame."
+  },
+  {
+    "chapter": 11,
+    "file": "snapshots-tray-screen.png",
+    "title": "Export from the Photo Tray",
+    "alt": "Actual Photo Tray showing the selected demo photograph, destination-folder control and full-resolution export action.",
+    "caption": "Choose the destination in the Photo Tray, confirm the shooting time, then use Export full-resolution photos. A missing folder or unconfirmed time keeps export disabled and explains why."
+  },
+  {
+    "chapter": 1,
+    "file": "photo-workflow.svg",
+    "title": "Your everyday photo workflow",
+    "alt": "Import and verify originals; create independent Enhanced and B&W versions; review, crop and choose exact versions in Lightbox; upload selected photos and verify archive copies.",
+    "caption": "Follow one event from camera card to sharing and archive. Keep the staging library as your working collection.",
+    "width": 1240,
+    "height": 410
+  },
+  {
+    "chapter": 6,
+    "file": "version-family.svg",
+    "title": "Understand the photo family",
+    "alt": "An unchanged camera JPEG independently supplies B&W, Enhanced and a new crop family. The cropped JPEG has its own optional generated versions.",
+    "caption": "Generated versions are separate files. A crop preserves the camera original and creates a new family for your cropped view.",
+    "width": 1240,
+    "height": 460
+  },
+  {
+    "chapter": 7,
+    "file": "raw-paths.svg",
+    "title": "An optional RAW path",
+    "alt": "Use Camera JPEG by default, explicitly develop a RAW alternative, choose which view to inspect, then select exact physical versions for sharing or archive.",
+    "caption": "Use your camera JPEG for everyday review. Develop RAW when you want to revisit exposure, colour or the creative finish.",
+    "width": 1240,
+    "height": 410
+  },
+  {
+    "chapter": 8,
+    "file": "video-workflow.svg",
+    "title": "The video-making sequence",
+    "alt": "Build the clip sequence; prepare stabilised picture and review it; configure titles, chapters and scorecards; finish camera sound and music and export the updated final.",
+    "caption": "Picture preparation and final assembly have different jobs. Valid cached pictures can survive later graphics or soundtrack edits.",
+    "width": 1240,
+    "height": 410
+  },
+  {
+    "chapter": 11,
+    "file": "snapshot-time.svg",
+    "title": "From a video moment to a photograph",
+    "alt": "Open original video, confirm its shooting start, choose an exact frame, select it into the Photo Tray, then export a photograph from the original at full available resolution. Timestamp is shooting start plus frame time.",
+    "caption": "The browser-sized preview helps you choose a moment. The Photo Tray export creates the full-resolution photograph.",
+    "width": 1240,
+    "height": 410
+  },
+  {
+    "chapter": 13,
+    "file": "archive-proof.svg",
+    "title": "What verified archive transfer means",
+    "alt": "Review chosen files, copy with bounded adaptive workers, independently read destination bytes and compare checksums, then record the verified result in the MD5 register and run manifest.",
+    "caption": "Copy speed matters, but verification is part of completion. A selected archive is only a backup of what you included.",
+    "width": 1240,
+    "height": 410
+  }
+]

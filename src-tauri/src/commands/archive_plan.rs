@@ -291,6 +291,7 @@ fn library_metadata(path: &Path) -> bool {
     matches!(
         n.as_str(),
         ".photogogo-curation.json"
+            | ".photogogo-review.json"
             | ".photogogo-raw.json"
             | ".photogogo-event.json"
             | ".photogogo.staging-tags.json"

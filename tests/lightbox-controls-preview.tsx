@@ -1,5 +1,8 @@
 // Isolated deterministic command adapter. Uses no native media/account operations.
 import React from "react";
+import GuideFixture from "./GuideFixture";
+import {neutralPhotoName} from "../src/utils/lightboxBrowse";
+import {controllerRuntime} from "../src/controller/runtime";
 import { createRoot } from "react-dom/client";
 import Review from "../src/pages/Review";
 import ControllerPanel from "../src/components/ControllerPanel";
@@ -9,6 +12,9 @@ import { lightboxCommands, lightboxCropCommands } from "../src/utils/lightboxCom
 import { defaultLightboxBindings, parseLightboxBindings } from "../src/controller/lightboxBindings";
 
 const fixture = window as any;
+if(!fixture.__browseTest&&!localStorage.getItem("photogogo.lightbox.browse.v1"))localStorage.setItem("photogogo.lightbox.browse.v1",JSON.stringify({quick:"all",trash:"include",sort:"name",direction:"asc"}));
+fixture.__controlsReviewDocuments=JSON.parse(localStorage.getItem("fixture.review.documents")||"{}");fixture.__controlsReviewWrites=[];fixture.__controlsFactsCalls=[];fixture.__controlsDeferredReviews=[];
+fixture.__controlsControllerSnapshot=()=>controllerRuntime().getSnapshot();
 const controllerCallbacks = new Map<number, (event: unknown) => void>();
 const controllerListeners = new Map<number, number>();
 let controllerCallback = 0, controllerListener = 0, controllerClient = "", controllerSession = 0, controllerInput = 0, controllerEnabled = true;
@@ -22,8 +28,9 @@ fixture.__controlsNativeInput = (input: Record<string, unknown> = {}) => {
 };
 fixture.__controlsCommandReference=[...lightboxCommands,...lightboxCropCommands].map(({id,label,group,keys})=>({id,label,group,keys}));
 const untag = (value: string) => value.replace(/\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi, "");
-const file = (name: string, parent = ""): TreeNode => ({type:"file", name, path:parent ? `${parent}/${name}` : name, size:32768});
+const file = (name: string, parent = ""): TreeNode => {const size=fixture.__controlsFileSizes?.[name]??32768;return {type:"file", name, path:parent ? `${parent}/${name}` : name, size,sourceStamp:`${size}:1`,curationKey:neutralPhotoName(name)};};
 function makeTree(): TreeNode {
+  if(fixture.__controlsLargeCount)return {type:"dir",name:"Large demo library",path:"",children:Array.from({length:fixture.__controlsLargeCount},(_,i)=>({...file(`20261109_100000_frame-${String(i).padStart(4,"0")}.jpg`),size:i+1,sourceStamp:`${i+1}:1`}))};
   if (fixture.__controlsRawWorkflow) return {type:"dir",name:"RAW workflow",path:"",children:[
     {...file("01-raw.CR3"),cameraJpeg:"01-camera{Like oo}.JPG"},file("01-camera{Like oo}.JPG"),file("01-camera_improved.jpg"),
     {...file("01-finish.jpg"),rawSource:"01-raw.CR3",rawKind:"developed"},
@@ -52,7 +59,7 @@ function files(tree: TreeNode): TreeNode[] {return tree.type === "file" ? [tree]
 const libraries = new Map<string, { tree:TreeNode; flags:Map<string,{selected:boolean;favourite:boolean}> }>();
 function library(root: string) {
   let current=libraries.get(root);
-  if (!current) {current={tree:makeTree(),flags:new Map()}; libraries.set(root,current);}
+  if (!current) {current={tree:makeTree(),flags:new Map(Object.entries(fixture.__controlsInitialFlags??{}).map(([path,flags])=>[`${root}|${untag(path).toLowerCase()}`,flags as {selected:boolean;favourite:boolean}]))}; libraries.set(root,current);}
   return current;
 }
 let currentRoot = "D:\\Controller photos";
@@ -82,6 +89,29 @@ function source(oldPath:string) {
   return {root,path:normalized.slice(root.length+1)};
 }
 fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(event:unknown)=>void)=>{const id=++controllerCallback;controllerCallbacks.set(id,callback);return id;},invoke:async(command:string,args:any)=>{
+  if(command==="lightbox_review_catalogue"){
+    fixture.__controlsFactsCalls.push(args);
+    const folder=args.relativeFolder||"",key=JSON.stringify([args.root,folder]);
+    const doc=fixture.__controlsReviewDocuments[key]||{schemaVersion:1,revision:0,entries:{}};
+    const selections:Record<string,{selected:boolean;favourite:boolean}>={};
+    for(const asset of catalogue(args.root).assets){if(asset.relativePath.replace(/\\/g,"/").split("/").slice(0,-1).join("/")===folder)selections[neutralPhotoName(asset.relativePath.replace(/\\/g,"/").split("/").pop()!)]= {selected:asset.selected,favourite:asset.favourite};}
+    return {review:fixture.__controlsBadReview?null:structuredClone(doc),selections,reviewWarning:fixture.__controlsBadReview?"Review history is invalid; it was not overwritten.":null};
+  }
+  if(command==="lightbox_review_set"){
+    const request=args.request;fixture.__controlsReviewWrites.push({...request});
+    const save=()=>{
+      if(fixture.__controlsFailReview)throw Error("Synthetic review save failed");
+      const node=files(library(request.root).tree).find(node=>node.path===request.relativePath);
+      if(!node||node.sourceStamp!==request.sourceStamp)throw Error("Review source changed");
+      const folder=request.relativePath.split("/").slice(0,-1).join("/"),storeKey=JSON.stringify([request.root,folder]),key=neutralPhotoName(node.name);
+      const doc=fixture.__controlsReviewDocuments[storeKey]||{schemaVersion:1,revision:0,entries:{}};
+      doc.revision++;doc.entries[key]={reviewed:request.reviewed,sourceStamp:request.sourceStamp};fixture.__controlsReviewDocuments[storeKey]=doc;
+      localStorage.setItem("fixture.review.documents",JSON.stringify(fixture.__controlsReviewDocuments));
+      return {root:request.root,relativePath:request.relativePath,key,sourceStamp:request.sourceStamp,reviewed:request.reviewed,revision:doc.revision};
+    };
+    if(fixture.__controlsHoldReview)return new Promise((resolve,reject)=>fixture.__controlsDeferredReviews.push(()=>{try{resolve(save())}catch(e){reject(e)}}));
+    return save();
+  }
   fixture.__controlsCalls.push({command,args:structuredClone(args)});
   if(command==="controller_claim_client") { if(controllerClient!==args.client){controllerClient=args.client;controllerSession++;} return controllerStatus(); }
   if(command==="controller_status") return controllerStatus();
@@ -180,7 +210,8 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(
 const root=createRoot(document.getElementById("root")!);
 let generation=0;
 // Mirror App's scroll container without mounting unrelated pages/jobs/accounts.
-function render() {root.render(<React.StrictMode><main id="app-main" className="app-main h-full min-w-0 min-h-0 overflow-auto"><Review key={generation} onOpenJobs={id => { fixture.__controlsViewedJob=id; }}/></main>{fixture.__controlsManagedController&&<div style={{position:"fixed",zIndex:40,top:8,right:8,width:224,background:"#0f0f0f",borderRadius:8}}><ControllerPanel/></div>}</React.StrictMode>);}
+function render() {const review=(reading=false)=><main id="app-main" className="app-main h-full min-w-0 min-h-0 overflow-auto"><Review key={generation} interactionSuspended={reading} onOpenJobs={id => { fixture.__controlsViewedJob=id; }}/></main>;root.render(<React.StrictMode>{fixture.__guideTest?<GuideFixture chapter="ch-06">{review}</GuideFixture>:review()}{fixture.__controlsManagedController&&<div style={{position:"fixed",zIndex:40,top:8,right:8,width:224,background:"#0f0f0f",borderRadius:8}}><ControllerPanel/></div>}</React.StrictMode>);}
 fixture.__controlsSwitchRoot=(next:string)=>{currentRoot=next;generation++;render();};
+fixture.__controlsRemount=()=>{generation++;render();};
 fixture.__controlsUnmount=()=>root.unmount();
 render();

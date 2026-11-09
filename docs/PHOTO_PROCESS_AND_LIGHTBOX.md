@@ -4,7 +4,7 @@
 
 Photo Lightbox lists originals rather than making B&W/Enhanced versions separate navigation stops. The Original, B&W and Enhanced panels show the associated versions. The tree, arrow buttons, keyboard arrows and photo counter share one folder-local originals list, including staging-root photos.
 
-Generated `_BW.jpg` and `_improved.jpg` versions are matched case-insensitively in their original's folder, including recognised rating/trash/focus tags and `.jpeg` originals. RAW+JPEG pairs associate processed versions with the JPEG. Orphan suffix-named images remain visible; ambiguous source associations are not guessed. Hiding versions deletes nothing. RAW decoding is not added.
+Generated `_BW.jpg` and `_improved.jpg` versions are matched case-insensitively in their original's folder, including recognised rating/trash/focus tags and `.jpeg` originals. RAW+JPEG pairs associate processed versions with the JPEG. Orphan suffix-named images remain visible; ambiguous source associations are not guessed. Hiding versions deletes nothing. Ordinary browsing does not develop RAW; the separate [RAW Development workflow](cr3-raw-development.md) provides explicit full-resolution alternatives.
 
 Read-ahead prepares up to two originals in the browsing direction and one behind, followed by their available versions. It uses at most two native reads, one speculative read at a time, a 64 MiB compressed cache and up to 128 MiB of explicitly warmed speculative decoded pixels. Active panels, transient buffers and browser-managed memory are additional; this is not a whole-app RAM cap. Refresh, rating/trash renames and leaving the page invalidate/dispose the cache. Refresh after regenerating versions elsewhere.
 
@@ -20,7 +20,7 @@ For selected-photo composition, Photo Lightbox also offers [non-destructive crop
 4. Use **Fit** for a draft or **100% - full-resolution check** for actual source pixels with synchronized comparison scrolling. Reduced-image drafts can differ in local contrast/sharpening. Full-resolution checks share the batch recipe and quality-95 JPEG encoder.
 5. **Queue Job** applies those settings to all eligible originals in the displayed scope, not only the sample. A preview never queues a job.
 
-Preview failures are visible and retryable without changing originals. Photo processing accepts JPEG/JPG originals; PNG/RAW processing is not introduced.
+Preview failures are visible and retryable without changing originals. These JPEG processing tasks accept JPEG/JPG originals, not PNG or RAW. CR3 development is a separate explicit workflow.
 
 ## Orientation and independent versions
 

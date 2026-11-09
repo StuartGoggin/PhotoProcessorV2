@@ -6,7 +6,7 @@
 2. Drag a corner or edge to crop; drag inside to move the selection. Choose Free, Original, 3:2, 4:3, Square or 16:9. Fixed ratios offer a portrait/landscape switch.
 3. The pixel count shows the actual retained resolution, with no upscaling. A focused crop handle accepts arrow keys for one-pixel adjustments, or Shift+arrow for ten pixels. Reset full frame starts again from the untouched original.
 4. Select the B&W and/or Enhanced crop versions to regenerate. Existing comparison versions determine the initial checkboxes; missing versions can be enabled explicitly. Expand **Current Photo Process settings** to inspect or adjust the recipe. These settings are shared with Photo Process, not reconstructed from historical JPEGs.
-5. Click **Apply crop & regenerate** or press Enter. Escape/Cancel leaves files unchanged before saving. Controls are locked during the bounded save, so it cannot be submitted twice.
+5. Click **Apply crop & regenerate** or press **Ctrl+Enter**. Ordinary Enter activates the currently focused control. Escape/Cancel leaves files unchanged before saving. Controls are locked during the bounded save, so it cannot be submitted twice.
 6. The Lightbox refreshes into **Cropped** view. Switch between **Original** and **Cropped** to inspect each version's B&W/Enhanced comparisons. There remains one navigation stop per original.
 
 For `photo.jpg`, the working files are:

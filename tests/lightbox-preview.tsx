@@ -7,7 +7,8 @@ import type { TreeNode } from "../src/types";
 import "../src/styles.css";
 
 const fixture = window as any;
-const file = (name: string, parent = ""): TreeNode => ({ name, path: parent ? `${parent}/${name}` : name, type: "file", size: 32768 });
+fixture.__lightboxReviewEntries={};fixture.__lightboxReviewRevision=0;
+const file = (name: string, parent = ""): TreeNode => ({ name, path: parent ? `${parent}/${name}` : name, type: "file", size: 32768, sourceStamp:"32768:1" });
 fixture.__lightboxTree = {
   name: "Synthetic photos", path: "", type: "dir", children: [
     file("01-rider.jpg"), file("01-rider_improved.jpg"), file("01-rider_BW.jpg"),
@@ -75,6 +76,8 @@ fixture.__lightboxReleaseAll = () => fixture.__lightboxRelease("");
 fixture.__TAURI_INTERNALS__ = {
   convertFileSrc: () => "",
   invoke: async (command: string, args: any) => {
+    if (command === "lightbox_review_catalogue") return {review:{schemaVersion:1,revision:fixture.__lightboxReviewRevision,entries:fixture.__lightboxReviewEntries},selections:Object.fromEntries(curation().assets.map(asset=>[asset.id.split('/').pop()!,{selected:asset.selected,favourite:asset.favourite}]))};
+    if(command==="lightbox_review_set") {const r=args.request,key=r.relativePath.split('/').pop().replace(/\{(?:Like o{1,3}|trash|Out of Focus \d+)\}/gi,"").toLowerCase();fixture.__lightboxReviewEntries[key]={reviewed:r.reviewed,sourceStamp:r.sourceStamp};return {...r,key,revision:++fixture.__lightboxReviewRevision};}
     if (command === "google_photos_catalogue") {
       fixture.__lightboxCatalogueReads++;
       if (fixture.__lightboxSelectionError) throw new Error(fixture.__lightboxSelectionError);

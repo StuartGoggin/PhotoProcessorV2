@@ -1,0 +1,8 @@
+.user-guide-dialog{position:fixed;inset:0;width:calc(100vw - 40px);height:calc(100dvh - 36px);max-width:1600px;max-height:none;margin:auto;padding:0;border:1px solid #5b6470;border-radius:16px;background:#17242e;color:#fff;box-shadow:0 28px 100px #0009;overflow:hidden}
+.user-guide-dialog[open]{display:flex;flex-direction:column}.user-guide-dialog::backdrop{background:#050b13c7;backdrop-filter:blur(5px)}
+.user-guide-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 22px;border-bottom:1px solid #47515b;flex:0 0 auto}
+.user-guide-bar h2{font-size:16px;font-weight:700;color:#fff;margin:0}.user-guide-bar p{font-size:11px;color:#b9c4cb;margin:2px 0 0}
+.user-guide-bar button,.user-guide-status button{min-height:42px;padding:8px 14px;border:1px solid #87939c;border-radius:8px;color:#fff;background:#263945;font-size:13px;white-space:nowrap}
+.user-guide-bar button:hover,.user-guide-status button:hover{background:#365063}.user-guide-bar button span{font-size:23px;line-height:12px;margin-left:10px}
+.user-guide-dialog iframe{display:block;flex:1;min-height:0;width:100%;border:0;background:#fbfaf7}.user-guide-status{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:8px 22px;color:#ffe2aa;font-size:13px;border-bottom:1px solid #647080}
+@media(max-width:640px){.user-guide-dialog{width:100vw;height:100dvh;border:0;border-radius:0}.user-guide-bar{padding:10px 12px;gap:8px}.user-guide-bar h2{font-size:13px}.user-guide-bar p{font-size:10px}.user-guide-bar button{font-size:11px;padding:8px}.user-guide-bar button span{margin-left:4px}.user-guide-status{padding:8px 12px}}

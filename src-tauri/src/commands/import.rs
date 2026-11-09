@@ -2830,12 +2830,16 @@ fn build_tree(path: &Path, root: &Path) -> anyhow::Result<serde_json::Value> {
             "children": children,
         }))
     } else {
-        let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let metadata = fs::metadata(path).ok();
+        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        let source_stamp = metadata.as_ref().and_then(super::lightbox_review::source_stamp);
         Ok(serde_json::json!({
             "name": name,
             "path": rel,
             "type": "file",
             "size": size,
+            "sourceStamp": source_stamp,
+            "curationKey": super::google_photos::catalogue::curation_key(path),
         }))
     }
 }

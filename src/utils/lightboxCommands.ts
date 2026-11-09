@@ -8,6 +8,8 @@ export const lightboxCommands = [
   { id: "rate-2", label: "Set two stars", group: "Review", keys: ["2"] },
   { id: "rate-3", label: "Set three stars", group: "Review", keys: ["3"] },
   { id: "clear-rating", label: "Clear the star rating", group: "Review", keys: ["Backspace"] },
+  { id: "reviewed-toggle", label: "Mark Reviewed / needs review", group: "Review", keys: ["M"] },
+  { id: "reviewed-next", label: "Mark Reviewed, save and next", group: "Quick review", keys: ["Shift+M"] },
   { id: "rate-1-next", label: "Set one star, save and next", group: "Quick review", keys: ["Shift+1"] },
   { id: "rate-2-next", label: "Set two stars, save and next", group: "Quick review", keys: ["Shift+2"] },
   { id: "rate-3-next", label: "Set three stars, save and next", group: "Quick review", keys: ["Shift+3"] },

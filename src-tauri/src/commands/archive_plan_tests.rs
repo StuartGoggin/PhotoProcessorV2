@@ -176,6 +176,7 @@ fn metadata_and_media_looking_caches_are_excluded_but_genuine_sidecars_follow_me
     f.file("horse.jpg.json", b"camera");
     f.selections("", &[]);
     f.file(".photogogo-event.json", b"{}");
+    f.file(".photogogo-review.json", b"{\"schemaVersion\":1,\"revision\":0,\"entries\":{}}");
     f.file("horse.photogogo-crop.json", b"recipe");
     f.file("horse.snapshot.json", b"provenance");
     f.file(".photogogo/thumb-cache/a.jpg", b"cache");
@@ -194,6 +195,7 @@ fn metadata_and_media_looking_caches_are_excluded_but_genuine_sidecars_follow_me
     with_metadata.include_library_metadata = true;
     let plan = build(with_metadata).unwrap();
     assert!(item(&plan, ".photogogo-curation.json").included);
+    assert!(item(&plan, ".photogogo-review.json").included);
     assert!(item(&plan, "horse.photogogo-crop.json").included);
     assert!(!item(&plan, ".photogogo-metadata-backups/date/horse.jpg").included);
     assert!(!item(&plan, "custom.json").included);

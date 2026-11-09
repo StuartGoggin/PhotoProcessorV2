@@ -1,7 +1,7 @@
 {
   "name": "photogogo-v2",
   "private": true,
-  "version": "2.0.51",
+  "version": "2.0.52",
   "type": "module",
   "scripts": {
     "test:archive:browser": "node scripts/test-archive-transfer-browser.mjs",
@@ -20,7 +20,9 @@
     "test:photo-process:browser": "node scripts/test-photo-process-browser.mjs",
     "test:photo-process:native": "pwsh -NoProfile -File scripts/test-photo-process.ps1 -VideoSmoke",
     "dev": "node scripts/start-dev.mjs",
-    "build": "tsc && vite build",
+    "guide:build": "node scripts/build-user-guide.mjs",
+    "test:guide:browser": "node scripts/test-user-guide-browser.mjs",
+    "build": "node scripts/build-user-guide.mjs && tsc && vite build",
     "preview": "vite preview",
     "test:studio": "node scripts/test-studio.mjs",
     "test:studio:browser": "node scripts/test-studio-browser.mjs",

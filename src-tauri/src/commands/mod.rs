@@ -11,6 +11,7 @@ mod import_devices;
 mod import_integration_tests;
 pub mod logs;
 pub mod lightbox;
+pub mod lightbox_review;
 pub mod lightbox_crop;
 mod media_tools;
 pub mod metadata_tools;

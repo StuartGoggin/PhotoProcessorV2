@@ -19,6 +19,8 @@ import Settings from "./pages/Settings";
 import Logs from "./pages/Logs";
 import ControllerPanel from "./components/ControllerPanel";
 import { useControllerSurface } from "./controller/useControllerSurface";
+import UserGuide from "./components/UserGuide";
+import { guideChapterForPage } from "./utils/userGuide";
 
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "import",      label: "Import",       icon: "📥" },
@@ -42,6 +44,8 @@ export default function App() {
   const [page, setPage] = useState<Page>("import");
   const [sidebarWidth, setSidebarWidth] = useState(() => readPanelSize(APP_SIDEBAR_PREFS_KEY, 208, 180, 420));
   const [menuOpen, setMenuOpen] = useState(false);
+  const [guide, setGuide] = useState<string | null>(null);
+  const workspace = useRef<HTMLDivElement>(null);
   const [jobsView, setJobsView] = useState<JobsView>("active");
   const [focusedJobId, setFocusedJobId] = useState<string | null>(null);
   const [jobsNavigation, setJobsNavigation] = useState(0);
@@ -130,7 +134,7 @@ export default function App() {
     cleanup: <Cleanup />,
     jobs: <Jobs key={jobsNavigation} initialView={jobsView} monitor={monitor} focusJobId={focusedJobId} />,
     postprocess: <PostProcess controllerOpenRaw={controllerOpenRaw} onOpenJobs={() => openJobs()} />,
-    review: <Review onOpenJobs={openJob} />,
+    review: <Review onOpenJobs={openJob} interactionSuspended={!!guide} />,
     transfer: <Transfer />,
     googlephotos: <GooglePhotos onViewJob={openJob} />,
     faceidentify: <FaceIdentify onOpenJobs={() => openJobs()} />,
@@ -139,11 +143,11 @@ export default function App() {
   };
 
   return (
-    <div className="app-root flex flex-col overflow-hidden bg-surface-900">
+    <><div ref={workspace} className="app-root flex flex-col overflow-hidden bg-surface-900">
       <header className="app-mobile-header">
         <button ref={menuButtonRef} className="btn-secondary" aria-controls="app-navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? "Close menu" : "☰ Menu"}</button>
         <span className="font-semibold truncate">{page === "googlephotos" ? "Transfer to Google Photos" : NAV_ITEMS.find((item) => item.id === page)?.label}</span>
-        <span className="text-xs text-gray-400">PhotoGoGo</span>
+        <button className="btn-secondary text-xs" onClick={() => {setGuide(guideChapterForPage(page)); setMenuOpen(false);}}>Help</button>
       </header>
       {/* Main content area (sidebar + page content) */}
       <div ref={appShellRef} className={`app-shell flex flex-1 min-h-0 min-w-0 overflow-hidden ${menuOpen ? "menu-open" : ""}`}>
@@ -177,7 +181,11 @@ export default function App() {
               </button>
             ))}
           </nav>
-          <div className="p-2 border-t border-surface-600"><ControllerPanel /></div>
+          <div className="p-2 border-t border-surface-600 space-y-1">
+            <button type="button" className="nav-item w-full text-left text-sm" onClick={() => setGuide("top")}><span aria-hidden="true">📖</span> Help &amp; User Guide</button>
+            <button type="button" className="px-4 py-2 text-xs text-cyan-200 hover:text-white w-full text-left" onClick={() => setGuide(guideChapterForPage(page))}>Help for this page</button>
+            <ControllerPanel />
+          </div>
         </aside>
 
         <div
@@ -201,14 +209,14 @@ export default function App() {
 
         {/* Page content */}
         <main id="app-main" className="app-main flex-1 min-w-0 min-h-0 overflow-auto bg-surface-900">
-          <div hidden={page !== "videostudio"}><VideoStudio jobs={studioJobs} active={page === "videostudio"} onOpenJobs={() => openJobs()} /></div>
-          <div hidden={page !== "videosnapshots"}><VideoSnapshots active={page === "videosnapshots"} /></div>
+          <div hidden={page !== "videostudio"}><VideoStudio jobs={studioJobs} active={!guide && page === "videostudio"} onOpenJobs={() => openJobs()} /></div>
+          <div hidden={page !== "videosnapshots"}><VideoSnapshots active={!guide && page === "videosnapshots"} /></div>
           {pageContent[page]}
         </main>
       </div>
 
       {/* Jobs panel (bottom frame) */}
       <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} refresh={refresh} loading={loading} error={error} onOpenJobs={openJobs} preferCollapsed={page === "videostudio" || page === "videosnapshots"} />
-    </div>
+    </div>{guide && <UserGuide chapter={guide} onClose={() => setGuide(null)} background={workspace.current} />}</>
   );
 }

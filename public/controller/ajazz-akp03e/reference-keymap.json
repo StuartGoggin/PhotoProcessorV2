@@ -148,6 +148,22 @@
       ]
     },
     {
+      "id": "reviewed-toggle",
+      "label": "Mark Reviewed / needs review",
+      "group": "Review",
+      "keys": [
+        "M"
+      ]
+    },
+    {
+      "id": "reviewed-next",
+      "label": "Mark Reviewed, save and next",
+      "group": "Quick review",
+      "keys": [
+        "Shift+M"
+      ]
+    },
+    {
       "id": "rate-1-next",
       "label": "Set one star, save and next",
       "group": "Quick review",

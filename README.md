@@ -2,6 +2,8 @@
 
 A desktop photo management workflow app built with [Tauri](https://tauri.app/) (Rust backend) and React + TypeScript frontend.
 
+User guide for **2.0.52**: open **Help & User Guide** in the app, or [read the illustrated HTML edition](docs/user-guide/PhotoGoGo_User_Guide_2.0.52.html). [Markdown source](docs/USER_GUIDE.md) · [Guide maintenance](docs/user-guide/README.md). Both editions work offline, with search, clickable contents, adjustable text, expandable illustrations and printing.
+
 Development checkpoint: [paused subject-aware video finishing](docs/subject-finishing-resume.md).
 Its source is preserved separately; it is not part of the released application.
 

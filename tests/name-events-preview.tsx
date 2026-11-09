@@ -25,6 +25,7 @@ fixture.__eventDays ??= [
 }));
 fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) => {
         fixture.__eventCalls.push({ command, args: structuredClone(args) });
+        if (command === "lightbox_review_catalogue") return {review:{schemaVersion:1,revision:0,entries:{}},selections:{}};
         if (command === "load_settings")
             return { staging_dir: fixture.__eventRoot || "D:\\Synthetic events", archive_dir: "D:\\Synthetic archive" };
         if (command === "load_event_naming_catalog")

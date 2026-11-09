@@ -274,6 +274,9 @@ export interface TreeNode {
   path: string;
   type: "dir" | "file";
   size?: number;
+  /** Opaque native size/mtime identity, from the existing folder metadata read. */
+  sourceStamp?: string | null;
+  curationKey?: string;
   children?: TreeNode[];
   /** Native-validated RAW output lineage; a suffix alone is never ownership. */
   rawSource?: string;

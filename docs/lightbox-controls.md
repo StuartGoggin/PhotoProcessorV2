@@ -25,8 +25,10 @@ still a labelled reference image.
 Verified RAW+camera-JPEG captures start in **Camera JPEG** view, showing that
 JPEG's existing B&W, Enhanced and cropped versions. RAW is an alternate source:
 choose **Camera RAW preview** deliberately to see the RAW preview and any
-explicitly developed RAW versions. Your explicit source choice is retained while
-browsing and refreshing in the current view. JPEG-only photos need no RAW step;
+explicitly developed RAW versions. Source inspection is remembered for that
+photo during the current view; it does not change another photo's default.
+**Use this finish for this photo** saves its portable JPEG/RAW preference.
+JPEG-only photos need no RAW step;
 standalone/unverified RAW files remain separate. Browsing never develops RAW.
 
 A version that exists but fails to read or display says **Could not load … image**
@@ -70,3 +72,9 @@ The older static artwork and Hotkey reference remain available for optional lega
 Google Photos checkboxes and favourites show your requested state immediately. Saving identifies changes awaiting native confirmation; further checkbox changes queue in order. A failed or unconfirmed save restores the confirmed flags and displays a scoped error. Changing a favourite does not clear a failed checkbox save. Retry the affected checkbox, or use Reload selections to read the confirmed disk state.
 
 Browsing, rating, trash, crop and refresh wait for pending selections. Select and next advances only after its own save succeeds. Transfer previews also wait for accepted selections and refuse to plan while a selection failure remains unresolved. Accepted writes continue if you leave Lightbox; return to that root to see a late failure. Keep PhotoGoGo open until Saving finishes: this small in-memory queue does not survive application shutdown.
+
+## Folder views and explicit Reviewed status (2.0.52)
+
+The Folder view bar filters the current folder by All, Needs review, Reviewed, Google-selected, Rated or Favourites. Trash is a separate Hide/Include/Only control. Capture time (imported filename), natural filename, rating and original size can be sorted in either direction; navigation and the tree share that order. Preferences stay on this PC.
+
+Press **M** to toggle Reviewed, or **Shift+M** to mark Reviewed, save and advance. New successful ratings, Trash/restore and exact-version Google selection/favourite changes automatically mark the capture Reviewed. M can clear it again. Older captures start Needs review without migrating historical decisions. A new `.photogogo-review.json` record stays with its event folder and is included only when the archive library-metadata option is selected. Confirmed saves can remove a photograph from the current view. Pending and failed decisions retain the current photograph, and uncertain identities remain visible rather than guessed.

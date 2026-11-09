@@ -1,5 +1,6 @@
 // Development-only fixture: no real media, filesystem or production IPC.
 import React from "react";
+import GuideFixture from "./GuideFixture";
 import { createRoot } from "react-dom/client";
 import VideoSnapshots from "../src/pages/VideoSnapshots";
 import "../src/styles.css";
@@ -101,6 +102,6 @@ state.__TAURI_INTERNALS__ = {
 function Fixture() {
   const [active, setActive] = React.useState(true);
   state.__setSnapshotsActive = setActive;
-  return <VideoSnapshots active={active} />;
+  return new URLSearchParams(location.search).has("guide") ? <GuideFixture chapter="ch-11">{reading=><VideoSnapshots active={active&&!reading}/>}</GuideFixture> : <VideoSnapshots active={active} />;
 }
 createRoot(document.getElementById("root")!).render(<React.StrictMode><Fixture /></React.StrictMode>);

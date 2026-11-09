@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useReview, type ReviewContext } from "../hooks/useReview";
 import { FileTree, ImagePanel, StarRating } from "../components";
 import LightboxCropEditor from "../components/LightboxCropEditor";
@@ -14,11 +14,14 @@ import { namedEventPath } from "../utils/eventNamingContext";
 import { useControllerSurface, useLightboxBindings } from "../controller/useControllerSurface";
 import { lightboxDials } from "../controller/lightboxBindings";
 import type { ControllerKey } from "../controller/types";
+import LightboxBrowseControls from "../components/LightboxBrowseControls";
+import {useLightboxFacts} from "../hooks/useLightboxFacts";
+import {readLightboxBrowse,defaultLightboxBrowse,LIGHTBOX_BROWSE_KEY,projectLightboxCatalogue,photoReviewState,relatedNodes,type LightboxBrowse} from "../utils/lightboxBrowse";
 
 const emptyPan = () => [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
 const frameId = (context?: ReviewContext) => context ? JSON.stringify([context.root, context.path, context.epoch, context.cropped]) : "";
 
-export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => void } = {}) {
+export default function Review({ onOpenJobs, interactionSuspended=false }: { onOpenJobs?: (id: string) => void; interactionSuspended?:boolean } = {}) {
   const review = useReview();
   const { tree, selected, siblings, siblingIdx, images, imageLoading, imageErrors, inspection, zoom, loading, trashed, stars, error, renaming,
     stagingDir, cropped, selectedPhoto, catalogueRevision, originalSource, originalInfo } = review;
@@ -28,6 +31,8 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
   const [cropMessage, setCropMessage] = useState("");
   const [feedback, setFeedback] = useState("");
   const [busy, setBusy] = useState(false);
+  const [browse,setBrowse] = useState(readLightboxBrowse);
+  const manualView = useRef(0), appliedManualView = useRef(0), pinFailures=useRef(true);
   const [controllerPage,setControllerPage]=useState<"review"|"versions"|"inspect">("review");
   const controllerBindings=useLightboxBindings();
   const actionBusy = useRef(false), alive = useRef(true);
@@ -42,6 +47,12 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
   const [resetKey, setResetKey] = useState(0);
   const identityReady = review.isIdentityReady();
   const curation = useGooglePhotoCuration(selectedPhoto && identityReady ? stagingDir : "", catalogueRevision, selectedPhoto?.node.path);
+  const facts = useLightboxFacts(stagingDir,review.browseFolder,catalogueRevision);
+  const browseProjection = useMemo(()=>(base:Parameters<typeof projectLightboxCatalogue>[0])=>projectLightboxCatalogue(base,browse,facts.data,review.browseFolder,node=>pinFailures.current&&facts.failedFor(node)),[browse,facts.version,review.browseFolder,stagingDir]);
+  const reviewStatus = selectedPhoto ? photoReviewState(selectedPhoto,facts.data,review.reviewAliases(selectedPhoto.node)) : "unknown";
+  function changeBrowse(value:LightboxBrowse){pinFailures.current=false;manualView.current++;setBrowse(value);}
+  useEffect(()=>{try{localStorage.setItem(LIGHTBOX_BROWSE_KEY,JSON.stringify(browse));}catch{}},[browse]);
+  useEffect(()=>{if(curation.confirmedVersion)void facts.refresh();},[curation.confirmedVersion,facts.refresh]);
   const naming = useEventNaming(stagingDir, async result => {
     const before = review.getSnapshot();
     await review.refreshTree(result.root, before?.context.cropped, before ? namedEventPath(before.context.path, result) : null);
@@ -75,6 +86,14 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
     }
   }, [loading, images.original, images.bw, images.improved]);
   modal.current = { crop: cropOpen, help: helpOpen, naming: naming.isOpen, raw: !!rawTarget };
+  useEffect(()=>{
+    const deliberate=manualView.current!==appliedManualView.current;
+    const selectionErrors=selectedPhoto&&relatedNodes(selectedPhoto).some(node=>curation.errorFor(curation.assetForPath(node.path)?.id));
+    const hold=busy||renaming||curation.saving||facts.saving||interactionSuspended||cropOpen||helpOpen||naming.isOpen||!!rawTarget
+      ||(!deliberate&&(facts.failedFor(selectedPhoto?.node)||selectionErrors||!!review.error));
+    review.applyBrowseProjection(browseProjection,hold,undefined,stagingDir);
+    if(!hold)appliedManualView.current=manualView.current;
+  },[browseProjection,busy,renaming,curation.saving,facts.saving,interactionSuspended,cropOpen,helpOpen,naming.isOpen,rawTarget,catalogueRevision,curation.error,facts.error,review.error,review.applyBrowseProjection,stagingDir,selectedPhoto?.node.path]);
 
   function focusReview() {
     if (alive.current && !modal.current.crop && !modal.current.help && !modal.current.naming && !modal.current.raw && !document.querySelector('[data-controller-mirror-dialog]')) reviewRoot.current?.focus({ preventScroll: true });
@@ -86,20 +105,20 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
   function openCrop() { modal.current.crop = true; setCropOpen(true); }
   function closeCrop() { modal.current.crop = false; setCropOpen(false); }
   async function chooseOriginalSource(source: "raw" | "cameraJpeg") {
-    if (actionBusy.current || renaming || loading || !review.isIdentityReady() || curation.hasPending()) {
+    if (actionBusy.current || renaming || loading || !review.isIdentityReady() || (curation.hasPending()||facts.saving)) {
       setFeedback("Wait for the current photo decisions to finish saving before changing the original source."); return;
     }
     setFeedback("");
     if (await review.setOriginalSource(source)) focusReview();
   }
   async function rememberFinish() {
-    if (actionBusy.current || disabled || curation.hasPending()) { setFeedback("Wait for the current decisions to finish saving."); return; }
+    if (actionBusy.current || disabled || (curation.hasPending()||facts.saving)) { setFeedback("Wait for the current decisions to finish saving."); return; }
     actionBusy.current = true; setBusy(true);
     try { if (await review.rememberOriginalSource()) setFeedback("Viewing choice saved for this photo. Upload selections are unchanged."); }
     finally { actionBusy.current = false; setBusy(false); }
   }
   function openRaw() {
-    if (actionBusy.current || rawEntryDisabled || curation.hasPending() || !selectedPhoto || !/\.cr3$/i.test(selectedPhoto.node.name)) return;
+    if (actionBusy.current || rawEntryDisabled || (curation.hasPending()||facts.saving) || !selectedPhoto || !/\.cr3$/i.test(selectedPhoto.node.name)) return;
     modal.current.raw = true;
     setRawTarget({root: stagingDir, path: lightboxAbsolute(stagingDir, selectedPhoto.node.path), jpeg: selectedPhoto.cameraJpeg ? lightboxAbsolute(stagingDir, selectedPhoto.cameraJpeg.path) : undefined});
   }
@@ -113,9 +132,10 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
   }
 
   async function execute(id: LightboxCommandId, desired?: boolean) {
-    if (!alive.current || modal.current.crop || modal.current.help || modal.current.naming || modal.current.raw || actionBusy.current) return;
+    if (!alive.current || interactionSuspended || modal.current.crop || modal.current.help || modal.current.naming || modal.current.raw || actionBusy.current) return;
     if (id === "help") { modal.current.help = true; setHelpOpen(true); return; }
     const selectionCommand = id.startsWith("select-") || id.startsWith("favourite-");
+    if(facts.saving&&!selectionCommand)return;
     const inspection = id.startsWith("panel-") || id.startsWith("zoom-") || id.startsWith("pan-") || id === "fit";
     if (curation.hasPending() && !selectionCommand && !inspection) {
       setFeedback("Wait for the pending selections to finish saving before changing photos or files."); return;
@@ -130,6 +150,7 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
     }
     if (id === "refresh") {
       setFeedback("");
+      void facts.refresh();
       if (await review.refreshTree()) { void curation.refresh(); focusReview(); }
       return;
     }
@@ -164,6 +185,21 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
       panRef.current = next; setPan(next); return;
     }
     if (!review.isReady()) { setFeedback("Preview is available. Wait for capture checks before editing or saving photo decisions."); return; }
+    if(id==="reviewed-toggle"||id==="reviewed-next"){
+      if(curation.hasPending()||facts.loading||!facts.data?.review||!photo.node.sourceStamp||review.reviewAliases(photo.node)!==1){setFeedback("Wait for this original's review information and identity checks, or retry folder information.");return;}
+      const next=id==="reviewed-next"?review.nextBrowsePath(context):undefined;
+      const reviewed=id==="reviewed-next"||photoReviewState(photo,facts.getData(),review.reviewAliases(photo.node))!=="reviewed";
+      actionBusy.current=true;setBusy(true);
+      try{
+        const saved=await facts.mark(photo.node,reviewed);
+        if(saved&&review.isContextCurrent(context)){
+          const confirmed=facts.getData();
+          review.applyBrowseProjection(base=>projectLightboxCatalogue(base,browse,confirmed,review.browseFolder),false,next,context.root);
+          setFeedback(reviewed?"Reviewed status saved":"Marked as needing review");
+        }else if(alive.current&&review.isContextCurrent(context))setFeedback("Review status was not confirmed. This photo stays open; retry before moving on.");
+      }finally{actionBusy.current=false;if(alive.current)setBusy(false);}
+      return;
+    }
     if (id === "crop") { if (editable) openCrop(); else setFeedback("Cropping supports JPEG originals; this photo is not editable here."); return; }
     if (id === "crop-version") {
       if (photo.crop && await review.setCropVersion(!context.cropped)) focusReview();
@@ -174,14 +210,20 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
     const mutating = id.startsWith("rate-") || id === "clear-rating" || id === "trash" || id === "trash-next"
       || id.startsWith("select-") || id.startsWith("favourite-");
     if (!mutating) return;
+    pinFailures.current=true;
     const sequential = !selectionCommand || id === "select-active-next";
     if (sequential) { actionBusy.current = true; setBusy(true); }
     setFeedback("");
+    let automatic:ReturnType<typeof facts.prepareAutomatic>;
+    try{automatic=facts.prepareAutomatic(photo.node);}catch(error){actionBusy.current=false;setBusy(false);setFeedback(String(error));return;}
+    let primarySaved=false,reviewedSaved=true;
+    const afterSaved=async(node=photo.node)=>{primarySaved=true;reviewedSaved=await automatic.complete(true,node);return reviewedSaved;};
+    const capturedNext=id==="select-active-next"?review.nextBrowsePath(context):undefined;
     try {
       let saved = false;
-      if (id.startsWith("rate-")) saved = await review.handleStars(Number(id.split("-")[1]), id.endsWith("-next"));
-      else if (id === "clear-rating") saved = await review.handleStars(0);
-      else if (id === "trash" || id === "trash-next") saved = await review.handleTrash(id === "trash-next" ? true : undefined, id === "trash-next");
+      if (id.startsWith("rate-")) saved = await review.handleStars(Number(id.split("-")[1]), id.endsWith("-next"), afterSaved);
+      else if (id === "clear-rating") saved = await review.handleStars(0, false, afterSaved);
+      else if (id === "trash" || id === "trash-next") saved = await review.handleTrash(id === "trash-next" ? true : undefined, id === "trash-next", afterSaved);
       else {
         const index = id.includes("active") ? active.current : id.endsWith("original") ? 0 : id.endsWith("bw") ? 1 : 2;
         const node = nodes[index];
@@ -193,15 +235,17 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
         activateDuringSave(index);
         saved = await curation.update(asset, id.startsWith("favourite-")
           ? { favourite: desired ?? !asset.favourite }
-          : { selected: id === "select-active-next" ? true : desired ?? !asset.selected });
-        if (saved && id === "select-active-next") saved = await review.advanceFromContext(context);
+          : { selected: id === "select-active-next" ? true : desired ?? !asset.selected },()=>afterSaved());
+        if (saved && id === "select-active-next" && review.isContextCurrent(context)) review.applyBrowseProjection(base=>projectLightboxCatalogue(base,browse,facts.getData(),review.browseFolder),false,capturedNext,context.root);
       }
-      if (sequential && alive.current && review.isContextCurrent(context)) {
+      if(primarySaved&&!reviewedSaved&&alive.current&&review.getSnapshot()?.context.root===context.root)setFeedback("Decision saved; Reviewed status was not saved. Use Mark reviewed to retry.");
+      else if (sequential && alive.current && review.isContextCurrent(context)) {
         setFeedback(saved ? "Saved" : "Review did not advance. Check the error or reload this photo before retrying.");
       }
     } catch (reason) {
       if (alive.current && review.getSnapshot()?.context.root === context.root) setFeedback("Review was not completed: " + String(reason));
     } finally {
+      await automatic.complete(false);
       if (sequential) {
         actionBusy.current = false;
         if (alive.current) setBusy(false);
@@ -211,11 +255,11 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
   function activateDuringSave(index: number) { active.current = index; setActivePanel(index); }
   const executeLatest = useRef(execute); executeLatest.current = execute;
   const controllerBlocked=disabled || helpOpen || naming.isOpen || cropOpen;
-  const controllerBrowseBlocked=busy || renaming || curation.saving || !renderFrame || helpOpen || naming.isOpen || cropOpen;
+  const controllerBrowseBlocked=busy || renaming || curation.saving || facts.saving || !renderFrame || helpOpen || naming.isOpen || cropOpen;
   const googleControllerKeys:ControllerKey[]=["original","bw","enhanced"].map((variant,index)=>{const node=[version?.original,version?.bw,version?.improved][index];const asset=node?curation.assetForPath(node.path):null;return{id:`select-${variant}`,label:["ORIGINAL","B&W","ENHANCED"][index],detail:asset?.selected?"SELECTED":"GOOGLE PHOTOS",icon:["original","bw","enhanced"][index],enabled:!controllerBlocked&&!curation.loading&&!!asset&&!!renderedImages[index],active:!!asset?.selected,status:curation.pendingFor(asset?.id)?"saving":"idle"};});
   const controllerKeys:ControllerKey[]=controllerPage==="review" ? [
     {id:"previous",label:"PREVIOUS",detail:"ORIGINAL PHOTO",icon:"previous",enabled:!controllerBrowseBlocked&&siblingIdx>0},
-    {id:"trash",label:trashed?"RESTORE":"TRASH",detail:"STAY ON THIS PHOTO",icon:"trash",enabled:!controllerBlocked,active:trashed},
+    {id:"trash",label:trashed?"RESTORE":"TRASH",detail:"MARK REVIEWED",icon:"trash",enabled:!controllerBlocked,active:trashed},
     {id:"next",label:"NEXT",detail:"ORIGINAL PHOTO",icon:"next",enabled:!controllerBrowseBlocked&&siblingIdx<siblings.length-1},
     ...googleControllerKeys,
   ] : controllerPage==="versions" ? [
@@ -229,7 +273,7 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
     {id:"refresh",label:"REFRESH",icon:"folder",enabled:!controllerBrowseBlocked},
     {id:"help",label:"HELP",icon:"help",enabled:!controllerBrowseBlocked},
   ];
-  useControllerSurface({id:"lightbox",title:`Lightbox · ${controllerPage}`,contextKey:JSON.stringify([renderFrame,activePanel,controllerPage,helpOpen,naming.isOpen,cropOpen]),keys:controllerKeys,
+  useControllerSurface({id:"lightbox",title:`Lightbox · ${controllerPage}`,contextKey:JSON.stringify([renderFrame,activePanel,controllerPage,helpOpen,naming.isOpen,cropOpen,browse,review.browseFolder,facts.version]),keys:controllerKeys,
     dials:lightboxDials(controllerBindings,!controllerBrowseBlocked,labels[activePanel]),
     sideButtons:[{label:"Review",id:"mode-review",enabled:!controllerBrowseBlocked},{label:"Versions",id:"mode-versions",enabled:!controllerBrowseBlocked},{label:"Inspect",id:"mode-inspect",enabled:!controllerBrowseBlocked}],
     execute:async command=>{if(command.startsWith("mode-")){if(!controllerBrowseBlocked)setControllerPage(command.slice(5) as "review"|"versions"|"inspect");return;}await executeLatest.current(command as LightboxCommandId);},
@@ -273,18 +317,18 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
         <button className="min-h-11 min-w-11 text-gray-400" disabled={busy || renaming} onClick={() => void execute("refresh")} title="Refresh photos (R)" aria-label="Refresh photos">↺</button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        <FileTree nodes={tree} keyboardNavigation disabled={busy || renaming || curation.saving} selected={selected?.path}
-          onFolderMenu={(node, anchor, point) => { if (!actionBusy.current && !curation.hasPending()) naming.openMenu(node.path, anchor, point); }}
-          onExpand={node=>{if(!actionBusy.current&&!curation.hasPending())void review.loadFolder(node.path);}}
-          onSelect={node => { if (!actionBusy.current && !curation.hasPending()) void review.selectNode(node).then(shown => { if (shown) focusReview(); }); }} />
+        <FileTree nodes={tree} keyboardNavigation disabled={busy || renaming || curation.saving || facts.saving} selected={selected?.path}
+          onFolderMenu={(node, anchor, point) => { if (!actionBusy.current && !curation.hasPending() && !facts.saving) naming.openMenu(node.path, anchor, point); }}
+          onExpand={node=>{if(!actionBusy.current&&!curation.hasPending()&&!facts.saving){if(!selectedPhoto)review.setBrowseFolder(node.path);void review.loadFolder(node.path);}}}
+          onSelect={node => { if (!actionBusy.current && !curation.hasPending() && !facts.saving) void review.selectNode(node).then(shown => { if (shown) focusReview(); }); }} />
       </div>
     </div>
     <div ref={reviewRoot} tabIndex={-1} aria-label="Photo Lightbox review" className="flex-1 flex flex-col min-w-0 outline-none">
       <div className="flex-shrink-0 bg-surface-800 border-b border-surface-600 px-3 py-2 flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-2">
-          <button className="btn-secondary min-h-11 min-w-11 text-sm" aria-label="Previous original photo" disabled={busy || renaming || curation.saving || siblingIdx <= 0} onClick={() => void execute("previous")} title="Previous original (←)">←</button>
+          <button className="btn-secondary min-h-11 min-w-11 text-sm" aria-label="Previous original photo" disabled={busy || renaming || curation.saving || facts.saving || siblingIdx <= 0} onClick={() => void execute("previous")} title="Previous original (←)">←</button>
           <span className="text-xs text-gray-400 tabular-nums">{siblings.length ? String(siblingIdx + 1) + " / " + siblings.length : "—"}</span>
-          <button className="btn-secondary min-h-11 min-w-11 text-sm" aria-label="Next original photo" disabled={busy || renaming || curation.saving || !siblings.length || siblingIdx >= siblings.length - 1} onClick={() => void execute("next")} title="Next original (→)">→</button>
+          <button className="btn-secondary min-h-11 min-w-11 text-sm" aria-label="Next original photo" disabled={busy || renaming || curation.saving || facts.saving || !siblings.length || siblingIdx >= siblings.length - 1} onClick={() => void execute("next")} title="Next original (→)">→</button>
         </div>
         <div className="flex items-center gap-1">
           {button("zoom-out", "−", !displayReady)}<span className="text-xs text-gray-400 w-10 text-center">{Math.round(zoom * 100)}%</span>{button("zoom-in", "+", !displayReady)}{button("fit", "Fit", !displayReady)}
@@ -297,9 +341,16 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
           </div>}
           <StarRating value={stars} comfortable readonly={disabled} onChange={value => void execute(value === 0 ? "clear-rating" : value === 1 ? "rate-1" : value === 2 ? "rate-2" : "rate-3")} />
           <button className={"min-h-11 px-3 text-xs rounded-lg font-medium " + (trashed ? "bg-red-700 text-white" : "btn-secondary")} disabled={disabled} onClick={() => void execute("trash")} title="Toggle trash tag only; no files are deleted (Delete)">{trashed ? "✗ Trashed" : "🗑 Trash"}</button>
+          <button type="button" className={"btn-secondary min-h-11 px-3 text-xs "+(reviewStatus==="reviewed"?"text-emerald-200":"")} disabled={disabled||facts.loading||facts.saving||!facts.data?.review||!selectedPhoto?.node.sourceStamp||review.reviewAliases(selectedPhoto.node)!==1} onClick={()=>void execute("reviewed-toggle")} title="Saved review decisions fill this flag automatically; M changes it manually">{reviewStatus==="reviewed"?"✓ Reviewed":"Mark reviewed"}</button>
+          <button type="button" className="btn-secondary min-h-11 px-3 text-xs" disabled={disabled||facts.loading||facts.saving||!facts.data?.review||!selectedPhoto?.node.sourceStamp||review.reviewAliases(selectedPhoto.node)!==1} onClick={()=>void execute("reviewed-next")} title="Save Reviewed before advancing once (Shift+M)">Reviewed &amp; next</button>
         </>}
         <button type="button" className="btn-secondary min-h-11 px-3 text-xs ml-auto" disabled={busy} onClick={() => void execute("help")} aria-label="Keyboard and controller help" title="Keyboard & Controller Help (F1 / ?)">⌨ Keys & controller</button>
       </div>
+      {facts.saving&&<p role="status" className="px-3 py-1 text-xs text-cyan-200">Saving Reviewed status…</p>}
+      <LightboxBrowseControls value={browse} onChange={changeBrowse} disabled={busy||renaming||curation.saving||facts.saving||interactionSuspended} shown={review.shownInFolder} total={review.totalInFolder} folder={review.browseFolder} pending={facts.loading||!!currentInspection} onReset={()=>changeBrowse({...defaultLightboxBrowse})}/>
+      {selectedPhoto&&review.reviewAliases(selectedPhoto.node)>1&&<p className="px-3 py-2 text-xs text-amber-200 border-b border-surface-600" role="status">Several originals share this review identity. Ambiguous photos stay visible; resolve the duplicate before marking Reviewed or relying on selection filters.</p>}
+      {(facts.error||facts.data?.reviewWarning||facts.data?.selectionWarning)&&<div className="px-3 py-2 text-xs text-amber-200 border-b border-surface-600 flex gap-3 items-center flex-wrap" aria-label="Folder review information"><span>{facts.error||facts.data?.reviewWarning||facts.data?.selectionWarning} Uncertain photos stay visible; other photo decisions remain available.</span><button type="button" className="btn-secondary min-h-11 text-xs" disabled={facts.loading||facts.saving||curation.saving} onClick={()=>void facts.refresh()}>Retry folder information</button></div>}
+      {!selected&&review.totalInFolder>0&&review.shownInFolder===0&&<div className="p-6 text-sm text-gray-300" role="status">No photos match this folder view. Change a filter or use Reset view; no files were removed.</div>}
       {selected && <div className="px-3 py-1.5 bg-surface-800 text-xs text-gray-400 flex flex-wrap items-center gap-2 border-b border-surface-700">
         <span className="truncate flex-1 min-w-0" title={selected.name}>{selected.name}</span>
         <span className="text-cyan-200">Active: {labels[activePanel]}</span>
@@ -322,7 +373,7 @@ export default function Review({ onOpenJobs }: { onOpenJobs?: (id: string) => vo
         <span>{currentInspection && currentInspection.phase !== "checking"
           ? "Some capture checks could not finish. Preview and browsing remain available; editing and upload choices are paused."
           : `Checking capture pairs${currentInspection?.files ? ` · ${currentInspection.files.toLocaleString()} files` : ""}. Preview and browsing are available; editing and upload choices will unlock when verified.`}</span>
-        {currentInspection && currentInspection.phase !== "checking" && <button type="button" className="btn-secondary min-h-11 px-3" disabled={busy || renaming || curation.saving} onClick={()=>void review.loadFolder(selectedFolder??"")}>Retry capture checks</button>}
+        {currentInspection && currentInspection.phase !== "checking" && <button type="button" className="btn-secondary min-h-11 px-3" disabled={busy || renaming || curation.saving || facts.saving} onClick={()=>void review.loadFolder(selectedFolder??"")}>Retry capture checks</button>}
       </div>}
       {curation.error && <div role="status" className="px-4 py-2 text-xs text-amber-200 bg-surface-800 flex items-center justify-between gap-3"><span>{curation.error} Photos remain available for review.</span><button className="btn-secondary min-h-11 px-2 text-xs" disabled={busy} onClick={() => void curation.refresh(true)}>Reload selections</button></div>}
       {curation.warnings.length > 0 && <details className="px-4 py-2 text-xs text-amber-200 bg-surface-800"><summary className="cursor-pointer">Upload selection notes ({curation.warnings.length})</summary><ul className="mt-1 ml-4 list-disc">{curation.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}

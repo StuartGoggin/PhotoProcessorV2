@@ -7,7 +7,7 @@ import { curationWriter as writer } from "../utils/curationPersistence";
 type Changes = { selected?: boolean; favourite?: boolean };
 interface Intent { id: number; assetId: string; changes: Changes }
 const createModel = (root: string, scope: string) => ({ root, scope, assets: new Map<string, GooglePhotoAsset>(), paths: new Map<string, string | null>(),
-  pending: [] as Intent[], warnings: [] as string[], loading: false, error: "", generation: 0, scanning: false, scanPath: undefined as string | undefined, deferred: false, deferredClear: false });
+  pending: [] as Intent[], warnings: [] as string[], loading: false, error: "", generation: 0, confirmedVersion:0, scanning: false, scanPath: undefined as string | undefined, deferred: false, deferredClear: false });
 
 /** Requested flags paint immediately. Only compact native acknowledgements
  * update confirmed flags; older completions cannot erase newer queued intent. */
@@ -83,34 +83,40 @@ export function useGooglePhotoCuration(root: string, refreshKey?: unknown, relat
     const asset = id ? model.assets.get(id) : undefined;
     return asset ? effective(asset) : undefined;
   }
-  async function update(asset: GooglePhotoAsset, changes: Changes) {
+  async function update(asset: GooglePhotoAsset, changes: Changes, afterSaved?: () => Promise<boolean>) {
     const model = modelRef.current;
     if (!root || model.root !== root || !mounted.current || model.loading || !model.assets.has(asset.id)
       || model.assets.get(asset.id)?.relativePath !== asset.relativePath) return false;
     const intent: Intent = { id: ++sequence.current, assetId: asset.id, changes: { ...changes } };
     model.pending.push(intent); ++model.generation; model.error = ""; notify(model);
-    let saved = false;
+    let primarySaved = false, followupSaved = true;
     try {
-      const result = await writer.enqueue({ root, assetId: asset.id, relativePath: asset.relativePath, ...changes });
-      const confirmed = model.assets.get(asset.id);
-      if (confirmed) model.assets.set(asset.id, { ...confirmed, selected: result.selected, favourite: result.favourite });
-      saved = true;
-    } catch (error) {
-      // Queue admission failures also need a visible error; native failures are
-      // retained by the writer for a view reopened after a late completion.
-      if (!writer.error(root, asset.id)) model.error = `Selection save was not confirmed: ${String(error)}. Try again.`;
-    }
-    finally {
+      try {
+        const result = await writer.enqueue({ root, assetId: asset.id, relativePath: asset.relativePath, ...changes });
+        const confirmed = model.assets.get(asset.id);
+        if (confirmed) model.assets.set(asset.id, { ...confirmed, selected: result.selected, favourite: result.favourite });
+        model.confirmedVersion++;
+        primarySaved = true;
+      } catch (error) {
+        // Queue admission failures also need a visible error; native failures are
+        // retained by the writer for a view reopened after a late completion.
+        if (!writer.error(root, asset.id)) model.error = `Selection save was not confirmed: ${String(error)}. Try again.`;
+      }
+      // Follow-up failure is separate from the confirmed selection; it must not
+      // enter the primary-write catch or paint the checkbox as rolled back.
+      if (primarySaved && afterSaved) followupSaved = await afterSaved();
+    } finally {
       model.pending = model.pending.filter(item => item.id !== intent.id);
       if (mounted.current && model === modelRef.current) {
         if (model.deferred && !model.pending.length && !model.scanning) { const clear = model.deferredClear; model.deferred = false; model.deferredClear = false; void refreshLatest.current(clear); }
         notify(model);
       }
     }
-    return saved && mounted.current && model === modelRef.current;
+    return primarySaved && followupSaved && mounted.current && model === modelRef.current;
   }
   const model = modelRef.current;
   return { get assets() { return [...model.assets.values()].map(effective); }, warnings: model.warnings, loading: model.loading,
+    confirmedVersion:model.confirmedVersion,
     saving: model.pending.length > 0, error: model.error || writer.error(root), refresh, update, assetForPath,
     hasPending: () => modelRef.current.pending.length > 0,
     pendingFor: (id?: string) => !!id && modelRef.current.pending.some(intent => intent.assetId === id),
