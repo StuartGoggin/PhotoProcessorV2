@@ -18,7 +18,7 @@ Close/return is blocked during preview, recipe loading, saving and queue admissi
 
 Viewing preferences have their own source admission stamp and never refresh the source hash, recipes or output lineage. Preferences survive ordinary rating/trash renames and whole-event folder moves; changed or ambiguous sources cannot inherit a choice by guessing.
 
-Release: PhotoGoGo 2.0.43. Engine: the separately bundled, pinned RawTherapee 5.13 CLI. Canon software, an external editor and a separate RAW installation are not required.
+The RAW engine was introduced in PhotoGoGo 2.0.43; the per-photo workflow above is new in 2.0.51. Engine: the separately bundled, pinned RawTherapee 5.13 CLI. Canon software, an external editor and a separate RAW installation are not required.
 
 ## Workflow
 

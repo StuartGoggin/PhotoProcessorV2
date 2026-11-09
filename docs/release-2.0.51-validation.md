@@ -10,7 +10,7 @@ Includes preceding commits `ec6666a` (re-import into named event days) and `d2cc
 
 ## Verification before packaging
 
-- Full native suite: **407 passed, 30 opt-in tests ignored**, no failures. Log `test-output/raw-finish-final-native.log`.
+- Full native suite: **407 passed, 30 opt-in tests ignored**, no failures, repeated on the 2.0.51 binary. Latest log `test-output/release-2.0.51-native.log`.
 - Five focused metadata/decision regressions cover independent admission stamps, unchanged recipes/output lineage, invalid/escaping requests, unavailable/changed/TIFF-only finishes, neutral rating renames, event-folder moves, ambiguous masters and authoritative JPEG review flags. All five passed again after the 2.0.51 version update.
 - Nine production-component browser suites: **101 groups**, with synthetic native adapters. Reports: `lightbox-raw-workflow-browser`, `lightbox-first-preview-browser`, `lightbox-raw-browser`, `lightbox-controls-browser`, `lightbox-selection-browser`, `lightbox-rename-curation-browser`, `google-photos-core-jobs-browser`, `raw-photo-editor-browser`, `raw-development-browser` under `test-output`.
 - Lightbox/cache/catalogue and Google UI unit checks: **24 passed**.
@@ -32,3 +32,17 @@ The final Lightbox workflow rerun also dispatches **Open Jobs** with the exact r
 4. Re-import one already-imported card into its named event day: identical content should skip; conflicting day folders require resolution instead of creating another sibling or guessing. Existing duplicate directories are not automatically removed.
 
 These controlled results do not establish live Google read-back resolution, subjective RAW appearance across every camera/scene, or performance on Stuart's storage. Originals and prior installer remain available for rollback.
+
+## Completed package inspection
+
+Built source: `8ffa47bcb7235bfdb2ecc6a3c7fd62abca318c75`. Both Windows x64 bundles completed through `build-release.ps1`, retaining pinned media, metadata, RAW and modified controller SDK source/licence deliverables. Inspection receipt: `test-output/release-2.0.51-inspection-20261109T001732882Z/report.json`.
+
+Both installers were extracted without installing. Application payload hashes match the built binary; metadata runtime (2,205 files), RAW runtime (440 resources), media pair, controller sources and corresponding source checks passed. MSI ProductVersion is **2.0.51**; UpgradeCode remains `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` from 2.0.50. Both relocated RAW runtimes converted the supplied sample to **6014 × 4016**, RTv4_sRGB, with PATH empty and its original hash unchanged. Decode observations were 14,384 and 11,414 ms; these do not establish target-PC throughput or bit-identical independent decodes.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| PhotoGoGoV2_2.0.51_x64-setup.exe | 130,910,478 | 0D271C94CC860881E035D53800E9FD40F0294978A71E2466A74AFB395ED4853B |
+| PhotoGoGoV2_2.0.51_x64_en-US.msi | 222,188,244 | F8BDABB7CEC2501605CB009D0D73D0D157F6AB2C29BFA4F9D93AF72AA26A5DED |
+| photogogo-v2.exe | — | F0AD5ABE3C563AB18658B6112E5FA34904963D031348D4C7D4E9B0387C724607 |
+
+These are unsigned test installers. The 2.0.50 packages are retained for rollback. Source is committed; GitHub publication and Slack delivery receipts follow after those actions are verified.
