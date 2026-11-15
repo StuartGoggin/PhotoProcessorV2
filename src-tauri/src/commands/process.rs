@@ -4116,3 +4116,17 @@ fn run_search_person_videos_task(
         errors: vec![],
     })
 }
+
+pub(crate) fn cleanup_entries()->Result<Vec<super::job_cleanup::Entry>,String>{
+    let active=super::process_runtime::active(super::process_runtime::Kind::PhotoProcess)?;
+    let jobs=process_jobs_store().lock().map_err(|_|"Process job state unavailable")?;
+    jobs.values().map(|job|{let status=serde_json::to_value(&job.status).ok().and_then(|v|v.as_str().map(str::to_owned)).unwrap_or_default();let safe=super::job_cleanup::terminal(&status)&&!active.contains(&job.id);super::job_cleanup::entry("process",&job.id,"Photo Process / Transfer",&status,&job.created_at,job,safe,false,if safe{"Remove this job's in-app history and logs; outputs and archive records are retained"}else{"Stop this process and wait for its safe checkpoint before cleanup"})}).collect()
+}
+pub(crate) fn cleanup_apply(choice:&super::job_cleanup::Choice)->Result<String,String>{
+    if choice.action!="remove"{return Err("Process cleanup supports finished details only".into());}
+    if super::process_runtime::active(super::process_runtime::Kind::PhotoProcess)?.contains(&choice.id){return Err("Process worker is still active".into());}
+    let mut jobs=process_jobs_store().lock().map_err(|_|"Process job state unavailable")?;
+    let job=jobs.get(&choice.id).ok_or("Process job no longer exists; refresh cleanup")?;super::job_cleanup::check_revision(job,&choice.revision)?;
+    if !matches!(job.status,ProcessJobStatus::Completed|ProcessJobStatus::CompletedWithWarnings|ProcessJobStatus::Failed|ProcessJobStatus::Aborted|ProcessJobStatus::NeedsAttention){return Err("Process is still active".into());}
+    jobs.remove(&choice.id);Ok(String::new())
+}

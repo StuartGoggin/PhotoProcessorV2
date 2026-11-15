@@ -489,3 +489,15 @@ fn completed_content_claims_are_revalidated_and_read_errors_are_not_duplicates()
         .is_err());
     assert_eq!(fs::read(destination).unwrap(), b"first photo");
 }
+
+#[test]
+fn weighted_source_size_reservation_rejects_growth_before_any_payload_copy(){
+    let fixture=Fixture::new();let source=fixture.0.join("card-a/growing.jpg");std::fs::write(&source,b"tiny").unwrap();let root=fixture.root();let session=import_sessions::try_open(&root).unwrap().unwrap();session.prepare_parent(&root).unwrap();
+    let copied=std::sync::atomic::AtomicUsize::new(0);
+    let stats=import_pipeline::run_weighted(&[source],|p|std::fs::metadata(p).unwrap().len(),|p,reserved|{
+        std::fs::write(p,b"a source which grew after reservation").unwrap();
+        let result=import_safety::stage_copy(p,&root,reserved,|chunk|{copied.fetch_add(chunk.len(),Ordering::Relaxed);Ok(())});
+        assert!(result.is_err(),"staging must bind to the reserved source size");None::<()>
+    },|_|panic!("Unreserved bytes cannot reach publication"),4,8,2).unwrap();
+    assert_eq!(copied.load(Ordering::Relaxed),0);assert_eq!(stats.peak_bytes,4);
+}

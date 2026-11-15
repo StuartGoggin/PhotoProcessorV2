@@ -5,11 +5,14 @@ pub(crate) use catalogue::{scan_for_archive as scan_archive_photos, untag as arc
 mod diagnostics;
 pub(crate) mod engine;
 mod core_jobs;
+mod cleanup;
+pub(crate) use cleanup::{entries as cleanup_entries,apply as cleanup_apply};
 pub(crate) use core_jobs::{snapshot as job_snapshot, archive_finished as archive_finished_jobs};
 mod metadata;
 pub mod model;
 mod oauth;
 mod plan;
+mod planning;
 pub(crate) mod store;
 mod transport;
 pub(crate) use transport::Album as CoreAlbum;
@@ -227,35 +230,24 @@ struct FrozenPlan {
     original_hashes: Vec<(String, String)>,
 }
 #[tauri::command]
-pub async fn google_photos_plan(
-    app: AppHandle,
-    request: PlanRequest,
-) -> Result<PlanPreview, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let _lease = writer_lease(&app)?; let store = protected(&app)?;
-        let account = oauth::account(&store)?.ok_or("Connect the intended Google account before preparing an upload plan.")?;
-        let catalogue = catalogue::scan(Path::new(&request.root))?;
-        let context = PlanContext { id: oauth::random_id()?, account_id: account.id, account_email: account.email, ledger: engine::effective_ledger(&store)?, albums: store.load("albums")?.unwrap_or_default() };
-        let mut result = plan::build(&catalogue, &request, &context)?;
-        let settings = super::settings::load_settings(app.clone())?;
-        let tool_available = if result.items.iter().any(|i| metadata::needs_tool(i)) { metadata::check_tool(&settings.exiftool_dir) } else { true };
-        let mut originals = std::collections::BTreeMap::new();
-        for item in &mut result.items {
-            if !matches!(item.status, PlanItemStatus::Ready | PlanItemStatus::Changed) { continue; }
-            let ext = Path::new(&item.path).extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
-            if !matches!(ext.as_str(), "jpg" | "jpeg" | "png") || (metadata::needs_tool(item) && ext == "png") { item.status = PlanItemStatus::Unsupported; item.warnings.push("This release validates full-resolution JPEG and unmodified PNG uploads. Metadata/GPS-safe copies require JPEG; no silent format conversion is performed.".into()); continue; }
-            if metadata::needs_tool(item) && !tool_available { item.status = PlanItemStatus::Blocked; item.warnings.push("Check the metadata tool in Settings. Clear a broken custom override to use bundled ExifTool, or repair the installation. It is needed to restore capture-date/colour metadata or remove GPS in an upload-only copy; your original is never modified.".into()); continue; }
-            if let Err(error) = metadata::validate_item(item) { item.status = PlanItemStatus::Blocked; item.warnings.push(error); continue; }
-            let origin = Path::new(&item.original_path);
-            match metadata::hash_file(origin) { Ok(hash) if hash == item.original_sha256 => { originals.insert(item.original_path.clone(), hash); }, Ok(_) => { item.status = PlanItemStatus::Blocked; item.warnings.push("The original metadata lineage changed during planning. Refresh and review a fresh plan.".into()); continue; }, Err(error) => { item.status = PlanItemStatus::Blocked; item.warnings.push(format!("Original metadata lineage cannot be verified: {error}")); continue; } }
-            if metadata::capture_date(Path::new(&item.path)).or_else(|| metadata::capture_date(origin)).is_none() { item.warnings.push("No embedded capture time could be verified. Google may use the upload time. The event date names the album only; it does not change the photo's capture time.".into()); }
-        }
-        result.total_bytes = result.items.iter().filter(|i| matches!(i.status, PlanItemStatus::Ready | PlanItemStatus::Changed)).map(|i| i.bytes).sum();
-        if result.items.iter().any(|i| matches!(i.status, PlanItemStatus::Unsupported | PlanItemStatus::Blocked)) { result.warnings.push("Blocked/unsupported versions will be excluded, not uploaded at reduced quality. Review all warnings and the final counts.".into()); }
-        store.save(&format!("plan_{}", result.id), &FrozenPlan { plan: result.clone(), original_hashes: originals.into_iter().collect() })?;
-        Ok(result)
-    }).await.map_err(|_| "Upload planning task failed; no Google writes occurred.")?
+pub async fn google_photos_plan(app: AppHandle,request:PlanRequest,inspection_id:Option<String>)->Result<PlanPreview,String>{
+    tauri::async_runtime::spawn_blocking(move||{
+        let generated=oauth::random_id()?;
+        let run=planning::begin(inspection_id.as_deref().unwrap_or(&generated))?;
+        let _lease=writer_lease(&app)?;let store=protected(&app)?;
+        let account=oauth::account(&store)?.ok_or("Connect the intended Google account before preparing an upload plan.")?;
+        let context=PlanContext{id:oauth::random_id()?,account_id:account.id,account_email:account.email,ledger:engine::effective_ledger(&store)?,albums:store.load("albums")?.unwrap_or_default()};
+        let settings=super::settings::load_settings(app.clone())?;
+        let inspected=planning::inspect(&request,&context,&settings.exiftool_dir,&run)?;
+        run.commit(||store.save(&format!("plan_{}",inspected.plan.id),&FrozenPlan{plan:inspected.plan.clone(),original_hashes:inspected.original_hashes.clone()}))?;
+        Ok(inspected.plan.clone())
+    }).await.map_err(|_|"Upload planning task failed; no Google writes occurred.")?
 }
+#[tauri::command]
+pub fn google_photos_plan_progress(inspection_id:String)->Result<Option<planning::InspectionProgress>,String>{planning::snapshot(&inspection_id)}
+#[tauri::command]
+pub fn google_photos_cancel_plan(inspection_id:String)->Result<bool,String>{planning::cancel(&inspection_id)}
+
 fn spawn_worker(app: AppHandle, mut job: Job, lease: File) -> Result<(), String> {
     let managed = super::process_runtime::register(super::process_runtime::Kind::GooglePhotos, &job.plan.id)?;
     let control = managed.control.clone();
@@ -382,6 +374,7 @@ pub async fn google_photos_control(
             let _lease = writer_lease(&app).map_err(|_| "This upload runs in another PhotoGoGo process. Stop it in the window where it was started.")?;
             let store = protected(&app)?;
             let mut job = load_job(&store, &job_id)?;
+        if job.dismissed&&matches!(action.as_str(),"resume"|"retry"){return Err("Restore this dismissed job to History before resuming it.".into());}
             job.recover();
             if !matches!(job.status.as_str(), "completed" | "completed_with_errors" | "completed_with_warnings") {
                 job.status = if action == "abort" { "aborted" } else { "paused" }.into();
@@ -398,6 +391,7 @@ pub async fn google_photos_control(
         let lease = writer_lease(&app)?;
         let store = protected(&app)?;
         let mut job = load_job(&store, &job_id)?;
+        if job.dismissed&&matches!(action.as_str(),"resume"|"retry"){return Err("Restore this dismissed job to History before resuming it.".into());}
         same_account(&store, &job.plan.account_id)?;
         job.recover();
         if job.history_hidden && core_jobs::history_eligible(&job) { return Err("Restore this upload to History before explicitly rechecking.".into()); }

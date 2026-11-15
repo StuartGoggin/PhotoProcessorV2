@@ -37,3 +37,5 @@ pub mod video_snapshots;
 mod studio_hardware;
 mod studio_adaptive;
 mod studio_telemetry;
+
+pub mod job_cleanup;

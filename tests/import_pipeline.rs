@@ -191,14 +191,14 @@ fn next_source_copy_overlaps_real_destination_verification() {
 }
 
 #[test]
-fn at_most_two_private_copies_are_in_flight_and_publish_in_source_order() {
+fn at_most_three_private_copies_are_in_flight_and_publish_in_source_order() {
     let fixture = Fixture::new();
     let sources = fixture.sources(24);
     let live = Arc::new(AtomicUsize::new(0));
     let peak_live = AtomicUsize::new(0);
     let copying = AtomicUsize::new(0);
     let peak_copying = AtomicUsize::new(0);
-    let (second_ready, second_copy_ready) = mpsc::channel();
+    let (third_ready, third_copy_ready) = mpsc::channel();
     let published = RefCell::new(Vec::new());
     let items: Vec<usize> = (0..sources.len()).collect();
 
@@ -218,8 +218,8 @@ fn at_most_two_private_copies_are_in_flight_and_publish_in_source_order() {
             )
             .unwrap();
             copying.fetch_sub(1, Ordering::SeqCst);
-            if *index == 1 {
-                second_ready.send(()).unwrap();
+            if *index == 2 {
+                third_ready.send(()).unwrap();
             }
             Some(TrackedPrepared {
                 prepared: Prepared {
@@ -231,10 +231,12 @@ fn at_most_two_private_copies_are_in_flight_and_publish_in_source_order() {
         },
         |mut item| {
             if item.prepared.index == 0 {
-                second_copy_ready
+                third_copy_ready
                     .recv_timeout(HANDSHAKE_DEADLINE)
-                    .expect("second copy must prepare while first is held");
-                assert_eq!(live.load(Ordering::SeqCst), 2);
+                    .expect("one queued copy and the next preparation must overlap the held first copy");
+                // Compatibility run now permits one queued payload: one held
+                // by the consumer, one queued, and one awaiting handoff.
+                assert_eq!(live.load(Ordering::SeqCst), 3);
             }
             item.prepared
                 .staged
@@ -249,7 +251,7 @@ fn at_most_two_private_copies_are_in_flight_and_publish_in_source_order() {
     )
     .unwrap();
 
-    assert_eq!(peak_live.load(Ordering::SeqCst), 2);
+    assert_eq!(peak_live.load(Ordering::SeqCst), 3);
     assert_eq!(
         peak_copying.load(Ordering::SeqCst),
         1,
@@ -529,7 +531,7 @@ fn reader_panic_probe() {
 }
 
 #[test]
-fn consumer_panic_disconnects_the_waiting_reader_and_cleans_both_copies() {
+fn consumer_panic_disconnects_the_waiting_reader_and_cleans_all_private_copies() {
     run_isolated_probe("consumer_panic_probe");
 }
 
@@ -561,8 +563,8 @@ fn consumer_panic_probe() {
             |prepared| {
                 assert_eq!(prepared.index, 0);
                 second_copy_ready.recv_timeout(HANDSHAKE_DEADLINE).unwrap();
-                // The producer now owns a second private copy and is about to wait
-                // at the rendezvous. Unwinding must drop the receiver before join.
+                // The producer may own a queued copy and the next preparation.
+                // Unwinding must drop the receiver before joining the reader.
                 panic!("synthetic destination-consumer failure");
             },
         )

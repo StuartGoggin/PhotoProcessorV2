@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { settleCuration } from "../utils/curationPersistence";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettings } from "../hooks";
-import type { GooglePhotoAlbumEdit, GooglePhotoMode, GooglePhotoPlanItem, GooglePhotoVariant, GooglePhotosPlan, GooglePhotosPlanRequest, GooglePhotosStatus, GooglePhotosJob } from "../types/googlePhotos";
+import type { GooglePhotoAlbumEdit, GooglePhotoMode, GooglePhotoPlanItem, GooglePhotoVariant, GooglePhotosPlan, GooglePhotosPlanRequest, GooglePhotosStatus, GooglePhotosJob, GooglePhotoInspectionProgress } from "../types/googlePhotos";
 import { GOOGLE_PHOTO_VARIANTS, googlePhotoCounts, googlePhotoSize, googlePhotoVariantLabel } from "../utils/googlePhotos";
 import { METADATA_TOOL_SOURCES, type MetadataToolStatus } from "../types/metadataTool";
 import "./GooglePhotos.css";
@@ -122,10 +122,38 @@ export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string
   const metadataBusy = useRef(false);
   const mounted = useRef(true);
   const planGeneration = useRef(0);
+  const inspectionRef = useRef<string | null>(null);
+  const inspectionSubmitted = useRef(false);
+  const inspectionPanel = useRef<HTMLElement | null>(null);
+  const [inspectionId, setInspectionId] = useState<string | null>(null);
+  const [inspectionProgress, setInspectionProgress] = useState<GooglePhotoInspectionProgress | null>(null);
+  const [inspectionCancelling, setInspectionCancelling] = useState(false);
+  useEffect(() => { if (inspectionId && busy === "plan") inspectionPanel.current?.scrollIntoView({ block: "nearest" }); }, [inspectionId, busy]);
   const currentRoot = useRef(root); currentRoot.current = root;
   const pollBusy = useRef(false);
   const actionBusy = useRef(false);
-  useEffect(() => { setRequest(defaultRequest(root)); setFraming("uncropped"); setPlan(null); ++planGeneration.current; }, [root]);
+  useEffect(() => {
+    setRequest(defaultRequest(root)); setFraming("uncropped"); setPlan(null); ++planGeneration.current;
+    const previous = inspectionRef.current;
+    if (previous && inspectionSubmitted.current) void invoke("google_photos_cancel_plan", { inspectionId: previous }).catch(() => undefined);
+    setInspectionProgress(null);
+  }, [root]);
+  useEffect(() => {
+    if (!inspectionId) return;
+    let stopped = false, reading = false;
+    const generation = planGeneration.current;
+    const poll = async () => {
+      if (stopped || reading) return;
+      reading = true;
+      try {
+        const progress = await invoke<GooglePhotoInspectionProgress | null>("google_photos_plan_progress", { inspectionId });
+        if (!stopped && mounted.current && inspectionRef.current === inspectionId && generation === planGeneration.current && progress?.inspectionId === inspectionId) setInspectionProgress(progress);
+      } catch { /* Planning still owns the result; a missing progress sample is not permission to publish. */ }
+      finally { reading = false; }
+    };
+    void poll(); const interval = window.setInterval(() => void poll(), 300);
+    return () => { stopped = true; window.clearInterval(interval); };
+  }, [inspectionId]);
 
   const refresh = useCallback(async () => {
     if (pollBusy.current) return;
@@ -139,7 +167,11 @@ export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string
   }, []);
   useEffect(() => {
     mounted.current = true; void refresh();
-    return () => { mounted.current = false; ++planGeneration.current; };
+    return () => {
+      mounted.current = false; ++planGeneration.current;
+      const active = inspectionRef.current;
+      if (active && inspectionSubmitted.current) void invoke("google_photos_cancel_plan", { inspectionId: active }).catch(() => undefined);
+    };
   }, [refresh]);
   useEffect(() => {
     if (!status.connecting) return;
@@ -190,18 +222,36 @@ export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string
       if (typeof path === "string") changeRequest({ scopeDir: path });
     } catch (reason) { setError(String(reason)); }
   }
+  async function cancelInspection() {
+    const active = inspectionRef.current;
+    if (!active || inspectionCancelling) return;
+    ++planGeneration.current; setInspectionCancelling(true); setPlan(null); setAccepted(false);
+    setMessage("Stopping this inspection. No upload has been started.");
+    if (!inspectionSubmitted.current) return;
+    try { await invoke("google_photos_cancel_plan", { inspectionId: active }); }
+    catch { if (mounted.current) setError("The stop request could not be confirmed. This inspection result will be ignored; no upload will start automatically."); }
+  }
   async function preview() {
+    if (actionBusy.current) return;
     const generation = ++planGeneration.current;
-    await action("plan", async () => {
-      const current = () => mounted.current && generation === planGeneration.current && root === currentRoot.current;
-      try {
-        await settleCuration(root);
-        if (!current()) return;
-        const result = await invoke<GooglePhotosPlan>("google_photos_plan", { request: { ...request, root } });
-        if (!current()) return;
-        setPlan(result); setAlbumEdits(result.albums.map(album => ({ key: album.key, title: album.title, coverItemId: album.coverItemId || undefined }))); setPreviewAlbum(result.albums[0]?.key ?? null); setAccepted(false);
-      } catch (error) { if (current()) throw error; }
-    });
+    const id = `inspection-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    inspectionRef.current = id; inspectionSubmitted.current = false; setInspectionId(id); setInspectionCancelling(false);
+    setInspectionProgress({ inspectionId: id, phase: "starting", completed: 0, total: 0, bytesRead: 0, fingerprintReads: 0, reusedFingerprints: 0, elapsedMs: 0, cancelled: false });
+    try {
+      await action("plan", async () => {
+        const current = () => mounted.current && generation === planGeneration.current && root === currentRoot.current;
+        try {
+          await settleCuration(root);
+          if (!current()) return;
+          inspectionSubmitted.current = true;
+          const result = await invoke<GooglePhotosPlan>("google_photos_plan", { request: { ...request, root }, inspectionId: id });
+          if (!current()) return;
+          setPlan(result); setAlbumEdits(result.albums.map(album => ({ key: album.key, title: album.title, coverItemId: album.coverItemId || undefined }))); setPreviewAlbum(result.albums[0]?.key ?? null); setAccepted(false);
+        } catch (error) { if (current()) throw error; }
+      });
+    } finally {
+      if (inspectionRef.current === id) { inspectionRef.current = null; inspectionSubmitted.current = false; if (mounted.current) { setInspectionId(null); setInspectionProgress(null); setInspectionCancelling(false); } }
+    }
   }
   async function publish() {
     if (!plan || !accepted) return;
@@ -236,7 +286,7 @@ export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string
     <section className="gp-section" aria-labelledby="gp-account-heading"><h3 id="gp-account-heading"><span className="gp-step" aria-hidden="true">1</span>Your Google account</h3>
       <div className="gp-row gp-between">
         <div className="gp-account"><span className="gp-account-icon" aria-hidden="true">{status.account ? "✓" : "G"}</span><div>{status.account ? <><strong>{status.account.email}</strong><p className="gp-muted">{status.account.displayName} · album history is isolated to this account</p></> : <><strong>{statusLoaded ? "Not connected" : "Checking connection…"}</strong><p className="gp-muted">Sign in using your normal browser. Passwords never pass through PhotoGoGo.</p></>}</div></div>
-        <div className="gp-row gp-actions"><button className="btn-secondary" disabled={!!busy} onClick={() => void refresh()}>Refresh account</button><button className="btn-secondary" disabled={!!busy || !!status.account || status.connecting} onClick={() => void configure()}>Import OAuth setup</button>{status.account ? <button className="btn-secondary" disabled={!!busy} onClick={() => setDisconnectOpen(value => !value)}>Disconnect</button> : <button className="btn-primary" disabled={!status.configured || !!busy || status.connecting} onClick={() => void action("connect", () => invoke("google_photos_connect"))}>{status.connecting || busy === "connect" ? "Waiting for browser sign-in…" : "Connect Google Photos"}</button>}</div>
+        <div className="gp-row gp-actions"><button className="btn-secondary" disabled={!!busy} onClick={() => void refresh()}>Refresh account</button><button className="btn-secondary" disabled={!!busy || !!status.account || status.connecting} onClick={() => void configure()}>Import OAuth setup</button>{status.account ? <><button className="btn-secondary" disabled={!!busy || status.connecting} onClick={() => void action("connect", () => invoke("google_photos_connect"))}>{status.connecting || busy === "connect" ? "Waiting for browser sign-in…" : "Reconnect same account"}</button><button className="btn-secondary" disabled={!!busy} onClick={() => setDisconnectOpen(value => !value)}>Disconnect</button></> : <button className="btn-primary" disabled={!status.configured || !!busy || status.connecting} onClick={() => void action("connect", () => invoke("google_photos_connect"))}>{status.connecting || busy === "connect" ? "Waiting for browser sign-in…" : "Connect Google Photos"}</button>}</div>
       </div>
       {status.configured && <p className="gp-muted" style={{ marginTop: 8 }}>Desktop OAuth setup configured{status.clientIdHint ? ` · ${status.clientIdHint}` : ""}. Refresh tokens and upload sessions are kept in protected native storage, not browser storage.</p>}
       {status.error && <div className="gp-note" role="status">{status.error}</div>}
@@ -261,6 +311,12 @@ export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string
       <details className="gp-details"><summary>Optional event and date override</summary><p className="gp-muted">Album names use event folders and shooting dates when available. Override only when that information is missing or you intentionally want a different grouping; local capture metadata is not invented from this label.</p><div className="gp-grid" style={{ marginTop: 10 }}><label className="gp-field"><span>Event name</span><input aria-label="Event name override" value={request.eventName ?? ""} disabled={!!busy} onChange={event => changeRequest({ eventName: event.target.value || undefined })} placeholder="Use event folder names" /></label><label className="gp-field"><span>Event date</span><input type="date" aria-label="Event date override" value={request.eventDate ?? ""} disabled={!!busy} onChange={event => changeRequest({ eventDate: event.target.value || undefined })} /></label></div></details>
       <p className="gp-muted">Full resolution · no extra image recompression · originals remain untouched. Metadata and privacy changes use temporary upload copies. Changed files become new Google media versions; existing Google images are not overwritten.</p>
       <div className="gp-row gp-actions" style={{ marginTop: 14 }}><button className="btn-primary" disabled={!canPreview} onClick={() => void preview()}>{busy === "plan" ? "Inspecting local photos…" : "Review publish plan"}</button><span className="gp-muted">No album or photo is created until you confirm the plan.</span></div>
+      {busy === "plan" && inspectionProgress && <section ref={inspectionPanel} className="gp-inspection" role="region" aria-label="Local photo inspection">
+        <div className="gp-row gp-between"><div><strong role="status" aria-live="polite">{inspectionCancelling ? "Stopping inspection…" : inspectionProgress.phase === "discovering" ? "Finding photos in this scope" : inspectionProgress.phase === "fingerprinting" ? "Reading and verifying photo bytes" : inspectionProgress.phase === "checking" ? "Checking photo formats and capture metadata" : "Preparing local inspection"}</strong><p>{inspectionProgress.total > 0 ? `${inspectionProgress.completed.toLocaleString()} of ${inspectionProgress.total.toLocaleString()} photos` : `${inspectionProgress.completed.toLocaleString()} entries discovered`}</p></div><button className="btn-secondary" type="button" disabled={inspectionCancelling} onClick={() => void cancelInspection()}>Cancel inspection</button></div>
+        <progress aria-label="Photo inspection progress" max={Math.max(inspectionProgress.total, 1)} value={inspectionProgress.total > 0 ? inspectionProgress.completed : undefined}/>
+        <div className="gp-inspection-facts"><span>{googlePhotoSize(inspectionProgress.bytesRead)} read for verification</span><span>{Math.floor(inspectionProgress.elapsedMs / 1000).toLocaleString()} seconds</span>{inspectionProgress.reusedFingerprints > 0 && <span>{inspectionProgress.reusedFingerprints.toLocaleString()} verified checks reused in this inspection</span>}</div>
+        <p className="gp-muted">Checks stay local. Full-resolution files are verified before publishing; no album or upload is created during inspection.</p>
+      </section>}
       {!status.account && <p className="gp-muted mt-2">Connect your Google account to review account-specific upload history.</p>}
     </section>
 

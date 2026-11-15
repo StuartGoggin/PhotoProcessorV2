@@ -8,13 +8,21 @@ the same NVMe staging folder concurrently. A waiting second job on card A does n
 block a ready job on card B. This is an import-only scheduler: Video Studio and
 post-processing CPU/GPU worker/thread policies are unchanged.
 
-Copying and destination processing overlap within each normal import. While the
-destination copy of file A is independently verified and published, the reader
-may copy file B. A zero-capacity handoff prevents an unbounded backlog: at most
-two unpublished staged files per card (one being processed, one being copied or
-waiting for handoff), and still only one reader per physical card. The source
-permit and staging session remain held until both stages finish. In-place
-reprocessing keeps its existing exclusive scheduling policy.
+Copying and destination processing overlap within each normal import. One source
+reader streams and hashes card data; two destination workers flush the original
+writable temporary-file handle, independently verify MD5, check duplicates and
+publish without overwriting. A bounded queue absorbs short destination stalls.
+Reservations cover files currently copied, queued and verified: at most four
+files and 256 MiB per card. An individual larger file runs alone. The reserved
+source size is passed into preparation and the locked source copy; size drift
+fails before unreserved payload copying. No destination flush is skipped.
+
+The source permit and staging session remain held until all stages finish.
+In-place reprocessing keeps its existing exclusive scheduling policy. Logs expose
+source backpressure milliseconds, summed destination-worker milliseconds, and
+peak staged file/byte counts. These are pipeline diagnostics, not a claim of
+physical-card saturation. The destination, USB controller, file mix and duplicate
+checks can still impose backpressure.
 
 Windows source paths are resolved to their mounted volume and physical disk
 extents, not grouped by directory name or drive letter. Partitions and aliases on
@@ -61,8 +69,9 @@ removed. Active streams are not swept; legacy partials and user files are retain
 
 Concurrent copies of already archived files do temporary NVMe writes before
 duplicate detection; this trades fast destination I/O for avoiding another slow
-card read. Up to eight files across four cards may be staged at once, so staging
-needs free space for those files. Full/failed destinations fail the copy without
+card read. Up to sixteen files across four cards may be staged at once, within the per-card
+byte budget; each oversize file can exceed that budget only while alone on its
+card. Staging needs space for these bounded in-flight files. Full/failed destinations fail the copy without
 publishing it. Source media are not deleted or modified by this pipeline.
 
 ## Importing again after naming an event

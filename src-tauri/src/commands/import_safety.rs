@@ -15,6 +15,7 @@ pub(super) struct StagedCopy {
     path: PathBuf,
     parent: PathBuf,
     bytes: u64,
+    pending_output: Option<fs::File>,
     verified: Option<fs::File>,
     verified_metadata: Option<fs::Metadata>,
     published: bool,
@@ -38,6 +39,10 @@ impl StagedCopy {
     ) -> Result<(), String> {
         self.verified = None;
         self.verified_metadata = None;
+        // Flush the original writable handle in the destination stage, never
+        // stall the card reader on FlushFileBuffers. Failure cannot publish.
+        if let Some(output)=self.pending_output.as_ref(){output.sync_all().map_err(|e|e.to_string())?;}
+        self.pending_output=None;
         let mut options = fs::OpenOptions::new();
         options.read(true);
         #[cfg(windows)]
@@ -210,6 +215,7 @@ pub(super) fn stage_copy(
         path: partial,
         parent,
         bytes: 0,
+        pending_output: None,
         verified: None,
         verified_metadata: None,
         published: false,
@@ -239,8 +245,7 @@ pub(super) fn stage_copy(
     {
         return Err("Source changed while copying; source retained".into());
     }
-    output.sync_all().map_err(|e| e.to_string())?;
-    drop(output);
+    staged.pending_output=Some(output);
     Ok(staged)
 }
 

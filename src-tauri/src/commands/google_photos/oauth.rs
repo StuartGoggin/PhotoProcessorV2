@@ -180,9 +180,42 @@ pub fn import_config(store: &GoogleStore, path: &Path) -> Result<(), String> {
     )
 }
 
+pub(super) const SAFE_OAUTH_CODES: &[&str]=&["INVALID_GRANT","INVALID_CLIENT","UNAUTHORIZED_CLIENT","INVALID_SCOPE","ACCESS_DENIED","TEMPORARILY_UNAVAILABLE","RATE_LIMITED","REJECTED"];
+pub(super) fn oauth_code(error:&str)->Option<&'static str>{
+    SAFE_OAUTH_CODES.iter().copied().find(|code|error.contains(&format!("[OAuth {code}]")))
+}
+pub(super) fn oauth_hint(code:&str)->&'static str{
+    match code {
+        "INVALID_GRANT"=>"Google no longer accepts this authorization. In Transfer to Google Photos choose Reconnect same account, sign in to the same Google account with the unchanged Desktop OAuth setup, then Retry this saved job. Receipts and selections are retained. Expired or revoked authorization requires a new sign-in; retry alone cannot renew it.",
+        "INVALID_CLIENT"|"UNAUTHORIZED_CLIENT"=>"Check the original Google Cloud Desktop OAuth client setup. Re-import that same client's JSON if necessary, then Reconnect same account and Retry this saved job. Do not create a different client to bypass saved-job account binding.",
+        "INVALID_SCOPE"|"ACCESS_DENIED"=>"Reconnect the same Google account and grant the requested Photos permissions using the unchanged Desktop OAuth setup, then Retry this saved job.",
+        "TEMPORARILY_UNAVAILABLE"|"RATE_LIMITED"=>"Google authorization is temporarily unavailable or rate limited. Wait before retrying this saved job; no photos were transferred by this account-check step.",
+        _=>"Google rejected the authorization request without a recognized safe error code. Reconnect the same account using the unchanged Desktop OAuth setup, then Retry this saved job. Check Desktop client and consent/test-user settings if it persists.",
+    }
+}
+pub(super) fn recovery_message(error:&str)->Option<String>{
+    oauth_code(error).map(|code|format!("Google authorization needs attention ({code}). {}",oauth_hint(code)))
+        .or_else(||error.contains("Google authorization returned HTTP 400").then(||format!("Google authorization needs attention. {}",oauth_hint("REJECTED"))))
+}
+fn check_reconnect_account(previous:Option<&Account>, next:&Account)->Result<(),String>{
+    if previous.is_some_and(|p|p.id!=next.id){return Err("Reconnect must use the same Google account and unchanged Desktop OAuth client. The previous connection and saved jobs were retained. Disconnect explicitly only when you intend to change accounts.".into());}
+    Ok(())
+}
 fn token_response(response: reqwest::blocking::Response) -> Result<TokenResponse, String> {
     if !response.status().is_success() {
-        return Err(format!("Google authorization returned HTTP {}. Reconnect and check the Desktop OAuth consent/test-user settings.", response.status().as_u16()));
+        let status=response.status().as_u16();
+        let mut body=Vec::new();
+        // Never echo error_description, arbitrary fields, or an unbounded body.
+        let _=response.take(8193).read_to_end(&mut body);
+        let value=if body.len()<=8192 { serde_json::from_slice::<serde_json::Value>(&body).ok() } else { None };
+        let code=value.as_ref().and_then(|v|v.get("error")).and_then(|v|v.as_str());
+        let code=match code {
+            Some("invalid_grant")=>"INVALID_GRANT", Some("invalid_client")=>"INVALID_CLIENT",
+            Some("unauthorized_client")=>"UNAUTHORIZED_CLIENT", Some("invalid_scope")=>"INVALID_SCOPE",
+            Some("access_denied")=>"ACCESS_DENIED", Some("temporarily_unavailable")=>"TEMPORARILY_UNAVAILABLE",
+            _ if status==429=>"RATE_LIMITED", _ if status>=500=>"TEMPORARILY_UNAVAILABLE", _=>"REJECTED",
+        };
+        return Err(format!("Google authorization returned HTTP {status}. [OAuth {code}] {}",oauth_hint(code)));
     }
     let token: TokenResponse = response
         .json()
@@ -221,6 +254,7 @@ fn identity(http: &Client, token: &str) -> Result<Identity, String> {
 }
 
 pub fn connect(store: &GoogleStore) -> Result<Account, String> {
+    let previous=account(store)?;
     let config: ClientConfig = store
         .load("oauth_config")?
         .ok_or("Import your Google Cloud Desktop OAuth JSON first.")?;
@@ -300,6 +334,7 @@ pub fn connect(store: &GoogleStore) -> Result<Account, String> {
     let scopes = required_scopes(token.scope.as_deref(), &[])?;
     let verified = identity(&http, &token.access_token)?;
     let account = scoped_account(&config.client_id, &verified);
+    check_reconnect_account(previous.as_ref(),&account)?;
     let credentials = Credentials {
         account: account.clone(),
         google_sub: verified.sub,
@@ -751,4 +786,49 @@ mod tests {
         assert!(super::account(&store).is_err());
         std::fs::remove_dir_all(directory).unwrap();
     }
+}
+
+#[cfg(test)]
+mod renewal_error_tests {
+    use super::*;
+    fn reject(body: &str) -> String {
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let address=listener.local_addr().unwrap();
+        let body=body.to_owned();
+        let server=std::thread::spawn(move||{
+            let (mut stream,_)=listener.accept().unwrap();
+            let mut request=[0u8;2048]; let _=stream.read(&mut request);
+            write!(stream,"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+        });
+        let response=Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap().post(format!("http://{address}/token")).send().unwrap();
+        let error=match token_response(response){Ok(_)=>panic!("Expected rejection"),Err(e)=>e};
+        server.join().unwrap(); error
+    }
+    #[test]
+    fn renewal_error_retains_only_allowlisted_machine_code_and_recovery() {
+        let error=reject(r#"{"error":"invalid_grant","error_description":"private-token email@example.test","refresh_token":"secret"}"#);
+        assert!(error.contains("[OAuth INVALID_GRANT]"),"{error}");
+        assert!(error.contains("same Google account"));
+        for secret in ["private-token","email@example.test","secret"]{assert!(!error.contains(secret));}
+        let error=reject(r#"{"error":"invalid_client","error_description":"arbitrary"}"#);
+        assert!(error.contains("[OAuth INVALID_CLIENT]"));
+        assert!(error.contains("Desktop"));
+    }
+    #[test]
+    fn renewal_unknown_and_oversize_error_bodies_never_echo_input() {
+        let error=reject(r#"{"error":"private@example.test","error_description":"invalid_grant"}"#);
+        assert!(!error.contains("private@")&&!error.contains("[OAuth INVALID_GRANT]"));
+        let body=format!("{{\"error\":\"invalid_grant\",\"description\":\"{}\"}}","private".repeat(2000));
+        let error=reject(&body);
+        assert!(!error.contains("private")&&!error.contains("[OAuth INVALID_GRANT]"));
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+ use super::*;
+ #[test]fn reconnect_refuses_a_different_account_without_discarding_the_old_identity(){
+  let a=Account{id:"same-client-account-a".into(),email:"a@example.test".into(),display_name:"A".into()};let b=Account{id:"same-client-account-b".into(),email:"b@example.test".into(),display_name:"B".into()};
+  assert!(check_reconnect_account(Some(&a),&b).is_err());assert!(check_reconnect_account(Some(&a),&a).is_ok());assert!(check_reconnect_account(None,&b).is_ok());assert_eq!(a.id,"same-client-account-a");
+ }
 }

@@ -1567,7 +1567,7 @@ fn run_import(
     // Only this closure reads source bytes/metadata. Destination verification,
     // deduplication and publication run separately, with at most two owned
     // temporary files in flight and still just one source reader per card.
-    let prepare = |src_path: &PathBuf| -> Option<PreparedImport> {
+    let prepare = |src_path: &PathBuf,reserved_size:Option<u64>| -> Option<PreparedImport> {
             if wait_if_paused_or_aborted(job_id_clone.as_deref()) {
                 return None;
             }
@@ -1625,6 +1625,9 @@ fn run_import(
                 }
             };
 
+            if reserved_size.is_some_and(|reserved|reserved!=src_size){
+                errors_clone.lock().unwrap().push(format!("{}: source size changed after pipeline reservation; reselect and retry",src_path.display()));done_clone.fetch_add(1,Ordering::Relaxed);return None;
+            }
             let mut staged_copy = None;
             let hash_result = if opts.reprocess_existing {
                 md5_for_file(src_path, true)
@@ -2421,11 +2424,12 @@ fn run_import(
             .num_threads((num_cpus() * 2).max(4))
             .build().map_err(|e| e.to_string())?;
         pool.install(|| ordered_files.par_iter().for_each(|path| {
-            if let Some(prepared) = prepare(path) { finish(prepared); }
+            if let Some(prepared) = prepare(path,None) { finish(prepared); }
         }));
     } else {
-        let _ = append_app_log(&app, "import pipeline: one source reader; destination verification overlaps; maximum two staged files per card");
-        super::import_pipeline::run(&ordered_files, prepare, finish)?;
+        let _ = append_app_log(&app, "import pipeline: one source reader; two destination workers; maximum four staged files and 256 MiB per card, larger files run alone");
+        let pipeline=super::import_pipeline::run_weighted(&ordered_files,|path|fs::metadata(path).map(|m|m.len()).unwrap_or(0),|path,reserved|prepare(path,Some(reserved)),finish,4,256*1024*1024,2)?;
+        if let Some(id)=job_id.as_deref(){append_job_log(id,format!("import pipeline: source_backpressure_ms={} destination_worker_ms={} peak_staged_files={} peak_staged_bytes={} (destination time is summed across workers)",pipeline.source_wait_ms,pipeline.destination_ms,pipeline.peak_files,pipeline.peak_bytes));}
     }
 
     let final_errors = errors.lock().unwrap().clone();
@@ -2844,3 +2848,16 @@ fn build_tree(path: &Path, root: &Path) -> anyhow::Result<serde_json::Value> {
     }
 }
 
+
+pub(crate) fn cleanup_entries()->Result<Vec<super::job_cleanup::Entry>,String>{
+    let jobs=jobs_store().lock().map_err(|_|"Import job state unavailable")?;
+    jobs.values().map(|job|{let status=serde_json::to_value(&job.status).ok().and_then(|v|v.as_str().map(str::to_owned)).unwrap_or_default();let safe=super::job_cleanup::terminal(&status);super::job_cleanup::entry("import",&job.id,"Photo import",&status,&job.created_at,job,safe,false,if safe{"Remove this job's in-app details; portable import verification manifests are retained"}else{"Stop the import and wait for completion before cleanup"})}).collect()
+}
+pub(crate) fn cleanup_apply(choice:&super::job_cleanup::Choice)->Result<String,String>{
+    if choice.action!="remove"{return Err("Import supports removing finished details only".into());}
+    let mut jobs=jobs_store().lock().map_err(|_|"Import job state unavailable")?;
+    let job=jobs.get(&choice.id).ok_or("Import job no longer exists; refresh cleanup")?;
+    super::job_cleanup::check_revision(job,&choice.revision)?;
+    if !matches!(job.status,ImportJobStatus::Completed|ImportJobStatus::Failed|ImportJobStatus::Aborted){return Err("Import is still active; stop it before cleanup".into());}
+    jobs.remove(&choice.id);Ok(String::new())
+}

@@ -14,8 +14,30 @@ const MAX_PHOTO_BYTES: u64 = 200_000_000;
 const MAX_ALBUM_ITEMS: usize = 20_000;
 
 pub fn source_fingerprint(path: &Path) -> Result<(String, u64, u64), String> {
+    let mut file = open_fingerprint(path)?;
+    fingerprint_reader(&mut file, &|| Ok(()), &|_| {})
+}
+
+pub(super) fn open_fingerprint(path: &Path) -> Result<File, String> {
     store::reject_link(path)?;
-    let mut file = File::open(path).map_err(|_| "The photo could not be opened.")?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Request-scoped callers may retain this handle: no writer or rename
+        // can replace fingerprinted bytes before the frozen plan is saved.
+        options.share_mode(1); // FILE_SHARE_READ
+    }
+    options.open(path).map_err(|_| "The photo could not be opened.".into())
+}
+
+pub(super) fn fingerprint_reader(
+    file: &mut File,
+    checkpoint: &impl Fn() -> Result<(), String>,
+    observed: &impl Fn(u64),
+) -> Result<(String, u64, u64), String> {
+    checkpoint()?;
     let before = file
         .metadata()
         .map_err(|_| "The photo could not be inspected.")?;
@@ -26,6 +48,7 @@ pub fn source_fingerprint(path: &Path) -> Result<(String, u64, u64), String> {
     let mut buffer = [0u8; 256 * 1024];
     let mut bytes = 0u64;
     loop {
+        checkpoint()?;
         let count = file
             .read(&mut buffer)
             .map_err(|_| "The photo could not be read completely.")?;
@@ -37,6 +60,7 @@ pub fn source_fingerprint(path: &Path) -> Result<(String, u64, u64), String> {
             return Err("The photo grew beyond the upload safety limit.".into());
         }
         hash.update(&buffer[..count]);
+        observed(count as u64);
     }
     let after = file
         .metadata()
@@ -75,7 +99,7 @@ fn text(value: &str, name: &str, limit: usize) -> Result<String, String> {
     }
     Ok(value.into())
 }
-fn relative_scope(root: &Path, scope: Option<&str>) -> Result<PathBuf, String> {
+pub(super) fn relative_scope(root: &Path, scope: Option<&str>) -> Result<PathBuf, String> {
     let Some(scope) = scope.filter(|s| !s.trim().is_empty()) else {
         return Ok(root.to_path_buf());
     };
@@ -126,6 +150,18 @@ pub fn build(
     request: &PlanRequest,
     context: &PlanContext,
 ) -> Result<PlanPreview, String> {
+    build_with(catalogue, request, context, &mut source_fingerprint, &|| Ok(()), &|_, _| {})
+}
+
+pub(super) fn build_with(
+    catalogue: &Catalogue,
+    request: &PlanRequest,
+    context: &PlanContext,
+    fingerprint: &mut impl FnMut(&Path) -> Result<(String, u64, u64), String>,
+    checkpoint: &impl Fn() -> Result<(), String>,
+    progress: &impl Fn(usize, usize),
+) -> Result<PlanPreview, String> {
+    checkpoint()?;
     if context.id.is_empty() || context.account_id.is_empty() || context.account_email.is_empty() {
         return Err("Connect the intended Google account before preparing an upload plan.".into());
     }
@@ -231,7 +267,10 @@ pub fn build(
         .collect();
     let multi_event = distinct_events.len() > 1;
     let mut original_hashes = HashMap::<PathBuf, String>::new();
-    for asset in chosen {
+    let selected_total = chosen.len();
+    progress(0, selected_total);
+    for (selected_index, asset) in chosen.into_iter().enumerate() {
+        checkpoint()?;
         let event_name = event_override
             .clone()
             .unwrap_or_else(|| asset.event_name.clone());
@@ -326,7 +365,7 @@ pub fn build(
                     status = PlanItemStatus::Blocked;
                     item_warnings.push("The photo resolves outside the selected root.".into());
                 }
-                Ok(_) => match source_fingerprint(path) {
+                Ok(_) => match fingerprint(path) {
                     Ok((sha256, length, modified)) => {
                         source_sha256 = sha256;
                         bytes = length;
@@ -368,7 +407,7 @@ pub fn build(
                         original_sha256 = source_sha256.clone();
                         original_hashes.insert(canonical, original_sha256.clone());
                     } else {
-                        match source_fingerprint(original) {
+                        match fingerprint(original) {
                             Ok((hash, _, _)) => {
                                 original_sha256 = hash;
                                 original_hashes.insert(canonical, original_sha256.clone());
@@ -436,7 +475,9 @@ pub fn build(
             album_key,
             strip_gps: request.strip_gps,
         });
+        progress(selected_index + 1, selected_total);
     }
+    checkpoint()?;
     if request.album_mode == AlbumMode::Continue
         && albums.values().any(|album| album.album_id.is_none())
     {

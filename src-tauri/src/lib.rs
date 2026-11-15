@@ -5,7 +5,7 @@ use commands::{
     raw_development::{raw_development_candidates,raw_development_preview,start_raw_development_job,manifest::{get_raw_recipe,save_raw_recipe,clear_raw_recipe,save_lightbox_source}},
     metadata_tools::metadata_tool_status,
     google_photos::{google_photos_status, google_photos_configure, google_photos_connect, google_photos_disconnect,
-        google_photos_catalogue, google_photos_set_selection, google_photos_update_selection, google_photos_plan, google_photos_start,
+        google_photos_catalogue, google_photos_set_selection, google_photos_update_selection, google_photos_plan, google_photos_plan_progress, google_photos_cancel_plan, google_photos_start,
         google_photos_list_jobs, google_photos_control, google_photos_open_album, google_photos_albums,
         google_photos_reconcile, google_photos_thumbnail, google_photos_job_diagnostics},
     process_preview::{process_preview, process_preview_candidates},
@@ -73,6 +73,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            commands::job_cleanup::job_cleanup_preview,
+            commands::job_cleanup::job_cleanup_apply,
             commands::controller::controller_status,
             commands::controller::bindings::controller_lightbox_bindings,
             commands::controller::controller_claim_client,
@@ -81,7 +83,7 @@ pub fn run() {
             commands::controller::controller_ack,
             metadata_tool_status,
             google_photos_status, google_photos_configure, google_photos_connect, google_photos_disconnect,
-            google_photos_catalogue, google_photos_set_selection, google_photos_update_selection, google_photos_plan, google_photos_start,
+            google_photos_catalogue, google_photos_set_selection, google_photos_update_selection, google_photos_plan, google_photos_plan_progress, google_photos_cancel_plan, google_photos_start,
             google_photos_list_jobs, google_photos_control, google_photos_open_album, google_photos_albums,
             google_photos_reconcile, google_photos_thumbnail, google_photos_job_diagnostics,
             snapshot_open,

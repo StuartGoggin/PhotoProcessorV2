@@ -3387,3 +3387,6 @@ pub fn studio_start_render(
         kind, clip_id, assemble_only: assembly,
     })
 }
+
+pub(crate) fn cleanup_entries()->Result<Vec<super::job_cleanup::Entry>,String>{recovery::cleanup_entries()}
+pub(crate) fn cleanup_apply(choice:&super::job_cleanup::Choice)->Result<String,String>{recovery::cleanup_apply(choice)}

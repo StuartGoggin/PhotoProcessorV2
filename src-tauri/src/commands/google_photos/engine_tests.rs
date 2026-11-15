@@ -1910,3 +1910,118 @@ fn core_jobs_partial_cache_retains_only_the_unavailable_filename_identity_and_re
         .iter()
         .all(|row| row.can_continue == Some(true) && row.persistence_error.is_none()));
 }
+
+fn cleanup_choice(job:&Job,action:&str)->crate::commands::job_cleanup::Choice{
+    crate::commands::job_cleanup::Choice{kind:"google".into(),id:job.plan.id.clone(),revision:crate::commands::job_cleanup::revision(job).unwrap(),action:action.into()}
+}
+#[test]
+fn cleanup_auth_failed_job_removes_details_but_not_original_or_account_state(){
+    let mut f=Fixture::core(1);f.job.status="needs_attention".into();f.job.save(&f.store).unwrap();
+    f.store.save("oauth_config",&"unchanged-client").unwrap();
+    let choice=cleanup_choice(&f.job,"remove");
+    assert!(super::super::cleanup::apply_store(&f.store,&choice,&[]).is_ok());
+    assert!(f.store.load::<Job>(&format!("job_{}",f.job.plan.id)).unwrap().is_none());
+    assert_eq!(f.store.load::<String>("oauth_config").unwrap().unwrap(),"unchanged-client");
+    assert_eq!(std::fs::read(&f.job.plan.items[0].path).unwrap(),f.source_bytes[0]);
+}
+#[test]
+fn cleanup_unknown_registration_and_album_outcomes_remain_recoverable_and_dismissible(){
+    let mut f=Fixture::core(1);f.job.status="needs_attention".into();f.job.items[0].state="registering".into();f.job.save(&f.store).unwrap();
+    assert!(super::super::cleanup::apply_store(&f.store,&cleanup_choice(&f.job,"remove"),&[]).is_err());
+    super::super::cleanup::apply_store(&f.store,&cleanup_choice(&f.job,"dismiss"),&[]).unwrap();
+    let saved=super::super::load_job(&f.store,&f.job.plan.id).unwrap();assert!(saved.dismissed);
+    assert!(super::super::core_jobs::project(&saved,None).google_photos.unwrap().history_hidden);
+    super::super::core_jobs::restore_store(&f.store,&f.job.plan.id).unwrap();
+    let mut saved=super::super::load_job(&f.store,&f.job.plan.id).unwrap();assert!(!saved.dismissed);
+    saved.items[0].state="pending".into();saved.albums[0].state="creation_outcome_unknown".into();saved.save(&f.store).unwrap();
+    assert!(super::super::cleanup::apply_store(&f.store,&cleanup_choice(&saved,"remove"),&[]).is_err());
+}
+#[test]
+fn cleanup_revalidates_revision_active_worker_and_photo_identity(){
+    let mut f=Fixture::core(1);f.job.save(&f.store).unwrap();let choice=cleanup_choice(&f.job,"remove");
+    assert!(super::super::cleanup::apply_store(&f.store,&choice,&[f.job.plan.id.clone()]).is_err());
+    f.job.errors.push("new error".into());f.job.save(&f.store).unwrap();
+    assert!(super::super::cleanup::apply_store(&f.store,&choice,&[]).is_err());
+    f.job.items[0].id="wrong".into();f.job.save(&f.store).unwrap();
+    assert!(super::super::cleanup::apply_store(&f.store,&cleanup_choice(&f.job,"remove"),&[]).is_err());
+    assert!(super::super::cleanup::apply_store(&f.store,&cleanup_choice(&f.job,"dismiss"),&[]).is_err());
+    assert!(f.store.load::<Job>(&format!("job_{}",f.job.plan.id)).unwrap().is_some());
+}
+#[test]
+fn cleanup_preserves_rejected_receipts_after_detail_deletion(){
+    let mut f=Fixture::core(1);let mut api=FakeGoogle::default();f.drive(&mut api,&AtomicBool::new(false)).unwrap();
+    f.job.items[0].readback_rejected=true;f.job.items[0].state="registered".into();f.job.status="needs_attention".into();f.job.save(&f.store).unwrap();
+    let original=effective_ledger(&f.store).unwrap();assert!(original.iter().any(|r|r.readback_rejected));
+    super::super::cleanup::apply_store(&f.store,&cleanup_choice(&f.job,"remove"),&[]).unwrap();
+    let saved=effective_ledger(&f.store).unwrap();assert!(saved.iter().all(|r|r.readback_rejected&&!r.readback_verified));
+    assert!(super::super::load_job(&f.store,&f.job.plan.id).is_err());
+}
+#[test]
+fn cleanup_positive_receipt_survives_restart_without_duplicate_admission(){
+    let mut f=Fixture::core(1);let mut api=FakeGoogle::default();f.drive(&mut api,&AtomicBool::new(false)).unwrap();
+    let receipts=effective_ledger(&f.store).unwrap();
+    super::super::cleanup::apply_store(&f.store,&cleanup_choice(&f.job,"remove"),&[]).unwrap();
+    let after=effective_ledger(&f.store).unwrap();assert_eq!(serde_json::to_value(receipts).unwrap(),serde_json::to_value(after).unwrap());
+    assert_eq!(api.begins,1);assert_eq!(api.registrations,1);
+}
+
+#[test]
+fn cleanup_current_album_and_complete_fingerprint_are_not_suppressed_by_other_receipts(){
+ for different_album in [true,false]{
+    let mut f=Fixture::core(1);let mut api=FakeGoogle::default();f.drive(&mut api,&AtomicBool::new(false)).unwrap();
+    let mut ledger:Vec<LedgerEntry>=f.store.load("ledger").unwrap().unwrap();
+    if different_album {ledger[0].album_id="different-older-album".into();} else {ledger[0].prepared_sha256.clear();}
+    f.store.save("ledger",&ledger).unwrap();
+    let mut known:Vec<ExistingAlbum>=f.store.load("albums").unwrap().unwrap();known[0].key="older-group-key".into();f.store.save("albums",&known).unwrap();
+    let expected_album=f.job.albums[0].id.clone().unwrap();let expected_hash=f.job.items[0].prepared.as_ref().unwrap().sha256.clone();
+    super::super::cleanup::apply_store(&f.store,&cleanup_choice(&f.job,"remove"),&[]).unwrap();
+    let known:Vec<ExistingAlbum>=f.store.load("albums").unwrap().unwrap();assert!(known.iter().any(|a|a.key==f.job.albums[0].key&&Some(&a.album_id)==f.job.albums[0].id.as_ref()));
+    let after=effective_ledger(&f.store).unwrap();
+    assert!(after.iter().any(|r|r.album_id==expected_album&&r.album_key==f.job.plan.items[0].album_key&&r.prepared_sha256==expected_hash),"current exact album membership/fingerprint must survive detail removal");
+ }
+}
+
+#[test]
+fn cleanup_isolates_unreadable_sibling_and_preserves_legacy_negative_evidence(){
+    let mut f=Fixture::core(1);let mut api=FakeGoogle::default();f.drive(&mut api,&AtomicBool::new(false)).unwrap();
+    f.job.items[0].readback_rejected=false;f.job.items[0].error=Some(DIMENSION_MISMATCH.into());f.job.items[0].state="registered".into();f.job.status="needs_attention".into();f.job.save(&f.store).unwrap();
+    f.store.save(&format!("job_{}","Z".repeat(43)),&vec!["unreadable-synthetic-document"]).unwrap();
+    super::super::cleanup::apply_store(&f.store,&cleanup_choice(&f.job,"remove"),&[]).unwrap();
+    let ledger:Vec<LedgerEntry>=f.store.load("ledger").unwrap().unwrap();assert!(ledger.iter().all(|r|r.readback_rejected&&!r.readback_verified));
+    assert!(effective_ledger(&f.store).is_err(),"unreadable sibling still blocks global upload admission");
+}
+#[test]
+fn oauth_report_explains_global_block_without_private_error_text(){
+    let mut f=Fixture::core(1);f.job.status="needs_attention".into();f.job.errors.push("Google authorization returned HTTP 400. [OAuth INVALID_GRANT] private@example.test token-secret".into());
+    let report=diagnostics::report(&f.job);assert!(report.contains("Job-level authorization block")&&report.contains("Reconnect same account"));assert!(!report.contains("private@example.test")&&!report.contains("token-secret"));
+}
+
+#[test]
+fn cleanup_abandoned_plans_protect_recent_and_job_bound_review(){
+    let mut f=Fixture::core(1);let mut plan=f.job.plan.clone();plan.id="K".repeat(43);
+    let mut frozen=super::super::FrozenPlan{plan,original_hashes:vec![]};
+    let mut choice=crate::commands::job_cleanup::Choice{kind:"google".into(),id:format!("plan:{}",frozen.plan.id),revision:crate::commands::job_cleanup::revision(&frozen).unwrap(),action:"remove".into()};
+    f.store.save(&format!("plan_{}",frozen.plan.id),&frozen).unwrap();
+    assert!(super::super::cleanup::remove_plan_store(&f.store,&choice).is_err());
+    frozen.plan.created_at=(chrono::Utc::now()-chrono::Duration::days(2)).to_rfc3339();choice.revision=crate::commands::job_cleanup::revision(&frozen).unwrap();f.store.save(&format!("plan_{}",frozen.plan.id),&frozen).unwrap();
+    f.job.plan.id=frozen.plan.id.clone();f.job.save(&f.store).unwrap();assert!(super::super::cleanup::remove_plan_store(&f.store,&choice).is_err());
+    f.store.remove(&format!("job_{}",frozen.plan.id)).unwrap();super::super::cleanup::remove_plan_store(&f.store,&choice).unwrap();
+    assert!(f.store.load::<super::super::FrozenPlan>(&format!("plan_{}",frozen.plan.id)).unwrap().is_none());
+}
+#[cfg(windows)]
+#[test]
+fn cleanup_delete_failure_keeps_durable_negative_receipt_and_retryable_details(){
+    use std::os::windows::fs::OpenOptionsExt;
+    let mut f=Fixture::core(1);let mut api=FakeGoogle::default();f.drive(&mut api,&AtomicBool::new(false)).unwrap();f.job.items[0].readback_rejected=true;f.job.status="needs_attention".into();f.job.save(&f.store).unwrap();
+    let path=f.directory.join("protected").join(format!("job_{}.sealed",f.job.plan.id));let guard=std::fs::OpenOptions::new().read(true).share_mode(1).open(path).unwrap();let choice=cleanup_choice(&f.job,"remove");
+    assert!(super::super::cleanup::apply_store(&f.store,&choice,&[]).is_err());let ledger:Vec<LedgerEntry>=f.store.load("ledger").unwrap().unwrap();assert!(ledger.iter().all(|r|r.readback_rejected&&!r.readback_verified));assert!(super::super::load_job(&f.store,&f.job.plan.id).is_ok());
+    drop(guard);super::super::cleanup::apply_store(&f.store,&choice,&[]).unwrap();
+}
+
+#[test]
+fn cleanup_unknown_album_checkpoint_cannot_be_permanently_removed(){
+    let mut f=Fixture::core(1);f.job.albums[0].state="future-unrecognized-state".into();f.job.status="needs_attention".into();f.job.save(&f.store).unwrap();
+    assert!(super::super::cleanup::apply_store(&f.store,&cleanup_choice(&f.job,"remove"),&[]).is_err());
+    super::super::cleanup::apply_store(&f.store,&cleanup_choice(&f.job,"dismiss"),&[]).unwrap();
+    let saved=super::super::load_job(&f.store,&f.job.plan.id).unwrap();assert_eq!(saved.albums[0].state,"future-unrecognized-state");assert!(saved.dismissed);
+}

@@ -52,6 +52,8 @@ fixture.__TAURI_INTERNALS__ = {
     if (command === "google_photos_configure") { fixture.__googleStatus.configured = true; return null; }
     if (command === "google_photos_connect") { fixture.__googleStatus.account = { id: "personal-client:subject-1", email: "rider@example.test", displayName: "Synthetic Rider" }; return null; }
     if (command === "google_photos_disconnect") { fixture.__googleStatus.account = null; return null; }
+    if (command === "google_photos_plan_progress") return { inspectionId: args.inspectionId, phase: "checking", completed: 2, total: 4, bytesRead: 1048576, fingerprintReads: 2, reusedFingerprints: 1, elapsedMs: 3200, cancelled: false };
+    if (command === "google_photos_cancel_plan") return true;
     if (command === "google_photos_plan") {
       if (fixture.__googlePlanError) throw new Error(fixture.__googlePlanError);
       if (fixture.__googlePlanDelay) await new Promise<void>(resolve => { fixture.__googleResolvePlan = resolve; });

@@ -1,6 +1,6 @@
 # PhotoGoGo User Guide
 
-Windows desktop edition • Version 2.0.54 • 16 November 2026
+Windows desktop edition • Version 2.0.55 • 16 November 2026
 
 PhotoGoGo helps you copy camera media into a working library, organise events, review and develop photographs, assemble videos, extract still photographs from video, and transfer selected results to Google Photos or an archive.
 
@@ -112,7 +112,7 @@ Start performance controls on their automatic settings. More simultaneous reader
 4. Check the source and staging locations, then choose **Queue Import Job**.
 5. Open **Jobs** and follow the import through copying and destination verification. Review its completion and any errors before disconnecting the source.
 
-Normal importing copies media and checks the copied bytes. It does not remove the source media. Jobs on separate physical source devices can run together; jobs sharing one card or source device are scheduled conservatively. The pipeline overlaps copying and verification while retaining checksum checks.
+Normal importing copies media and checks the copied bytes. It does not remove the source media. Jobs on separate physical source devices can run together; jobs sharing one card or source device are scheduled conservatively. The pipeline keeps one sequential reader per card, with two destination workers and bounded read-ahead. Flushing, independent checksum verification and publication run off the card-reader stage. Up to four files and 256 MiB of temporary data may be in flight per card; a single larger file runs alone. The job log records reader backpressure, destination-worker time and peak staged files/bytes. This helps distinguish a slow card from a slow destination. It does not promise that every device will remain fully saturated.
 
 Check camera clocks and the expected event dates before a large import. If media lands under an unexpected date, inspect the job log and the camera’s metadata rather than immediately running a broad rename.
 
@@ -494,7 +494,7 @@ Lightbox checkboxes and local favourites prepare a local selection. **Transfer �
 
 The integration needs permissions to add photographs, read app-created content for verification, and edit app-created album details. It does not gain general read access to unrelated Google Photos content. Google’s Library API is focused on app-created content.
 
-External Testing configurations using Photos permissions can have refresh tokens expire after seven days. Reconnect when needed. A cloud project with the API enabled does not, by itself, configure PhotoGoGo.
+External Testing configurations using Photos permissions can have refresh tokens expire after seven days. If a saved job reports **Check account / HTTP 400**, inspect its safe authorization code. **INVALID_GRANT** means Google no longer accepts that authorization; **INVALID_CLIENT** or **UNAUTHORIZED_CLIENT** points to the original Desktop client setup. Open **Transfer to Google Photos → Reconnect same account**, use the same account and unchanged Desktop client, then return to **Jobs** and **Retry** the existing attempt. Reconnection keeps the old connection until the replacement identity is verified and does not start an upload. A generic HTTP 400 alone does not establish token expiry as the cause. Only allowlisted codes and fixed guidance are exported; credentials and raw Google error descriptions are omitted. A cloud project with the API enabled does not, by itself, configure PhotoGoGo.
 
 For several PCs, reuse the same Desktop client configuration, import it on each PC and sign in separately. Do not copy protected access/refresh-token stores between machines. Saved jobs, receipts and known event-album mappings remain local to that PC. The installer does not automatically configure Google credentials.
 
@@ -507,7 +507,7 @@ Keep the original OAuth client and Google account for existing jobs. Do not rese
 3. If deliberately overriding selections for one job, use **Choose versions for this upload**. In that mode, check **Photo framing** (Uncropped, Cropped only or Both) and the advanced colour/original, rating or favourite rules. The framing control is not shown in the ordinary checked-selection mode.
 4. Choose **Create new private album(s)** or **Add new photos to saved event album(s)**. Continued albums retain their existing sharing settings.
 5. Decide whether to enable **Remove GPS location from upload copies**. It is off by default; do not assume location is stripped.
-6. Choose **Review publish plan**.
+6. Choose **Review publish plan**. **Local photo inspection** shows discovery, fingerprinting and metadata-check progress, files checked, bytes read and elapsed time. The selected subtree is inspected rather than the whole staging library. **Cancel inspection** stops at a safe boundary; an accepted cancellation prevents that plan from being saved. If the plan has already completed, review the completed result. Shared fingerprints are reused only while their exact files are protected during that inspection; files are still checked before uploading.
 7. Inspect the account, album names/dates, exact versions, counts, duplicates and warnings. Confirm the explicit review checkbox.
 8. Choose **Publish N photos**, then **View job** in the common Jobs page.
 
@@ -582,6 +582,18 @@ Pausing retains the job; aborting stops that attempt. Neither means an archive c
 A selected job that leaves the current filter offers **Show in History**, **Show in Needs attention** or the relevant view. Your manually chosen filter is preserved. If the job is unavailable from the list, the read-only recovery panel can request its existing diagnostics without creating a substitute job.
 
 **Tail (auto-refresh)** updates the view. Turning Tail off freezes what you are looking at, not the underlying worker. **Refresh** requests a current view. In History, **Clear finished import / process history** changes history visibility; protected Google receipts remain. Archived Google upload records can be restored to History before an explicit recheck.
+
+### Clean up old job details
+
+1. In **Jobs**, choose **Clean up jobs**. All ages are shown initially; nothing is selected.
+2. Filter by **Job age**, **Job type** and **Job status**. **Needs attention / failed** helps find abandoned failures. Changing a filter clears the selection and confirmation.
+3. Select individual rows or **Select eligible shown**. Choose **Remove details permanently** or, for an inactive Google job that still needs recovery evidence, **Dismiss to Archived**.
+4. Read each row's explanation and confirm **I understand removal cannot be undone**. Apply up to 1,000 selected jobs per operation.
+5. Inspect the separate removed, dismissed, protected and failed counts. Refresh and review again if a record changed or an operation failed; cleanup never retries itself.
+
+Permanent removal deletes eligible detailed job records and owned temporary/log data. Google receipt and album mappings are compacted and verified before its detailed record is removed, preserving duplicate prevention and negative read-back evidence. Originals, processed photos, projects, rendered videos, reusable clip caches, account setup and portable import manifests remain. Previously cleared Studio history and abandoned Google plans older than 24 hours are included. Recent plans stay protected.
+
+Active workers, unreadable records and unresolved photo registration or album-creation outcomes are protected from permanent removal. **Dismiss to Archived** removes an inactive Google job from ordinary lists while keeping its full recovery record; restore it to History before retrying. A protected row is not reported as removed. Legacy **Clear finished** remains available for its existing narrower action.
 
 Use **Reveal Log**, **Reveal Manifest**, job diagnostics or the common console where available. The separate **Logs** page offers **Refresh**, **Tail (auto-refresh)** and **Clear Log**. Clearing the log removes useful evidence; copy the relevant failure details first.
 

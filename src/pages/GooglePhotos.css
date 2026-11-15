@@ -91,3 +91,7 @@
   .gp-section { padding: 12px; }
   .gp-filmstrip { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
 }
+
+.gp-inspection{margin-top:14px;padding:14px 16px;border:1px solid #395c6e;border-radius:10px;background:linear-gradient(120deg,#102936,#15232c)}
+.gp-inspection progress{display:block;width:100%;height:8px;margin:12px 0;accent-color:#6fc3c2}
+.gp-inspection-facts{display:flex;flex-wrap:wrap;gap:8px 20px;font-size:.8rem;color:#b7ced7;margin-bottom:8px}

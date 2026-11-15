@@ -90,3 +90,16 @@ export interface GooglePhotosJob {
   albums: GooglePhotosJobAlbum[];
   errors: string[];
 }
+
+/** Local-only request progress; contains no paths, accounts or upload secrets. */
+export interface GooglePhotoInspectionProgress {
+  inspectionId: string;
+  phase: string;
+  completed: number;
+  total: number;
+  bytesRead: number;
+  fingerprintReads: number;
+  reusedFingerprints: number;
+  elapsedMs: number;
+  cancelled: boolean;
+}

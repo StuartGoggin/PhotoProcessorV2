@@ -881,3 +881,85 @@ mod tests {
         job.status = "completed".into(); recover_status(&mut job); assert_eq!(job.status, "completed");
     }
 }
+
+pub(super) fn cleanup_entries()->Result<Vec<crate::commands::job_cleanup::Entry>,String>{
+    let workers=active().lock().map_err(|_|"Studio worker state unavailable")?;let store=jobs().lock().map_err(|_|"Studio jobs unavailable")?;
+    let mut result=store.values().map(|job|{let safe=crate::commands::job_cleanup::terminal(&job.status)&&!workers.contains(&job.id);crate::commands::job_cleanup::entry("studio",&job.id,&job.name,&job.status,&job.created_at,job,safe,false,if safe{"Remove saved job details and owned logs; project, rendered videos and reusable clip caches stay intact"}else{"Stop the Studio worker and wait for its final checkpoint before cleanup"})}).collect::<Result<Vec<_>,String>>()?;
+    drop(store);drop(workers);
+    if let Some(folder)=STORE.get(){result.extend(archived_cleanup_entries(folder)?);}
+    Ok(result)
+}
+pub(super) fn cleanup_apply(choice:&crate::commands::job_cleanup::Choice)->Result<String,String>{
+    if choice.action!="remove"{return Err("Studio cleanup supports finished details only".into());}
+    let _gate=LIFECYCLE.try_lock().map_err(|_|"Studio queue is being updated")?;
+    if choice.id.starts_with("archived:"){return remove_archived_history(choice);}
+    let workers=active().lock().map_err(|_|"Studio worker state unavailable")?;let mut store=jobs().lock().map_err(|_|"Studio jobs unavailable")?;
+    let job=store.get(&choice.id).ok_or("Studio job no longer exists; refresh cleanup")?;
+    crate::commands::job_cleanup::check_revision(job,&choice.revision)?;
+    if !crate::commands::job_cleanup::terminal(&job.status)||workers.contains(&choice.id){return Err("Studio worker has not stopped".into());}
+    if choice.id.is_empty()||!choice.id.chars().all(|c|c.is_ascii_alphanumeric()||c=='-'){return Err("Invalid Studio job identifier retained".into());}
+    if let Some(folder)=STORE.get(){let path=folder.join(format!("{}.json",choice.id));if path.exists(){crate::commands::job_cleanup::remove_owned(folder,&path)?;}}
+    store.remove(&choice.id);requests().lock().map_err(|_|"Saved Studio requests unavailable")?.remove(&choice.id);
+    let root=log_root();let path=root.join(&choice.id);
+    if path.exists()&&crate::commands::job_cleanup::remove_owned(&root,&path).is_err(){return Ok("Studio job details removed; some protected log files were retained.".into());}
+    Ok(String::new())
+}
+
+fn history_parts(value:&str)->Result<(&str,&str),String>{
+    let rest=value.strip_prefix("archived:").ok_or("Invalid archived history selection")?;
+    let (generation,id)=rest.split_once(':').ok_or("Invalid archived history selection")?;
+    if generation.is_empty()||id.is_empty()||!generation.chars().all(|c|c.is_ascii_alphanumeric()||c=='-')||!id.chars().all(|c|c.is_ascii_alphanumeric()||c=='-'){return Err("Invalid archived history selection".into());}Ok((generation,id))
+}
+fn read_history(folder:&Path,generation:&str,id:&str)->Result<Checkpoint,String>{
+    let path=folder.join("cleared-history").join(generation).join(format!("{id}.json"));
+    for p in [folder.to_path_buf(),folder.join("cleared-history"),folder.join("cleared-history").join(generation),path.clone()]{crate::commands::google_photos::store::reject_link(&p)?;}
+    let file=fs::File::open(path).map_err(|_|"Archived Studio record cannot be read")?;
+    let mut bytes=Vec::new();std::io::Read::take(file,32*1024*1024+1).read_to_end(&mut bytes).map_err(|_|"Archived Studio record cannot be read")?;
+    if bytes.len()>32*1024*1024{return Err("Oversized archived Studio record retained".into());}
+    let record:Checkpoint=serde_json::from_slice(&bytes).map_err(|_|"Unrecognized archived Studio record retained")?;
+    if record.job.id!=id{return Err("Archived Studio identity mismatch retained".into());}Ok(record)
+}
+fn archived_cleanup_entries(folder:&Path)->Result<Vec<crate::commands::job_cleanup::Entry>,String>{
+    let root=folder.join("cleared-history");if !root.exists(){return Ok(Vec::new());}crate::commands::google_photos::store::reject_link(&root)?;
+    let mut result=Vec::new();
+    for generation in fs::read_dir(&root).map_err(|_|"Cannot list archived Studio jobs")?{
+        let generation=generation.map_err(|_|"Cannot list archived Studio jobs")?;let name=generation.file_name().to_string_lossy().into_owned();
+        if !name.chars().all(|c|c.is_ascii_alphanumeric()||c=='-')||!generation.path().is_dir(){continue;}
+        crate::commands::google_photos::store::reject_link(&generation.path())?;
+        for file in fs::read_dir(generation.path()).map_err(|_|"Cannot list archived Studio jobs")?{
+            let file=file.map_err(|_|"Cannot list archived Studio jobs")?;if file.path().extension().and_then(|v|v.to_str())!=Some("json"){continue;}
+            let id=file.path().file_stem().unwrap_or_default().to_string_lossy().into_owned();let key=format!("archived:{name}:{id}");if history_parts(&key).is_err(){continue;}
+            match read_history(folder,&name,&id){Ok(record)=>result.push(crate::commands::job_cleanup::entry("studio",&key,&format!("{} (archived history)",record.job.name),"archived",&record.job.created_at,&record,true,false,"Remove previously cleared Studio job details and owned logs; rendered media remains")?),Err(_)=>result.push(crate::commands::job_cleanup::entry("studio",&key,"Protected archived Studio history","protected","",&key,false,false,"Unrecognized/redirected archived history retained for inspection")?)}
+        }
+    }
+    Ok(result)
+}
+fn remove_archived_history(choice:&crate::commands::job_cleanup::Choice)->Result<String,String>{
+    let folder=STORE.get().ok_or("Studio storage unavailable")?;
+    let active_ids=active().lock().map_err(|_|"Studio workers unavailable")?.clone();
+    let current_ids=jobs().lock().map_err(|_|"Studio state unavailable")?.keys().cloned().collect();
+    remove_archived_from(folder,choice,&active_ids,&current_ids)
+}
+fn remove_archived_from(folder:&Path,choice:&crate::commands::job_cleanup::Choice,active_ids:&std::collections::HashSet<String>,current_ids:&std::collections::HashSet<String>)->Result<String,String>{
+    let (generation,id)=history_parts(&choice.id)?;
+    if active_ids.contains(id)||current_ids.contains(id){return Err("Archived identifier is still referenced by a current job; retained".into());}
+    let record=read_history(folder,generation,id)?;crate::commands::job_cleanup::check_revision(&record,&choice.revision)?;
+    crate::commands::job_cleanup::remove_owned(folder,&folder.join("cleared-history").join(generation).join(format!("{id}.json")))?;
+    let logs=folder.join("logs");let path=logs.join(id);if path.exists()&&crate::commands::job_cleanup::remove_owned(&logs,&path).is_err(){return Ok("Archived Studio details removed; some protected logs retained.".into());}
+    Ok(String::new())
+}
+#[cfg(test)]
+mod cleanup_tests {
+ use super::*;
+ #[test]fn archived_history_cleanup_keeps_outputs_and_rejects_active_or_opaque_entries(){
+  let root=std::env::temp_dir().join(format!("photogogo-studio-history-{}-{}",std::process::id(),chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+  fs::create_dir_all(root.join("cleared-history/123")).unwrap();fs::create_dir_all(root.join("logs/old-123")).unwrap();fs::write(root.join("original.mp4"),b"original-media").unwrap();fs::write(root.join("logs/old-123/job.log"),b"old log").unwrap();
+  let record=Checkpoint{job:StudioJob{id:"old-123".into(),name:"Old render".into(),status:"failed".into(),created_at:"2025-01-01T00:00:00Z".into(),output:Some(root.join("original.mp4").to_string_lossy().into_owned()),..Default::default()},request:RenderRequest{project:super::super::tests::project(&root),staging_dir:root.to_string_lossy().into_owned(),preview:false,preview_start:None,preview_length:None,kind:"project".into(),clip_id:None,assemble_only:false}};
+  fs::write(root.join("cleared-history/123/old-123.json"),serde_json::to_vec(&record).unwrap()).unwrap();fs::write(root.join("cleared-history/123/opaque.json"),b"unrecognized checkpoint").unwrap();
+  let entries=archived_cleanup_entries(&root).unwrap();assert_eq!(entries.len(),2);assert!(entries.iter().any(|e|!e.can_remove));let good=entries.iter().find(|e|e.can_remove).unwrap();
+  let choice=crate::commands::job_cleanup::Choice{kind:"studio".into(),id:good.id.clone(),revision:good.revision.clone(),action:"remove".into()};let empty=std::collections::HashSet::new();
+  assert!(remove_archived_from(&root,&choice,&std::collections::HashSet::from(["old-123".into()]),&empty).is_err());
+  remove_archived_from(&root,&choice,&empty,&empty).unwrap();assert!(!root.join("cleared-history/123/old-123.json").exists());assert!(!root.join("logs/old-123").exists());assert!(root.join("cleared-history/123/opaque.json").exists());assert_eq!(fs::read(root.join("original.mp4")).unwrap(),b"original-media");
+  assert!(history_parts("archived:../escape:old-123").is_err());fs::remove_dir_all(root).unwrap();
+ }
+}

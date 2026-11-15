@@ -40,7 +40,7 @@ pub(super) fn history_eligible(job: &Job) -> bool {
 }
 pub(super) fn project(job: &Job, account_id: Option<&str>) -> ProcessJob {
     let mut summary = job.summary();
-    summary.history_hidden = job.history_hidden && history_eligible(job);
+    summary.history_hidden = job.dismissed || (job.history_hidden && history_eligible(job));
     summary.can_open_album = account_id == Some(job.plan.account_id.as_str());
     let status = match job.status.as_str() {
         "queued" => ProcessJobStatus::Queued,
@@ -62,7 +62,7 @@ pub(super) fn project(job: &Job, account_id: Option<&str>) -> ProcessJob {
         None
     };
     let errors = if !job.errors.is_empty() || summary.failed > 0 {
-        vec!["Google Photos needs attention. Open the sanitized job diagnostics for the per-photo status and recovery guidance.".into()]
+        vec![job.errors.iter().find_map(|e|super::oauth::recovery_message(e)).unwrap_or_else(||"Google Photos needs attention. Open the sanitized job diagnostics for the per-photo status and recovery guidance.".into())]
     } else {
         vec![]
     };
@@ -347,8 +347,9 @@ pub(super) fn restore_store(store: &super::store::GoogleStore, id: &str) -> Resu
     if job.plan.id != id {
         return Err("Saved upload identity is inconsistent.".into());
     }
-    let changed = job.history_hidden;
+    let changed = job.history_hidden || job.dismissed;
     job.history_hidden = false;
+    job.dismissed = false;
     job.save(store)?;
     Ok(changed)
 }

@@ -74,7 +74,7 @@ fn error_codes(error: &str) -> (Option<i64>, Option<u16>, Option<String>) {
     let reason = transport::SAFE_REASONS
         .iter()
         .find(|reason| error.contains(**reason))
-        .map(|v| (*v).to_string());
+        .map(|v| (*v).to_string()).or_else(||super::oauth::oauth_code(error).map(|v|format!("OAuth {v}")));
     (rpc, http, reason)
 }
 pub fn note(
@@ -183,6 +183,9 @@ fn explain(rpc: Option<i64>, http: Option<u16>, reason: Option<&str>) -> String 
     if let Some(reason) = reason.filter(|v| transport::SAFE_REASONS.contains(v)) {
         let _ = write!(output, " Reason: {reason}.");
     }
+    if let Some(code)=reason.and_then(|r|r.strip_prefix("OAuth ")).filter(|code|super::oauth::SAFE_OAUTH_CODES.contains(code)) {
+        let _=write!(output," OAuth {code}. {}",super::oauth::oauth_hint(code));
+    }
     if output.is_empty() {
         output.push_str("No API code was retained. Read the current in-app message; no free-form response content is exported.");
     }
@@ -194,6 +197,9 @@ pub fn report(job: &Job) -> String {
     let confirmation = format!("Accepted by Google: {}; verified by read-back: {}; awaiting verification: {}; verification needs attention: {}; read-back unavailable: {}\n", summary.accepted, summary.uploaded, summary.awaiting_verification, summary.verification_needs_attention, summary.readback_unavailable);
     let mut text = format!("PhotoGoGo {} — Google Photos diagnostics\nCreated: {}\nStatus: {}\nConfirmed uploaded: {}; skipped: {}; need attention: {}; total: {}\nBytes transferred: {} / {} (byte transfer is not confirmation of upload success)\n\n", env!("CARGO_PKG_VERSION"), time(&job.plan.created_at), known_state(&job.status), summary.uploaded, summary.skipped, summary.failed, summary.total, summary.bytes_done, summary.total_bytes);
     text.push_str(&confirmation);
+    if let Some(recovery)=job.errors.iter().find_map(|error|super::oauth::recovery_message(error)) {
+        let _=writeln!(text,"\nJob-level authorization block: {recovery}\n{} photos remain in this saved attempt; this is separate from the per-photo attention count.\n",summary.total);
+    }
     text.push_str("Privacy: filenames, local paths, account details, album/media IDs, credentials, upload tokens, session URLs and raw Google response messages are omitted. Photo numbers refer to this saved job's reviewed order.\n\nPhoto checkpoints (first 200):\n");
     for (index, item) in job.items.iter().enumerate().take(200) {
         let variant = job

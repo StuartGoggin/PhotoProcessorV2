@@ -251,7 +251,35 @@ pub(crate) fn scan_selection(root: &Path, relative_path: &str) -> Result<Catalog
     scan_scope(root, false, path.parent())
 }
 
+/// Plan discovery walks only the chosen subtree, but retains the original
+/// library root so source/variant IDs and portable selections do not change.
+pub(super) fn scan_for_plan(
+    root: &Path,
+    scope: Option<&str>,
+    checkpoint: &impl Fn() -> Result<(), String>,
+    observed: &impl Fn(usize),
+) -> Result<Catalogue, String> {
+    store::reject_link(root)?;
+    let canonical_root = root.canonicalize().map_err(|_| "Cannot resolve the photo folder.")?;
+    let scope = super::plan::relative_scope(&canonical_root, scope)?;
+    let depth = scope.strip_prefix(&canonical_root).map_err(|_| "Photo folder is outside the library.")?.components().count();
+    if depth > 32 { return Err("Photo folder exceeds the supported library depth.".into()); }
+    scan_controlled(&canonical_root, false, Some(&scope), 32 - depth, checkpoint, observed)
+}
+
 fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Catalogue, String> {
+    scan_controlled(root, archive, directory, if directory.is_some() { 1 } else { 32 }, &|| Ok(()), &|_| {})
+}
+
+fn scan_controlled(
+    root: &Path,
+    archive: bool,
+    directory: Option<&Path>,
+    max_depth: usize,
+    checkpoint: &impl Fn() -> Result<(), String>,
+    observed: &impl Fn(usize),
+) -> Result<Catalogue, String> {
+    checkpoint()?;
     let raw_epoch=super::super::raw_development::manifest::snapshot()?;
     if !root.is_absolute() || !root.is_dir() {
         return Err("Choose an existing absolute photo folder.".into());
@@ -269,10 +297,12 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
     store::reject_link(scope)?;
     let mut walker = WalkDir::new(scope)
         .follow_links(false)
-        .max_depth(if directory.is_some() { 1 } else { 32 })
+        .max_depth(max_depth)
         .into_iter();
     while let Some(entry) = walker.next() {
+        checkpoint()?;
         count += 1;
+        observed(count);
         if count > MAX_ENTRIES {
             return Err(
                 "This photo scope exceeds the 200,000-entry scan limit; choose an event folder."
@@ -330,6 +360,7 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
     let mut assets = Vec::new();
     let mut revision = 0u64;
     for (directory, mut files) in folders {
+        checkpoint()?;
         files.sort_by_key(|path| {
             path.file_name()
                 .unwrap_or_default()
@@ -450,6 +481,7 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
         let review_owner: HashMap<usize,usize> = camera_raw.iter().map(|(&jpeg,&raw)|(raw,jpeg)).collect();
         let mut duplicate_keys = HashMap::<String, usize>::new();
         for (index, path) in files.iter().enumerate() {
+            checkpoint()?;
             if retired_raw.contains(&index)&&!archive{continue}
             if suppressed.contains(&index) {
                 continue;
@@ -458,6 +490,7 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
         }
         let (event_name, event_date) = event(&directory);
         for (index, path) in files.iter().enumerate() {
+            checkpoint()?;
             if retired_raw.contains(&index)&&!archive{continue}
             if suppressed.contains(&index) {
                 continue;
@@ -564,6 +597,7 @@ fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Ca
     if assets.iter().any(|asset| !seen.insert(asset.id.clone())) {
         return Err("Ambiguous photo identifiers were found; narrow the folder scope.".into());
     }
+    checkpoint()?;
     warnings.sort();
     warnings.dedup();
     super::super::raw_development::manifest::unchanged(raw_epoch)?;

@@ -55,6 +55,8 @@ pub struct Job {
     #[serde(default)]
     pub history_hidden: bool,
     #[serde(default)]
+    pub dismissed: bool,
+    #[serde(default)]
     pub started_at: Option<String>,
     #[serde(default)]
     pub finished_at: Option<String>,
@@ -209,6 +211,7 @@ impl Job {
             original_hashes,
             diagnostics: Vec::new(),
             history_hidden: false,
+            dismissed: false,
             started_at: None,
             finished_at: None,
         })
@@ -404,6 +407,8 @@ fn scope(item: &PlanItem, root: &Path) -> Result<(), String> {
 }
 const DIMENSION_MISMATCH: &str = "Google's reported photo dimensions differ from the full-resolution upload. Needs review; not marked successful.";
 
+pub(super) fn rejected_evidence(progress:&ItemProgress)->bool{progress.readback_rejected||progress.error.as_deref()==Some(DIMENSION_MISMATCH)}
+
 /// Reconcile durable negative job evidence after an interrupted ledger write.
 /// Older rejected jobs remain conservative until their own successful recheck.
 pub(super) fn effective_ledger(store: &GoogleStore) -> Result<Vec<LedgerEntry>, String> {
@@ -416,8 +421,9 @@ pub(super) fn effective_ledger(store: &GoogleStore) -> Result<Vec<LedgerEntry>, 
     }
     for key in store.keys("job_")? {
         if let Some(job) = store.load::<Job>(&key)? {
+            if job.items.len()!=job.plan.items.len()||job.items.iter().zip(&job.plan.items).any(|(progress,item)|progress.id!=item.id){return Err("Saved upload receipt identity is inconsistent; evidence was retained.".into());}
             for (index, item) in job.items.iter().enumerate() {
-                if item.readback_rejected || item.error.as_deref() == Some(DIMENSION_MISMATCH) {
+                if rejected_evidence(item) {
                     if let Some(media) = &item.media {
                         rejected.insert((job.plan.account_id.clone(), media.id.clone()));
                         if !entries.iter().any(|r| {
@@ -441,7 +447,7 @@ pub(super) fn effective_ledger(store: &GoogleStore) -> Result<Vec<LedgerEntry>, 
     }
     Ok(entries)
 }
-fn ledger_entry(job: &Job, index: usize, verified: bool) -> Result<LedgerEntry, String> {
+pub(super) fn ledger_entry(job: &Job, index: usize, verified: bool) -> Result<LedgerEntry, String> {
     let item = &job.plan.items[index];
     let p = &job.items[index];
     let album = job

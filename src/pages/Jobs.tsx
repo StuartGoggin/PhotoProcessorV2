@@ -6,6 +6,7 @@ import StudioJobs from "../components/StudioJobs";
 import GooglePhotoJobDetails from "../components/GooglePhotoJobDetails";
 import ProcessJobControls from "../components/ProcessJobControls";
 import ProcessJobRecovery from "../components/ProcessJobRecovery";
+import JobCleanup from "../components/JobCleanup";
 import { useJobsMonitor, type JobsMonitorResult } from "../hooks/useJobsMonitor";
 import ImportSchedulingStatus, { ImportJobSchedulingStatus } from "../components/ImportSchedulingStatus";
 import { formatImportRate } from "../utils/importScheduling";
@@ -172,7 +173,8 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
     setImportJobs(snapshot.importJobs); setProcessJobs(snapshot.processJobs);
     setError(snapshot.error); setLoading(snapshot.loading);
   }, [tail, snapshot.importJobs, snapshot.processJobs, snapshot.error, snapshot.loading]);
-  const focusedJob=typeof focusJobId==="string"?processJobs.find(job=>job.id===focusJobId):undefined;
+  const [removedFocus,setRemovedFocus]=useState<string|undefined>(undefined);
+  const focusedJob=typeof focusJobId==="string"&&focusJobId!==removedFocus?processJobs.find(job=>job.id===focusJobId):undefined;
   const focusedView=focusedJob?preferredJobsView(focusedJob):null;
   useEffect(() => {
     if (!focusJobId || focusedOnce.current === focusJobId) return;
@@ -267,6 +269,7 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
           Refresh
         </button>
         {view === "archived" && <p className="text-xs text-gray-400">Archived Google Photos uploads retain their receipts. Restore to History before explicitly rechecking; restoring starts no cloud work.</p>}
+        <JobCleanup onChanged={async()=>{setRemovedFocus(focusJobId??undefined);await loadJobs();}}/>
         {view === "history" && <button className="btn-secondary" onClick={clearFinished} disabled={loading}>Clear finished import / process history</button>}
         <label className="flex items-center gap-2 text-sm text-gray-300 ml-2">
           <input type="checkbox" className="h-4 w-4" checked={tail} onChange={(e) => setTail(e.target.checked)} />
@@ -280,7 +283,7 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
         </div>
       )}
 
-      {typeof focusJobId==="string"&&focusJobId.length>0&&focusJobId.length<=256&&!focusedJob&&!loading&&<ProcessJobRecovery key={focusJobId} jobId={focusJobId} onRefresh={()=>loadJobs()}/>}
+      {typeof focusJobId==="string"&&focusJobId.length>0&&focusJobId.length<=256&&focusJobId!==removedFocus&&!focusedJob&&!loading&&<ProcessJobRecovery key={focusJobId} jobId={focusJobId} onRefresh={()=>loadJobs()}/>}
       {focusedJob&&focusedView&&!matchesJobsView(focusedJob,view)&&<div role="status" className="card mb-4 flex flex-wrap items-center gap-3 text-sm"><span>The selected job is outside the current filter. Its status and details are available in {JOBS_VIEWS.find(item=>item.id===focusedView)?.label}.</span><button type="button" className="btn-secondary" onClick={()=>setView(focusedView)}>Show in {JOBS_VIEWS.find(item=>item.id===focusedView)?.label}</button></div>}
       <div className="card mb-6">
         <StudioJobs view={view} />
