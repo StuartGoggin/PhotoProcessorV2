@@ -4,7 +4,7 @@ Approved: focused repair, one read-only receipt/retry reviewer, validation, comm
 
 ## Evidence and limits
 
-- User runs 2.0.53; a confirmed publish appears briefly and is absent from both Active and History.
+- User runs 2.0.53; a user-confirmed publish attempt appears briefly and is absent from both Active and History.
 - Slack1794773866.614299 reports8 protected upload records, including2 written16November2026 at07:02:05 and07:04:46, each581414bytes. The files exist; their status and Google outcome are not yet known.
 - A real-page synthetic command test is RED: native google_photos_start returns a JobSummary, but GooglePhotos.tsx treats it as string, passing an object to Jobs focus. No Google calls or user media were used.
 - Snapshot enumeration currently aborts the whole cloud list if any record fails parsing, ID validation or filename/ID consistency. A legacy unsupported identifier can pass the executor ledger read yet fail this stricter read-only projection. This is a candidate explanation, not a confirmed target-record diagnosis.
@@ -19,6 +19,6 @@ Approved: focused repair, one read-only receipt/retry reviewer, validation, comm
 ## Validation and release
 
 - Run focused red/green browser and native regressions; existing Google/core Jobs and relevant Lightbox boundaries; TypeScript/production build and offline Help checks.
-- Review final diff, commit source, build both installer formats with existing pinned runtimes, inspect/extract and compare hashes without installing. Serialize packaging and compiled-asset validation after the earlier WiX overlap failure.
+- Review final diff, commit source, build both installer formats with existing pinned runtimes, inspect/extract and compare hashes without installing. Serialize packaging and compiled-asset validation as a precaution after the earlier WiX packaging failure; its exact OS cause was not confirmed.
 - Deliver validated EXE/MSI to #swghermes with verified read-back and source/tag receipts. Both installers go to Slack; GitHub carries the source tag, guide/checksums and explicit links to Slack installers and the unchanged matching FFmpeg source.
 - No live Google sign-in/upload, account reset, user-photo mutation, render-PC installation or controller access. Keep2.0.53 rollback installers. Stop for a decision on an unresolved identity/receipt issue, unsuitable dependency or behavior-changing integration conflict; no dependency changes are planned.

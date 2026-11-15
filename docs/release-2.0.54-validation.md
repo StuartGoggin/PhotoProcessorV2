@@ -1,6 +1,6 @@
 # PhotoGoGo 2.0.54 validation and delivery
 
-Status: implementation and source validation complete; installer validation and delivery pending.
+Status: source and both installer formats validated; remote publication and Slack delivery pending.
 
 ## Scope and evidence
 
@@ -27,3 +27,18 @@ Status: implementation and source validation complete; installer validation and 
 Preserve2.0.53 rollback installers and unrelated worktrees/cleanup files. Use existing dependencies and pinned runtime/source bundles. Build and inspect EXE/MSI without installation; serialize packaging and compiled-guide validation. Deliver both to Personal/GoggoVille #swghermes with read-back and hashes. Both installers will be delivered to Slack. GitHub will publish the source tag, portable guide and checksums, with explicit Slack installer links and the unchanged matching FFmpeg source link; avoid slow redundant installer uploads.
 
 Final checks, source commit, package hashes, inspection and delivery receipts will be appended after completion.
+
+## Final package evidence
+
+Built application source: `46b0ceee8abe7936a9a4b026b74251f3d0630249`. Build ID: `20261115T205335240Z-46b0ceee+local`; the local marker reflects four preserved unrelated cleanup artifacts and a documentation clarification, not additional application changes. Production build and compiled custom-protocol embedded-guide parity passed. A final focused native run passed all 11 core-job cases after removing unrelated formatting churn.
+
+Both EXE and MSI were built successfully and extracted without installation. Inspection report: `test-output/release-2.0.54-inspection-20261115T210157225Z/report.json`, complete=true. MSI product version is 2.0.54; UpgradeCode `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` is unchanged from 2.0.53. Both application payloads match normalized SHA-256 `d6c152c29979134ac3d0341ce69a9d56d63e11efea37c2ab3f2a83e5a0b9dfbe`; normalization covers only Tauri's expected three-byte bundle marker. Each package verified 35 payload hashes, ExifTool's 2,205 files and relocated runtime, RAW's 440 resources, controller sources/licences and media/source pairing. No new RAW decode benchmark or live Google test was run for this job-recovery change. These are unsigned test installers.
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| PhotoGoGoV2_2.0.54_x64-setup.exe | 131,758,900 | `c3041be10c0f481c052436e752abbdf07cab54b1c12ae8183f62e79316fcafdc` |
+| PhotoGoGoV2_2.0.54_x64_en-US.msi | 222,978,772 | `86469b210dc5fa737e5899f91e52831805d3985c8536a98f7d4d400c7e826cb9` |
+| PhotoGoGo_User_Guide_2.0.54.html | 1,094,541 | `93ef8509369e2b2da71bc5b71f8edcf2f3c01523f97a23c912e56e98e918ad99` |
+| PhotoGoGo-FFmpeg-rowtest1-source.tar.gz | 49,570,807 | `27f7cd21a21e661314d76fe4689f7e4d92b0c0e13bc101376e8443e10eec8fd8` |
+
+`SHA256SUMS-2.0.54.txt` lists these hashes. Both installer formats will be shared in Slack; GitHub carries the source tag, portable guide and checksums with explicit installer links. The unchanged matching FFmpeg source archive was verified on the published 2.0.53 release by server digest and size. Source, receipts and all eight target records remain untouched by live Google operations. Remote and delivery receipts follow after read-back.
