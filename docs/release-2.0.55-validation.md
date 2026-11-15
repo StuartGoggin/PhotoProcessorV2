@@ -1,6 +1,6 @@
 # PhotoGoGo 2.0.55 combined release validation
 
-Status: all four approved areas implemented and combined source validation passed; package inspection and delivery pending.
+Status: all four approved areas implemented; combined source validation and both installer inspections passed. Publication and delivery pending.
 
 ## Scope and evidence boundaries
 
@@ -12,7 +12,7 @@ Status: all four approved areas implemented and combined source validation passe
 - Planning: scope scan, request-fenced stage/count/bytes, cancellation/persistence gate and request-local locked fingerprint reuse with fresh-read fallback beyond1,024handles. No unsafe persistent hash cache or weakened upload-time checks.
 - Import: one source reader, two destination workers, bounded four-file/256MiB reservation before copying, oversize-alone path; source size bound carried into preparation and locked copy. Flush original writable handle in destination stage before independent MD5 and atomic no-overwrite publication. Backpressure/peak metrics logged.
 
-## Evidence ledger so far
+## Historical implementation evidence (superseded by final validation below)
 
 - New auth2tests green after reproduced generic400 lost-code failure; reconnect identity guard and global diagnostic-redaction tests added.
 - Planning native7green before finalguardfallback test; final8case suite is in combined validation. Newbrowser4 and existingGooglebrowser15groups green. Synthetic3x1MiB originals:6,291,456→3,145,728 fingerprint bytes; local warm-cache121.880→101.825ms sample. Not target-PC throughput evidence.
@@ -43,3 +43,18 @@ The installer gate follows: complete all native and compiledGuide checks, source
 
 - Added a production weighted-pipeline regression with two real concurrent MD5 destination verifiers: eight synthetic duplicate inputs produce exactly two independently verified publications and six duplicate decisions, with one source reader and no private-copy orphans. Focused case passed; the final full native run passed449/0failed/30ignored in84.55seconds.
 - Compiled release Help parity passed. Running that check after the first packaging pass rebuilt the local reference executable; the strict binary guard detected changed bytes and stopped before package publication. No installer was shared. All tests now precede the replacement production build; both packages must pass extraction against that final production reference before delivery.
+
+## Final package evidence
+
+Built application source: `7e54e42d` (full source identity recorded by Git); application implementation checkpoint `424b370f477833daf626b2bbf911f1c8118b727c`. Build ID: `20261115T230710724Z-7e54e42d+local`; local reflects four preserved unrelated untracked cleanup artifacts. No application code changed after the passing449-test native run. All build-producing tests ran before the final installer build.
+
+Both installer formats built successfully. Non-installing inspection report `test-output/release-2.0.55-inspection-20261115T231402195Z/report.json` is complete=true. MSI version2.0.55, prior2.0.54 UpgradeCode `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` unchanged. Normalized application SHA-256 `3928d973ad0ba31147fafe7875ca5be4b734eec488ffd4551c885441550bb2cd`; normalization changes only the expected three-byte Tauri bundle marker. Each package verified35payload hashes, ExifTool2,205files and relocated runtime, RAW440resources, controller source/licence closure and managed media/source matching. No new RAW image-quality test or live Google operation was performed; installers are unsigned test builds.
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| PhotoGoGoV2_2.0.55_x64-setup.exe | 131,843,891 | `1941c0c682e84f00047e68a51e8ef83f5a60bc3663f120a36db2ecfe03499078` |
+| PhotoGoGoV2_2.0.55_x64_en-US.msi | 223,126,228 | `7261a60a718bfef3b96c3523b9633fde235db2d576c3449727cfe459e91ec6fc` |
+| PhotoGoGo_User_Guide_2.0.55.html | 1,098,272 | `edc3fb998b15cd86186259addad4714fe25ed31e3ae48189238590c042bf8342` |
+| PhotoGoGo-FFmpeg-rowtest1-source.tar.gz | 49,570,807 | `27f7cd21a21e661314d76fe4689f7e4d92b0c0e13bc101376e8443e10eec8fd8` |
+
+The portable illustrated guide is18chapters/11figures; embedded and portable checks passed. The matching unchanged FFmpeg source asset on GitHubv2.0.53 was verified by server digest and size. `SHA256SUMS-2.0.55.txt` covers the four artifacts. Keep2.0.54 rollback installers. Published source/tag and Slack read-back receipts follow.

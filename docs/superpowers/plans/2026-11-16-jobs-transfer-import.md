@@ -39,4 +39,6 @@
 - Ruling: import may reserve up to four in-flight files and256MiB per card across one reader/two destination workers. A larger single file runs alone. The reserved byte size is passed into preparation and checked before staging; size drift is rejected.
 - Ruling: default cleanup shows all ages with no preselection; otherwise the reported21-day-old failed jobs were invisible under the initially proposed30-day filter. Age/type/status remain explicit filters, and changing them clears selection/actions/acknowledgement.
 
-- Sourcegate: finalnative448/0/30ignored; UI/browser/guide/productionbuildpassed. Backpressure metric RED→GREEN; no liveGoogle operation. Benchmarkclaims restricted to controlled synthetic workloads/read-byte counts.
+- Sourcegate: finalnative449/0/30ignored; UI/browser/guide/productionbuildpassed. Backpressure metric RED→GREEN; no liveGoogle operation. Benchmarkclaims restricted to controlled synthetic workloads/read-byte counts.
+
+- Packagegate: finalsource7e54e42d; EXE/MSI build and extraction checks passed with35payload hashes each, unchangedUpgradeCode, managed runtime/source closure and embeddedHelp parity. Publication/delivery pending. All native/release Help tests precede final packaging after the strict guard caught the earlier reference rebuild.
