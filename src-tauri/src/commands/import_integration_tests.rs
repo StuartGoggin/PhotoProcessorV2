@@ -501,3 +501,29 @@ fn weighted_source_size_reservation_rejects_growth_before_any_payload_copy(){
     },|_|panic!("Unreserved bytes cannot reach publication"),4,8,2).unwrap();
     assert_eq!(copied.load(Ordering::Relaxed),0);assert_eq!(stats.peak_bytes,4);
 }
+
+
+#[test]
+fn weighted_pipeline_uses_two_real_md5_verifiers_without_duplicate_publication(){
+    let fixture=Fixture::new();let root=fixture.root();
+    let sources=(0..8).map(|i|{let path=fixture.0.join("card-a").join(format!("weighted-{i}.jpg"));fs::write(&path,vec![if i%2==0{b'A'}else{b'B'};16*1024]).unwrap();path}).collect::<Vec<_>>();
+    let session=import_sessions::try_open(&root).unwrap().unwrap();session.prepare_parent(&root).unwrap();
+    let outcomes=std::sync::Mutex::new(Vec::new());let source_active=std::sync::atomic::AtomicUsize::new(0);let verifier_entered=std::sync::atomic::AtomicUsize::new(0);
+    let stats=import_pipeline::run_weighted(&sources,|p|fs::metadata(p).unwrap().len(),|source,reserved|{
+        assert_eq!(source_active.fetch_add(1,Ordering::SeqCst),0,"one sequential source reader");let mut digest=Md5::new();
+        let staged=import_safety::stage_copy(source,&root,reserved,|chunk|{digest.update(chunk);Ok(())}).unwrap();source_active.fetch_sub(1,Ordering::SeqCst);
+        Some((source.clone(),reserved,hex::encode(digest.finalize()),staged))
+    },|(source,size,hash,mut staged)|{
+        verifier_entered.fetch_add(1,Ordering::SeqCst);let deadline=Instant::now()+TIMEOUT;
+        while verifier_entered.load(Ordering::SeqCst)<2{assert!(Instant::now()<deadline,"both destination workers must execute this real-byte seam");std::thread::sleep(Duration::from_millis(1));}
+        staged.verify(&hash,|path|crate::utils::compute_md5(path).map_err(|e|e.to_string())).unwrap();
+        let _publication=session.publication.lock().unwrap();
+        let (destination,imported)=if let Some(existing)=session.published_duplicate(&hash,size,file_hash).unwrap(){(existing,false)}else{
+            let dest=import::reserve_unique_destination(root.join("same-second.jpg"),&session.reserved);staged.publish(&dest).unwrap();session.claimed.lock().unwrap().insert(hash,dest.clone());(dest,true)
+        };
+        outcomes.lock().unwrap().push((source,destination,imported));
+    },4,128*1024,2).unwrap();
+    let outcomes=outcomes.into_inner().unwrap();assert_eq!(outcomes.len(),8);assert_eq!(outcomes.iter().filter(|(_,_,created)|*created).count(),2);
+    for(source,destination,_)in outcomes{assert_eq!(file_hash(&source).unwrap(),file_hash(&destination).unwrap());assert_eq!(fs::read(source).unwrap(),fs::read(destination).unwrap());}
+    assert!(stats.peak_files<=4&&stats.peak_bytes<=128*1024);assert_eq!(fs::read_dir(root.join(".photogogo-import")).unwrap().count(),0);
+}
