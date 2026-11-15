@@ -1,6 +1,6 @@
 # PhotoGoGo 2.0.54 validation and delivery
 
-Status: source and both installer formats validated; remote publication and Slack delivery pending.
+Status: validated, merged/pushed and published. Both installer formats were delivered and read back in the requested Slack channel; target-PC acceptance remains pending.
 
 ## Scope and evidence
 
@@ -42,3 +42,20 @@ Both EXE and MSI were built successfully and extracted without installation. Ins
 | PhotoGoGo-FFmpeg-rowtest1-source.tar.gz | 49,570,807 | `27f7cd21a21e661314d76fe4689f7e4d92b0c0e13bc101376e8443e10eec8fd8` |
 
 `SHA256SUMS-2.0.54.txt` lists these hashes. Both installer formats will be shared in Slack; GitHub carries the source tag, portable guide and checksums with explicit installer links. The unchanged matching FFmpeg source archive was verified on the published 2.0.53 release by server digest and size. Source, receipts and all eight target records remain untouched by live Google operations. Remote and delivery receipts follow after read-back.
+
+## Verified publication and delivery
+
+Package receipt `0c15a439846ec90e4a227589d40c7206f7252f6d` was atomically pushed to GitHub master and SWG/google-upload-job-recovery; annotated tag v2.0.54 peels to that receipt. Both branches and the tag were read back. Application source remains `46b0ceee8abe7936a9a4b026b74251f3d0630249`. A later documentation-only delivery commit advances the branches without moving the tag.
+
+Published GitHub test release: https://github.com/StuartGoggin/PhotoProcessorV2/releases/tag/v2.0.54 (release446366619), published2026-11-15T21:09:46Z; draft=false, prerelease=true. Its two assets, portable HTML guide and checksum list, have server SHA-256 digests and byte sizes matching local files. Both installer formats are explicitly linked to their Slack attachments rather than advertised as duplicate GitHub assets. The unchanged corresponding FFmpeg source archive remains linked from the verified2.0.53 asset.
+
+Personal / GoggoVille #swghermes delivery:
+
+- EXE release parent: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794776877691729; fileF0CHRF6GDAP. HTTP200 acknowledged131758900bytes in134.6seconds.
+- MSI alternative: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794776946950309; fileF0CHVNYEGLW. HTTP200 acknowledged222978772bytes in202.5seconds.
+- Published release/guide/source links and retest instructions: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794777010503909.
+- Final thread read-back verified both file IDs, version, hashes, byte counts and published links.
+
+Slack evidence is the sender's pre-transfer SHA-256, HTTP200 exact-byte acknowledgement and visible file/thread metadata; no independent Slack-hosted download/hash was performed. Signed upload addresses and credentials were not saved to files. Structured local receipt: `test-output/release-2.0.54-delivery.json`.
+
+Target retest: after active jobs finish and the app is closed, install one format, open Jobs All/History and refresh. Inspect the existing attempt's details/diagnostics before considering another upload. If still missing, share the visible warning or reviewed report with sensitive paths/account details redacted. No protected-record deletion, migration, account reset or live upload occurred in development. The user target's exact failing record and actual Google outcome remain unconfirmed.
