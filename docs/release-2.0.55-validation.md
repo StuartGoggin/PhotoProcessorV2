@@ -1,6 +1,6 @@
 # PhotoGoGo 2.0.55 combined release validation
 
-Status: all four approved areas implemented; combined source validation and both installer inspections passed. Publication and delivery pending.
+Status: all four approved areas delivered together in2.0.55; source/tag, both Slack installers and published guide/checksum assets verified by read-back. Target-PC acceptance remains outstanding.
 
 ## Scope and evidence boundaries
 
@@ -46,7 +46,7 @@ The installer gate follows: complete all native and compiledGuide checks, source
 
 ## Final package evidence
 
-Built application source: `7e54e42d` (full source identity recorded by Git); application implementation checkpoint `424b370f477833daf626b2bbf911f1c8118b727c`. Build ID: `20261115T230710724Z-7e54e42d+local`; local reflects four preserved unrelated untracked cleanup artifacts. No application code changed after the passing449-test native run. All build-producing tests ran before the final installer build.
+Built application source: `7e54e42d410b26c0039799800bc072cdc09bf930`; application implementation checkpoint `424b370f477833daf626b2bbf911f1c8118b727c`. Build ID: `20261115T230710724Z-7e54e42d+local`; local reflects four preserved unrelated untracked cleanup artifacts. No application code changed after the passing449-test native run. All build-producing tests ran before the final installer build.
 
 Both installer formats built successfully. Non-installing inspection report `test-output/release-2.0.55-inspection-20261115T231402195Z/report.json` is complete=true. MSI version2.0.55, prior2.0.54 UpgradeCode `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` unchanged. Normalized application SHA-256 `3928d973ad0ba31147fafe7875ca5be4b734eec488ffd4551c885441550bb2cd`; normalization changes only the expected three-byte Tauri bundle marker. Each package verified35payload hashes, ExifTool2,205files and relocated runtime, RAW440resources, controller source/licence closure and managed media/source matching. No new RAW image-quality test or live Google operation was performed; installers are unsigned test builds.
 
@@ -58,3 +58,18 @@ Both installer formats built successfully. Non-installing inspection report `tes
 | PhotoGoGo-FFmpeg-rowtest1-source.tar.gz | 49,570,807 | `27f7cd21a21e661314d76fe4689f7e4d92b0c0e13bc101376e8443e10eec8fd8` |
 
 The portable illustrated guide is18chapters/11figures; embedded and portable checks passed. The matching unchanged FFmpeg source asset on GitHubv2.0.53 was verified by server digest and size. `SHA256SUMS-2.0.55.txt` covers the four artifacts. Keep2.0.54 rollback installers. Published source/tag and Slack read-back receipts follow.
+
+## Verified publication and delivery
+
+Package receipt `e72b1e969909a309f12dd9f78808242f4820122c` was atomically pushed to GitHub master and `SWG/jobs-transfer-import-2.0.55`. Annotated tag `v2.0.55` peels to that receipt; both remote heads and the peeled tag were read back. A later documentation-only delivery commit advances the branches without moving the tag.
+
+Published test release: https://github.com/StuartGoggin/PhotoProcessorV2/releases/tag/v2.0.55, release446441301, published2026-11-15T23:23:21Z; draft=false/prerelease=true. The two GitHub assets have server digests and byte sizes matching local files: guide1,098,272bytes/SHAedc3fb998b15cd86186259addad4714fe25ed31e3ae48189238590c042bf8342; checksum list407bytes/SHA534b2c534fcb7b543d98bced15b6ddbd6d80af6fcdc9ffc788eaa012c062cb1b. Notes link both Slack installers and the unchanged matching verifiedv2.0.53FFmpeg source. Installer binaries are hosted in Slack, not duplicated as GitHub assets.
+
+Personal/GoggoVille #swghermes:
+
+- EXE/new top-level release: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794784868842969; fileF0CJ1S4A03E. HTTP200 acknowledged131,843,891bytes in168.0seconds.
+- MSI alternative in the same thread: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794784965007589; fileF0CHRU522LB. HTTP200 acknowledged223,126,228bytes in225.7seconds.
+- Published guide/source/checksum links and acceptance steps: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794785037988659.
+- Final thread read-back verified both installer IDs, version, byte counts, hashes and published links. Evidence is sender-side pre-transfer SHA-256, exact-byte HTTP200 acknowledgement and visible file/thread metadata. No independent Slack-hosted download/hash was performed; signed upload addresses/credentials were not saved. Structured receipt: `test-output/release-2.0.55-delivery.json`.
+
+Target acceptance order: finish active work, close PhotoGoGo and install one format; Reconnect the SAME Google account with the unchanged Desktop client; Retry the EXISTING saved job and inspect diagnostics before cleanup/new upload. Then test cleanup on an older eligible record. Once upload work has finished or is safely paused, check inspection progress/cancel and compare normal import card utilization in Windows Task Manager. Actual target OAuth recovery, the exact originalHTTP400 reason and hardware throughput remain unverified. No live upload, account reset, original-photo change or target-PC installation occurred in development.

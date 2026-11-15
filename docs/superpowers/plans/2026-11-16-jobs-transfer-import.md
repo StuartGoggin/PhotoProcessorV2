@@ -28,7 +28,7 @@
 - [x] Planning helper: reproduce redundant reads; scope catalogue safely, coalesce per-inspection identity-checked source/metadata work, bounded concurrency, stage/count/byte progress + cancel with request fencing. Own plan/catalogue/metadata/planning + GooglePhotos page/types/tests; root integrates native command registration. Compare output/hash/read counts and cold/warm synthetic timings, maintain upload-time full checks.
 - [x] Import: RED demonstrate source pause on destination flush/handoff; move destination flush into verification, add bounded look-ahead and measured worker tuning where useful, source-stage timing/idle reasons. Preserve one sequential card reader initially; do not add competing readers without evidence. Test real bytes plus deterministic slow verification, checksum failure, abort cleanup and duplicate races.
 - [x] Integrate: full native serial suite, focused browser/unit regressions for all four changes, production build and guide parity; visually inspect changed UI. Two bounded repair attempts per failing safety/quality gate, then stop for decision if unresolvable.
-- [ ] Release: update guide/version; source commit, serialized build/inspection, package receipt, fast-forward remote master/tag, both Slack installers read back, published guide/checksum links, final delivery commit and clean managed-checkout sync.
+- [x] Release: update guide/version; source commit, serialized build/inspection, package receipt, fast-forward remote master/tag, both Slack installers read back, published guide/checksum links, final delivery commit and clean managed-checkout sync.
 
 ## Execution ledger
 - Approved scope and helpers; no further approval needed for the listed implementation/release.
@@ -42,3 +42,5 @@
 - Sourcegate: finalnative449/0/30ignored; UI/browser/guide/productionbuildpassed. Backpressure metric RED→GREEN; no liveGoogle operation. Benchmarkclaims restricted to controlled synthetic workloads/read-byte counts.
 
 - Packagegate: finalsource7e54e42d; EXE/MSI build and extraction checks passed with35payload hashes each, unchangedUpgradeCode, managed runtime/source closure and embeddedHelp parity. Publication/delivery pending. All native/release Help tests precede final packaging after the strict guard caught the earlier reference rebuild.
+
+- Deliverygate: master/feature/tag read back atpackagee72b1e9; GitHubtestrelease446441301 published with exact guide/checksum serverdigests; SlackEXE1794784868.842969/F0CJ1S4A03E, MSI1794784965.007589/F0CHRU522LB and linkreply1794785037.988659 all read back. Targetacceptance remains explicit. Final documentation receipt advances branches without retag; managed checkout sync is clean/fast-forward only.
