@@ -35,6 +35,10 @@ export function matchesJobsView(job: JobSummary, view: JobsView): boolean {
   if (view === "attention") return jobNeedsAttention(job);
   return !isActiveJob(job);
 }
+/** A focused job is located once; subsequent filter changes stay deliberate. */
+export function preferredJobsView(job:JobSummary):JobsView {
+  return isArchivedJob(job)?"archived":jobNeedsAttention(job)?"attention":isActiveJob(job)?"active":"history";
+}
 export function countJobs(jobs: readonly JobSummary[]): Record<JobsView, number> {
   return {
     active: jobs.filter(isActiveJob).length,

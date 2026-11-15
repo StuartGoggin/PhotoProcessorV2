@@ -134,7 +134,7 @@ pub(super) fn project(job: &Job, account_id: Option<&str>) -> ProcessJob {
     }
 }
 
-fn read(app: &AppHandle) -> Result<Vec<ProcessJob>, String> {
+fn read(app: &AppHandle) -> Result<StoredJobs, String> {
     let store = protected(app)?;
     let active = process_runtime::active(Kind::GooglePhotos)?;
     // A different process may own the OS lease: it must not be called interrupted.
@@ -151,38 +151,98 @@ fn read(app: &AppHandle) -> Result<Vec<ProcessJob>, String> {
         idle.is_some(),
     )
 }
+/// Read-only catalogue findings. Neither malformed nor legacy records are rewritten.
+pub(super) struct StoredJobs {
+    pub jobs: Vec<ProcessJob>,
+    pub warnings: Vec<String>,
+    unavailable_keys: Vec<String>,
+    blocking_warning: Option<String>,
+}
 pub(super) fn stored_jobs(
     store: &super::store::GoogleStore,
     account_id: Option<&str>,
     active: &[String],
     can_recover: bool,
-) -> Result<Vec<ProcessJob>, String> {
-    let mut out = Vec::new();
+) -> Result<StoredJobs, String> {
+    let mut jobs = Vec::new();
+    let mut unavailable_keys = Vec::new();
+    let (mut unreadable, mut inconsistent, mut changed, mut legacy) = (0, 0, 0, 0);
+    // Root/enumeration/reparse failures remain global failures; only individual
+    // document failures are isolated after the protected store validates its keys.
     for key in store.keys("job_")? {
-        if let Some(mut job) = store.load::<Job>(&key)? {
-            super::validate_id(&job.plan.id)?;
-            if key != format!("job_{}", job.plan.id) {
-                return Err(
-                    "Google Photos saved-job identity is inconsistent; no record was reset.".into(),
-                );
+        let mut job = match store.load::<Job>(&key) {
+            Ok(Some(job)) => job,
+            Ok(None) => {
+                changed += 1;
+                unavailable_keys.push(key);
+                continue;
             }
-            if !active.contains(&job.plan.id) && can_recover {
-                job.recover();
+            Err(_) => {
+                unreadable += 1;
+                unavailable_keys.push(key);
+                continue;
             }
-
-            let mut row = project(&job, account_id);
-            let (stop, abort) = process_runtime::stop_state(&job.plan.id);
-            row.pause_requested = stop && !abort;
-            row.abort_requested = abort;
-            if stop && matches!(job.status.as_str(), "queued" | "running") {
-                row.current_phase =
-                    Some("Stop requested; finishing a safe upload checkpoint".into());
-                row.status_line = "Stop requested; finishing a safe upload checkpoint".into();
+        };
+        if key != format!("job_{}", job.plan.id) {
+            inconsistent += 1;
+            unavailable_keys.push(key);
+            continue;
+        }
+        if super::validate_id(&job.plan.id).is_err() {
+            // Fully decoded self-consistent legacy records still participate in
+            // the strict executor ledger; they are never routed as current jobs.
+            legacy += 1;
+            continue;
+        }
+        if !active.contains(&job.plan.id) && can_recover {
+            job.recover();
+        }
+        let mut row = project(&job, account_id);
+        let (stop, abort) = process_runtime::stop_state(&job.plan.id);
+        row.pause_requested = stop && !abort;
+        row.abort_requested = abort;
+        if stop && matches!(job.status.as_str(), "queued" | "running") {
+            row.current_phase = Some("Stop requested; finishing a safe upload checkpoint".into());
+            row.status_line = "Stop requested; finishing a safe upload checkpoint".into();
+        }
+        jobs.push(row);
+    }
+    let mut warnings = Vec::new();
+    if legacy > 0 {
+        warnings.push(format!("{legacy} older Google Photos upload record(s) use an unsupported identifier and cannot be resumed in this version. Their records and receipts are preserved; readable current jobs remain available. No new upload is needed to recover job visibility."));
+    }
+    let blocking_warning = if unreadable + inconsistent + changed > 0 {
+        let warning=format!("Some saved Google Photos records could not be listed safely (unreadable data: {unreadable}; inconsistent identity: {inconsistent}; changed during reading: {changed}). Records and receipts were preserved. Continuation and album actions are disabled until receipt history can be read safely; safe stop and diagnostics remain available. Refresh Jobs after restoring access or resolving the saved-record warning.");
+        jobs = stale_jobs(jobs, &warning);
+        warnings.push(warning.clone());
+        Some(warning)
+    } else {
+        None
+    };
+    Ok(StoredJobs {
+        jobs,
+        warnings,
+        unavailable_keys,
+        blocking_warning,
+    })
+}
+/// Retain only matching, previously validated filename identities in this store.
+pub(super) fn retain_unavailable(mut report: StoredJobs, cached: &[ProcessJob]) -> StoredJobs {
+    if let Some(warning) = report.blocking_warning.as_deref() {
+        for previous in cached {
+            if super::validate_id(&previous.id).is_ok()
+                && report
+                    .unavailable_keys
+                    .contains(&format!("job_{}", previous.id))
+                && !report.jobs.iter().any(|job| job.id == previous.id)
+            {
+                report
+                    .jobs
+                    .extend(stale_jobs(vec![previous.clone()], warning));
             }
-            out.push(row);
         }
     }
-    Ok(out)
+    report
 }
 pub(super) fn stale_jobs(mut jobs: Vec<ProcessJob>, warning: &str) -> Vec<ProcessJob> {
     for job in &mut jobs {
@@ -221,7 +281,15 @@ pub(crate) fn snapshot(app: &AppHandle) -> (Vec<ProcessJob>, Vec<String>) {
         return (cached.jobs.clone(), cached.warnings.clone());
     }
     let (jobs, warnings) = match read(app) {
-        Ok(jobs) => (jobs, vec![]),
+        Ok(report) => {
+            let report = if let Some(previous) = cache.as_ref().filter(|cached| cached.root == root)
+            {
+                retain_unavailable(report, &previous.jobs)
+            } else {
+                report
+            };
+            (report.jobs, report.warnings)
+        }
         Err(_) => {
             let warning = "Google Photos saved-job refresh failed; showing the last known state with continuation and album actions disabled. Safe stop requests remain available for active jobs. Local Photo Process jobs remain available. No cloud records were reset.".to_string();
             let jobs = cache

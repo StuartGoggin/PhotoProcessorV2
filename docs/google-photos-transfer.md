@@ -336,3 +336,11 @@ remain unchanged. Do not include sensitive photographs in that pilot.
 - [Refresh-token expiry](https://developers.google.com/identity/protocols/oauth2#expiration)
 - [Token revocation](https://developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke)
 - [Windows DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata)
+
+## Saved-job visibility and recovery (2.0.54)
+
+The start command returns a job summary. The app validates its ID against the reviewed plan before confirming that the job was saved. An uncertain acknowledgement or start error retains only an unconfirmed lookup reference, exposed through **Find upload attempt**; it never automatically republishes.
+
+Jobs uses the same core snapshot and protected receipts. Readable valid jobs remain visible when an older, fully decoded record has an unsupported ID. That older record is preserved and is not routed as a runnable current job. If any receipt data is unreadable, a saved identity is inconsistent, or a listed file changes during reading, current jobs remain visible but continuation and album actions are disabled. Matching last-known rows from the same store are explicitly stale; unrelated missing rows are not invented or restored. The executor ledger, account binding and protected-store guards remain strict.
+
+A missing selected job offers read-only saved diagnostics. A selected job leaving Active offers a link to its new view rather than silently disappearing or repeatedly changing a manually selected filter. An existing older unsupported record can still make **Clear finished** fail; this separate archive validation is intentionally not weakened. No encrypted record, upload receipt, account credential or Lightbox selection is reset by this visibility repair.

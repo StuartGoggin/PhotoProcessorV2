@@ -85,9 +85,13 @@ fn validate_id(id: &str) -> Result<(), String> {
 pub(crate) fn is_job_id(id: &str) -> bool { validate_id(id).is_ok() }
 fn load_job(store: &store::GoogleStore, id: &str) -> Result<Job, String> {
     validate_id(id)?;
-    store
+    let job: Job = store
         .load(&format!("job_{id}"))?
-        .ok_or("Upload job was not found.".into())
+        .ok_or("Upload job was not found.")?;
+    if job.plan.id != id {
+        return Err("Saved upload identity is inconsistent; no upload was started or changed.".into());
+    }
+    Ok(job)
 }
 fn same_account(store: &store::GoogleStore, id: &str) -> Result<(), String> {
     if oauth::account(store)?.is_none_or(|a| a.id != id) {

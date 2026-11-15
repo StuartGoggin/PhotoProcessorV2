@@ -1,6 +1,6 @@
 // One core ProcessJob, not a second Google job list. Real app job UI/hook,
 // synthetic protected summary and deterministic core native-command adapter.
-import React from "react";
+import React, {useState} from "react";
 import { createRoot } from "react-dom/client";
 import Jobs from "../src/pages/Jobs";
 import JobsPanel from "../src/components/JobsPanel";
@@ -10,6 +10,7 @@ const fixture = window as any;
 fixture.__coreCalls = [];
 const id = "G".repeat(43);
 fixture.__coreJob ??= { id, task: "googlePhotos", status: "needs_attention", stagingDir: "", scopeDir: "", scopeMode: "entireStaging", createdAt: "2026-10-26T04:00:00Z", startedAt: "2026-10-26T04:00:00Z", finishedAt: null, total: 4, done: 4, processed: 4, resultCount: 3, currentFile: "Photo 3 (Original)", errors: ["Photo 3 verification needs attention; saved registration retained."], logs: ["Registered receipts retained. Retry verifies remaining work."], statusLine: "4 accepted · 3 verified · 1 verification warning", pauseRequested: false, abortRequested: false, canContinue: true, controlBlockedReason: null, googlePhotos: { id, status: "needs_attention", accountId: "client:subject", accountEmail: "rider@example.test", createdAt: "2026-10-26T04:00:00Z", total: 4, done: 4, uploaded: 3, accepted: 4, awaitingVerification: 1, verificationNeedsAttention: 1, skipped: 0, failed: 1, bytesDone: 20000, totalBytes: 20000, currentFile: "Photo 3 (Original)", errors: ["Photo 3 verification needs attention; saved registration retained."], albums: [{ key: "event", title: "Synthetic event", state: "ready", productUrl: "https://photos.google.com/lr/album/synthetic" }] } };
+if(fixture.__coreInitialStatus){fixture.__coreJob.status=fixture.__coreInitialStatus;fixture.__coreJob.errors=[];fixture.__coreJob.googlePhotos.status=fixture.__coreInitialStatus;}
 fixture.__coreJobs ??= [fixture.__coreJob];
 fixture.__coreWarnings ??= [];
 fixture.__checkpointRetained = true;
@@ -30,5 +31,5 @@ fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any = {}) 
   throw new Error(`Unexpected core Jobs fixture command: ${command}`);
 } };
 Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { if (fixture.__clipboardDenied) throw new Error("Synthetic clipboard denied"); fixture.__copied = value; } } });
-function Preview() { const monitor = useJobsMonitor(true, 500); return <div style={{ height: "100%", overflow: "auto", padding: 12 }}><JobsPanel {...monitor} /><Jobs initialView="attention" monitor={monitor} /></div>; }
+function Preview() { const [focusJobId,setFocusJobId]=useState<string|null>(fixture.__coreFocusJobId??null);fixture.__setCoreFocus=setFocusJobId;const monitor = useJobsMonitor(true, 500); return <div style={{ height: "100%", overflow: "auto", padding: 12 }}><JobsPanel {...monitor} /><Jobs initialView="attention" monitor={monitor} focusJobId={focusJobId} /></div>; }
 createRoot(document.getElementById("root")!).render(<Preview />);

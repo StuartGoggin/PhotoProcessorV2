@@ -61,7 +61,8 @@ fixture.__TAURI_INTERNALS__ = {
         { key: "horse-24", title: "Horse event — 24 October 2026", date: "2026-10-24", albumId: args.request.albumMode === "continue" ? "saved-horse-album" : null, itemIds: planItems.filter((item: any) => item.relativePath.includes("/24/")).map((item: any) => item.id), coverItemId: null },
         { key: "arena-25", title: "Arena — 25 October 2026", date: "2026-10-25", albumId: args.request.albumMode === "continue" ? "saved-app-album" : null, itemIds: planItems.filter((item: any) => item.relativePath.includes("/25/")).map((item: any) => item.id), coverItemId: null },
       ].filter(album => album.itemIds.length > 0);
-      return { id: `plan-${fixture.__googleCalls.filter((call: any) => call.command === command).length}`, accountId: fixture.__googleStatus.account.id, accountEmail: fixture.__googleStatus.account.email, root: args.request.root, items: planItems, albums, warnings: ["Synthetic metadata check: confirm capture dates before publishing."], totalBytes: 51370368 };
+      fixture.__googleLastPlanId = "P" + fixture.__googleCalls.filter((call: any) => call.command === command).length.toString(36).padStart(42,"0");
+      return { id: fixture.__googleLastPlanId, accountId: fixture.__googleStatus.account.id, accountEmail: fixture.__googleStatus.account.email, root: args.request.root, items: planItems, albums, warnings: ["Synthetic metadata check: confirm capture dates before publishing."], totalBytes: 51370368 };
     }
     if (command === "google_photos_thumbnail") {
       fixture.__googleThumbnailActive++;
@@ -73,7 +74,8 @@ fixture.__TAURI_INTERNALS__ = {
     if (command === "google_photos_start") {
       if (fixture.__googleStartDelay) await new Promise<void>(resolve => { fixture.__googleResolveStart = resolve; });
       if (fixture.__googleStartError) throw new Error(fixture.__googleStartError);
-      return "S".repeat(43);
+      if (Object.prototype.hasOwnProperty.call(fixture,"__googleStartResponse")) return fixture.__googleStartResponse;
+      return {id:args.planId,status:"queued",accountId:fixture.__googleStatus.account.id,accountEmail:fixture.__googleStatus.account.email,createdAt:"2026-11-16T00:00:00Z",done:0,total:4,uploaded:0,accepted:0,awaitingVerification:0,verificationNeedsAttention:0,readbackUnavailable:0,historyHidden:false,canOpenAlbum:true,skipped:1,failed:0,bytesDone:0,totalBytes:51370368,currentFile:"",albums:[],errors:[]};
     }
     throw new Error(`Unexpected Google Photos fixture command: ${command}`);
   },

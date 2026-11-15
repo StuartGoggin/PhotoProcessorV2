@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { settleCuration } from "../utils/curationPersistence";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettings } from "../hooks";
-import type { GooglePhotoAlbumEdit, GooglePhotoMode, GooglePhotoPlanItem, GooglePhotoVariant, GooglePhotosPlan, GooglePhotosPlanRequest, GooglePhotosStatus } from "../types/googlePhotos";
+import type { GooglePhotoAlbumEdit, GooglePhotoMode, GooglePhotoPlanItem, GooglePhotoVariant, GooglePhotosPlan, GooglePhotosPlanRequest, GooglePhotosStatus, GooglePhotosJob } from "../types/googlePhotos";
 import { GOOGLE_PHOTO_VARIANTS, googlePhotoCounts, googlePhotoSize, googlePhotoVariantLabel } from "../utils/googlePhotos";
 import { METADATA_TOOL_SOURCES, type MetadataToolStatus } from "../types/metadataTool";
 import "./GooglePhotos.css";
@@ -104,7 +104,7 @@ export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string
   const root = settings?.staging_dir ?? "";
   const [status, setStatus] = useState<GooglePhotosStatus>(emptyStatus);
   const [statusLoaded, setStatusLoaded] = useState(false);
-  const [lastJobId, setLastJobId] = useState<string | null>(null);
+  const [lastAttempt, setLastAttempt] = useState<{id:string;saved:boolean}|null>(null);
   const [request, setRequest] = useState<GooglePhotosPlanRequest>(defaultRequest(""));
   const [framing, setFraming] = useState<PhotoFraming>("uncropped");
   const [plan, setPlan] = useState<GooglePhotosPlan | null>(null);
@@ -207,8 +207,13 @@ export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string
     if (!plan || !accepted) return;
     const planId = plan.id;
     await action("start", async () => {
-      const jobId = await invoke<string>("google_photos_start", { planId, albums: albumEdits, acknowledgeWarnings: accepted });
-      if (mounted.current) { setLastJobId(jobId); setPlan(null); setAccepted(false); }
+      setLastAttempt({id:planId,saved:false});
+      const result = await invoke<GooglePhotosJob>("google_photos_start", { planId, albums: albumEdits, acknowledgeWarnings: accepted });
+      if (!result || typeof result.id !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(result.id) || result.id !== planId) {
+        if(mounted.current){setPlan(null);setAccepted(false);}
+        throw new Error("The upload acknowledgement did not identify this reviewed attempt. It may already be saved. Use Find upload attempt to inspect it before publishing again.");
+      }
+      if (mounted.current) { setLastAttempt({id:result.id,saved:true}); setPlan(null); setAccepted(false); }
     }, "Upload job saved in Jobs. Local photos and Lightbox selections are unchanged.");
   }
   const counts = useMemo(() => googlePhotoCounts(plan?.items ?? []), [plan]);
@@ -270,6 +275,6 @@ export default function GooglePhotos({ onViewJob }: { onViewJob?: (jobId: string
       {counts.ready === 0 && <p className="gp-muted mt-2">{albumOnlyEdit ? "Only the reviewed existing album title/cover will change; already-uploaded photos are not uploaded again." : "Nothing new is ready to upload. Change your selection, resolve the reported checks, or edit the title/cover of an existing app-created album."}</p>}
     </section>}
 
-    {lastJobId && <div className="gp-section"><p className="gp-muted">This upload is a normal process job. Progress, controls, receipt details and recovery are in Jobs.</p><button className="btn-primary mt-2" onClick={() => onViewJob?.(lastJobId)}>View job</button></div>}
+    {lastAttempt && <div className="gp-section"><p className="gp-muted">{lastAttempt.saved ? "This upload is a normal process job. Progress, controls, receipt details and recovery are in Jobs." : "This reviewed attempt may already have a saved job. Find the same attempt and its diagnostics before starting another upload."}</p><button className="btn-primary mt-2" disabled={!!busy} onClick={() => onViewJob?.(lastAttempt.id)}>{lastAttempt.saved?"View job":"Find upload attempt"}</button></div>}
   </div>;
 }

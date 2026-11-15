@@ -209,13 +209,13 @@ try {
   await page.keyboard.press("Enter"); await page.keyboard.press("Enter");
   assert.equal((await calls(page, "google_photos_start")).length, 1, "Busy keyboard input cannot duplicate publication");
   const start = (await calls(page, "google_photos_start"))[0].args;
-  assert.equal(start.planId, "plan-1"); assert.equal(start.acknowledgeWarnings, true);
+  assert.equal(start.planId, await page.evaluate(() => window.__googleLastPlanId)); assert.equal(start.acknowledgeWarnings, true);
   assert.equal(start.albums[0].title, "Horse event — curated selection"); assert.equal(start.albums[0].coverItemId, "first-enhanced");
   assert.equal("items" in start, false, "Start submits immutable plan identity and allowed album edits only");
   await page.evaluate(() => window.__googleResolveStart());
   await page.getByText("Upload job saved in Jobs.", { exact: false }).waitFor();
   await page.getByRole("button", { name: "View job", exact: true }).click();
-  assert.equal(await page.evaluate(() => window.__viewedGoogleJob), "S".repeat(43));
+  assert.equal(await page.evaluate(() => window.__viewedGoogleJob), start.planId);
   assert.equal(await page.getByRole("heading", { name: "Upload jobs", exact: true }).count(), 0);
   assert.equal((await calls(page, "google_photos_list_jobs")).length, 0, "Transfer has no second job tracker or management poll");
   await page.waitForFunction(() => window.__googleRevokedUrls.length > 0);

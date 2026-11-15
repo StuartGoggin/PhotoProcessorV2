@@ -1,10 +1,10 @@
 # PhotoGoGo User Guide
 
-Windows desktop edition • Version 2.0.53 • 9 November 2026
+Windows desktop edition • Version 2.0.54 • 16 November 2026
 
 PhotoGoGo helps you copy camera media into a working library, organise events, review and develop photographs, assemble videos, extract still photographs from video, and transfer selected results to Google Photos or an archive.
 
-This guide covers PhotoGoGo 2.0.53. It is organised around tasks rather than development history. The normal photo path uses camera JPEGs; RAW development is optional for individual photographs or a deliberate batch. The video paths are separate: Video Studio creates finished videos, while Video snapshots creates photographs from original video frames.
+This guide covers PhotoGoGo 2.0.54. It is organised around tasks rather than development history. The normal photo path uses camera JPEGs; RAW development is optional for individual photographs or a deliberate batch. The video paths are separate: Video Studio creates finished videos, while Video snapshots creates photographs from original video frames.
 
 **Start with the quick workflows in chapter 1.** Use the later chapters for settings, detailed controls and recovery. Examples use imaginary event names and folders. Screen labels are written in bold. Generated previews help you make choices; the full export or render is the deliverable.
 
@@ -513,6 +513,8 @@ Keep the original OAuth client and Google account for existing jobs. Do not rese
 
 A one-job override does not rewrite Lightbox checkboxes. New albums begin private; sharing is a separate action in Google Photos. Publishing does not replace already uploaded image bytes or delete local photographs.
 
+If the start response is uncertain, **Find upload attempt** opens the reference for the plan you reviewed. It does not claim that Google accepted the photos and does not publish again. In Jobs, a missing selected attempt offers **Refresh saved jobs** and **Read saved diagnostics** through the same job service.
+
 ### Understand completion and recovery
 
 Transferred bytes, accepted Google registration and read-back verification are different milestones. A visible photograph in an album is useful evidence, but does not automatically prove that every saved receipt was verified.
@@ -520,6 +522,8 @@ Transferred bytes, accepted Google registration and read-back verification are d
 Use **Retry** or **Resume** on the existing job as offered. Accepted photos retain their receipts; healthy work can continue past an isolated photo read-back failure. Unresolved errors remain visible. An accepted upload with unavailable read-back may finish with verification warnings, while a genuine unresolved failure remains under **Needs attention**.
 
 Use **View diagnostics / Copy diagnostics** for support. Send the app version, status and sanitised diagnostics. Do not repeatedly create replacement jobs to bypass a warning or reset the account/client without a specific recovery plan.
+
+A warning about an older unsupported record does not hide readable current jobs. Older records remain untouched. If receipt data cannot be read or record identities conflict, continuation and album actions pause while safe stop and diagnostics remain available. Restore access or resolve the warning before continuing; the app does not discard unknown receipts to make a new upload succeed.
 
 **Clear finished** archives local job visibility while retaining protected receipts and cloud photos. Restoring an archived record to History does not start another upload. A previous-upload label is history, not proof that today’s file bytes are unchanged.
 
@@ -574,6 +578,8 @@ MD5 here checks accidental corruption and duplicates; it is not an authenticity 
 Choose the controls offered for that job type: **Pause**, **Resume**, **Abort**, **Retry**, or the Studio saved-render recovery controls. They are not interchangeable. Read the current status before starting a second attempt.
 
 Pausing retains the job; aborting stops that attempt. Neither means an archive copy or upload is verified. Finished and interrupted work can still have useful outputs or recovery records, so inspect the results rather than assuming “stopped” means nothing was written.
+
+A selected job that leaves the current filter offers **Show in History**, **Show in Needs attention** or the relevant view. Your manually chosen filter is preserved. If the job is unavailable from the list, the read-only recovery panel can request its existing diagnostics without creating a substitute job.
 
 **Tail (auto-refresh)** updates the view. Turning Tail off freezes what you are looking at, not the underlying worker. **Refresh** requests a current view. In History, **Clear finished import / process history** changes history visibility; protected Google receipts remain. Archived Google upload records can be restored to History before an explicit recheck.
 
@@ -718,7 +724,7 @@ A selection, approval, preview, queued job and verified result are different sta
 
 ### Version and evidence
 
-The media workflows in this guide were checked against released PhotoGoGo 2.0.51, application source **8ffa47b**, with package record **6bcf6ee** and release delivery recorded on 9 November 2026. The embedded illustrated Help centre is added in 2.0.53; its validation is recorded separately in the 2.0.53 validation note. This guide describes application behavior; it does not substitute for testing your own media, account permissions, hardware or storage. The paired-camera, controller and optional-environment conditions described above still apply. Screenshots use demo settings and illustrative media, with no private photographs or accounts.
+The media workflows in this guide were checked against released PhotoGoGo 2.0.51, application source **8ffa47b**, with package record **6bcf6ee** and release delivery recorded on 16 November 2026. The embedded illustrated Help centre is added in 2.0.54; its validation is recorded separately in the 2.0.54 validation note. This guide describes application behavior; it does not substitute for testing your own media, account permissions, hardware or storage. The paired-camera, controller and optional-environment conditions described above still apply. Screenshots use demo settings and illustrative media, with no private photographs or accounts.
 
 Application reference notes are in the repository’s docs folder: **lightbox-controls.md**, **cr3-raw-development.md**, **PHOTO_PROCESS_AND_LIGHTBOX.md**, **LIGHTBOX_CROPPING.md**, **device-aware-imports.md**, **name-events-workflow.md**, **STUDIO_FINISHING.md**, **studio-camera-audio.md**, **studio-prevent-rotation.md**, **STUDIO_RELINK_AND_PREVIEW.md**, **STUDIO_REVIEW_AND_SCORE_DEFAULTS.md**, **VIDEO_SNAPSHOT_SESSIONS.md**, **google-photos-transfer.md**, **archive-transfer.md**, and **akp03e-controller.md**. Historical release/checkpoint notes can describe older behavior; use this guide’s version boundary and the current screen labels.
 

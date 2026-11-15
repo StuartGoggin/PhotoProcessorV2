@@ -466,7 +466,9 @@ fn core_jobs_history_archives_only_resolved_jobs_and_keeps_receipts_and_ledger()
         .unwrap(),
         serde_json::to_string(&ledger).unwrap()
     );
-    let archived = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true).unwrap();
+    let archived = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true)
+        .unwrap()
+        .jobs;
     assert_eq!(archived.len(), 1);
     assert!(archived[0].google_photos.as_ref().unwrap().history_hidden);
     let saved = serde_json::to_value(&fixture.job).unwrap();
@@ -478,7 +480,9 @@ fn core_jobs_history_archives_only_resolved_jobs_and_keeps_receipts_and_ledger()
     // Even an older hidden record must reappear if a receipt needs attention.
     fixture.job.items[0].state = "registered".into();
     fixture.job.save(&fixture.store).unwrap();
-    let rows = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true).unwrap();
+    let rows = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true)
+        .unwrap()
+        .jobs;
     assert_eq!(rows.len(), 1);
     assert!(matches!(
         rows[0].status,
@@ -558,9 +562,10 @@ fn core_jobs_account_backoff_and_stale_state_disable_continuation() {
             &vec!["invalid document shape"],
         )
         .unwrap();
-    assert!(
-        super::super::core_jobs::stored_jobs(&fixture.store, Some(&account), &[], true).is_err()
-    );
+    let report =
+        super::super::core_jobs::stored_jobs(&fixture.store, Some(&account), &[], true).unwrap();
+    assert!(report.jobs.is_empty());
+    assert!(!report.warnings.is_empty());
     assert!(super::super::core_jobs::archive_store(&fixture.store).is_err());
 }
 
@@ -570,12 +575,16 @@ fn core_jobs_restart_recovery_respects_other_process_lease_and_old_saves() {
     for state in ["queued", "running"] {
         fixture.job.status = state.into();
         fixture.job.save(&fixture.store).unwrap();
-        let rows = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], false).unwrap();
+        let rows = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], false)
+            .unwrap()
+            .jobs;
         assert!(!matches!(
             rows[0].status,
             crate::commands::process::ProcessJobStatus::Paused
         ));
-        let rows = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true).unwrap();
+        let rows = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true)
+            .unwrap()
+            .jobs;
         assert!(matches!(
             rows[0].status,
             crate::commands::process::ProcessJobStatus::Paused
@@ -612,7 +621,9 @@ fn core_jobs_order_mixed_local_and_cloud_times_chronologically() {
 fn core_jobs_reject_foreign_id_namespaces_without_resetting_saved_records() {
     let fixture = Fixture::new(1);
     fixture.job.save(&fixture.store).unwrap();
-    assert!(super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true).is_err());
+    let report = super::super::core_jobs::stored_jobs(&fixture.store, None, &[], true).unwrap();
+    assert!(report.jobs.is_empty());
+    assert!(report.warnings.join(" ").contains("unsupported identifier"));
     assert!(super::super::core_jobs::archive_store(&fixture.store).is_err());
     assert!(fixture.store.load::<Job>("job_test-job").unwrap().is_some());
     assert!(!crate::commands::google_photos::is_job_id("process-job-1"));
@@ -1756,4 +1767,146 @@ fn known_expired_query_resets_only_byte_session_and_reuses_confirmed_album() {
         api.sessions.get("test-session-2").unwrap(),
         &fixture.source_bytes[0]
     );
+}
+
+#[test]
+fn core_jobs_legacy_record_cannot_hide_newer_saved_upload() {
+    let fixture = Fixture::core(1);
+    fixture.job.save(&fixture.store).unwrap();
+    let mut legacy = fixture.job.clone();
+    legacy.plan.id = "legacy-upload".into();
+    fixture.store.save("job_legacy-upload", &legacy).unwrap();
+    let before = std::fs::read(
+        fixture
+            .directory
+            .join("protected")
+            .join("job_legacy-upload.sealed"),
+    )
+    .unwrap();
+    let account = fixture.job.plan.account_id.clone();
+    let rows = super::super::core_jobs::stored_jobs(&fixture.store, Some(&account), &[], false)
+        .expect("An unsupported older identifier must not hide a valid newly saved upload");
+    assert!(rows.warnings.join(" ").contains("unsupported identifier"));
+    assert!(rows
+        .jobs
+        .iter()
+        .any(|row| row.id == fixture.job.plan.id && row.can_continue == Some(true)));
+    assert!(
+        effective_ledger(&fixture.store).is_ok(),
+        "Decoded legacy receipts stay in the executor ledger"
+    );
+    let after = std::fs::read(
+        fixture
+            .directory
+            .join("protected")
+            .join("job_legacy-upload.sealed"),
+    )
+    .unwrap();
+    assert_eq!(
+        before, after,
+        "Read-only listing cannot rewrite old records"
+    );
+}
+
+#[test]
+fn core_jobs_direct_lookup_refuses_a_mismatched_saved_identity() {
+    let fixture = Fixture::core(1);
+    let requested = "H".repeat(43);
+    fixture
+        .store
+        .save(&format!("job_{requested}"), &fixture.job)
+        .unwrap();
+    assert!(
+        super::super::load_job(&fixture.store, &requested).is_err(),
+        "Direct controls and diagnostics cannot load a different saved identity"
+    );
+}
+
+#[test]
+fn core_jobs_unreadable_receipts_keep_healthy_rows_visible_but_block_continuation() {
+    let fixture = Fixture::core(1);
+    fixture.job.save(&fixture.store).unwrap();
+    let bad_key = format!("job_{}", "H".repeat(43));
+    fixture
+        .store
+        .save(
+            &bad_key,
+            &vec!["private-token-value", "session-url", "private@example.test"],
+        )
+        .unwrap();
+    let bad_path = fixture
+        .directory
+        .join("protected")
+        .join(format!("{bad_key}.sealed"));
+    let before = fs::read(&bad_path).unwrap();
+    let account = &fixture.job.plan.account_id;
+    let report =
+        super::super::core_jobs::stored_jobs(&fixture.store, Some(account), &[], false).unwrap();
+    assert_eq!(report.jobs.len(), 1);
+    assert_eq!(report.jobs[0].id, fixture.job.plan.id);
+    assert_eq!(report.jobs[0].can_continue, Some(false));
+    assert!(report.jobs[0].persistence_error.is_some());
+    assert!(
+        !report.jobs[0]
+            .google_photos
+            .as_ref()
+            .unwrap()
+            .can_open_album
+    );
+    let warning = report.warnings.join(" ");
+    assert!(warning.contains("unreadable data: 1"));
+    for secret in ["private-token-value", "session-url", "private@example.test"] {
+        assert!(!warning.contains(secret));
+    }
+    assert_eq!(before, fs::read(&bad_path).unwrap());
+    assert!(
+        effective_ledger(&fixture.store).is_err(),
+        "Unknown receipt data must still block the executor ledger"
+    );
+    assert!(super::super::core_jobs::archive_store(&fixture.store).is_err());
+}
+
+#[test]
+fn core_jobs_partial_cache_retains_only_the_unavailable_filename_identity_and_recovers() {
+    let fixture = Fixture::core(1);
+    fixture.job.save(&fixture.store).unwrap();
+    let mut second = fixture.job.clone();
+    second.plan.id = "H".repeat(43);
+    second.save(&fixture.store).unwrap();
+    let account = &fixture.job.plan.account_id;
+    let mut previous =
+        super::super::core_jobs::stored_jobs(&fixture.store, Some(account), &[], false)
+            .unwrap()
+            .jobs;
+    let mut unrelated = previous[0].clone();
+    unrelated.id = "K".repeat(43);
+    previous.push(unrelated);
+    fixture
+        .store
+        .save(&format!("job_{}", second.plan.id), &fixture.job)
+        .unwrap();
+    let report =
+        super::super::core_jobs::stored_jobs(&fixture.store, Some(account), &[], false).unwrap();
+    assert_eq!(report.jobs.len(), 1);
+    assert!(report
+        .warnings
+        .join(" ")
+        .contains("inconsistent identity: 1"));
+    let merged = super::super::core_jobs::retain_unavailable(report, &previous);
+    assert_eq!(merged.jobs.len(), 2);
+    assert!(merged.jobs.iter().any(|row| row.id == second.plan.id));
+    assert!(!merged.jobs.iter().any(|row| row.id == "K".repeat(43)));
+    assert!(merged
+        .jobs
+        .iter()
+        .all(|row| row.can_continue == Some(false) && row.persistence_error.is_some()));
+    second.save(&fixture.store).unwrap();
+    let repaired =
+        super::super::core_jobs::stored_jobs(&fixture.store, Some(account), &[], false).unwrap();
+    assert!(repaired.warnings.is_empty());
+    assert_eq!(repaired.jobs.len(), 2);
+    assert!(repaired
+        .jobs
+        .iter()
+        .all(|row| row.can_continue == Some(true) && row.persistence_error.is_none()));
 }

@@ -5,11 +5,12 @@ import { ProgressBar } from "../components";
 import StudioJobs from "../components/StudioJobs";
 import GooglePhotoJobDetails from "../components/GooglePhotoJobDetails";
 import ProcessJobControls from "../components/ProcessJobControls";
+import ProcessJobRecovery from "../components/ProcessJobRecovery";
 import { useJobsMonitor, type JobsMonitorResult } from "../hooks/useJobsMonitor";
 import ImportSchedulingStatus, { ImportJobSchedulingStatus } from "../components/ImportSchedulingStatus";
 import { formatImportRate } from "../utils/importScheduling";
 import { getProcessAttemptLabel, getProcessResultLabel, getProcessResultToken } from "../utils";
-import { countJobs, JOBS_VIEWS, matchesJobsView, type JobsView } from "../utils/jobsView";
+import { countJobs, JOBS_VIEWS, matchesJobsView, preferredJobsView, type JobsView } from "../utils/jobsView";
 
 function pct(done: number, total: number): number {
   if (total <= 0) return 0;
@@ -171,15 +172,17 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
     setImportJobs(snapshot.importJobs); setProcessJobs(snapshot.processJobs);
     setError(snapshot.error); setLoading(snapshot.loading);
   }, [tail, snapshot.importJobs, snapshot.processJobs, snapshot.error, snapshot.loading]);
+  const focusedJob=typeof focusJobId==="string"?processJobs.find(job=>job.id===focusJobId):undefined;
+  const focusedView=focusedJob?preferredJobsView(focusedJob):null;
   useEffect(() => {
     if (!focusJobId || focusedOnce.current === focusJobId) return;
-    const target = processJobs.find(job => job.id === focusJobId);
+    const target = focusedJob;
     if (!target) return;
     focusedOnce.current = focusJobId;
-    setView(matchesJobsView(target, "archived") ? "archived" : matchesJobsView(target, "attention") ? "attention" : matchesJobsView(target, "active") ? "active" : "history");
+    setView(preferredJobsView(target));
     const timer = window.setTimeout(() => document.getElementById(`process-job-${focusJobId}`)?.scrollIntoView({ block: "center" }), 0);
     return () => window.clearTimeout(timer);
-  }, [focusJobId, processJobs]);
+  }, [focusJobId, focusedJob]);
 
   const processCounts = countJobs(processJobs);
   const filteredImportJobs = importJobs.filter((job) => matchesJobsView(job, view));
@@ -277,12 +280,14 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
         </div>
       )}
 
+      {typeof focusJobId==="string"&&focusJobId.length>0&&focusJobId.length<=256&&!focusedJob&&!loading&&<ProcessJobRecovery key={focusJobId} jobId={focusJobId} onRefresh={()=>loadJobs()}/>}
+      {focusedJob&&focusedView&&!matchesJobsView(focusedJob,view)&&<div role="status" className="card mb-4 flex flex-wrap items-center gap-3 text-sm"><span>The selected job is outside the current filter. Its status and details are available in {JOBS_VIEWS.find(item=>item.id===focusedView)?.label}.</span><button type="button" className="btn-secondary" onClick={()=>setView(focusedView)}>Show in {JOBS_VIEWS.find(item=>item.id===focusedView)?.label}</button></div>}
       <div className="card mb-6">
         <StudioJobs view={view} />
       </div>
 
       {importJobs.length === 0 && processJobs.length === 0 ? (
-        <div className="card text-sm text-gray-400">{loading ? "Checking import and post-process jobs…" : "No import or post-process jobs yet."}</div>
+        <div className="card text-sm text-gray-400">{loading ? "Checking import and post-process jobs…" : error||focusJobId ? "No saved jobs are currently listed. Check the warning or saved-attempt recovery above." : "No import or post-process jobs yet."}</div>
       ) : (
         <div className="space-y-6">
           {importJobs.length > 0 && (
