@@ -7,6 +7,8 @@ import { lightboxCatalogue, lightboxAbsolute, neighborPaths, photoFolder, photoP
 import { LightboxCache, type LightboxImage, type LightboxImageInfo } from "../utils/lightboxCache";
 import { LightboxFolderQueue } from "../utils/lightboxFolderQueue";
 import {neutralPhotoPath,reviewKey} from "../utils/lightboxBrowse";
+import type {ReviewActionReceipt} from "../types/reviewActions";
+import {reviewActionWriter} from "../utils/reviewActionPersistence";
 
 const emptyImages = (): ImageSet => ({ original: null, improved: null, bw: null });
 const captureKey = (path: string) => {
@@ -19,8 +21,9 @@ const folderInspections = new LightboxFolderQueue();
 let inspectionOwnerSequence = 0;
 export interface ReviewContext { root: string; path: string; epoch: number; cropped: boolean }
 
-/** The view and writes share a pinned selection identity. Failed writes never
- * advance; stale reads and writes cannot replace a newer root or selection. */
+/** Views and writes share a pinned selection identity. Ratings wait for save;
+ * fast Trash paints an explicit pending decision and reconciles exact receipts.
+ * Stale reads and writes cannot replace a newer root or selection. */
 export function useReview() {
   const { settings } = useSettings();
   const [tree, setTree] = useState<TreeNode[]>([]);
@@ -57,13 +60,33 @@ export function useReview() {
   type Catalogue = ReturnType<typeof lightboxCatalogue>;
   const projection = useRef<(base:Catalogue)=>Catalogue>(base=>base);
   const [browseFolder,setBrowseFolder] = useState("");
+  const [reviewComplete,setReviewComplete]=useState(false),[historyNotice,setHistoryNotice]=useState("");
+  const completed=useRef(false),historyPin=useRef<string|null>(null);
   const browseFolderRef=useRef(browseFolder);browseFolderRef.current=browseFolder;
   const decisionOrder = useRef<{root:string;key:string;photos:LightboxPhoto[]}|null>(null);
   const showLatest = useRef(show); showLatest.current=show;
   function rebuildCatalogue(nodes:TreeNode[]) {
     baseCatalogue.current=lightboxCatalogue(nodes);
-    catalogue.current=projection.current(baseCatalogue.current);
+    catalogue.current=projectCatalogue(baseCatalogue.current);
     setTree(catalogue.current.tree);
+  }
+  function projectCatalogue(base:Catalogue):Catalogue{
+    const result=projection.current(base),pin=historyPin.current;
+    if(!pin)return result;
+    const photo=[...base.photos.values()].find(photo=>neutralPhotoPath(photo.node.path)===pin);
+    if(!photo||(result.folders.get(photoFolder(photo.node.path))??[]).some(item=>item.node.path===photo.node.path))return result;
+    const photos=new Map(result.photos),folders=new Map(result.folders);photos.set(photo.node.path,photo);
+    const folder=photoFolder(photo.node.path);folders.set(folder,[...(folders.get(folder)??[]),photo]);
+    const tree=(nodes:TreeNode[],parent=""):TreeNode[]=>[
+      ...nodes.map(node=>node.type==="dir"?{...node,children:tree(node.children??[],node.path)}:node),
+      ...(parent===folder&&!nodes.some(node=>node.path===photo.node.path)?[photo.node]:[]),
+    ];
+    return {...result,photos,folders,tree:tree(result.tree)};
+  }
+  function resetReviewComplete(){completed.current=false;setReviewComplete(false);historyPin.current=null;setHistoryNotice("");}
+  function clearSelection(){
+    ++selectionRequest.current;viewReady.current=false;originalPending.current=false;selectedPath.current=null;intendedPath.current=null;
+    cache.current!.select([]);setSelected(null);setSelectedPhoto(null);setSiblings([]);setSiblingIdx(0);setImages(emptyImages());setImageLoading({original:false,bw:false,improved:false});setImageErrors({original:false,bw:false,improved:false});setOriginalInfo(null);showingCrop.current=false;setCropped(false);setLoading(false);
   }
   const rawTree = useRef<TreeNode | null>(null);
   const folderLoads = useRef(new Map<string, Promise<boolean>>());
@@ -231,14 +254,26 @@ export function useReview() {
     setZoom(1); setLoading(true); setError(""); setSourceNotice(photo.node.lightboxSource === "raw" && !usable && !choice ? "This photo's saved RAW finish is unavailable. " + (photo.cameraJpeg ? "Showing the Camera JPEG; develop or refresh the RAW alternative before choosing it again." : "Only a camera reference is available; develop or refresh a full-resolution RAW finish before exporting.") : ""); setImages(emptyImages());
     setImageErrors({ original: false, bw: false, improved: false });
     originalPending.current=true;
-    const load = (node?: TreeNode) => node ? cache.current!.get(lightboxAbsolute(originalRoot, node.path)) : Promise.resolve(null);
+    // Reserve the foreground lane for originals. Optional comparison panels
+    // share one background lane with bounded read-ahead, so a slow derivative
+    // cannot hold the next original behind two outstanding comparison reads.
+    const load = (node:TreeNode|undefined,foreground:boolean) => node ? cache.current!.get(lightboxAbsolute(originalRoot, node.path),foreground) : Promise.resolve(null);
+    if(isIdentityReady()){
+      const ahead=group.map(item=>{
+        const remembered=sourceChoices.current.get(captureKey(item.node.path))??item.node.lightboxSource;
+        const usable=item.improved?.rawKind==="developed"||item.bw?.rawKind==="bw";
+        const source=(remembered==="raw"&&!usable?undefined:remembered)??(item.cameraJpeg?"cameraJpeg":"raw");
+        return photoForSource(item,source);
+      });
+      cache.current!.prefetch(neighborPaths(ahead,index,direction).map(path=>lightboxAbsolute(originalRoot,path)));
+    }
     setImageLoading({ original: true, bw: !!version.bw, improved: !!version.improved });
     let resolveFirst!: (value: boolean) => void;
     const first = new Promise<boolean>(resolve => { resolveFirst = resolve; });
     const current = () => mounted.current && request === selectionRequest.current && selectedPath.current === photo.node.path
       && originalRoot === root.current && originalRoot === configuredRoot.current;
     const panels = (["original", "bw", "improved"] as const).map(async kind => {
-      const image = await load(version[kind]);
+      const image = await load(version[kind],kind==="original");
       if (!current()) { resolveFirst(false); return; }
       acceptImage(kind, version[kind], image, originalRoot);
       if (image) resolveFirst(true);
@@ -246,7 +281,6 @@ export function useReview() {
     void Promise.all(panels).then(() => {
       if (!current()) { resolveFirst(false); return; }
       setLoading(false); resolveFirst(viewReady.current);
-      if (isIdentityReady()) cache.current!.prefetch(neighborPaths(group, index, direction).map(path => lightboxAbsolute(originalRoot, path)));
     });
     return first;
   }
@@ -258,6 +292,7 @@ export function useReview() {
     if (!keepCache) cache.current!.clear();
     setLoading(true); setImages(emptyImages()); setImageErrors({original:false,bw:false,improved:false}); setError("");
     try {
+      try{await reviewActionWriter.settled();}catch{/* Failed decisions stay in the persistent retry banner; read actual files. */}
       const result = await invoke<TreeNode>("list_staging_tree", { stagingDir: target });
       if (!mounted.current || request !== treeRequest.current || target !== root.current || target !== configuredRoot.current) return false;
       // A newer pick may have become visible while directory IO was pending.
@@ -305,7 +340,7 @@ export function useReview() {
 
   useEffect(() => {
     root.current = settings?.staging_dir ?? "";
-    projection.current=base=>base;decisionOrder.current=null;setBrowseFolder("");browseFolderRef.current="";rebuildCatalogue([]);
+    projection.current=base=>base;decisionOrder.current=null;resetReviewComplete();setBrowseFolder("");browseFolderRef.current="";rebuildCatalogue([]);
     sourceChoices.current.clear();
     setSourceNotice("");
     setStagingDir(root.current); setCatalogueRevision(0);
@@ -321,6 +356,7 @@ export function useReview() {
 
   async function selectNode(node: TreeNode, direction: 1 | -1 = 1) {
     if (renameBusy.current) return false;
+    resetReviewComplete();
     ++pickRequest.current;
     intendedPath.current=node.path;
     metadataSelection.current=false;
@@ -426,9 +462,43 @@ export function useReview() {
     const snapshot = getSnapshot();
     return snapshot ? renameSelected(applyStars((snapshot.photo.cameraJpeg ?? snapshot.photo.node).name, value), advance, afterSaved) : false;
   }
-  async function handleTrash(desired?: boolean, advance = false, afterSaved?: (node:TreeNode) => Promise<boolean>) {
-    const snapshot = getSnapshot();
-    return snapshot ? renameSelected(applyTrash((snapshot.photo.cameraJpeg ?? snapshot.photo.node).name, desired ?? !isTrashed((snapshot.photo.cameraJpeg ?? snapshot.photo.node).name)), advance, afterSaved) : false;
+  /** Paint the decision and next visible capture synchronously; paths remain
+   * physical until the native journal acknowledges its exact rename list. */
+  function optimisticTrash(context:ReviewContext,desired:boolean){
+    const snapshot=getSnapshot();
+    if(!snapshot||!isReady()||!isContextCurrent(context)||!rawTree.current)return false;
+    const group=catalogue.current.folders.get(photoFolder(context.path))??[],index=group.findIndex(photo=>photo.node.path===context.path);
+    const next=group[index+1],anchor=snapshot.photo.cameraJpeg??snapshot.photo.node;
+    historyPin.current=null;setHistoryNotice("");
+    const patch=(node:TreeNode):TreeNode=>node.type==="dir"?{...node,children:node.children?.map(patch)}:node.path===anchor.path?{...node,name:applyTrash(node.name,desired)}:node;
+    rawTree.current=patch(rawTree.current);rebuildCatalogue(rawTree.current.children??[]);
+    if(next){completed.current=false;setReviewComplete(false);void show(baseCatalogue.current.photos.get(next.node.path)??next);}
+    else{completed.current=true;setReviewComplete(true);clearSelection();}
+    return true;
+  }
+  function acceptReviewAction(receipt:ReviewActionReceipt,replay=false){
+    if(!mounted.current||!rawTree.current||receipt.review.root!==root.current||root.current!==configuredRoot.current)return;
+    const before=selectedPath.current,renames=new Map(receipt.renamed.map(item=>[item.oldPath,item.newPath]));
+    const path=(value:string)=>renames.get(value)??value;
+    const patch=(node:TreeNode):TreeNode=>{
+      if(node.type==="dir")return {...node,children:node.children?.map(patch)};
+      const next=path(node.path);
+      return {...node,path:next,name:next!==node.path?next.split("/").pop()!:node.name,
+        ...(node.cameraJpeg?{cameraJpeg:path(node.cameraJpeg)}:{}),...(node.rawSource?{rawSource:path(node.rawSource)}:{})};
+    };
+    rawTree.current=patch(rawTree.current);
+    // Confirmed state also repairs an optimistic name after idempotent replay.
+    const anchorPhoto=lightboxCatalogue(rawTree.current.children??[]).photos.get(receipt.relativePath);
+    const anchor=anchorPhoto?.cameraJpeg??anchorPhoto?.node;
+    if(anchor){const update=(node:TreeNode):TreeNode=>node.type==="dir"?{...node,children:node.children?.map(update)}:node.path===anchor.path?{...node,name:applyTrash(node.name,receipt.trashed)}:node;rawTree.current=update(rawTree.current);}
+    if(replay){
+      completed.current=false;setReviewComplete(false);historyPin.current=neutralPhotoPath(receipt.relativePath);
+      setHistoryNotice("Showing the photo affected by Undo / Redo, including when it is outside the current filters. Choose another photo or change the view to return.");
+    }
+    rebuildCatalogue(rawTree.current.children??[]);
+    const target=replay?receipt.relativePath:before?path(before):null;
+    const photo=target?baseCatalogue.current.photos.get(target):null;
+    if(photo&&(replay||(before!==target)||neutralPhotoPath(photo.node.path)===neutralPhotoPath(receipt.relativePath)))void show(photo,1,replay?false:showingCrop.current,replay?null:sourceChoice.current);
   }
 
 
@@ -438,8 +508,8 @@ export function useReview() {
     const key=path?neutralPhotoPath(path):null;
     const oldGroup=before&&(decisionOrder.current?.root===before.context.root&&decisionOrder.current.key===key)
       ?decisionOrder.current.photos:before?catalogue.current.folders.get(photoFolder(before.context.path))??[]:[];
-    projection.current=project;catalogue.current=project(baseCatalogue.current);setTree(catalogue.current.tree);
-    if(!before){const first=catalogue.current.folders.get(browseFolderRef.current)?.[0];if(first&&!selectedPath.current)void showLatest.current(first);return;}
+    projection.current=project;catalogue.current=projectCatalogue(baseCatalogue.current);setTree(catalogue.current.tree);
+    if(!before){const first=catalogue.current.folders.get(browseFolderRef.current)?.[0];if(first&&!selectedPath.current&&!completed.current)void showLatest.current(first);return;}
     const group=catalogue.current.folders.get(photoFolder(before.context.path))??[];
     const current=group.findIndex(photo=>photo.node.path===path);
     const preferred=typeof preferPath==="string"?group.find(photo=>photo.node.path===preferPath):undefined;
@@ -468,9 +538,10 @@ export function useReview() {
     describeFile:(node:TreeNode)=>{const photo=baseCatalogue.current.photos.get(node.path);const jpeg=photo?.cameraJpeg;return jpeg?{name:jpeg.name,size:jpeg.size,badge:"RAW",hint:"Camera JPEG · RAW alternative available"}:undefined;},
     trashed: selectedPhoto ? isTrashed((selectedPhoto.cameraJpeg ?? selectedPhoto.node).name) : false,
     stars: selectedPhoto ? parseStars((selectedPhoto.cameraJpeg ?? selectedPhoto.node).name) : 0,
-    refreshTree, selectNode, loadFolder, retryImage, imageFailed, handleStars, handleTrash, navigate, navigateToEdge, setZoom, setCropVersion, setOriginalSource,
+    refreshTree, selectNode, loadFolder, retryImage, imageFailed, handleStars, navigate, navigateToEdge, setZoom, setCropVersion, setOriginalSource,
     getSnapshot, isContextCurrent, isReady, isDisplayReady, isIdentityReady, advanceFromContext, rememberOriginalSource,
     browseFolder,setBrowseFolder,applyBrowseProjection,nextBrowsePath,
+    optimisticTrash,acceptReviewAction,reviewComplete,resetReviewComplete,historyNotice,
     totalInFolder:folderPhotos.length,shownInFolder:catalogue.current.folders.get(browseFolder)?.length??0,
     reviewAliases:(node:TreeNode)=>folderPhotos.filter(photo=>reviewKey(photo.node)===reviewKey(node)).length,
   };

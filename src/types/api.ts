@@ -34,6 +34,7 @@ export interface ImportProgress {
 export interface ImportResult {
   imported: number;
   skipped: number;
+  discarded_skipped?: number;
   sourceFileTotal: number;
   ignoredFileTotal: number;
   ignoredLegacyMd5SidecarTotal: number;
@@ -43,6 +44,7 @@ export interface ImportResult {
 
 export interface ImportOptions {
   reprocessExisting: boolean;
+  reimportDiscarded?: boolean;
 }
 
 export interface SourceShortcut {
@@ -138,6 +140,7 @@ export interface ImportJob {
   total: number;
   done: number;
   skipped: number;
+  discardedSkipped?: number;
   speedMbps: number;
   /** Optional for jobs saved before source-aware import scheduling. */
   sourceDevice?: string;
@@ -174,7 +177,7 @@ export interface ProcessResult {
   errors: string[];
 }
 
-export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums" | "scan_faces" | "search_person_videos" | "googlePhotos" | "rawDevelop";
+export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums" | "scan_faces" | "search_person_videos" | "googlePhotos" | "rawDevelop" | "takeOutTrash";
 
 export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly";
 

@@ -1,10 +1,10 @@
 # PhotoGoGo User Guide
 
-Windows desktop edition • Version 2.0.55 • 16 November 2026
+Windows desktop edition • Version 2.0.56 • 16 November 2026
 
 PhotoGoGo helps you copy camera media into a working library, organise events, review and develop photographs, assemble videos, extract still photographs from video, and transfer selected results to Google Photos or an archive.
 
-This guide covers PhotoGoGo 2.0.54. It is organised around tasks rather than development history. The normal photo path uses camera JPEGs; RAW development is optional for individual photographs or a deliberate batch. The video paths are separate: Video Studio creates finished videos, while Video snapshots creates photographs from original video frames.
+This guide covers the PhotoGoGo version shown above. It is organised around tasks rather than development history. The normal photo path uses camera JPEGs; RAW development is optional for individual photographs or a deliberate batch. The video paths are separate: Video Studio creates finished videos, while Video snapshots creates photographs from original video frames.
 
 **Start with the quick workflows in chapter 1.** Use the later chapters for settings, detailed controls and recovery. Examples use imaginary event names and folders. Screen labels are written in bold. Generated previews help you make choices; the full export or render is the deliverable.
 
@@ -40,10 +40,12 @@ Open **Help & User Guide** from the app menu to read this guide without leaving 
 1. In **Settings**, set your camera/card source, local staging folder and archive destination. Save the settings.
 2. In **Import**, select the card or source folder and choose **Queue Import Job**. Wait for the verified import to finish in **Jobs**.
 3. In **Name Events**, name the imported event before creating path-dependent video projects or upload plans.
-4. In **Photo Process**, select that event and check the processing scope. Preview **JPG Enhancement** or **B&W Conversion**, adjust the controls, then queue the required jobs.
-5. In **Photo Lightbox**, review originals and their comparisons. Rate, mark Trash, crop selected JPEGs and tick the exact versions you want to publish. Develop a RAW alternative only where it adds value.
-6. In **Transfer → Transfer to Google Photos**, review a publish plan and publish it. A local selection checkbox does not upload anything by itself.
-7. In **Transfer to Archive**, preview your archive rules, queue the reviewed transfer and verify the result. Keep a separate complete backup where your archive selection omits material.
+4. In **Photo Lightbox**, cull the originals first. **Trash & next**, **Delete**, **X** and the AJAZZ Trash control reject the capture and show the next visible original while the decision saves. Use **Undo** or **Redo** to correct mistakes, then wait for **All changes saved**.
+5. In **Photo Process**, select that event and check the included/excluded counts. Trashed captures and their crop inputs are excluded from Enhanced, B&W and RAW processing. Preview the finish, adjust its controls and queue the required jobs.
+6. Return to **Photo Lightbox** to compare finishes, crop selected JPEGs and tick the exact versions you want to publish. Develop a RAW alternative only where it adds value.
+7. In **Transfer → Transfer to Google Photos**, review a publish plan and publish it. A local selection checkbox does not upload anything by itself.
+8. In **Transfer to Archive**, preview your archive rules, queue the reviewed transfer and verify the result. Keep a separate complete backup where your archive selection omits material.
+9. When ready to reclaim staging space, use **Take out the trash** to review and separately confirm permanent removal. Its exact list can include Camera JPEG and paired CR3 originals, not just generated versions. See chapter 6 before confirming.
 
 For a JPEG-first event, you can complete the whole workflow without opening RAW Development. With a verified CR3/JPEG pair, the Camera JPEG remains the normal Lightbox view.
 
@@ -86,7 +88,7 @@ On a new installation, verify the actual staging and output folders. A drive let
 
 Photo Process enhancement and B&W jobs create derived JPEGs. A crop creates a separate working version. RAW development creates separate outputs. Review rating and Trash actions can rename the review file with tags; marking Trash does not delete its image contents.
 
-Some commands deliberately change existing files. **Focus Detection** can rename originals with focus flags. **Write Tags To JPG/MP4 Metadata** changes media bytes. **Reprocess Staging Tree** can correct names and timestamps. **Collect Trash** moves files. Treat those as maintenance actions, distinct from previews and ordinary viewing.
+Some commands deliberately change existing files. **Focus Detection** can rename originals with focus flags. **Write Tags To JPG/MP4 Metadata** changes media bytes. **Reprocess Staging Tree** can correct names and timestamps. The separately confirmed **Take out the trash** job permanently removes its listed local originals and verified generated versions. Treat those as maintenance actions, distinct from previews and ordinary viewing.
 
 Keep the supported PhotoGoGo metadata when you want to revisit recipes, selections or event descriptions. Do not delete all JSON files from staging as if they were disposable cache files. Archive selection lets you choose whether to back up supported library metadata.
 
@@ -119,6 +121,12 @@ Check camera clocks and the expected event dates before a large import. If media
 ### Import the same material again
 
 A uniquely named day such as **E:\stage\2026\11\24 - AMGA Champs** is reused when the corresponding date is imported again. Identical content is skipped through the existing checksum checks. A conflicting filename with different contents receives a safe collision name rather than overwriting another photograph.
+
+Originals intentionally removed by **Take out the trash** are also recognised by their verified content fingerprints. The normal import skips those identical discarded captures and records the skip in its log. This prevents unwanted photographs from returning on the next card import. A matching filename alone is not proof: different contents remain distinct.
+
+An import job shows **Previously discarded: N** when that count is nonzero. It is included in the overall skipped total, rather than being another set of imported or removed files.
+
+To bring a discarded capture back deliberately, enable **Re-import previously discarded captures** in Import before queuing that import. It starts unchecked. This override permits a verified source copy to be imported again; it cannot recover deleted bytes on its own. Restoring a retained capture in Lightbox is a different action and does not require re-importing.
 
 If both **24** and **24 - AMGA Champs** exist, or several named folders represent that day, the application reports the ambiguity. Resolve the folders deliberately before retrying. It does not silently merge old duplicate directories or guess which event you intended.
 
@@ -219,13 +227,13 @@ For a verified CR3/JPEG pair, the tree shows the **camera JPEG filename and size
 1. Select an original in the folder tree.
 2. Wait for its image and any **Checking capture pairs** work to settle. Browsing and zoom remain available while identity checks finish.
 3. Compare the available panels. Use **1**, **2** or **3** to rate; **Backspace** clears the review rating.
-4. Use **Delete** to mark or restore Trash. A confirmed change can move the photo out of the filtered view; choose **Include Trash** to keep both states visible. **X** marks Trash and advances after saving.
+4. Use **Trash & next**, **Delete**, **X** or the AJAZZ Trash control to reject the whole capture and immediately advance in the current folder, sort and filter order. In **Only Trash**, the same control offers **Restore & next**. The last visible photograph ends at **Review complete**, without wrapping.
 5. Tick the exact versions you want for Google Photos. Checking a box saves a local decision; it starts no cloud work.
-6. Wait for saving to finish before closing or preparing a transfer.
+6. Follow **Saving N decisions** until **All changes saved** before closing or preparing processing, transfer or removal work. An advanced photo can still have an unsaved decision; its exact name and error remain in the Retry queue if saving fails.
 
 The cyan active border identifies the panel affected by active-panel commands. **Q / W / E** toggle Original / B&W / Enhanced selections; cropped view applies them to the cropped versions. **Shift+Q / W / E** toggle their local favourite flags. These favourites are filters within PhotoGoGo; they do not promise a favourite star inside Google Photos.
 
-For verified pairs, ratings and Trash use the Camera JPEG review file in both views. If older RAW and JPEG review tags disagree, a notice explains the difference and both existing tags remain. A source-family switch never transfers crop geometry or changes upload selections.
+For verified pairs, ratings use the Camera JPEG review file in both views. Trash rejects the entire capture, including that JPEG and its paired CR3. The CR3 is an original, not a generated version. Existing filename tags remain compatible with earlier libraries. A source-family switch never transfers crop geometry or changes exact-file upload selections.
 
 In a folder containing camera JPEG originals, unpaired RAW files are hidden from normal browsing, including while capture checks run. **Show unpaired RAW files** reveals them; its count explains how many are hidden. RAW-only folders are always shown, even when they contain developed JPEG outputs. This is a view preference: no original is deleted, no files are paired by filename, and **Develop RAW alternative** stays available on each verified JPEG/RAW capture.
 
@@ -243,7 +251,27 @@ Sort by **Capture time**, **Filename**, **Rating** or **Original size**, then ch
 
 Older photographs with a positive rating, Trash tag or saved Google selection/favourite on a verified version are recognised as Reviewed. A notice says when this comes from existing decisions. A valid explicit Reviewed choice takes priority, including a manual Needs review choice. No metadata is rewritten in bulk; an unselected/unrated photograph alone cannot prove that you previously reviewed it. Decisions live beside their originals in `.photogogo-review.json`, so a normal event-folder rename carries them with the folder. The Archive option to include **PhotoGoGo library metadata** controls whether this record is backed up; it is excluded from a media-only archive.
 
-A save must be acknowledged before the current photograph leaves a filtered view. A failed primary save does not mark Reviewed. If the decision saves but its Reviewed update fails, the decision stays saved and the photograph stays open: use **Retry Reviewed** to save only that flag as Reviewed, without repeating the photo action or advancing. **M** keeps its manual toggle meaning. A failed manual clear offers **Retry Needs review**, preserving that intended clear. While capture identity or folder information is uncertain, photographs remain visible with a notice; they are never silently labelled Reviewed. If an original was replaced or its identity is ambiguous, refresh and resolve the warning before recording a new decision. A newly verified RAW/JPEG pair retains a valid previous JPEG-only Reviewed decision when no canonical decision exists. Stale or ambiguous records remain uncertain. A matching filename alone never transfers a decision.
+Trash and Restore advance immediately with a visible pending-save count. Their coupled Reviewed change is confirmed with that capture decision. A failure retains the exact photo and error after you advance; use **Retry decision** before further changes. A decision explicitly rejected before saving can instead be discarded after confirmation: the dialog states how many unsaved actions, including queued Undo/Redo, will be cancelled before confirmed files and history reload. An unknown save outcome remains retry-only.
+
+Other rating and selection actions retain their save safeguards. A failed primary save does not mark Reviewed. If that decision saves but its Reviewed update fails, use **Retry Reviewed** to save only the flag without repeating the original action. **M** keeps its manual toggle meaning. A failed manual clear offers **Retry Needs review**. While capture identity or folder information is uncertain, photographs remain visible with a notice; they are never silently labelled Reviewed. A newly verified RAW/JPEG pair retains a valid previous JPEG-only Reviewed decision when no canonical decision exists. Stale or ambiguous records remain uncertain. A matching filename alone never transfers a decision.
+
+### Undo or redo a Trash decision
+
+Use **Undo** or **Ctrl+Z** to restore the prior Trash and Reviewed values changed by the last Trash/Restore action. Use **Redo**, **Ctrl+Y** or **Ctrl+Shift+Z** to reapply it. These commands keep unrelated ratings and Google selections/favourites. They retain normal text-editing behaviour while a text field is focused.
+
+The affected original opens even if it falls outside the current filters, with a temporary explanation. Select another photograph or change the view to return to ordinary browsing. **Review history** shows the saved Trash/Restore history when you revisit staging or restart the app. A new decision after Undo clears that redo branch while retaining its audit entries. Changed or replaced source files block an unsafe replay.
+
+Undo covers review decisions for retained files. **Files permanently removed · Undo unavailable** marks an irreversible boundary as soon as any approved member has been removed. A paused or partial job may still have surviving originals; inspect its per-file outcomes in Jobs. Undo cannot recover the bytes already removed.
+
+### Permanently remove a reviewed Trash list
+
+1. Wait for **All changes saved**, select the intended staging folder and choose **Take out the trash**. The initial scope is that folder; **Include subfolders** is an explicit choice.
+2. Review the exact file list, capture/file counts and confirmed file bytes. Camera JPEG and verified paired CR3 originals are listed explicitly. RAW-only captures are supported too.
+3. Check the proven generated members: Enhanced, B&W, crops and crop versions, manifest-owned RAW developments and precisely owned sidecars. Ambiguous ownership, replaced files and active use are protected rather than guessed from a filename prefix.
+4. Read the acknowledgement that the listed originals and versions will be permanently removed and that Undo cannot recover their files. Only then check it and choose **Permanently remove listed files**.
+5. Follow the separate **Take out the trash** job in **Jobs**. It rechecks identity and Trash status before removal, removes verified generated members before originals, and reports removed, already absent, protected and failed outcomes separately. Use the offered stop/recovery controls at safe boundaries and inspect partial results before continuing.
+
+No file removal happens during ordinary review. This job affects local staging files; Google Photos, SD-card sources and archive copies are outside its scope. The retained history and deletion receipts mark the permanent boundary. Reported removed file bytes are confirmed file sizes, not a promise of the exact physical space recovered. Trashed captures remain excluded from processing until restored; preparing a processing/removal plan waits for pending review writes.
 
 ### Understand missing and delayed images
 
@@ -586,7 +614,7 @@ A selected job that leaves the current filter offers **Show in History**, **Show
 ### Clean up old job details
 
 1. In **Jobs**, choose **Clean up jobs**. All ages are shown initially; nothing is selected.
-2. Filter by **Job age**, **Job type** and **Job status**. **Needs attention / failed** helps find abandoned failures. Changing a filter clears the selection and confirmation.
+2. Filter by **Job age**, **Job type** and **Job status**. **Take out the trash** selects removal-job details; **Needs attention / failed** helps find abandoned failures. Changing a filter clears the selection and confirmation.
 3. Select individual rows or **Select eligible shown**. Choose **Remove details permanently** or, for an inactive Google job that still needs recovery evidence, **Dismiss to Archived**.
 4. Read each row's explanation and confirm **I understand removal cannot be undone**. Apply up to 1,000 selected jobs per operation.
 5. Inspect the separate removed, dismissed, protected and failed counts. Refresh and review again if a record changed or an operation failed; cleanup never retries itself.
@@ -594,6 +622,8 @@ A selected job that leaves the current filter offers **Show in History**, **Show
 Permanent removal deletes eligible detailed job records and owned temporary/log data. Google receipt and album mappings are compacted and verified before its detailed record is removed, preserving duplicate prevention and negative read-back evidence. Originals, processed photos, projects, rendered videos, reusable clip caches, account setup and portable import manifests remain. Previously cleared Studio history and abandoned Google plans older than 24 hours are included. Recent plans stay protected.
 
 Active workers, unreadable records and unresolved photo registration or album-creation outcomes are protected from permanent removal. **Dismiss to Archived** removes an inactive Google job from ordinary lists while keeping its full recovery record; restore it to History before retrying. A protected row is not reported as removed. Legacy **Clear finished** remains available for its existing narrower action.
+
+Cleaning up a completed **Take out the trash** job removes eligible job details and owned temporary data. The retained review history, compact deletion receipts and discarded-import safeguards stay protected. This cleanup neither removes another set of photographs nor recovers photographs already permanently removed.
 
 Use **Reveal Log**, **Reveal Manifest**, job diagnostics or the common console where available. The separate **Logs** page offers **Refresh**, **Tail (auto-refresh)** and **Clear Log**. Clearing the log removes useful evidence; copy the relevant failure details first.
 
@@ -610,7 +640,8 @@ Open **Keyboard & Controller Help** using the toolbar, **F1** or **?**. It inclu
 | Left / Right; Home / End | Previous/next original; first/last in the folder |
 | 1 / 2 / 3; Backspace | Set or clear the review rating |
 | Shift+1 / Shift+2 / Shift+3 | Rate, save and advance |
-| Delete; X | Toggle Trash (filter may move after saving); mark Trash, save and advance |
+| Delete; X | Trash capture and immediately advance; Restore and advance in Only Trash |
+| Ctrl+Z; Ctrl+Y / Ctrl+Shift+Z | Undo; Redo a Trash/Restore decision and its coupled Reviewed change |
 | M; Shift+M | Toggle Reviewed; mark Reviewed, save and next |
 | Q / W / E | Toggle exact Original / B&W / Enhanced upload selection |
 | Shift+Q / Shift+W / Shift+E | Toggle the corresponding local favourite |
@@ -632,7 +663,7 @@ The normal Lightbox layout provides Trash and three lower Google version-selecti
 
 Check **Connected** before reviewing. **Looking for AKP03E** means the expected device was not found; **Reconnecting** means an opened connection later failed. Capture the actual operation/error in the panel or controller log. Unsupported or ambiguous interfaces are not guessed. Saved custom brightness can differ from the current full-brightness default.
 
-Try navigation, each lower selection key and Trash on a small test event before a long review. Confirm one press toggles once and each lower button affects the displayed version. The controller follows the active page and its modal/save safeguards; it is not a general keyboard-injection tool.
+Try navigation, each lower selection key, Trash and Undo on a small test event before a long review. Confirm one Trash press advances once and each lower selection button affects the displayed version. The **Inspect** controller page provides Undo and Redo, including after Review complete. Dial presses can also be assigned directly to Undo or Redo. The controller follows the active page and its modal/save safeguards; it is not a general keyboard-injection tool.
 
 ## 16 Maintain the library and optional features
 
@@ -640,9 +671,9 @@ Try navigation, each lower selection key and Trash on a small test event before 
 
 **Reprocess Staging Tree → Queue Reprocess Job** rechecks existing staged files, can correct names/timestamps and ensures MD5 sidecars. It is maintenance, not another routine card import. Saved RAW ownership can prevent an identity-changing reprocess; resolve the reported condition rather than deleting metadata to force it.
 
-**Collect Trash** is a real move. It takes individually named **{trash}** files into staging’s **Trash/** folder, with collision-safe names. It is not a capture-family collector: moving a tagged JPEG can separate it from its RAW pair or leave derived versions elsewhere.
+**Review permanent trash removal** opens the same exact-list confirmation used by Lightbox’s **Take out the trash**. From Cleanup, the initial scope is the staging root; choose **Include subfolders** deliberately if required. Review the listed Camera JPEG and paired CR3 originals, proven generated versions and protected cases before acknowledging permanent removal. It creates a separate job; marking Trash alone does not remove files.
 
-For an ordinary reviewed RAW/JPEG/crop library, leave Trash marks and use the transfer/archive exclusion rules unless you have deliberately checked the maintenance consequences. Do not assume a marked capture means all associated files will move together.
+Permanent removal cannot be undone. Its history entry and deletion receipt remain, and a later import normally skips an identical deliberately discarded original. Use **Re-import previously discarded captures** only when you deliberately want to bring a source copy back. See chapters 3 and 6 for the full workflows.
 
 ### Optional Face Identify
 

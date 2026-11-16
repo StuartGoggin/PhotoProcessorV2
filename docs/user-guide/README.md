@@ -15,6 +15,7 @@ To recreate with the existing Playwright development dependency:
 ```
 node scripts/test-user-guide-browser.mjs --capture
 node scripts/test-user-guide-pages.mjs --capture
+node scripts/capture-lightbox-trash-guide.mjs
 npm run guide:build
 node scripts/test-user-guide-document.mjs
 ```

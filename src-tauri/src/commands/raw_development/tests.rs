@@ -250,7 +250,8 @@ fn scope_is_bounded_and_selected_is_explicit() {
         recipe: RawRecipe::default(),
         use_photo_overrides: false,
     };
-    assert_eq!(req.files().unwrap().len(), 3);
+    assert_eq!(req.files().unwrap().len(), 2);
+    assert_eq!(req.files_with_counts().unwrap().1,1);
     req.selection = "nonTrash".into();
     assert_eq!(req.files().unwrap().len(), 2);
     req.selection = "minRating".into();
@@ -260,6 +261,8 @@ fn scope_is_bounded_and_selected_is_explicit() {
     assert!(req.files().unwrap().is_empty());
     req.selected_paths = vec![dir.join("one.CR3").to_string_lossy().into()];
     assert_eq!(req.files().unwrap().len(), 1);
+    req.selected_paths=vec![dir.join("three{trash}.cr3").to_string_lossy().into()];
+    assert!(req.files().unwrap().is_empty());
     assert!(safe_source(&req.staging_dir, "../outside.cr3").is_err());
 }
 #[test]

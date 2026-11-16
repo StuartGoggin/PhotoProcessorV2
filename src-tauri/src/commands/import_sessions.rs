@@ -149,6 +149,17 @@ pub fn try_open(root: &Path) -> Result<Option<Arc<Session>>, String> {
     Ok(Some(session))
 }
 
+/// Maintenance never joins an active import cohort, including in this process.
+pub(crate) fn exclusive_maintenance(root: &Path) -> Result<File, String> {
+    let path = root.join(".photogogo-import.lock");
+    super::lightbox_trash::safety::inspect_optional(&path)?;
+    let file = fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+        .open(path).map_err(|e| e.to_string())?;
+    fs2::FileExt::try_lock_exclusive(&file)
+        .map_err(|_| "An import is using this staging library. Let it finish before taking out the trash.")?;
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

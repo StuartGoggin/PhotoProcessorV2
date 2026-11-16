@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import RawDevelopment from "../src/components/RawDevelopment";
 import { rawPreset } from "../src/utils/rawRecipe";
+import {reviewActionWriter} from "../src/utils/reviewActionPersistence";
 import "../src/styles.css";
 
 const fixture = window as any;
@@ -14,6 +15,7 @@ fixture.__rawPreviewActive = 0;
 fixture.__rawPreviewMax = 0;
 fixture.__rawDeferred = [];
 fixture.__rawRevoked = [];
+fixture.__rawHoldReviewDecision=()=>{void reviewActionWriter.enqueue({stagingDir:"D:\\Photos",relativePath:"Elsewhere/Other.jpg",expectedSourceStamp:"1:1",actionId:crypto.randomUUID(),trashed:true}).catch(()=>{});};
 const revoke = URL.revokeObjectURL.bind(URL);
 URL.revokeObjectURL = (url) => { fixture.__rawRevoked.push(url); revoke(url); };
 function image(label: string, full: boolean) {
@@ -26,10 +28,14 @@ function image(label: string, full: boolean) {
 }
 fixture.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any) => {
   fixture.__rawCalls.push({ command, args: structuredClone(args) });
+  if(command==="apply_lightbox_review_action"){
+    await new Promise<void>(resolve=>fixture.__rawReleaseReviewDecision=resolve);
+    const request=args.request;return {actionId:request.actionId,revision:1,relativePath:request.relativePath,renamed:[],trashed:true,reviewed:true,sourceStamp:request.expectedSourceStamp,canUndo:true,canRedo:false,entry:{id:request.actionId},review:{root:request.stagingDir,relativePath:request.relativePath,key:"other.jpg",sourceStamp:request.expectedSourceStamp,reviewed:true,revision:1,explicit:true}};
+  }
   if (command === "raw_development_candidates") {
     const eligible = ["Rider.CR3", "Portrait.CR3", "Wide.CR3"].map((file) => `${args.request.scopeDir}\\${file}`);
     const paths = fixture.__rawEmpty ? [] : args.request.selection === "selected" ? eligible.filter(path => args.request.selectedPaths.includes(path)) : eligible;
-    return { paths, total: paths.length, truncated: false, runtime: { available: !fixture.__rawUnavailable, version: "Fixture worker", message: fixture.__rawUnavailable ? "Fixture worker unavailable" : "Synthetic adapter; no image-quality claim" } };
+    return { paths, total: paths.length, ...(fixture.__rawExcludedTrash!==undefined?{excludedTrash:fixture.__rawExcludedTrash}:{}), truncated: false, runtime: { available: !fixture.__rawUnavailable, version: "Fixture worker", message: fixture.__rawUnavailable ? "Fixture worker unavailable" : "Synthetic adapter; no image-quality claim" } };
   }
   if (command === "get_raw_recipe") return { recipe: fixture.__rawOverrides[args.path] || null, lastAppliedRecipe: fixture.__rawLastApplied[args.path] || null };
   if (command === "save_raw_recipe") {

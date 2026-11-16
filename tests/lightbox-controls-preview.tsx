@@ -97,7 +97,57 @@ function source(oldPath:string) {
   if(!root)throw Error("Unknown synthetic source root");
   return {root,path:normalized.slice(root.length+1)};
 }
+fixture.__controlsActionWrites=[];fixture.__controlsDeferredActions=[];fixture.__controlsDeferredHistories=[];
+const actionHistories=new Map<string,{revision:number;entries:any[];cursor:number;receipts:Map<string,any>}>();
+function actionHistory(root:string){let value=actionHistories.get(root);if(!value){value={revision:0,entries:[],cursor:0,receipts:new Map()};actionHistories.set(root,value);}return value;}
+function actionReceipt(request:any,direction?:string){
+  const state=actionHistory(request.stagingDir),prior=state.receipts.get(request.actionId);if(prior)return structuredClone(prior);
+  if(fixture.__controlsRejectActions)throw "[Review rejected before acceptance] Synthetic changed source was preserved";
+  if(direction&&request.expectedRevision!==undefined&&request.expectedRevision!==state.revision)throw "[Review rejected before acceptance] Review history changed in another window";
+  if(fixture.__controlsFailActions)throw Error("Synthetic capture decision failed");
+  let entry:any;
+  if(direction){entry=state.entries[direction==="undo"?state.cursor-1:state.cursor];if(!entry)throw Error("No decision to replay");}
+  const lib=library(request.stagingDir),path=direction?entry.capturePath:request.relativePath;
+  const node=files(lib.tree).find(node=>neutralPhotoName(node.path)===neutralPhotoName(path));
+  if(!node||(!direction&&node.sourceStamp!==request.expectedSourceStamp))throw Error("Capture identity changed");
+  const anchor=node.cameraJpeg?files(lib.tree).find(item=>item.path===node.cameraJpeg)!:node;
+  const beforePath=node.path,oldPath=anchor.path,trash=direction?(direction==="undo"?entry.beforeTrashed:entry.afterTrashed):request.trashed;
+  const folder=node.path.split("/").slice(0,-1).join("/"),storeKey=JSON.stringify([request.stagingDir,folder]),key=neutralPhotoName(node.name);
+  const doc=fixture.__controlsReviewDocuments[storeKey]||{schemaVersion:1,revision:0,entries:{}};
+  const beforeOverride=doc.entries[key]?structuredClone(doc.entries[key]):null;
+  const clean=anchor.name.replace(/\{trash\}/gi,""),dot=clean.lastIndexOf(".");
+  const name=trash?clean.slice(0,dot)+"{trash}"+clean.slice(dot):clean;
+  const newPath=oldPath.slice(0,oldPath.length-anchor.name.length)+name;
+  if(!direction){state.entries.splice(state.cursor);entry={id:request.actionId,capturePath:beforePath,label:anchor.name,beforeTrashed:/\{trash\}/i.test(anchor.name),afterTrashed:trash,beforeReviewed:beforeOverride?.reviewed??false,afterReviewed:true,outcome:"saved",canUndo:true,canRedo:false,createdAt:Date.now(),beforeOverride};state.entries.push(entry);state.cursor++;}
+  else state.cursor+=direction==="undo"?-1:1;
+  anchor.name=name;anchor.path=newPath;
+  for(const file of files(lib.tree)){if(file.cameraJpeg===oldPath)file.cameraJpeg=newPath;if(file.rawSource===oldPath)file.rawSource=newPath;}
+  entry.capturePath=node.path;
+  const override=direction==="undo"?entry.beforeOverride:{reviewed:true,sourceStamp:node.sourceStamp};
+  if(override)doc.entries[key]=override;else delete doc.entries[key];doc.revision++;fixture.__controlsReviewDocuments[storeKey]=doc;
+  state.revision++;
+  const receipt={actionId:request.actionId,revision:state.revision,relativePath:node.path,renamed:oldPath===newPath?[]:[{oldPath,newPath}],trashed:trash,reviewed:override?.reviewed??false,sourceStamp:node.sourceStamp,canUndo:state.cursor>0,canRedo:state.cursor<state.entries.length,entry:{...entry,canUndo:state.cursor>0,canRedo:state.cursor<state.entries.length},review:{root:request.stagingDir,relativePath:node.path,key,sourceStamp:node.sourceStamp,reviewed:override?.reviewed??false,revision:doc.revision,explicit:!!override}};
+  state.receipts.set(request.actionId,receipt);return structuredClone(receipt);
+}
 fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(event:unknown)=>void)=>{const id=++controllerCallback;controllerCallbacks.set(id,callback);return id;},invoke:async(command:string,args:any)=>{
+  if(command==="preview_lightbox_trash")return fixture.__controlsTrashPreview??{id:"trash-preview",stagingDir:args.stagingDir,relativeDir:args.relativeDir,recursive:args.recursive,canStart:true,items:[{relativePath:"01-camera{trash}.JPG",capturePath:"01-raw.CR3",kind:"Camera JPEG original",bytes:12000,included:true,reason:""},{relativePath:"01-raw.CR3",capturePath:"01-raw.CR3",kind:"Camera RAW original",bytes:44000,included:true,reason:""},{relativePath:"01-camera_improved.jpg",capturePath:"01-raw.CR3",kind:"Enhanced",bytes:8000,included:true,reason:""},{relativePath:"same-stem-ambiguous.jpg",capturePath:"",kind:"Ambiguous",bytes:1000,included:false,reason:"Several possible owners"}],captureCount:1,fileCount:3,totalBytes:64000,warnings:["One ambiguous file is protected."]};
+  if(command==="start_lightbox_trash_job"){fixture.__controlsTrashJobs??=[];fixture.__controlsTrashJobs.push(structuredClone(args));return {id:"trash-job-fixture"};}
+  if(command==="read_lightbox_review_history"){
+    const state=actionHistory(args.stagingDir),all=state.entries.map((entry,index)=>({...entry,canUndo:index===state.cursor-1,canRedo:index===state.cursor})).reverse(),offset=args.offset||0,limit=args.limit||50;
+    const result={revision:state.revision,entries:all.slice(offset,offset+limit),canUndo:state.cursor>0,canRedo:state.cursor<all.length,total:all.length,nextOffset:offset+limit<all.length?offset+limit:null,warnings:[]};
+    if(fixture.__controlsHoldHistory)return new Promise(resolve=>fixture.__controlsDeferredHistories.push(()=>resolve(result)));
+    return result;
+  }
+  if(command==="apply_lightbox_review_action"||command==="replay_lightbox_review_action"){
+    fixture.__controlsActionWrites.push(structuredClone(args.request));
+    const save=()=>{
+      const receipt=actionReceipt(args.request,args.request.direction);
+      if(fixture.__controlsExternalActionAfterSave&&!args.request.direction){fixture.__controlsExternalActionAfterSave=false;actionReceipt({stagingDir:args.request.stagingDir,relativePath:"03-wide.jpg",expectedSourceStamp:"32768:1",trashed:true,actionId:"other-window-action"});}
+      return receipt;
+    };
+    if(fixture.__controlsHoldActions)return new Promise((resolve,reject)=>fixture.__controlsDeferredActions.push(()=>{try{resolve(save());}catch(error){reject(error);}}));
+    return save();
+  }
   if(command==="lightbox_review_catalogue"){
     fixture.__controlsFactsCalls.push(args);
     const folder=args.relativeFolder||"",key=JSON.stringify([args.root,folder]);
@@ -152,7 +202,7 @@ fixture.__TAURI_INTERNALS__={convertFileSrc:()=>"",transformCallback:(callback:(
     return value;
   }
   if(command==="read_lightbox_folder") {
-    const folder=library(args.stagingDir).tree.children?.find(node=>node.path===args.relativeDir);
+    const folder=args.relativeDir?library(args.stagingDir).tree.children?.find(node=>node.path===args.relativeDir):library(args.stagingDir).tree;
     if(!folder)throw Error("Unknown synthetic folder");
     const value=structuredClone(folder);
     value.captureMetadataComplete=!fixture.__controlsMetadataIncomplete;

@@ -62,6 +62,7 @@ pub enum ProcessTask {
     SearchPersonVideos,
     GooglePhotos,
     RawDevelop,
+    TakeOutTrash,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -638,19 +639,23 @@ pub(crate) fn list_local_process_jobs() -> Result<Vec<ProcessJob>, String> {
 
 #[tauri::command]
 pub fn clear_finished_process_jobs(app: AppHandle) -> Result<usize, String> {
+    let trash_cleared = super::lightbox_trash::worker::clear_finished(&app)?;
     let archived = super::google_photos::archive_finished_jobs(&app);
     let mut jobs = process_jobs_store().lock().map_err(|e| e.to_string())?;
     let before = jobs.len();
     jobs.retain(|_, job| !matches!(job.status, ProcessJobStatus::Completed | ProcessJobStatus::CompletedWithWarnings | ProcessJobStatus::Failed | ProcessJobStatus::Aborted));
     let local_cleared = before.saturating_sub(jobs.len());
     match archived {
-        Ok(archived) => Ok(local_cleared + archived),
+        Ok(archived) => Ok(local_cleared + archived + trash_cleared),
         Err(_) => Err(format!("Cleared {local_cleared} local finished jobs, but Google Photos history could not be updated. Its upload checkpoints and receipts were retained. Review the saved-job warning before retrying.")),
     }
 }
 
 #[tauri::command]
 pub async fn pause_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::lightbox_trash::worker::is_job(&job_id) {
+        return async_runtime::spawn_blocking(move||super::lightbox_trash::worker::control(app,&job_id,"pause")).await.map_err(|_|"Removal pause did not finish")?;
+    }
     if super::google_photos::is_job_id(&job_id) {
         super::google_photos::google_photos_control(app, job_id, "pause".into()).await?;
         return Ok(true);
@@ -669,6 +674,9 @@ pub async fn pause_process_job(app: AppHandle, job_id: String) -> Result<bool, S
 
 #[tauri::command]
 pub async fn resume_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::lightbox_trash::worker::is_job(&job_id) {
+        return async_runtime::spawn_blocking(move||super::lightbox_trash::worker::control(app,&job_id,"resume")).await.map_err(|_|"Removal resume did not finish")?;
+    }
     if super::google_photos::is_job_id(&job_id) {
         super::google_photos::google_photos_control(app, job_id, "resume".into()).await?;
         return Ok(true);
@@ -686,6 +694,9 @@ pub async fn resume_process_job(app: AppHandle, job_id: String) -> Result<bool, 
 
 #[tauri::command]
 pub async fn abort_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::lightbox_trash::worker::is_job(&job_id) {
+        return async_runtime::spawn_blocking(move||super::lightbox_trash::worker::control(app,&job_id,"abort")).await.map_err(|_|"Removal cancellation did not finish")?;
+    }
     if super::google_photos::is_job_id(&job_id) {
         super::google_photos::google_photos_control(app, job_id, "abort".into()).await?;
         return Ok(true);
@@ -1033,6 +1044,18 @@ pub(super) fn enhance_rgb_clahe(rgb: &RgbImage) -> RgbImage {
 }
 
 fn collect_jpgs(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>,String> {
+    let mut result=Vec::new();
+    for path in collect_jpgs_including_trash(dir,recursive)? {
+        if super::lightbox_trash::eligibility::eligible(&path)? {result.push(path);}
+    }
+    Ok(result)
+}
+pub(crate) fn photo_processing_counts(dir:&Path,recursive:bool)->Result<(usize,usize),String>{
+    let files=collect_jpgs_including_trash(dir,recursive)?;
+    let mut included=0;for path in &files {if super::lightbox_trash::eligibility::eligible(path)?{included+=1;}}
+    Ok((included,files.len()-included))
+}
+fn collect_jpgs_including_trash(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>,String> {
     let walker = if recursive {
         WalkDir::new(dir)
     } else {
@@ -1174,7 +1197,7 @@ pub(super) fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: b
         ProcessTask::RemoveStabilize => collect_named_outputs(dir, recursive, "_stabilized", "mp4"),
         ProcessTask::ScanArchiveNaming | ProcessTask::ApplyEventNaming => vec![],
         ProcessTask::Transfer | ProcessTask::VerifyChecksums => vec![],
-        ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos | ProcessTask::RawDevelop => vec![],
+        ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos | ProcessTask::RawDevelop | ProcessTask::TakeOutTrash => vec![],
     })
 }
 
@@ -2161,6 +2184,7 @@ fn task_name(task: &ProcessTask) -> &'static str {
         ProcessTask::SearchPersonVideos => "search_person_videos",
         ProcessTask::GooglePhotos => "google_photos",
         ProcessTask::RawDevelop => "raw_develop",
+        ProcessTask::TakeOutTrash => "take_out_trash",
     }
 }
 
@@ -2182,6 +2206,7 @@ fn task_result_label(task: &ProcessTask) -> &'static str {
         ProcessTask::SearchPersonVideos => "videos_found",
         ProcessTask::GooglePhotos => "verified",
         ProcessTask::RawDevelop => "developed",
+        ProcessTask::TakeOutTrash => "removed",
     }
 }
 
@@ -2641,6 +2666,12 @@ fn run_process_task(
             }
 
             let result = (|| -> anyhow::Result<()> {
+                let photo_task=matches!(task_clone,ProcessTask::Focus|ProcessTask::RemoveFocus|ProcessTask::Enhance|ProcessTask::RemoveEnhance|ProcessTask::Bw|ProcessTask::RemoveBw);
+                let _access=if photo_task {Some(super::lightbox_trash::safety::Access::acquire(path.parent().ok_or_else(||anyhow::anyhow!("Photo parent missing"))?,false).map_err(anyhow::Error::msg)?)}else{None};
+                if matches!(task_clone,ProcessTask::Enhance|ProcessTask::Bw|ProcessTask::Focus)&&!super::lightbox_trash::eligibility::eligible(path).map_err(anyhow::Error::msg)? {
+                    if let Some(id)=job_id_clone.as_deref(){append_process_job_log(id,format!("Skipped newly trashed capture '{}'",path.display()));}
+                    return Ok(());
+                }
                 match task_clone {
                     ProcessTask::Focus => {
                         let img = load_oriented(path).map_err(anyhow::Error::msg)?;
@@ -2772,7 +2803,7 @@ fn run_process_task(
                     ProcessTask::ScanArchiveNaming => {}
                     ProcessTask::ApplyEventNaming => {}
                     ProcessTask::Transfer | ProcessTask::VerifyChecksums => {}
-                    ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos | ProcessTask::RawDevelop => {}
+                    ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos | ProcessTask::RawDevelop | ProcessTask::TakeOutTrash => {}
                 }
                 Ok(())
             })();

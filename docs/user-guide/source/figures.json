@@ -21,6 +21,20 @@
     "caption": "Use the Folder view bar to find the next photograph, then choose each exact version separately: 1 Original, 2 B&W, 3 Enhanced. These local selections do not start an upload. The screenshot uses an illustrative demo library."
   },
   {
+    "chapter": 6,
+    "file": "lightbox-history-screen.png",
+    "title": "Cull originals and correct a decision",
+    "alt": "Actual Lightbox using synthetic media, with Trash and next, Undo, Redo and the saved Trash and Restore history. The affected Camera JPEG is reopened after Redo, and the RAW badge identifies its verified pair.",
+    "caption": "Trash advances while saving. Undo and Redo reopen the affected capture and restore their coupled Reviewed change; the history remains available. This screenshot uses a synthetic JPEG/CR3 library and retains the existing two-star rating."
+  },
+  {
+    "chapter": 16,
+    "file": "lightbox-trash-preview.png",
+    "title": "Review the permanent-removal list",
+    "alt": "Actual Take out the trash confirmation using a synthetic preview. The exact list includes a Camera JPEG original, paired CR3 original, Enhanced JPEG and manifest-owned RAW development. Include subfolders and irreversible confirmation are both unchecked.",
+    "caption": "Inspect the exact list before confirming. Camera JPEG and CR3 are originals; generated versions need proven ownership. Scope and irreversible consent are explicit, and the removal button stays disabled until acknowledged. No removal was started for this synthetic screenshot."
+  },
+  {
     "chapter": 11,
     "file": "snapshots-screen.png",
     "title": "Find and select a source frame",

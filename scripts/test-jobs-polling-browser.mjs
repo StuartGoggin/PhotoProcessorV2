@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
+import {mkdir,writeFile} from 'node:fs/promises';
 const { chromium } = await import(process.env.PHOTOGOGO_PLAYWRIGHT_PATH ? pathToFileURL(process.env.PHOTOGOGO_PLAYWRIGHT_PATH).href : 'playwright');
 const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '1432', '--strictPort'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-let browser, serverLog = '';
+let browser, page, serverLog = '';
+const failures=[],consoleErrors=[],badResponses=[],report={complete:false,scope:'Actual App/hooks/job tiles with synthetic native IPC; includes nonzero/zero/absent discarded-import count and steady polling checks.'};
 server.stdout.on('data', data => { serverLog += data; });
 server.stderr.on('data', data => { serverLog += data; });
 try {
@@ -17,12 +19,19 @@ try {
   }
   assert.ok(ready, 'Fixture server started');
   browser = await chromium.launch({ channel: 'msedge', headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10000);
-  const failures = [];
   page.on('pageerror', error => failures.push(error.message));
+  page.on('console',message=>{if(message.type()==='error')consoleErrors.push(message.text());});
+  page.on('response',response=>{if(response.status()>=400)badResponses.push({status:response.status(),url:response.url()});});
   await page.goto('http://127.0.0.1:1432/studio-preview.html');
   await page.getByRole('region', { name: 'Active jobs list', exact: true }).waitFor();
+  assert.equal(await page.getByText(/Previously discarded:/).count(),0,"Older jobs without discard counts remain uncluttered");
+  await page.evaluate(()=>window.__importJobs[0].discardedSkipped=3);
+  await page.getByText('Previously discarded: 3',{exact:true}).waitFor();
+  await page.evaluate(()=>window.__importJobs[0].discardedSkipped=0);
+  await page.getByText(/Previously discarded:/).waitFor({state:'hidden'});
+  await page.evaluate(()=>delete window.__importJobs[0].discardedSkipped);
   await page.evaluate(() => {
     const invoke = window.__TAURI_INTERNALS__.invoke;
     window.__flickerOriginalJobs = { studio: window.__studioJobs, imports: window.__importJobs };
@@ -136,5 +145,7 @@ try {
   assert.equal(await refresh.isDisabled(), true, 'manual Refresh must still give loading feedback');
   await page.waitForFunction(() => ![...document.querySelectorAll('.jobs-page button')].find(button => button.textContent.trim() === 'Refresh').disabled);
   assert.deepEqual(failures, [], 'no browser runtime errors');
+  Object.assign(report,{complete:true,results,slow,jobsPage});
   console.log('PASS: steady polling, RAM-wait controls and recovery, persistent errors and manual refresh.');
-} finally { await browser?.close(); server.kill(); }
+} catch(error){report.error=error.stack;report.body=await page?.locator('body').innerText().catch(()=>null);await mkdir('test-output/jobs-polling-browser',{recursive:true});await page?.screenshot({path:'test-output/jobs-polling-browser/failure.png',fullPage:true}).catch(()=>{});throw error;
+} finally {await mkdir('test-output/jobs-polling-browser',{recursive:true});await writeFile('test-output/jobs-polling-browser/report.json',JSON.stringify({...report,failures,consoleErrors,badResponses,serverLog},null,2));await browser?.close(); server.kill(); }

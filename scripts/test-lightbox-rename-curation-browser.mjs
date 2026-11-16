@@ -47,14 +47,18 @@ const checkbox=page=>page.getByRole("checkbox", { name: "Upload Original to Goog
 async function ready(page) {
   await page.waitForFunction(()=>{const input=document.querySelector('input[aria-label="Upload Original to Google Photos"]');return input&&!input.disabled&&input.getAttribute("aria-busy")!=="true";});
 }
+async function trashAndReopen(page){
+  await page.getByRole("button",{name:"🗑 Trash & next",exact:true}).click();
+  await page.getByText("All changes saved",{exact:true}).waitFor();
+  await page.getByRole("tree").getByText("01-horse{trash}.jpg",{exact:true}).click();
+}
 async function trace(page) {return page.evaluate(()=>({catalogue:window.__renameCatalogueTrace,calls:window.__controlsCalls.filter(call=>["rename_file","google_photos_catalogue"].includes(call.command)),text:document.body.innerText}));}
 async function group(name,run) {if(process.env.PHOTOGOGO_RENAME_CASE&&!name.includes(process.env.PHOTOGOGO_RENAME_CASE))return;await run();report.checks.push(name);report.traces.push({name,...await trace(page)});console.log("PASS "+name);await page.close();page=null;}
 try {
   for (let n = 0; ; n++) { try { if ((await fetch(base + "/lightbox-controls-preview.html")).ok) break; } catch {} if (n > 100) throw Error("Fixture unavailable: " + serverLog); await delay(100); }
   browser = await chromium.launch({ channel: "msedge", headless: true });
   await group("Trash rename refreshes selections for the confirmed new path without an unavailable warning",async()=>{
-  page=await fixture();await ready(page);await page.getByRole("button", { name: "🗑 Trash", exact: true }).click();
-  await page.getByRole("button", { name: "✗ Trashed", exact: true }).waitFor();
+  page=await fixture();await ready(page);await trashAndReopen(page);
   await page.waitForFunction(() => {
     const input = document.querySelector('input[aria-label="Upload Original to Google Photos"]');
     return input && !input.disabled && !document.body.textContent.includes("Upload selections unavailable");
@@ -78,7 +82,7 @@ try {
   await group("A real failed checkbox remains visible after a rename until its own exact-version retry succeeds",async()=>{
     page=await fixture({__controlsSelectionError:"Synthetic unsaved checkbox"});await ready(page);await checkbox(page).click();
     await page.getByText(/Selection save was not confirmed.*Synthetic unsaved checkbox/).first().waitFor();await ready(page);
-    await page.getByRole("button",{name:"🗑 Trash",exact:true}).click();await page.getByRole("button",{name:"✗ Trashed",exact:true}).waitFor();await ready(page);
+    await trashAndReopen(page);await ready(page);
     assert.equal(await checkbox(page).isChecked(),false);assert.ok(await page.getByText(/Selection save was not confirmed.*Synthetic unsaved checkbox/).count()>0);
     await page.evaluate(()=>window.__controlsSelectionError=undefined);await checkbox(page).check();await ready(page);
     assert.equal(await page.getByText(/Selection save was not confirmed/).count(),0);assert.equal(await page.evaluate(()=>window.__controlsSelectionWrites.length),2);
@@ -86,21 +90,21 @@ try {
   });
   await group("Trash cannot race a pending checkbox save and each confirmed intent is persisted once",async()=>{
     page=await fixture({__controlsDeferSelection:true});await ready(page);await checkbox(page).check();await page.waitForFunction(()=>window.__controlsSelectionWrites.length===1);
-    assert.equal(await page.getByRole("button",{name:"🗑 Trash",exact:true}).isDisabled(),true);
-    await page.locator('[aria-label="Photo Lightbox review"]').focus();await page.keyboard.press("Delete");assert.equal(await page.evaluate(()=>window.__controlsRenames.length),0);
+    assert.equal(await page.getByRole("button",{name:"🗑 Trash & next",exact:true}).isDisabled(),true);
+    await page.locator('[aria-label="Photo Lightbox review"]').focus();await page.keyboard.press("Delete");assert.equal(await page.evaluate(()=>window.__controlsActionWrites.length),0);
     await page.evaluate(()=>{window.__controlsDeferSelection=false;window.__controlsReleaseSelection();});await ready(page);
-    await page.getByRole("button",{name:"🗑 Trash",exact:true}).click();await page.getByRole("button",{name:"✗ Trashed",exact:true}).waitFor();await ready(page);
-    assert.equal(await page.evaluate(()=>window.__controlsSelectionWrites.length),1);assert.equal(await page.evaluate(()=>window.__controlsRenames.length),1);assert.equal(await checkbox(page).isChecked(),true);
+    await trashAndReopen(page);await ready(page);
+    assert.equal(await page.evaluate(()=>window.__controlsSelectionWrites.length),1);assert.equal(await page.evaluate(()=>window.__controlsActionWrites.length),1);assert.equal(await checkbox(page).isChecked(),true);
   });
   await group("A genuine catalogue read failure recovers on the confirmed renamed photo without clearing failed writes",async()=>{
     page=await fixture({__controlsCatalogueError:"Synthetic catalogue unavailable"});await page.getByText(/Upload selections unavailable/).first().waitFor();
-    await page.evaluate(()=>window.__controlsCatalogueError=undefined);await page.getByRole("button",{name:"🗑 Trash",exact:true}).click();await page.getByRole("button",{name:"✗ Trashed",exact:true}).waitFor();await ready(page);
+    await page.evaluate(()=>window.__controlsCatalogueError=undefined);await trashAndReopen(page);await ready(page);
     assert.equal(await page.getByText(/Upload selections unavailable/).count(),0);assert.equal(await page.evaluate(()=>window.__controlsSelectionWrites.length),0);
   });
   await group("A held pre-rename catalogue cannot replace the new photo's selections after it finishes",async()=>{
     page=await fixture();await ready(page);await page.evaluate(()=>window.__controlsDeferCatalogue=true);
     await page.getByRole("button",{name:"Refresh photos",exact:true}).click();await page.waitForFunction(()=>typeof window.__controlsReleaseCatalogue==="function");
-    await page.getByRole("button",{name:"🗑 Trash",exact:true}).click();await page.getByRole("button",{name:"✗ Trashed",exact:true}).waitFor();
+    await trashAndReopen(page);
     await page.evaluate(()=>{window.__controlsDeferCatalogue=false;window.__controlsReleaseCatalogue();});await ready(page);
     assert.equal(await page.getByText(/Upload selections unavailable/).count(),0);await checkbox(page).check();await ready(page);
     assert.equal(await page.evaluate(()=>window.__controlsSelectionWrites.length),1);assert.equal(await page.evaluate(()=>window.__controlsSelectionWrites[0].relativePath),"01-horse{trash}.jpg");

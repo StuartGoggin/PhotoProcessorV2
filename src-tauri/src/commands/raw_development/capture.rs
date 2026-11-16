@@ -52,6 +52,7 @@ fn token(value: &serde_json::Value) -> Option<String> {
     Some(format!("{model}\0{serial}\0{date}\0{sub}"))
 }
 pub fn candidate_paths(files: &[PathBuf], excluded: &HashSet<usize>) -> Vec<PathBuf> {
+    if !files.iter().enumerate().any(|(i,p)|!excluded.contains(&i)&&super::is_raw(p)){return vec![];}
     let paths: Vec<_> = files
         .iter()
         .enumerate()
@@ -289,13 +290,19 @@ pub fn review_flags(file: &Path, owner: &Path, camera_jpeg: Option<&Path>) -> (u
 pub fn review_anchors(dir: &Path) -> Result<HashMap<PathBuf, PathBuf>, String> {
     let mut files = vec![];
     for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
-        let path = entry.map_err(|e| e.to_string())?.path();
+        let entry=entry.map_err(|e|e.to_string())?;
+        let path = entry.path();
         if super::is_raw(&path) || path.extension().is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg")) {
-            super::reject_link(&path)?;
-            if path.is_file() { files.push(path); }
+            // DirEntry metadata is supplied by Windows enumeration. Avoid two
+            // separate path-stat calls per unrelated image on every decision.
+            let meta=entry.metadata().map_err(|e|e.to_string())?;
+            if meta.file_type().is_symlink(){return Err("Linked capture is protected".into())}
+            #[cfg(windows)] {use std::os::windows::fs::MetadataExt;if meta.file_attributes()&0x400!=0{return Err("Redirected capture is protected".into())}}
+            if meta.is_file() { files.push(path); }
         }
         if files.len() > 100_000 { return Err("Choose a smaller RAW folder before reviewing its capture decisions".into()) }
     }
+    if !files.iter().any(|p|super::is_raw(p)){return Ok(HashMap::new());}
     let excluded = manifest::associations(dir, &files)?.into_iter().map(|(i, _, _)| i).collect();
     Ok(pairs(&files, &excluded).into_iter().map(|(raw, jpeg)| (files[raw].clone(), files[jpeg].clone())).collect())
 }

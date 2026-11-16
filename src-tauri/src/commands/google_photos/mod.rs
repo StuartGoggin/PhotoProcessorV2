@@ -17,6 +17,8 @@ pub(crate) mod store;
 mod transport;
 pub(crate) use transport::Album as CoreAlbum;
 mod vault;
+// Reuse current-user authenticated storage without reading the Google workspace.
+pub(crate) use vault::UserVault as LocalUserVault;
 
 use engine::{AlbumEdit, Job, JobSummary};
 use model::*;

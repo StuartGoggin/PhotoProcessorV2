@@ -11,6 +11,7 @@ export default function Import() {
   const [message, setMessage] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [sourceOverride, setSourceOverride] = useState("");
+  const [reimportDiscarded, setReimportDiscarded] = useState(false);
   const [shortcuts, setShortcuts] = useState<SourceShortcut[]>([]);
   const [loadingShortcuts, setLoadingShortcuts] = useState(false);
 
@@ -56,7 +57,7 @@ export default function Import() {
     setMessage(null);
 
     try {
-      const options: ImportOptions = { reprocessExisting: false };
+      const options: ImportOptions = { reprocessExisting: false, ...(reimportDiscarded ? { reimportDiscarded: true } : {}) };
       const jobId = await invoke<string>("start_import_job", {
         sourceDir: source,
         stagingDir: staging,
@@ -160,6 +161,10 @@ export default function Import() {
         </div>
       )}
 
+      <label className="flex items-start gap-3 text-sm text-gray-300 mb-4">
+        <input type="checkbox" className="w-5 h-5 mt-0.5" checked={reimportDiscarded} disabled={starting} onChange={event=>setReimportDiscarded(event.target.checked)} />
+        <span>Re-import previously discarded captures<small className="block text-gray-400">Normally, identical originals removed by Take out the trash are skipped. Enable this deliberately to bring them back from the card.</small></span>
+      </label>
       <button className="btn-primary" onClick={startImport} disabled={starting}>
         {starting ? "Queueing..." : "Queue Import Job"}
       </button>

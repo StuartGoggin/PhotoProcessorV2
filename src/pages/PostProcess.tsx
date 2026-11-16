@@ -9,6 +9,7 @@ import { DEFAULT_BW, type BwParams } from "../types/photoProcess";
 import { loadPhotoProcessRecipe, savePhotoProcessRecipe } from "../utils/photoProcessRecipe";
 import { useEventNaming } from "../hooks/useEventNaming";
 import { eventAbsolutePath, eventPathInRoot, namedEventPath, namingRootKey } from "../utils/eventNamingContext";
+import { reviewActionWriter } from "../utils/reviewActionPersistence";
 
 interface TaskConfig {
   label: string;
@@ -228,6 +229,7 @@ export default function PostProcess({ onOpenJobs,controllerOpenRaw=0 }: PostProc
     setLastQueuedJobId(null);
 
     try {
+      await reviewActionWriter.settled();
       const jobId = await invoke<string>("start_process_job", {
         stagingDir: settings.staging_dir,
         scopeDir: effectiveScope,

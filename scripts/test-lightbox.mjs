@@ -209,6 +209,18 @@ test("one speculative read yields a slot to foreground; queued abandoned foregro
   pending.get("jump")(payload); await jump; pending.get("next")(payload); await tick(); cache.clear();
 });
 
+test("active derivatives use a bounded background lane while a next original gets priority and a jump stays responsive",async()=>{
+  const calls=[],pending=new Map();
+  const cache=new LightboxCache(path=>{calls.push(path);return new Promise(resolve=>pending.set(path,resolve));});
+  cache.select(["original","bw","enhanced"]);const original=cache.get("original");
+  cache.prefetch(["next","farther"]);const bw=cache.get("bw",false),enhanced=cache.get("enhanced",false);
+  pending.get("original")(payload);await original;await tick();
+  assert.deepEqual(calls,["original","next"],"Next original prefetch precedes optional active derivatives");
+  pending.get("next")(payload);await tick();assert.equal(calls.at(-1),"bw","Active optional panels still load after the next original");
+  cache.select(["jump"]);const jump=cache.get("jump");assert.equal(calls.at(-1),"jump","An unrelated slow derivative cannot consume the original's lane");
+  pending.get("jump")(payload);await jump;pending.get("bw")(payload);await Promise.all([bw,enhanced]);await tick();cache.clear();
+});
+
 test("compressed cache remains within budget, except active panels which are evicted after selection changes", async () => {
   const cache = new LightboxCache(async () => payload, 30);
   cache.select(["one"]); await cache.get("one");

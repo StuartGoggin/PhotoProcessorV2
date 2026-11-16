@@ -22,6 +22,8 @@ pub enum Press {
     Previous,
     Next,
     Trash,
+    Undo,
+    Redo,
     Off,
 }
 

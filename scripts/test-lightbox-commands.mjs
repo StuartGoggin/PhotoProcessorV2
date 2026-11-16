@@ -35,6 +35,13 @@ check("Typing modifiers, IME and unknown keys stay outside the review map", () =
   for (const modifier of ["ctrlKey","altKey","metaKey","isComposing"]) assert.equal(matchLightboxCommand(event("q","KeyQ",{[modifier]:true})),undefined);
   assert.equal(matchLightboxCommand(event("F2")),undefined);
 });
+check("Undo and redo use explicit control shortcuts without stealing ordinary typing modifiers", () => {
+  assert.equal(matchLightboxCommand(event("z","KeyZ",{ctrlKey:true}))?.id,"undo");
+  assert.equal(matchLightboxCommand(event("y","KeyY",{ctrlKey:true}))?.id,"redo");
+  assert.equal(matchLightboxCommand(event("Z","KeyZ",{ctrlKey:true,shiftKey:true}))?.id,"redo");
+  assert.equal(matchLightboxCommand(event("z","KeyZ")),undefined);
+  assert.equal(matchLightboxCommand(event("z","KeyZ",{ctrlKey:true,altKey:true})),undefined);
+});
 check("Only inspection/navigation commands permit held-key repeats", () => {
   for (const c of lightboxCommands.filter(c=>c.repeat)) assert.match(c.id,/^(previous|next|panel-|zoom-|pan-)/);
   for (const id of ["rate-1","rate-2-next","trash","trash-next","select-active-next","select-original","favourite-bw","crop","refresh"]) assert.notEqual(lightboxCommands.find(c=>c.id===id).repeat,true);
@@ -56,3 +63,8 @@ check("Crop application is explicit Ctrl+Enter; plain Enter cannot apply", () =>
   assert.equal(matchLightboxCropCommand(event("F1")),"crop-help");
 });
 console.log("PASS: " + checks + " Lightbox command checks");
+const naming=ts.transpileModule(readFileSync(new URL("../src/utils/fileNaming.ts",import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
+const {isTrashed,applyTrash}=await import("data:text/javascript;base64,"+Buffer.from(naming).toString("base64"));
+assert.equal(isTrashed("a{Trash}.jpg"),true,"Legacy mixed-case Trash tags must remain visible as discarded captures");
+assert.equal(applyTrash("a{Like oo}{Trash}.jpg",false),"a{Like oo}.jpg","Restore removes legacy Trash while preserving the rating");
+assert.equal(applyTrash("a{Trash}.jpg",true),"a{trash}.jpg","Reapplying Trash must not duplicate legacy tags");

@@ -169,6 +169,9 @@ pub(crate) fn enrich_folder(children: &mut [serde_json::Value], root: &Path) -> 
 }
 impl Request {
     pub fn files(&self) -> Result<Vec<PathBuf>, String> {
+        Ok(self.files_with_counts()?.0)
+    }
+    fn files_with_counts(&self) -> Result<(Vec<PathBuf>,usize), String> {
         self.recipe.validate()?;
         if !["all", "nonTrash", "minRating", "selected"].contains(&self.selection.as_str())
             || self.min_rating > 3
@@ -195,6 +198,7 @@ impl Request {
             .map(|p| safe_source(&self.staging_dir, p))
             .collect::<Result<_, _>>()?;
         let mut result = vec![];
+        let mut excluded_trash=0;
         let mut review_anchors = HashMap::new();
         let max_depth = if matches!(self.scope_mode, ProcessScopeMode::FolderOnly) {
             1
@@ -229,14 +233,15 @@ impl Request {
             }
             let p = safe_source(&self.staging_dir, &e.path().to_string_lossy())?;
             // Inspect each eligible folder once; explicit pair proof is cached
-            // by the existing metadata lane. All does not need review metadata.
+            // by the existing metadata lane, including the All selection.
             let parent = p.parent().ok_or("RAW parent missing")?;
-            if self.selection != "all" && !review_anchors.contains_key(parent) {
+            if !review_anchors.contains_key(parent) {
                 review_anchors.insert(parent.to_path_buf(), capture::review_anchors(parent)?);
             }
             let jpeg = review_anchors.get(parent).and_then(|anchors| anchors.get(&p));
             let (rating, trash) = capture::review_flags(&p, &p, jpeg.map(|p| p.as_path()));
-            if self.selection != "all" && trash {
+            if trash {
+                excluded_trash+=1;
                 continue;
             }
             if self.selection == "minRating" && rating < self.min_rating {
@@ -251,12 +256,12 @@ impl Request {
             }
         }
         result.sort();
-        Ok(result)
+        Ok((result,excluded_trash))
     }
 }
 #[tauri::command]
 pub async fn raw_development_candidates(request: Request) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move||{let paths=request.files()?;let total=paths.len();let available=worker::runtime().is_ok();Ok(serde_json::json!({"paths":paths.into_iter().take(1000).map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>(),"total":total,"truncated":total>1000,"runtime":{"available":available,"version":"RawTherapee 5.13 / recipe 1","message":if available{"Bundled RAW developer found. Full integrity verification runs before preview or export; originals remain unchanged."}else{"Bundled RAW developer is missing. Repair the installation."}}}))}).await.map_err(|e|e.to_string())?
+    tauri::async_runtime::spawn_blocking(move||{let (paths,excluded_trash)=request.files_with_counts()?;let total=paths.len();let available=worker::runtime().is_ok();Ok(serde_json::json!({"paths":paths.into_iter().take(1000).map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>(),"total":total,"excludedTrash":excluded_trash,"truncated":total>1000,"runtime":{"available":available,"version":"RawTherapee 5.13 / recipe 1","message":if available{"Bundled RAW developer found. Full integrity verification runs before preview or export; originals remain unchanged."}else{"Bundled RAW developer is missing. Repair the installation."}}}))}).await.map_err(|e|e.to_string())?
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -390,6 +395,8 @@ pub fn run(app: tauri::AppHandle, id: &str) -> Result<ProcessResult, String> {
             j.current_file = source.file_name().unwrap().to_string_lossy().into_owned()
         });
         let result = (|| {
+            let _access=super::lightbox_trash::safety::Access::acquire(source.parent().ok_or("RAW parent missing")?,false)?;
+            if !super::lightbox_trash::eligibility::eligible(&source)? {return Ok(0);}
             let recipe = if request.use_photo_overrides {
                 manifest::override_for(&source)?.unwrap_or_else(|| request.recipe.clone())
             } else {

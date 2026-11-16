@@ -35,6 +35,7 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   search_person_videos: "Search Person Videos",
   googlePhotos: "Google Photos",
   rawDevelop: "RAW Development",
+  takeOutTrash: "Take out the trash",
 };
 
 const PROCESS_SCOPE_LABELS: Record<ProcessJob["scopeMode"], string> = {

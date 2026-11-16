@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { reviewActionWriter } from "../utils/reviewActionPersistence";
 import type { ProcessPreviewCandidates, ProcessPreviewRequest, ProcessPreviewResult } from "../types/photoProcess";
 
 // A page can switch tasks while native work is finishing. Keep all instances on
@@ -67,10 +68,10 @@ export default function PhotoProcessPreview({ request }: PreviewProps) {
     setPath(""); setCandidates(null); setError(null); setFullResolution(false); setActualPixels(false);
     if (cleanup) { setLoadingCandidates(false); return; }
     setLoadingCandidates(true);
-    invoke<ProcessPreviewCandidates>("process_preview_candidates", {
+    reviewActionWriter.settled().then(()=>invoke<ProcessPreviewCandidates>("process_preview_candidates", {
       stagingDir: request.stagingDir, scopeDir: request.scopeDir,
       scopeMode: request.scopeMode, task: request.task,
-    }).then((data) => {
+      })).then((data) => {
       if (current !== candidateGeneration.current) return;
       setCandidates(data);
       setPath(data.paths.length ? data.paths[Math.floor(Math.random() * data.paths.length)] : "");
@@ -160,6 +161,7 @@ export default function PhotoProcessPreview({ request }: PreviewProps) {
           <select size={Math.min(6, Math.max(2, visiblePaths.length))} aria-label="Preview original" value={path} className="input w-full text-xs" onChange={(event) => { setPath(event.target.value); setChoosing(false); }}>
             {visiblePaths.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
+          {candidates && ["enhance","bw","focus"].includes(request.task) && <p className="text-xs text-gray-400">{candidates.total.toLocaleString()} photos eligible · {(candidates.excludedTrash??0).toLocaleString()} Trash inputs excluded</p>}
           {candidates?.truncated && <p className="text-xs text-amber-300">Showing a bounded sample of {candidates.total.toLocaleString()} eligible originals. Choose a narrower processing folder to find other files.</p>}
         </div>}
       </>}

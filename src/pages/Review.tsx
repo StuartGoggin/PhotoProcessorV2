@@ -16,6 +16,10 @@ import { lightboxDials } from "../controller/lightboxBindings";
 import type { ControllerKey } from "../controller/types";
 import LightboxBrowseControls from "../components/LightboxBrowseControls";
 import {useLightboxFacts} from "../hooks/useLightboxFacts";
+import {useReviewActions} from "../hooks/useReviewActions";
+import {invoke} from "@tauri-apps/api/core";
+import LightboxReviewHistory from "../components/LightboxReviewHistory";
+import LightboxTrashRemoval from "../components/LightboxTrashRemoval";
 import {readLightboxBrowse,defaultLightboxBrowse,LIGHTBOX_BROWSE_KEY,projectLightboxCatalogue,photoReviewState,photoReviewEvidence,reviewIdentityCounts,unpairedRawCount,relatedNodes,type LightboxBrowse} from "../utils/lightboxBrowse";
 
 const emptyPan = () => [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
@@ -27,6 +31,8 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
     stagingDir, cropped, selectedPhoto, catalogueRevision, originalSource, originalInfo } = review;
   const [cropOpen, setCropOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [historyOpen,setHistoryOpen]=useState(false);
+  const [removalOpen,setRemovalOpen]=useState(false);
   const [rawTarget, setRawTarget] = useState<{root: string; path: string; jpeg?: string} | null>(null);
   const [cropMessage, setCropMessage] = useState("");
   const [feedback, setFeedback] = useState("");
@@ -36,7 +42,7 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
   const [controllerPage,setControllerPage]=useState<"review"|"versions"|"inspect">("review");
   const controllerBindings=useLightboxBindings();
   const actionBusy = useRef(false), alive = useRef(true);
-  const modal = useRef({ crop: false, help: false, naming: false, raw: false });
+  const modal = useRef({ crop: false, help: false, naming: false, raw: false, removal:false });
   const reviewRoot = useRef<HTMLDivElement>(null);
   const [activePanel, setActivePanel] = useState(0);
   const active = useRef(0);
@@ -46,13 +52,16 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
   const panRef = useRef(pan);
   const [resetKey, setResetKey] = useState(0);
   const identityReady = review.isIdentityReady();
-  const curation = useGooglePhotoCuration(selectedPhoto && identityReady ? stagingDir : "", catalogueRevision, selectedPhoto?.node.path);
+  const curation = useGooglePhotoCuration(selectedPhoto && identityReady ? stagingDir : "", catalogueRevision, selectedPhoto?.original.path);
   const facts = useLightboxFacts(stagingDir,review.browseFolder,catalogueRevision);
+  const actions=useReviewActions(stagingDir,review.browseFolder,(receipt,replay)=>{
+    facts.acceptAction(receipt);review.acceptReviewAction(receipt,replay);
+  });
   const browseProjection = useMemo(()=>(base:Parameters<typeof projectLightboxCatalogue>[0])=>projectLightboxCatalogue(base,browse,facts.data,review.browseFolder,node=>pinFailures.current&&facts.failedFor(node)),[browse,facts.version,review.browseFolder,stagingDir]);
   const reviewCounts=useMemo(()=>reviewIdentityCounts(review.folderCaptures),[catalogueRevision,review.browseFolder,stagingDir]);
   const reviewEvidence=review.selectedCapture?photoReviewEvidence(review.selectedCapture,facts.data,review.reviewAliases(review.selectedCapture.node),reviewCounts):null;
   const reviewStatus=reviewEvidence?.state??"unknown";
-  function changeBrowse(value:LightboxBrowse){pinFailures.current=false;manualView.current++;setBrowse(value);}
+  function changeBrowse(value:LightboxBrowse){review.resetReviewComplete();pinFailures.current=false;manualView.current++;setBrowse(value);}
   useEffect(()=>{try{localStorage.setItem(LIGHTBOX_BROWSE_KEY,JSON.stringify(browse));}catch{}},[browse]);
   useEffect(()=>{if(curation.confirmedVersion)void facts.refresh();},[curation.confirmedVersion,facts.refresh]);
   const naming = useEventNaming(stagingDir, async result => {
@@ -87,7 +96,7 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
       const first = renderedImages.findIndex(Boolean); active.current = first; setActivePanel(first);
     }
   }, [loading, images.original, images.bw, images.improved]);
-  modal.current = { crop: cropOpen, help: helpOpen, naming: naming.isOpen, raw: !!rawTarget };
+  modal.current = { crop: cropOpen, help: helpOpen, naming: naming.isOpen, raw: !!rawTarget,removal:removalOpen };
   useEffect(()=>{
     const deliberate=manualView.current!==appliedManualView.current;
     const selectionErrors=selectedPhoto&&relatedNodes(selectedPhoto).some(node=>curation.errorFor(curation.assetForPath(node.path)?.id));
@@ -98,7 +107,7 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
   },[browseProjection,busy,renaming,curation.saving,facts.saving,interactionSuspended,cropOpen,helpOpen,naming.isOpen,rawTarget,catalogueRevision,curation.error,facts.error,review.error,review.applyBrowseProjection,stagingDir,selectedPhoto?.node.path]);
 
   function focusReview() {
-    if (alive.current && !modal.current.crop && !modal.current.help && !modal.current.naming && !modal.current.raw && !document.querySelector('[data-controller-mirror-dialog]')) reviewRoot.current?.focus({ preventScroll: true });
+    if (alive.current && !modal.current.crop && !modal.current.help && !modal.current.naming && !modal.current.raw && !modal.current.removal && !document.querySelector('[data-controller-mirror-dialog]')) reviewRoot.current?.focus({ preventScroll: true });
   }
   function activate(index: number) {
     if (actionBusy.current) return;
@@ -134,8 +143,13 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
   }
 
   async function execute(id: LightboxCommandId, desired?: boolean) {
-    if (!alive.current || interactionSuspended || modal.current.crop || modal.current.help || modal.current.naming || modal.current.raw || actionBusy.current) return;
+    if (!alive.current || interactionSuspended || modal.current.crop || modal.current.help || modal.current.naming || modal.current.raw || modal.current.removal || actionBusy.current) return;
     if (id === "help") { modal.current.help = true; setHelpOpen(true); return; }
+    if(id==="undo"||id==="redo"){
+      if(curation.hasPending()||facts.saving){setFeedback("Wait for the current photo decisions to finish saving.");return;}
+      if(!actions.replay(id))setFeedback(actions.blocked?"Retry the unsaved decision before Undo / Redo.":"No saved decision is available for "+id+".");
+      return;
+    }
     const selectionCommand = id.startsWith("select-") || id.startsWith("favourite-");
     if(facts.saving&&!selectionCommand)return;
     const inspection = id.startsWith("panel-") || id.startsWith("zoom-") || id.startsWith("pan-") || id === "fit";
@@ -151,6 +165,7 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
       setFeedback(""); if (await review.navigateToEdge(id)) focusReview(); return;
     }
     if (id === "refresh") {
+      if(actions.hasPending()){setFeedback("Wait for pending decisions, or retry the failed save, before refreshing.");return;}
       setFeedback("");
       void facts.refresh();
       if (await review.refreshTree()) { void curation.refresh(); focusReview(); }
@@ -187,6 +202,15 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
       panRef.current = next; setPan(next); return;
     }
     if (!review.isReady()) { setFeedback("Preview is available. Wait for capture checks before editing or saving photo decisions."); return; }
+    if(id==="trash"||id==="trash-next"){
+      if(actions.blocked||actions.full||actions.replaying||actions.pendingFor(context.path)||facts.loading||!photo.node.sourceStamp){setFeedback("Wait for capture decisions to finish saving, or retry the unsaved decision.");return;}
+      const trashed=browse.trash!=="only";
+      if(actions.trash({relativePath:context.path,expectedSourceStamp:photo.node.sourceStamp,trashed})){
+        review.optimisticTrash(context,trashed);setFeedback(trashed?"Capture marked Trash; saving…":"Capture restored; saving…");
+      }
+      return;
+    }
+    if(actions.hasPending()&&!inspection){setFeedback("Wait for pending Trash / Restore decisions before changing this photo.");return;}
     if(id==="reviewed-toggle"||id==="reviewed-next"){
       if(curation.hasPending()||facts.loading||!facts.data?.review||!photo.node.sourceStamp||review.reviewAliases(photo.node)!==1){setFeedback("Wait for this original's review information and identity checks, or retry folder information.");return;}
       const next=id==="reviewed-next"?review.nextBrowsePath(context):undefined;
@@ -209,7 +233,7 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
       return;
     }
 
-    const mutating = id.startsWith("rate-") || id === "clear-rating" || id === "trash" || id === "trash-next"
+    const mutating = id.startsWith("rate-") || id === "clear-rating"
       || id.startsWith("select-") || id.startsWith("favourite-");
     if (!mutating) return;
     pinFailures.current=true;
@@ -225,7 +249,6 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
       let saved = false;
       if (id.startsWith("rate-")) saved = await review.handleStars(Number(id.split("-")[1]), id.endsWith("-next"), afterSaved);
       else if (id === "clear-rating") saved = await review.handleStars(0, false, afterSaved);
-      else if (id === "trash" || id === "trash-next") saved = await review.handleTrash(id === "trash-next" ? true : undefined, id === "trash-next", afterSaved);
       else {
         const index = id.includes("active") ? active.current : id.endsWith("original") ? 0 : id.endsWith("bw") ? 1 : 2;
         const node = nodes[index];
@@ -255,13 +278,29 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
     }
   }
   function activateDuringSave(index: number) { active.current = index; setActivePanel(index); }
+  async function discardRejectedActions(actionId:string){
+    if(actionBusy.current||!actions.canDiscardRejected(actionId))return;
+    const count=actions.queuedCount();
+    if(!window.confirm(`Discard ${count} unsaved action${count===1?"":"s"}? The failed action was rejected before acceptance. This also discards ALL queued unsaved Trash, Restore, Undo and Redo actions so they cannot affect earlier saved history. Confirmed files and saved history will be reloaded.`))return;
+    actionBusy.current=true;setBusy(true);
+    try{
+      const discarded=actions.discardRejected(actionId),folders=new Map<string,{stagingDir:string;relativeDir:string}>();
+      for(const request of discarded){const relativeDir="relativePath" in request?request.relativePath.replace(/\\/g,"/").split("/").slice(0,-1).join("/"):"";folders.set(JSON.stringify([request.stagingDir,relativeDir]),{stagingDir:request.stagingDir,relativeDir});}
+      const results=await Promise.allSettled([...folders.values()].map(args=>invoke("read_lightbox_folder",args)));
+      review.resetReviewComplete();await review.refreshTree();await facts.refresh();await curation.refresh();await actions.refresh();
+      if(results.some(result=>result.status==="rejected"))setFeedback("Unsaved actions were discarded. Some folders could not reload; reopen or refresh those folders before reviewing them.");
+      else setFeedback("Unsaved actions discarded; confirmed files and history reloaded.");
+    }catch(reason){setFeedback("Could not reload confirmed files: "+String(reason));}
+    finally{actionBusy.current=false;if(alive.current)setBusy(false);}
+  }
   const executeLatest = useRef(execute); executeLatest.current = execute;
-  const controllerBlocked=disabled || helpOpen || naming.isOpen || cropOpen;
-  const controllerBrowseBlocked=busy || renaming || curation.saving || facts.saving || !renderFrame || helpOpen || naming.isOpen || cropOpen;
+  const controllerBlocked=disabled || helpOpen || naming.isOpen || cropOpen || removalOpen;
+  const controllerBrowseBlocked=busy || renaming || curation.saving || facts.saving || !renderFrame || helpOpen || naming.isOpen || cropOpen || removalOpen;
+  const controllerHistoryBlocked=busy||renaming||curation.saving||facts.saving||interactionSuspended||helpOpen||naming.isOpen||cropOpen||removalOpen;
   const googleControllerKeys:ControllerKey[]=["original","bw","enhanced"].map((variant,index)=>{const node=[version?.original,version?.bw,version?.improved][index];const asset=node?curation.assetForPath(node.path):null;return{id:`select-${variant}`,label:["ORIGINAL","B&W","ENHANCED"][index],detail:asset?.selected?"SELECTED":"GOOGLE PHOTOS",icon:["original","bw","enhanced"][index],enabled:!controllerBlocked&&!curation.loading&&!!asset&&!!renderedImages[index],active:!!asset?.selected,status:curation.pendingFor(asset?.id)?"saving":"idle"};});
   const controllerKeys:ControllerKey[]=controllerPage==="review" ? [
     {id:"previous",label:"PREVIOUS",detail:"ORIGINAL PHOTO",icon:"previous",enabled:!controllerBrowseBlocked&&siblingIdx>0},
-    {id:"trash",label:trashed?"RESTORE":"TRASH",detail:"MARK REVIEWED",icon:"trash",enabled:!controllerBlocked,active:trashed},
+    {id:"trash",label:browse.trash==="only"?"RESTORE":"TRASH",detail:"AND NEXT",icon:"trash",enabled:!controllerBlocked&&!actions.blocked&&!actions.full&&!actions.replaying,active:trashed},
     {id:"next",label:"NEXT",detail:"ORIGINAL PHOTO",icon:"next",enabled:!controllerBrowseBlocked&&siblingIdx<siblings.length-1},
     ...googleControllerKeys,
   ] : controllerPage==="versions" ? [
@@ -271,19 +310,24 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
     {id:"crop",label:"CROP",icon:"crop",enabled:!controllerBlocked&&editable},
     {id:"crop-version",label:cropped?"ORIGINAL":"CROPPED",icon:"photo",enabled:!controllerBlocked&&!!selectedPhoto?.crop,active:cropped},
     {id:"fit",label:"FIT",icon:"zoom",enabled:!controllerBrowseBlocked&&displayReady},
-    {id:"clear-rating",label:"UNRATE",icon:"reset",enabled:!controllerBlocked&&stars>0},
-    {id:"refresh",label:"REFRESH",icon:"folder",enabled:!controllerBrowseBlocked},
+    {id:"undo",label:"UNDO",icon:"previous",enabled:actions.canUndo&&!controllerHistoryBlocked},
+    {id:"redo",label:"REDO",icon:"next",enabled:actions.canRedo&&!controllerHistoryBlocked},
     {id:"help",label:"HELP",icon:"help",enabled:!controllerBrowseBlocked},
   ];
   useControllerSurface({id:"lightbox",title:`Lightbox · ${controllerPage}`,contextKey:JSON.stringify([renderFrame,activePanel,controllerPage,helpOpen,naming.isOpen,cropOpen,browse,review.browseFolder,facts.version]),keys:controllerKeys,
-    dials:lightboxDials(controllerBindings,!controllerBrowseBlocked,labels[activePanel]),
-    sideButtons:[{label:"Review",id:"mode-review",enabled:!controllerBrowseBlocked},{label:"Versions",id:"mode-versions",enabled:!controllerBrowseBlocked},{label:"Inspect",id:"mode-inspect",enabled:!controllerBrowseBlocked}],
-    execute:async command=>{if(command.startsWith("mode-")){if(!controllerBrowseBlocked)setControllerPage(command.slice(5) as "review"|"versions"|"inspect");return;}await executeLatest.current(command as LightboxCommandId);},
+    dials:lightboxDials(controllerBindings,!controllerBrowseBlocked,labels[activePanel]).map((dial,index)=>{
+      const press=controllerBindings.dials[index]?.press;
+      if(press!=="undo"&&press!=="redo")return dial;
+      const available=!controllerHistoryBlocked&&(press==="undo"?actions.canUndo:actions.canRedo);
+      return {...dial,press:available?press:undefined,enabled:available||!!dial.enabled};
+    }),
+    sideButtons:[{label:"Review",id:"mode-review",enabled:!controllerHistoryBlocked},{label:"Versions",id:"mode-versions",enabled:!controllerHistoryBlocked},{label:"Inspect",id:"mode-inspect",enabled:!controllerHistoryBlocked}],
+    execute:async command=>{if(command.startsWith("mode-")){if(!controllerHistoryBlocked)setControllerPage(command.slice(5) as "review"|"versions"|"inspect");return;}await executeLatest.current(command as LightboxCommandId);},
   });
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (event.target instanceof HTMLElement && event.target.closest('[data-controller-mirror-dialog]')) return;
-      if (event.defaultPrevented || modal.current.crop || modal.current.help || modal.current.naming || modal.current.raw) return;
+      if (event.defaultPrevented || modal.current.crop || modal.current.help || modal.current.naming || modal.current.raw || modal.current.removal) return;
       const command = matchLightboxCommand(event);
       if (!command) return;
       if (lightboxTypingTarget(event.target) && event.key !== "F1") return;
@@ -342,12 +386,21 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
             <button type="button" className="btn-secondary min-h-11 px-3 text-xs" disabled={disabled} aria-pressed={cropped} onClick={() => { if (!cropped) void execute("crop-version"); }}>Cropped</button>
           </div>}
           <StarRating value={stars} comfortable readonly={disabled} onChange={value => void execute(value === 0 ? "clear-rating" : value === 1 ? "rate-1" : value === 2 ? "rate-2" : "rate-3")} />
-          <button className={"min-h-11 px-3 text-xs rounded-lg font-medium " + (trashed ? "bg-red-700 text-white" : "btn-secondary")} disabled={disabled} onClick={() => void execute("trash")} title="Toggle trash tag only; no files are deleted (Delete)">{trashed ? "✗ Trashed" : "🗑 Trash"}</button>
+          <button className={"min-h-11 px-3 text-xs rounded-lg font-medium " + (trashed ? "bg-red-700 text-white" : "btn-secondary")} disabled={disabled||actions.blocked||actions.full||actions.replaying} onClick={() => void execute("trash")} title="Apply capture decision and show the next visible original; files are retained (Delete / X)">{browse.trash==="only"?"Restore & next":"🗑 Trash & next"}</button>
           <button type="button" className={"btn-secondary min-h-11 px-3 text-xs "+(reviewStatus==="reviewed"?"text-emerald-200":"")} disabled={disabled||facts.loading||facts.saving||!facts.data?.review||!selectedPhoto?.node.sourceStamp||review.reviewAliases(selectedPhoto.node)!==1} onClick={()=>void execute("reviewed-toggle")} title="Saved review decisions fill this flag automatically; M changes it manually">{reviewStatus==="reviewed"?"✓ Reviewed":"Mark reviewed"}</button>
           <button type="button" className="btn-secondary min-h-11 px-3 text-xs" disabled={disabled||facts.loading||facts.saving||!facts.data?.review||!selectedPhoto?.node.sourceStamp||review.reviewAliases(selectedPhoto.node)!==1} onClick={()=>void execute("reviewed-next")} title="Save Reviewed before advancing once (Shift+M)">Reviewed &amp; next</button>
         </>}
+        {button("undo","Undo",!actions.canUndo)}{button("redo","Redo",!actions.canRedo)}
+        <button type="button" className="btn-secondary min-h-11 px-3 text-xs" aria-expanded={historyOpen} onClick={()=>setHistoryOpen(v=>!v)}>Review history</button>
+        <button type="button" className="btn-secondary min-h-11 px-3 text-xs" disabled={busy||renaming||actions.blocked||curation.saving||facts.saving} onClick={()=>{modal.current.removal=true;setRemovalOpen(true);}}>Take out the trash</button>
         <button type="button" className="btn-secondary min-h-11 px-3 text-xs ml-auto" disabled={busy} onClick={() => void execute("help")} aria-label="Keyboard and controller help" title="Keyboard & Controller Help (F1 / ?)">⌨ Keys & controller</button>
       </div>
+      <div role="status" aria-live="polite" className={"px-3 py-1 text-xs border-b border-surface-700 "+(actions.pending||actions.failures.length?"text-amber-200":"text-emerald-200")}>{actions.failures.length?"Decisions need attention · later saves paused":actions.pending?`Saving ${actions.pending} decision${actions.pending===1?"":"s"} · wait before closing`:"All changes saved"}</div>
+      {actions.failures.length>0&&<section aria-label="Unsaved photo decisions" className="px-3 py-2 border-b border-amber-700 bg-amber-950/20 text-xs text-amber-200">{actions.failures.map(failure=><div key={failure.request.actionId} className="flex flex-wrap items-center gap-3 py-1"><span className="flex-1 break-all">{failure.request.stagingDir!==stagingDir?failure.request.stagingDir+" / ":""}{"relativePath" in failure.request?failure.request.relativePath:failure.request.direction+" decision"}: {failure.message}. This decision is not confirmed.</span><button type="button" className="btn-secondary min-h-11 text-xs" onClick={()=>void actions.retry(failure.request.actionId)}>Retry decision</button>{actions.canDiscardRejected(failure.request.actionId)&&<button type="button" className="btn-secondary min-h-11 text-xs" onClick={()=>void discardRejectedActions(failure.request.actionId)}>Discard rejected action and queued unsaved actions</button>}</div>)}</section>}
+      {actions.discardedNotices.length>0&&<section aria-label="Discarded unsaved decisions" className="px-3 py-2 border-b border-surface-600 text-xs text-amber-200">{actions.discardedNotices.map(notice=><p key={notice.actionId} className="py-1 break-all">Discarded {notice.count} unsaved action{notice.count===1?"":"s"}: {notice.message}. Earlier saved history was retained.</p>)}</section>}
+      {historyOpen&&<LightboxReviewHistory history={actions.history} error={actions.error} loading={actions.loading} onMore={()=>void actions.refresh(true)} onRefresh={()=>void actions.refresh()}/>}
+      {review.historyNotice&&<p role="status" className="px-3 py-2 text-xs text-cyan-200 border-b border-surface-700">{review.historyNotice}</p>}
+      {review.reviewComplete&&<p role="status" className="px-4 py-5 text-sm text-emerald-200">Review complete · reached the end of this folder view. Undo is available for retained files.</p>}
       {reviewEvidence?.source==="history"&&<p className="px-3 py-1 text-xs text-emerald-200" data-testid="lightbox-legacy-reviewed">Reviewed from existing rating, Trash or Google selections · M can mark it as needing review.</p>}
       {selectedPhoto&&facts.failedFor(selectedPhoto.node)&&<div className="px-3 py-2 text-xs text-amber-200 flex gap-3 items-center border-b border-surface-600" role="status"><span>The review update was not saved. Retry the intended flag only; M still toggles it manually.</span><button type="button" className="btn-secondary min-h-11 text-xs" disabled={disabled||facts.loading||facts.saving||!facts.data?.review||!selectedPhoto.node.sourceStamp||review.reviewAliases(selectedPhoto.node)!==1} onClick={()=>void execute("reviewed-toggle",facts.failedValue(selectedPhoto.node))}>{facts.failedValue(selectedPhoto.node)===false?"Retry Needs review":"Retry Reviewed"}</button></div>}
       {facts.saving&&<p role="status" className="px-3 py-1 text-xs text-cyan-200">Saving Reviewed status…</p>}
@@ -362,7 +415,7 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
       </div>}
       {selectedPhoto?.cameraJpeg && <div className="px-3 py-2 border-b border-surface-700 bg-surface-800 text-xs text-gray-300 flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2">Original source<select aria-label="Original source" className="input-field w-auto text-xs py-1.5" value={originalSource} disabled={busy || renaming || loading || !identityReady || curation.saving} onChange={(event) => void chooseOriginalSource(event.target.value === "cameraJpeg" ? "cameraJpeg" : "raw")}><option value="raw">Camera RAW preview</option><option value="cameraJpeg">Camera JPEG</option></select></label>
-        <span>This photo only · JPEG is the default. Upload / favourite controls target exact displayed files. Ratings and Trash use the Camera JPEG in both views. {originalSource === "cameraJpeg" ? "Crop creates a separate _crop from the full Camera JPEG." : "Camera RAW preview is a reference; finished RAW photos appear in the comparison panels."}</span>
+        <span>This photo only · JPEG is the default. Upload / favourite controls target exact displayed files. Ratings use the Camera JPEG. Trash rejects the whole capture, including its paired CR3. {originalSource === "cameraJpeg" ? "Crop creates a separate _crop from the full Camera JPEG." : "Camera RAW preview is a reference; finished RAW photos appear in the comparison panels."}</span>
         <button className="btn-secondary min-h-11 text-xs" disabled={disabled || (originalSource === "raw" && !selectedPhoto.improved && !selectedPhoto.bw)} onClick={() => void rememberFinish()}>Use this finish for this photo</button>
       </div>}
       {selectedPhoto && /\.cr3$/i.test(selectedPhoto.node.name) && <div className="px-3 py-2 border-b border-surface-700 flex gap-3 items-center flex-wrap text-xs text-gray-300"><span className="text-amber-200">RAW available{selectedPhoto.improvedLabel === "Developed RAW" || selectedPhoto.node.lightboxSource === "raw" ? " · Alternative developed" : ""}</span><button className="btn-secondary min-h-11 text-xs" disabled={rawEntryDisabled} onClick={openRaw}>Develop RAW alternative</button><button className="btn-secondary min-h-11 text-xs" disabled={rawEntryDisabled} onClick={() => void review.refreshTree()}>Refresh RAW results</button><span>Full-resolution development runs only when queued. Choosing or creating a finish never changes upload selections.</span></div>}
@@ -405,6 +458,7 @@ export default function Review({ onOpenJobs, interactionSuspended=false }: { onO
       </div>
     </div>
     {helpOpen && <LightboxHelp onClose={() => { modal.current.help = false; setHelpOpen(false); }} />}
+    {removalOpen&&<LightboxTrashRemoval root={stagingDir} folder={review.browseFolder} onClose={()=>{modal.current.removal=false;setRemovalOpen(false);focusReview();}} onStarted={job=>{modal.current.removal=false;setRemovalOpen(false);setFeedback("Permanent removal queued in Jobs.");onOpenJobs?.(job.id);}}/>}
     {rawTarget && rawTarget.root === stagingDir && <LightboxRawEditor root={rawTarget.root} path={rawTarget.path} cameraJpeg={rawTarget.jpeg} onOpenJobs={onOpenJobs} onClose={refresh => { modal.current.raw = false; setRawTarget(null); if (refresh) void review.refreshTree(); else focusReview(); }} />}
     {cropOpen && selectedPhoto && <LightboxCropEditor stagingDir={stagingDir} photo={selectedPhoto}
       onClose={() => { closeCrop(); void review.refreshTree(); }}

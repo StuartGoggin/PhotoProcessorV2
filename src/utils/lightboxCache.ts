@@ -53,7 +53,7 @@ export class LightboxCache {
   prefetch(paths: string[]) {
     this.wanted = new Set(paths.slice(0, 9));
     this.queue = this.queue.filter(item => {
-      if (item.foreground || this.wanted.has(item.path)) return true;
+      if (item.foreground || this.active.has(item.path) || this.wanted.has(item.path)) return true;
       if (this.pending.get(item.path) === item) this.pending.delete(item.path);
       item.resolve(null); return false;
     });
@@ -95,7 +95,10 @@ export class LightboxCache {
       let index = this.queue.findIndex(item => item.foreground);
       if (index < 0) {
         if (this.backgroundRunning || this.running) return;
-        index = this.queue.findIndex(item => this.wanted.has(item.path));
+        const nearest=this.wanted.values().next().value;
+        index = this.queue.findIndex(item => item.path===nearest);
+        if(index<0)index=this.queue.findIndex(item=>this.active.has(item.path));
+        if(index<0)index=this.queue.findIndex(item=>this.wanted.has(item.path));
       }
       if (index < 0) return;
       const [item] = this.queue.splice(index, 1);

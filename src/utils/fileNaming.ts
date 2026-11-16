@@ -41,12 +41,12 @@ export function applyStars(filename: string, stars: number): string {
 
 /** Return true if the filename carries the trash marker. */
 export function isTrashed(filename: string): boolean {
-  return filename.includes("{trash}");
+  return /\{trash\}/i.test(filename);
 }
 
 /** Return filename with the trash marker applied or removed. */
 export function applyTrash(filename: string, trashed: boolean): string {
-  const clean = filename.replace(/\{trash\}/g, "").trim();
+  const clean = filename.replace(/\{trash\}/gi, "").trim();
   if (!trashed) return clean;
   const dot = clean.lastIndexOf(".");
   return dot === -1 ? clean + "{trash}" : clean.slice(0, dot) + "{trash}" + clean.slice(dot);

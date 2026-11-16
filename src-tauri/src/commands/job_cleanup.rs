@@ -166,6 +166,7 @@ fn collect(app: &AppHandle) -> Result<Preview, String> {
     entries.extend(super::process::cleanup_entries()?);
     entries.extend(super::video_studio::cleanup_entries()?);
     let mut warnings = Vec::new();
+    match super::lightbox_trash::worker::cleanup_entries(app){Ok(mut trash)=>entries.append(&mut trash),Err(_)=>warnings.push("Saved removal jobs could not be inspected; their evidence remains protected.".into())}
     match super::google_photos::cleanup_entries(&app){Ok(mut cloud)=>entries.append(&mut cloud),Err(_)=>warnings.push("Google saved jobs could not be inspected. Those records remain protected; other job types are available.".into())}
     entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(Preview { entries, warnings })
@@ -224,6 +225,7 @@ pub async fn job_cleanup_apply(
             }
             let outcome = match c.kind.as_str() {
                 "google" => super::google_photos::cleanup_apply(&app, &c),
+                "trash" => super::lightbox_trash::worker::cleanup_apply(&app, &c),
                 "import" => super::import::cleanup_apply(&c),
                 "process" => super::process::cleanup_apply(&c),
                 "studio" => super::video_studio::cleanup_apply(&c),

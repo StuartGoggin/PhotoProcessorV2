@@ -84,7 +84,7 @@ fn inspect_optional(path: &Path) -> Result<(), String> {
         Err(_) => Err("Cannot inspect the review history path.".into()),
     }
 }
-fn load(folder: &Path) -> Result<ReviewDocument, String> {
+pub(crate) fn load(folder: &Path) -> Result<ReviewDocument, String> {
     inspect_optional(&folder.join(FILE))?;
     let Some(bytes) = store::read_bounded(&folder.join(FILE), LIMIT)? else {
         return Ok(ReviewDocument::default());
@@ -434,4 +434,21 @@ mod tests {
             }
         }
     }
+}
+
+/// Compare and restore one exact Reviewed override while the source is pinned.
+pub(crate) fn replace_entry(root:&str,relative:&str,expected_id:&super::lightbox_trash::Identity,expected:&Option<ReviewEntry>,value:Option<ReviewEntry>)->Result<ReviewReceipt,String>{
+ let path=resolve(root,relative,false)?;let folder=path.parent().ok_or("Photo parent missing")?;
+ let _lock=super::lightbox_trash::safety::metadata_lock(folder,".photogogo-review.json.lock")?;
+ let base=super::lightbox_trash::safety::root(root)?;
+ let held=super::lightbox_trash::safety::MediaFile::for_metadata(&base,relative)?;
+ let actual=super::lightbox_trash::safety::id(&held.file)?;
+ if !super::lightbox_trash::safety::same(&actual,expected_id){return Err("Original identity changed before saving Reviewed; later files were preserved".into())}
+ let mut doc=load(folder)?;let key=curation_key(&path);let stamp=actual.modified;
+ if let Some(entry)=&value{if entry.source_stamp!=stamp{return Err("Reviewed identity changed; refresh before retrying".into())}}
+ let current=doc.entries.get(&key).cloned();
+ if current!=*expected&&current!=value{return Err("Reviewed changed in another window; the later decision was preserved".into())}
+ if current!=value{doc.revision=doc.revision.checked_add(1).filter(|r|*r<=MAX_REVISION).ok_or("Review revision exhausted")?;if let Some(entry)=value.clone(){doc.entries.insert(key.clone(),entry);}else{doc.entries.remove(&key);}let bytes=serde_json::to_vec(&doc).map_err(|e|e.to_string())?;if bytes.len() as u64>LIMIT{return Err("Review metadata is full; no decisions were discarded".into())}store::atomic_write(&folder.join(FILE),&bytes)?;}
+ held.validate_held()?;
+ Ok(ReviewReceipt{root:root.into(),relative_path:relative.replace('\\',"/"),key,source_stamp:stamp,reviewed:value.map(|v|v.reviewed).unwrap_or(false),revision:doc.revision})
 }

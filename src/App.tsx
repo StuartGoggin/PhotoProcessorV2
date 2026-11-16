@@ -21,6 +21,8 @@ import ControllerPanel from "./components/ControllerPanel";
 import { useControllerSurface } from "./controller/useControllerSurface";
 import UserGuide from "./components/UserGuide";
 import { guideChapterForPage } from "./utils/userGuide";
+import {reviewActionWriter} from "./utils/reviewActionPersistence";
+import {installReviewCloseGuard} from "./utils/reviewCloseGuard";
 
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "import",      label: "Import",       icon: "📥" },
@@ -45,6 +47,7 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(() => readPanelSize(APP_SIDEBAR_PREFS_KEY, 208, 180, 420));
   const [menuOpen, setMenuOpen] = useState(false);
   const [guide, setGuide] = useState<string | null>(null);
+  const [reviewCloseNotice,setReviewCloseNotice]=useState("");
   const workspace = useRef<HTMLDivElement>(null);
   const [jobsView, setJobsView] = useState<JobsView>("active");
   const [focusedJobId, setFocusedJobId] = useState<string | null>(null);
@@ -63,6 +66,14 @@ export default function App() {
     setMenuOpen(false);
   }
   function openJob(jobId: string) { openJobs("active"); setFocusedJobId(jobId); }
+  useEffect(()=>{
+    let disposed=false,unlisten:(()=>void)|undefined;
+    if("__TAURI_INTERNALS__" in window)void import("@tauri-apps/api/window").then(({getCurrentWindow})=>installReviewCloseGuard(getCurrentWindow(),()=>reviewActionWriter.hasPending(),()=>{
+      setReviewCloseNotice("Photo decisions are still saving or need Retry. Wait for All changes saved in the Lightbox before closing PhotoGoGo.");setPage("review");setMenuOpen(false);
+    })).then(stop=>{if(disposed)stop();else unlisten=stop;}).catch(()=>{});
+    const unsubscribe=reviewActionWriter.subscribe(()=>{if(!reviewActionWriter.hasPending())setReviewCloseNotice("");});
+    return()=>{disposed=true;unlisten?.();unsubscribe();};
+  },[]);
   useControllerSurface({
     id: "app", title: "PhotoGoGo", contextKey: page, priority: 0,
     keys: [
@@ -131,7 +142,7 @@ export default function App() {
     videostudio: null,
     videosnapshots: null,
     nameevents: <NameEvents />,
-    cleanup: <Cleanup />,
+    cleanup: <Cleanup onOpenJobs={openJob} />,
     jobs: <Jobs key={jobsNavigation} initialView={jobsView} monitor={monitor} focusJobId={focusedJobId} />,
     postprocess: <PostProcess controllerOpenRaw={controllerOpenRaw} onOpenJobs={() => openJobs()} />,
     review: <Review onOpenJobs={openJob} interactionSuspended={!!guide} />,
@@ -149,6 +160,7 @@ export default function App() {
         <span className="font-semibold truncate">{page === "googlephotos" ? "Transfer to Google Photos" : NAV_ITEMS.find((item) => item.id === page)?.label}</span>
         <button className="btn-secondary text-xs" onClick={() => {setGuide(guideChapterForPage(page)); setMenuOpen(false);}}>Help</button>
       </header>
+      {reviewCloseNotice&&<p role="alert" className="px-4 py-3 text-xs text-amber-200 border-b border-amber-700 bg-surface-800">{reviewCloseNotice}</p>}
       {/* Main content area (sidebar + page content) */}
       <div ref={appShellRef} className={`app-shell flex flex-1 min-h-0 min-w-0 overflow-hidden ${menuOpen ? "menu-open" : ""}`}>
         {/* Sidebar */}

@@ -24,6 +24,7 @@ try {
   browser = await chromium.launch({ channel: "msedge", headless: true });
   const page = await browser.newPage({ viewport: { width: 1420, height: 1050 } });
   page.setDefaultTimeout(12000); page.on("pageerror", (error) => errors.push(error.message)); page.on("dialog", (dialog) => void dialog.accept());
+  await page.addInitScript(()=>window.__rawExcludedTrash=4);
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.getByRole("button", { name: "Set up RAW Development", exact: true }).waitFor();
   assert.equal(await page.evaluate(() => window.__rawCalls.length), 0);
@@ -33,6 +34,16 @@ try {
   assert.equal(await page.getByRole("checkbox", { name: "Auto levels", exact: true }).isChecked(), false);
   assert.equal(await page.evaluate(() => window.__rawCalls.filter((call) => call.command === "raw_development_preview").length), 0);
   report.checks.push("Opening controls performs scoped candidate/recipe reads only; conservative Natural defaults and non-trash scope are explicit, with no automatic RAW decode");
+  await page.getByText("4 trashed captures excluded",{exact:true}).waitFor();
+  await page.evaluate(()=>window.__rawExcludedTrash=0);await page.getByRole("button",{name:"Refresh RAW list",exact:true}).click();await ready(page);
+  await page.getByText(/trashed captures excluded/).waitFor({state:"hidden"});
+  report.checks.push("Eligible RAW originals show a separate nonzero Trash exclusion count; zero stays hidden");
+
+  await page.evaluate(()=>window.__rawHoldReviewDecision());await page.waitForFunction(()=>typeof window.__rawReleaseReviewDecision==="function");
+  await page.getByRole("button",{name:"Generate RAW preview",exact:true}).click();await delay(120);
+  assert.equal(await page.evaluate(()=>window.__rawCalls.filter(call=>call.command==="raw_development_preview").length),0,"RAW preview must wait for pending review decisions");
+  await page.evaluate(()=>window.__rawReleaseReviewDecision());await page.getByRole("img",{name:"RAW developed comparison",exact:true}).waitFor();
+  report.checks.push("RAW preview waits for the shared review decision queue before reading a processing source");
 
   await range(page.getByRole("slider", { name: "RAW Exposure (EV)", exact: true }), .75);
   await page.getByRole("button", { name: "Generate RAW preview", exact: true }).click();

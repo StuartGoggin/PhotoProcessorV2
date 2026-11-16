@@ -1,5 +1,5 @@
 #Requires -Version 7.0
-param([string]$Filter='commands::google_photos::',[switch]$Release,[switch]$ShowOutput)
+param([string]$Filter='commands::google_photos::',[switch]$Release,[switch]$ShowOutput,[switch]$Ignored)
 $ErrorActionPreference='Stop'
 $repoRoot=Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
@@ -14,6 +14,7 @@ $cargo=Join-Path $env:USERPROFILE '.cargo/bin/cargo.exe'
 $arguments=@('test','--manifest-path',(Join-Path $repoRoot 'src-tauri/Cargo.toml'),'--locked','--lib',$Filter)
 if($Release){$arguments+='--release'}
 $arguments+=@('--','--test-threads=1')
+if($Ignored){$arguments+='--ignored'}
 if($ShowOutput){$arguments+='--nocapture'}
 & $cargo @arguments
 if($LASTEXITCODE -ne 0){throw "Google Photos native verification failed ($LASTEXITCODE)."}

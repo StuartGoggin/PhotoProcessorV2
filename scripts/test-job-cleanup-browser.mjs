@@ -37,6 +37,13 @@ try{
   assert.deepEqual(calls[0].args.choices.map(x=>({kind:x.kind,id:x.id,revision:x.revision,action:x.action})).sort((a,b)=>a.id.localeCompare(b.id)),[{kind:"google",id:G,revision:"google-verified-r1",action:"remove"},{kind:"google",id:U,revision:"google-unresolved-r1",action:"dismiss"}].sort((a,b)=>a.id.localeCompare(b.id)));
   assert.equal(await p.evaluate(()=>window.__cleanupChanged),1);assert.equal(await confirm(p).isChecked(),false);await p.close();
  });
+ await check("Take out the trash filter selects only removal-job details while retaining review and discard safeguards",async()=>{
+  const p=await fixture();await open(p);await p.getByRole("combobox",{name:"Job type",exact:true}).selectOption("trash");
+  assert.equal(await select(p,"Old trash removal","old-trash").count(),1);assert.equal(await select(p,"Old failed import","old-import").count(),0);
+  await p.getByText("Review history, deletion receipts and discarded-import safeguards remain.",{exact:true}).waitFor();
+  await select(p,"Old trash removal","old-trash").check();await confirm(p).check();await apply(p).click();await p.getByText("Synthetic cleanup completed; photo files and compact receipts preserved.",{exact:true}).waitFor();
+  assert.deepEqual(await p.evaluate(()=>window.__cleanupCalls.find(call=>call.command==="job_cleanup_apply").args.choices),[{kind:"trash",id:"old-trash",revision:"trash-r1",action:"remove"}]);await p.close();
+ });
  await check("Changing status/type filters clears hidden selections and resets old actions",async()=>{
   const p=await fixture();await open(p);await select(p,"Old verified Google upload",G).check();await action(p,G).selectOption("dismiss");
   await p.getByRole("combobox",{name:"Job status",exact:true}).selectOption("attention");

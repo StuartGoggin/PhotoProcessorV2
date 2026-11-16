@@ -14,6 +14,7 @@ fixture.__cleanupPreview ??= {entries:[
  {kind:"import",id:"old-import",title:"Old failed import",status:"failed",createdAt:ago(60),revision:"import-r1",canRemove:true,canDismiss:false,reason:"Only saved job details are removed; imported photos remain."},
  {kind:"process",id:"recent-process",title:"Recent photo process",status:"completed",createdAt:ago(2),revision:"process-r1",canRemove:true,canDismiss:false,reason:"Only job details are removed."},
  {kind:"studio",id:"old-studio",title:"Old studio render",status:"completed",createdAt:ago(60),revision:"studio-r1",canRemove:true,canDismiss:false,reason:"Project and rendered video remain."},
+ {kind:"trash",id:"old-trash",title:"Old trash removal",status:"completed",createdAt:ago(60),revision:"trash-r1",canRemove:true,canDismiss:false,reason:"Review history, deletion receipts and discarded-import safeguards remain."},
 ],warnings:["Synthetic preview: cleanup does not delete photos or Google albums."]};
 fixture.__cleanupPreviewResolvers=[];
 fixture.__TAURI_INTERNALS__={invoke:async(command:string,args:any={})=>{

@@ -189,7 +189,7 @@
     },
     {
       "id": "trash",
-      "label": "Mark / unmark trash (no file deletion)",
+      "label": "Trash capture and next / Restore in Trash view",
       "group": "Review",
       "keys": [
         "Delete"
@@ -197,11 +197,23 @@
     },
     {
       "id": "trash-next",
-      "label": "Mark trash, save and next",
+      "label": "Trash capture and next / Restore in Trash view",
       "group": "Quick review",
       "keys": [
         "X"
       ]
+    },
+    {
+      "id": "undo",
+      "label": "Undo last Trash / Restore decision",
+      "group": "History",
+      "keys": ["Ctrl+Z"]
+    },
+    {
+      "id": "redo",
+      "label": "Redo Trash / Restore decision",
+      "group": "History",
+      "keys": ["Ctrl+Y", "Ctrl+Shift+Z"]
     },
     {
       "id": "select-original",

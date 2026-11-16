@@ -22,8 +22,12 @@ pub(crate) fn snapshot(app: &AppHandle) -> Result<Snapshot, String> {
             .cloned()
             .collect()
     };
-    let (cloud, warnings) = google_photos::job_snapshot(app);
+    let (cloud, mut warnings) = google_photos::job_snapshot(app);
     jobs.extend(cloud);
+    match super::lightbox_trash::worker::snapshot(app) {
+        Ok((removal, mut notices)) => {jobs.extend(removal); warnings.append(&mut notices);}
+        Err(_) => warnings.push("Saved removal jobs could not be read; their evidence remains protected.".into()),
+    }
     sort_jobs(&mut jobs);
     Ok(Snapshot { jobs, warnings })
 }
@@ -54,6 +58,10 @@ pub async fn process_jobs_snapshot(app: AppHandle) -> Result<Snapshot, String> {
 }
 #[tauri::command]
 pub async fn retry_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::lightbox_trash::worker::is_job(&job_id) {
+        return tauri::async_runtime::spawn_blocking(move||super::lightbox_trash::worker::control(app,&job_id,"retry"))
+            .await.map_err(|_|"Removal retry did not finish")?;
+    }
     if !google_photos::is_job_id(&job_id) {
         return Err("Review and start a fresh Photo Process job for this task. This saved-job retry is for durable upload recovery.".into());
     }
@@ -62,6 +70,10 @@ pub async fn retry_process_job(app: AppHandle, job_id: String) -> Result<bool, S
 }
 #[tauri::command]
 pub async fn process_job_diagnostics(app: AppHandle, job_id: String) -> Result<String, String> {
+    if super::lightbox_trash::worker::is_job(&job_id) {
+        return tauri::async_runtime::spawn_blocking(move||super::lightbox_trash::worker::diagnostics(&app,&job_id))
+            .await.map_err(|_|"Removal diagnostics could not be read")?;
+    }
     if google_photos::is_job_id(&job_id) {
         return google_photos::google_photos_job_diagnostics(app, job_id).await;
     }

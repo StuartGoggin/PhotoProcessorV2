@@ -13,7 +13,7 @@ This pack contains a manual setup reference and static button artwork. It is **n
 | Top left | One star, save and next | Shift+1 | one-star-next.png |
 | Top middle | Two stars, save and next | Shift+2 | two-stars-next.png |
 | Top right | Three stars, save and next | Shift+3 | three-stars-next.png |
-| Bottom left | Mark trash, save and next | X | trash-next.png |
+| Bottom left | Trash capture and next; Restore and next in Trash-only view | X | trash-next.png |
 | Bottom middle | Select active version, save and next | G | select-next.png |
 | Bottom right | Skip to next original | Right arrow | skip.png |
 
@@ -23,7 +23,7 @@ This pack contains a manual setup reference and static button artwork. It is **n
 | 2 | Zoom out / in: - / + | Fit/reset zoom and pan: 0 |
 | 3 | Previous / next image panel: [ / ] | Toggle active panel's Google Photos selection: A |
 
-The cyan Active border identifies the panel controlled by A and G. In cropped view it controls cropped versions. G sets selection **on** before advancing; A toggles it. Missing versions are not substituted. A failed save does not advance. Trash marks a filename; it does not physically delete a photo. Keep the control held only for browsing/zooming; state changes run once per press.
+The cyan Active border identifies the panel controlled by A and G. In cropped view it controls cropped versions. G sets selection **on** before advancing; A toggles it. Missing versions are not substituted. Trash rejects the whole capture, including its Camera JPEG and paired CR3, and advances immediately while saving. A failed Trash save remains in the exact-photo Retry queue and pauses later changes. Trash retains the files until the separately previewed and confirmed permanent-removal job. Ctrl+Z undoes Trash/Restore; Ctrl+Y or Ctrl+Shift+Z redoes it. Keep the control held only for browsing/zooming; state changes run once per press.
 
 For a second scene, Q / W / E toggle the exact Original / B&W / Enhanced Google Photos checkboxes; Shift+Q / Shift+W / Shift+E toggle those versions' favourites. Star ratings and Google Photos favourites are separate. Selecting a checkbox does not upload anything. The existing Google Photos publishing and selective archive rules use these same saved selections.
 

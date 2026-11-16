@@ -711,11 +711,15 @@ pub fn prewarm_staging_timeline_cache(staging_dir: String) -> Result<usize, Stri
 /// A rating/trash tag may change a basename, never replace another photograph.
 #[tauri::command]
 pub async fn rename_file(old_path: String, new_name: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || rename_review_file(Path::new(&old_path), &new_name))
+    tauri::async_runtime::spawn_blocking(move || {
+        let old=Path::new(&old_path);
+        let _access=super::lightbox_trash::safety::Access::acquire(old.parent().ok_or("Photo parent missing")?,true)?;
+        rename_review_file(old,&new_name)
+    })
         .await.map_err(|_| "The photo rename task failed; refresh before retrying.".to_string())?
 }
 
-fn rename_review_file(old: &Path, new_name: &str) -> Result<String, String> {
+pub(crate) fn rename_review_file(old: &Path, new_name: &str) -> Result<String, String> {
     use std::path::Component;
     if new_name.is_empty() || new_name.contains(['/', '\\', ':', '\0', '\n', '\r'])
         || !matches!(Path::new(new_name).components().next(), Some(Component::Normal(_)))

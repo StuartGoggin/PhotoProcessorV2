@@ -48,6 +48,8 @@ pub struct ImportProgress {
 pub struct ImportResult {
     pub imported: usize,
     pub skipped: usize,
+    #[serde(default)]
+    pub discarded_skipped: usize,
     pub source_file_total: usize,
     pub ignored_file_total: usize,
     pub ignored_legacy_md5_sidecar_total: usize,
@@ -59,6 +61,8 @@ pub struct ImportResult {
 #[serde(rename_all = "camelCase")]
 pub struct ImportOptions {
     pub reprocess_existing: bool,
+    #[serde(default)]
+    pub reimport_discarded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +92,8 @@ pub struct ImportJob {
     pub log_file_path: String,
     pub manifest_file_path: String,
     pub reprocess_existing: bool,
+    #[serde(default)]
+    pub reimport_discarded: bool,
     pub status: ImportJobStatus,
     pub created_at: String,
     pub started_at: Option<String>,
@@ -100,6 +106,8 @@ pub struct ImportJob {
     pub done: usize,
     pub skipped: usize,
     pub speed_mbps: f64,
+    #[serde(default)]
+    pub discarded_skipped: usize,
     pub current_file: String,
     pub imported: usize,
     pub md5_sidecar_hits: usize,
@@ -1174,6 +1182,7 @@ fn run_import(
     }
     let identity = match expected_source { Some(identity) => identity, None => super::import_devices::resolve(&source)? };
     source_unchanged(&source, &identity)?;
+
     if let Some(id) = job_id.as_deref() {
         update_job(id, |job| {
             job.source_device = identity.label.clone();
@@ -1228,6 +1237,9 @@ fn run_import(
     };
     source_unchanged(&source, &identity)?;
     import_phase(job_id.as_deref(), "scanning", None);
+    let discarded = if !opts.reprocess_existing && !opts.reimport_discarded {
+        super::lightbox_trash::discard::load_index(&staging)?
+    } else { super::lightbox_trash::discard::Index::default() };
 
     let mode = if opts.reprocess_existing { "reprocess" } else { "import" };
     let manifest_path = job_id
@@ -1500,6 +1512,7 @@ fn run_import(
         return Ok(ImportResult {
             imported: 0,
             skipped: 0,
+            discarded_skipped: 0,
             source_file_total,
             ignored_file_total,
             ignored_legacy_md5_sidecar_total: ignored_md5_sidecar_total,
@@ -1538,6 +1551,7 @@ fn run_import(
     let done_count = Arc::new(AtomicU64::new(0));
     let imported_count = Arc::new(AtomicU64::new(0));
     let skipped_count = Arc::new(AtomicU64::new(0));
+    let discarded_count=AtomicU64::new(0);
     let md5_sidecar_hits = Arc::new(AtomicU64::new(0));
     let md5_computed = Arc::new(AtomicU64::new(0));
     let bytes_copied = Arc::new(AtomicU64::new(0));
@@ -1700,6 +1714,30 @@ fn run_import(
                 md5_computed_clone.fetch_add(1, Ordering::Relaxed);
             }
             let md5_source = if used_sidecar { "sidecar" } else { "computed" };
+
+            if let Some(staged) = staged_copy.as_ref() {
+                match discarded.matches(&src_md5, src_size, staged.path()) {
+                    Ok(true) => {
+                        let discarded_total=discarded_count.fetch_add(1,Ordering::Relaxed)+1;
+                        skipped_clone.fetch_add(1, Ordering::Relaxed);
+                        let done=done_clone.fetch_add(1, Ordering::Relaxed)+1;
+                        if let Some(id) = &job_id_clone { append_job_log(id, format!("Skipped previously discarded content: {} (fresh MD5 + SHA-256 verified)", src_path.display())); }
+                        if let Some(id)=&job_id_clone { update_job(id,|job|{job.done=done as usize;job.skipped=skipped_clone.load(Ordering::Relaxed) as usize;job.discarded_skipped=job.discarded_skipped.max(discarded_total as usize);completion_file_label(job,src_path);}); }
+                        if let Some(path)=manifest_path_clone.as_ref().as_ref() {
+                            // Match the existing import manifest schema and retain the reason.
+                            if let Ok(entry)=serde_json::from_value::<ImportManifestEntry>(serde_json::json!({"timestamp":now_string(),"kind":"file","phase":"process","outcome":"skipped","status":"discarded_content","sourcePath":src_path.to_string_lossy(),"md5":src_md5,"md5Source":"computed","size":src_size,"reason":"previously_discarded_verified_md5_sha256"})) { append_manifest_entry(path,&entry); }
+                        }
+                        let _ = append_app_log(&app_clone, format!("import outcome=discarded_content_skipped file='{}' md5={src_md5}", src_path.display()));
+                        return;
+                    },
+                    Ok(false) => {},
+                    Err(error) => {
+                        errors_clone.lock().unwrap().push(format!("{}: discard comparison protected source: {error}", src_path.display()));
+                        done_clone.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            }
 
             if let Some(job_id) = &job_id_clone {
                 update_job(job_id, |job| {
@@ -2436,6 +2474,8 @@ fn run_import(
     let imported = imported_count.load(Ordering::Relaxed) as usize;
     let processed = done_count.load(Ordering::Relaxed) as usize;
     let skipped = skipped_count.load(Ordering::Relaxed) as usize;
+    let discarded_skipped=discarded_count.load(Ordering::Relaxed) as usize;
+    if let Some(id)=&job_id {append_job_log(id,format!("Previously discarded identical camera files skipped: {discarded_skipped}; verified with fresh MD5 + SHA-256. Explicit re-import override: {}",opts.reimport_discarded));}
     let md5_sidecar_total = md5_sidecar_hits.load(Ordering::Relaxed) as usize;
     let md5_computed_total = md5_computed.load(Ordering::Relaxed) as usize;
     let was_aborted = job_id
@@ -2477,6 +2517,7 @@ fn run_import(
             job.unsupported_file_total = unsupported_file_total;
             job.imported = imported;
             job.skipped = skipped;
+            job.discarded_skipped=discarded_skipped;
             job.done = processed;
             job.md5_sidecar_hits = md5_sidecar_total;
             job.md5_computed = md5_computed_total;
@@ -2578,6 +2619,7 @@ fn run_import(
     Ok(ImportResult {
         imported,
         skipped,
+        discarded_skipped,
         source_file_total,
         ignored_file_total,
         ignored_legacy_md5_sidecar_total: ignored_md5_sidecar_total,
@@ -2624,6 +2666,7 @@ pub async fn start_import_job(
         log_file_path: log_file_path.clone(),
         manifest_file_path: manifest_file_path.clone(),
         reprocess_existing: opts.reprocess_existing,
+        reimport_discarded: opts.reimport_discarded,
         status: ImportJobStatus::Queued,
         created_at: now_string(),
         started_at: None,
@@ -2635,6 +2678,7 @@ pub async fn start_import_job(
         total: 0,
         done: 0,
         skipped: 0,
+        discarded_skipped: 0,
         speed_mbps: 0.0,
         current_file: "Queued".to_string(),
         imported: 0,

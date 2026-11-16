@@ -35,7 +35,9 @@ try{
     await key(p,"1");await p.waitForFunction(()=>window.__controlsRenames.length===1);assert.match(await p.evaluate(()=>window.__controlsRenames[0].oldPath),/01-camera\{Like oo\}\.JPG$/);
     await ready(p);await p.getByLabel("Original source",{exact:true}).selectOption("raw");await ready(p,"Original RAW");
     const command=await p.evaluate(()=>window.__controlsCommandReference.find(x=>x.id==="trash")?.keys[0]);assert.ok(command);await key(p,command);
-    await p.waitForFunction(()=>window.__controlsRenames.length===2);assert.match(await p.evaluate(()=>window.__controlsRenames[1].oldPath),/01-camera/);assert.match(await p.evaluate(()=>window.__controlsRenames[1].newName),/\{trash\}/i);
+    await p.waitForFunction(()=>window.__controlsActionWrites.length===1);assert.equal(await p.evaluate(()=>window.__controlsActionWrites[0].relativePath),"01-raw.CR3");
+    await p.getByText("All changes saved",{exact:true}).waitFor();assert.equal(await p.evaluate(()=>window.__controlsRenames.length),1);
+    assert.ok(await p.evaluate(()=>window.__controlsLibraries.get("D:\\Controller photos").tree.children.some(node=>node.name==="01-camera{Like o}{trash}.JPG")));
     await p.close();
   });
   await group("Lightbox opens exact one-photo editor; queue and close preserve review and upload state",async()=>{

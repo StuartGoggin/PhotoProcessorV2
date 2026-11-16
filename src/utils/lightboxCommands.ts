@@ -13,8 +13,10 @@ export const lightboxCommands = [
   { id: "rate-1-next", label: "Set one star, save and next", group: "Quick review", keys: ["Shift+1"] },
   { id: "rate-2-next", label: "Set two stars, save and next", group: "Quick review", keys: ["Shift+2"] },
   { id: "rate-3-next", label: "Set three stars, save and next", group: "Quick review", keys: ["Shift+3"] },
-  { id: "trash", label: "Mark / unmark trash (no file deletion)", group: "Review", keys: ["Delete"] },
-  { id: "trash-next", label: "Mark trash, save and next", group: "Quick review", keys: ["X"] },
+  { id: "trash", label: "Trash capture and next / Restore in Trash view", group: "Review", keys: ["Delete"] },
+  { id: "trash-next", label: "Trash capture and next / Restore in Trash view", group: "Quick review", keys: ["X"] },
+  { id: "undo", label: "Undo last Trash / Restore decision", group: "History", keys: ["Ctrl+Z"] },
+  { id: "redo", label: "Redo Trash / Restore decision", group: "History", keys: ["Ctrl+Y", "Ctrl+Shift+Z"] },
   { id: "select-original", label: "Toggle Original Google Photos selection (Cropped in cropped view)", group: "Version selections", keys: ["Q"] },
   { id: "select-bw", label: "Toggle B&W Google Photos selection", group: "Version selections", keys: ["W"] },
   { id: "select-enhanced", label: "Toggle Enhanced Google Photos selection", group: "Version selections", keys: ["E"] },
@@ -60,7 +62,12 @@ export function shortcutFor(id: string): string {
 /** Recognises shifted number-row keys by physical code, including !/@/#.
  * Alt/Meta/Ctrl and IME input retain their normal app/OS behaviour. */
 export function matchLightboxCommand(event: Pick<KeyboardEvent, "key" | "code" | "shiftKey" | "ctrlKey" | "altKey" | "metaKey" | "isComposing">): LightboxCommand | undefined {
-  if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return undefined;
+  if (event.altKey || event.metaKey || event.isComposing) return undefined;
+  if(event.ctrlKey){
+    const key=event.key.toLowerCase();
+    const id=key==="z"?(event.shiftKey?"redo":"undo"):key==="y"&&!event.shiftKey?"redo":null;
+    return id?lightboxCommands.find(command=>command.id===id):undefined;
+  }
   let key = event.key;
   if (/^Digit[0-9]$/.test(event.code)) key = event.code.slice(-1);
   else if (/^[a-z]$/i.test(key)) key = key.toUpperCase();

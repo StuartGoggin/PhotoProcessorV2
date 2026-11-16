@@ -27,7 +27,7 @@ try{
   }
   const missing=fragments.filter(fragment=>!article.includes(fragment));assert.deepEqual(missing,[]);
   checks.push('Preserved '+fragments.length+' substantive source paragraphs, headings and table cells');
-  for(const [query,target] of [['RAW','#ch-07'],['wind noise','#ch-10'],['crop','#ch-06'],['Google Photos verification','#ch-12']]){
+  for(const [query,target] of [['RAW','#ch-07'],['wind noise','#ch-10'],['crop','#ch-06'],['Google Photos verification','#ch-12'],['Take out the trash','#ch-06'],['previously discarded captures','#ch-03'],['Undo','#ch-06']]){
     await page.locator('#guide-search').fill(query);assert.ok(await page.locator('#result-list a').evaluateAll((as,target)=>as.some(a=>a.hash===target),target));
   }
   await page.locator('#guide-search').fill('zzqvnonexistent');assert.match(await page.locator('#search-status').innerText(),/No matching chapters/);await page.keyboard.press('Escape');

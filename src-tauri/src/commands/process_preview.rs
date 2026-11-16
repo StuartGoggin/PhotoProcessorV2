@@ -27,7 +27,7 @@ pub struct PreviewRequest {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PreviewCandidates { paths: Vec<String>, total: usize, truncated: bool }
+pub struct PreviewCandidates { paths: Vec<String>, total: usize, truncated: bool, excluded_trash: usize }
 #[derive(Debug, Serialize)]
 pub struct FocusPreview { max: f64, average: f64, percent: f64, flagged: bool }
 #[derive(Serialize)]
@@ -66,9 +66,14 @@ fn candidates(staging: &str, scope: &str, mode: &ProcessScopeMode, task: &Proces
 #[tauri::command]
 pub async fn process_preview_candidates(staging_dir: String, scope_dir: String, scope_mode: ProcessScopeMode, task: String) -> Result<PreviewCandidates, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let files = candidates(&staging_dir, &scope_dir, &scope_mode, &self::task(&task)?)?;
+        let kind = self::task(&task)?;
+        let excluded_trash = if matches!(kind, ProcessTask::Enhance | ProcessTask::Bw | ProcessTask::Focus) {
+            let dir = process::resolve_process_scope(&staging_dir, Some(scope_dir.clone()), &scope_mode)?;
+            process::photo_processing_counts(&dir, !matches!(scope_mode, ProcessScopeMode::FolderOnly))?.1
+        } else { 0 };
+        let files = candidates(&staging_dir, &scope_dir, &scope_mode, &kind)?;
         let total = files.len();
-        Ok(PreviewCandidates { paths: files.into_iter().take(1000).map(|p| p.to_string_lossy().into_owned()).collect(), total, truncated: total > 1000 })
+        Ok(PreviewCandidates { paths: files.into_iter().take(1000).map(|p| p.to_string_lossy().into_owned()).collect(), total, truncated: total > 1000, excluded_trash })
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -79,6 +84,10 @@ fn jpeg_url(image: &DynamicImage) -> Result<String, String> {
 }
 
 fn photo_preview(request: &PreviewRequest, path: &Path, task: &ProcessTask) -> Result<PreviewResult, String> {
+    // A read-only preview pins its exact source without creating staging files.
+    let root=super::lightbox_trash::safety::root(&request.staging_dir)?;
+    let relative=super::lightbox_trash::safety::relative(&root,path)?;
+    let _source=super::lightbox_trash::safety::MediaFile::open(&root,&relative,false)?;
     let oriented = load_oriented(path)?;
     let full = request.full_resolution.unwrap_or(false);
     // Focus classification always uses source resolution, just like the job.

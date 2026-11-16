@@ -264,11 +264,11 @@ pub(super) fn scan_for_plan(
     let scope = super::plan::relative_scope(&canonical_root, scope)?;
     let depth = scope.strip_prefix(&canonical_root).map_err(|_| "Photo folder is outside the library.")?.components().count();
     if depth > 32 { return Err("Photo folder exceeds the supported library depth.".into()); }
-    scan_controlled(&canonical_root, false, Some(&scope), 32 - depth, checkpoint, observed)
+    scan_controlled(&canonical_root, false, Some(&scope), 32 - depth, checkpoint, observed, false)
 }
 
 fn scan_scope(root: &Path, archive: bool, directory: Option<&Path>) -> Result<Catalogue, String> {
-    scan_controlled(root, archive, directory, if directory.is_some() { 1 } else { 32 }, &|| Ok(()), &|_| {})
+    scan_controlled(root, archive, directory, if directory.is_some() { 1 } else { 32 }, &|| Ok(()), &|_| {}, false)
 }
 
 fn scan_controlled(
@@ -278,6 +278,7 @@ fn scan_controlled(
     max_depth: usize,
     checkpoint: &impl Fn() -> Result<(), String>,
     observed: &impl Fn(usize),
+    preserve_all_versions: bool,
 ) -> Result<Catalogue, String> {
     checkpoint()?;
     let raw_epoch=super::super::raw_development::manifest::snapshot()?;
@@ -415,6 +416,7 @@ fn scan_controlled(
         }
         let mut suppressed = HashSet::new();
         for ((source, variant), children) in comparison_groups {
+            if preserve_all_versions { continue; }
             if children.len() <= 1 {
                 continue;
             }
@@ -808,3 +810,8 @@ mod tests {
 #[cfg(test)]
 #[path = "selection_tests.rs"]
 mod selection_tests;
+
+/// Exact candidate inventory; destructive callers additionally verify fingerprints and warnings.
+pub(crate) fn scan_for_removal(root:&Path,scope:&Path,recursive:bool)->Result<Catalogue,String>{
+ scan_controlled(root,true,Some(scope),if recursive{32}else{1},&||Ok(()),&|_|{},true)
+}

@@ -1,5 +1,11 @@
 //! Synthetic filesystem regressions for imports after event naming/review.
 use super::*;
+#[test]
+fn discard_override_is_explicit_and_old_options_keep_safe_default(){
+ let old:ImportOptions=serde_json::from_value(serde_json::json!({"reprocessExisting":false})).unwrap();assert!(!old.reimport_discarded);
+ let yes:ImportOptions=serde_json::from_value(serde_json::json!({"reprocessExisting":false,"reimportDiscarded":true})).unwrap();assert!(yes.reimport_discarded);
+ let entry:ImportManifestEntry=serde_json::from_value(serde_json::json!({"timestamp":"now","kind":"file","phase":"process","outcome":"skipped","status":"discarded_content","sourcePath":"card.jpg","md5":"0".repeat(32),"md5Source":"computed","size":6,"reason":"previously_discarded_verified_md5_sha256"})).unwrap();assert_eq!(entry.reason.as_deref(),Some("previously_discarded_verified_md5_sha256"));
+}
 
 struct Fixture(PathBuf);
 

@@ -12,6 +12,7 @@ use std::{
 pub(crate) enum Kind {
     PhotoProcess,
     GooglePhotos,
+    TakeOutTrash,
 }
 #[derive(Default)]
 pub(crate) struct Control {

@@ -321,6 +321,21 @@ fn owned(f: &Family, r: Option<&Receipt>) -> Result<Vec<Option<String>>, String>
     Ok(old)
 }
 
+/// Read-only ownership proof for the reviewed removal planner. A filename alone
+/// cannot authorize deleting a crop or the camera original it resembles.
+pub(crate) fn removal_ownership(staging: &str, selected: &str) -> Result<Vec<PathBuf>, String> {
+    let family = family(staging, selected)?;
+    for path in &family.paths { super::lightbox_trash::safety::inspect_optional(path)?; }
+    let receipt = receipt(&family)?;
+    let fingerprints = owned(&family, receipt.as_ref())?;
+    if fingerprints.iter().all(Option::is_none) { return Ok(vec![]); }
+    let receipt = receipt.ok_or("Crop ownership receipt is missing; capture retained")?;
+    if file_fingerprint(&family.source, 64 * 1024 * 1024)?.as_deref() != Some(&receipt.source_fingerprint) {
+        return Err("Crop source differs from its saved ownership receipt; capture retained".into());
+    }
+    Ok(family.paths.into_iter().zip(fingerprints).filter_map(|(path, hash)| hash.map(|_| path)).collect())
+}
+
 #[derive(Deserialize, Serialize)]
 struct Journal {
     old: Vec<Option<String>>,
@@ -552,6 +567,7 @@ fn apply(request: CropRequest) -> Result<CropResult, String> {
         return Err("Invalid enhancement settings".into());
     }
     let f = family(&request.staging_dir, &request.path)?;
+    let _access=super::lightbox_trash::safety::Access::acquire(f.source.parent().ok_or("Photo parent unavailable")?,false)?;
     recover(&f)?;
     let mut source_options = fs::OpenOptions::new();
     source_options.read(true);
@@ -857,6 +873,7 @@ mod tests {
     fn crop_bounds_and_stale_source_are_rejected_without_outputs() {
         let w = Work::new();
         let p = w.photo("photo.jpg");
+        let original_bytes=fs::read(&p).unwrap();
         for crop in [
             CropRect {
                 x: f64::NAN,
@@ -896,7 +913,9 @@ mod tests {
         let mut req = request(&w, &p);
         req.source_fingerprint = "old".into();
         assert!(apply(req).unwrap_err().contains("changed"));
-        assert_eq!(fs::read_dir(&w.0).unwrap().count(), 1);
+        // Coordination metadata is permitted; no media or crop output changed.
+        assert_eq!(fs::read_dir(&w.0).unwrap().flatten().filter(|e|e.file_name()!=".photogogo-capture-access.lock").count(), 1);
+        assert_eq!(fs::read(&p).unwrap(),original_bytes);
     }
     #[test]
     fn crop_foreign_or_edited_versions_are_never_replaced() {

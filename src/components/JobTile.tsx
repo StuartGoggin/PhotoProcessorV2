@@ -31,6 +31,7 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   search_person_videos: "Search Person",
   googlePhotos: "Google Photos",
   rawDevelop: "RAW Development",
+  takeOutTrash: "Take out the trash",
 };
 
 const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {
@@ -203,6 +204,7 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
       </div>
 
       {importJob && <ImportJobSchedulingStatus job={importJob} compact />}
+      {importJob&&(importJob.discardedSkipped??0)>0&&<div className="text-xs text-amber-300" title="Identical originals previously removed by Take out the trash; included in the skipped total.">Previously discarded: {(importJob.discardedSkipped??0).toLocaleString()}</div>}
 
       {/* Progress bar or completion stats */}
       {job.status === "completed" ? (

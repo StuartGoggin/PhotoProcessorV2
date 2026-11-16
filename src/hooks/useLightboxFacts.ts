@@ -5,6 +5,8 @@ import {photoFolder} from "../utils/lightboxCatalogue";
 import {reviewKey,type FolderFacts} from "../utils/lightboxBrowse";
 import {curationWriter} from "../utils/curationPersistence";
 import {reviewWriter} from "../utils/reviewPersistence";
+import {reviewActionWriter} from "../utils/reviewActionPersistence";
+import type {ReviewActionReceipt} from "../types/reviewActions";
 
 const modelFor=(root:string,folder:string)=>({root,folder,data:null as FolderFacts|null,version:0,loading:!!root,saving:false,pending:0,error:"",generation:0});
 
@@ -20,7 +22,7 @@ export function useLightboxFacts(root:string,folder:string,refreshKey:unknown){
     const target=model.current;if(target.root!==root||target.folder!==folder||!root||target.saving)return;
     const generation=++target.generation;target.loading=true;target.error="";notify(target);
     try{
-      await reviewWriter.settled();await curationWriter.settled();await reviewWriter.settled();
+      await reviewActionWriter.settled();await reviewWriter.settled();await curationWriter.settled();await reviewWriter.settled();
       if(!alive.current||model.current!==target||target.generation!==generation)return;
       const data=await invoke<FolderFacts>("lightbox_review_catalogue",{root,relativeFolder:folder});
       if(!alive.current||model.current!==target||target.generation!==generation)return;
@@ -60,6 +62,15 @@ export function useLightboxFacts(root:string,folder:string,refreshKey:unknown){
   }
   const current=model.current;
   return {data:current.data,version:current.version,loading:current.loading,saving:current.saving,error:current.error||reviewWriter.error(root),refresh,mark,
+    acceptAction:(receipt:ReviewActionReceipt)=>{
+      const target=model.current,entry=receipt.review;
+      if(target.root!==entry.root||target.folder!==photoFolder(entry.relativePath))return;
+      if(!target.data?.review){void refreshLatest.current();return;}
+      ++target.generation;target.loading=false;
+      const entries={...target.data.review.entries};
+      if(entry.explicit)entries[entry.key]={reviewed:entry.reviewed,sourceStamp:entry.sourceStamp};else delete entries[entry.key];
+      target.data={...target.data,review:{...target.data.review,revision:entry.revision,entries}};target.version++;notify(target);
+    },
     prepareAutomatic:(node:TreeNode)=>prepare(node,true),
     failedValue:(node:TreeNode)=>reviewWriter.failedValue(root,node.path),
     failedFor:(node?:TreeNode)=>!!node&&reviewWriter.failedFor(root,node.path),getData:()=>model.current.data};

@@ -1,7 +1,7 @@
 import type { ControllerDial } from "./types";
 
 export const LIGHTBOX_TURNS = ["browse", "zoom", "versions", "off"] as const;
-export const LIGHTBOX_PRESSES = ["fit", "select-active", "crop-version", "previous", "next", "trash", "off"] as const;
+export const LIGHTBOX_PRESSES = ["fit", "select-active", "crop-version", "previous", "next", "trash", "undo", "redo", "off"] as const;
 export type LightboxTurn = typeof LIGHTBOX_TURNS[number];
 export type LightboxPress = typeof LIGHTBOX_PRESSES[number];
 export interface LightboxDialBinding { turn: LightboxTurn; press: LightboxPress }
@@ -27,7 +27,7 @@ export function parseLightboxBindings(value: unknown): LightboxBindings {
 }
 
 export const turnLabels: Record<LightboxTurn, string> = { browse: "Browse original photos", zoom: "Zoom image", versions: "Switch image version", off: "Off" };
-export const pressLabels: Record<LightboxPress, string> = { fit: "Fit / reset view", "select-active": "Toggle active Google Photos selection", "crop-version": "Original / Cropped view", previous: "Previous original", next: "Next original", trash: "Toggle trash", off: "Off" };
+export const pressLabels: Record<LightboxPress, string> = { fit: "Fit / reset view", "select-active": "Toggle active Google Photos selection", "crop-version": "Original / Cropped view", previous: "Previous original", next: "Next original", trash: "Trash / Restore and next",undo:"Undo Trash / Restore",redo:"Redo Trash / Restore", off: "Off" };
 
 export function lightboxDials(bindings: LightboxBindings, enabled: boolean, versionLabel: string): ControllerDial[] {
   return bindings.dials.map(({ turn, press }) => ({

@@ -44,6 +44,7 @@ export interface RawRecipeRecord {
 export interface RawCandidates {
   paths: string[];
   total: number;
+  excludedTrash?: number;
   truncated: boolean;
   runtime?: { available: boolean; version: string; message: string };
 }

@@ -282,9 +282,9 @@ try {
     await page.evaluate(()=>{window.__controlsDeferTree=false;window.__controlsReleaseTree();});await ready(page,"02-rider.jpg");
     await page.keyboard.press("End");await ready(page,"03-wide.jpg");await page.keyboard.press("Home");await ready(page);
     await page.keyboard.press("x");await ready(page,"02-rider.jpg");
-    const calls=await page.evaluate(()=>window.__controlsRenames);assert.equal(calls.at(-1).newName,"01-horse{trash}.jpg");
+    const calls=await page.evaluate(()=>window.__controlsActionWrites);assert.equal(calls.at(-1).relativePath,"01-horse.jpg");assert.equal(calls.at(-1).trashed,true);
     await tree(page).getByText("04-finish.jpg",{exact:true}).click();await ready(page,"04-finish.jpg");
-    await page.keyboard.press("x");await ready(page,"04-finish{trash}.jpg");
+    await page.keyboard.press("x");await page.getByText(/Review complete ·/).waitFor();
     assert.equal(await page.getByRole("button",{name:"Next original photo",exact:true}).isDisabled(),true);await page.close();
   });
 
@@ -300,26 +300,21 @@ try {
     assert.ok(await help.evaluate(node=>node.scrollWidth<=node.clientWidth+1));await page.keyboard.press("Escape");await page.close();
   });
 
-  await group("Managed default keys browse originals, toggle trash without advancing, and wait for the confirmed rename", async () => {
-    const page=await newFixture({__controlsManagedController:true,__controlsDeferRename:true});await select(page);
+  await group("Managed default Trash advances immediately and explicit Trash-only Restore uses the same action", async () => {
+    const page=await newFixture({__controlsManagedController:true,__controlsHoldActions:true});await select(page);
     await page.waitForFunction(()=>window.__controllerSurface?.keys[2]?.enabled);
     assert.deepEqual(await page.evaluate(()=>window.__controllerSurface.keys.map(key=>key.label)),["PREVIOUS","TRASH","NEXT","ORIGINAL","B&W","ENHANCED"]);
     assert.deepEqual(await page.evaluate(()=>window.__controllerSurface.keys.slice(3).map(key=>key.enabled)),[true,true,true]);
     await page.evaluate(()=>window.__controlsNativeInput({index:1}));
-    await page.waitForFunction(()=>window.__controlsRenames.length===1);
-    assert.equal(await page.evaluate(()=>window.__controllerAcks.length),0,"The trash input is not acknowledged before its native save finishes");
-    await page.evaluate(()=>window.__controlsNativeInput({index:2}));
-    await page.waitForFunction(()=>window.__controllerAcks.some(ack=>ack.result==="ignored"));
-    assert.equal(await count(page,"__controlsRenames"),1);
-    await page.evaluate(()=>{window.__controlsDeferRename=false;window.__controlsReleaseRename();});
-    await ready(page,"01-horse{trash}.jpg");
+    await ready(page,"02-rider.jpg");await page.waitForFunction(()=>window.__controlsActionWrites.length===1);
+    await page.getByText(/Saving 1 decision/).waitFor();
     await page.waitForFunction(()=>window.__controllerAcks.some(ack=>ack.result==="handled"));
-    assert.match((await page.evaluate(()=>window.__controlsRenames[0])).newName,/\{trash\}/);
+    assert.equal(await count(page,"__controlsRenames"),0);
+    await page.evaluate(()=>{window.__controlsHoldActions=false;window.__controlsDeferredActions.shift()();});await page.getByText("All changes saved",{exact:true}).waitFor();
+    await page.getByLabel("Trash visibility").selectOption("only");await ready(page,"01-horse{trash}.jpg");
     await page.waitForFunction(()=>window.__controllerSurface?.keys[1]?.label==="RESTORE"&&window.__controllerSurface.keys[1].enabled);
-    await page.evaluate(()=>window.__controlsNativeInput({index:1}));await ready(page,"01-horse.jpg");
-    await page.waitForFunction(()=>window.__controllerSurface?.keys[2]?.enabled);await page.evaluate(()=>window.__controlsNativeInput({index:2}));await ready(page,"02-rider.jpg");
-    await page.waitForFunction(()=>window.__controllerSurface?.keys[0]?.enabled);await page.evaluate(()=>window.__controlsNativeInput({index:0}));await ready(page,"01-horse.jpg");
-    assert.equal(await count(page,"__controlsRenames"),2);await page.close();
+    await page.evaluate(()=>window.__controlsNativeInput({index:1}));await page.getByText(/Review complete ·/).waitFor();
+    await page.getByText("All changes saved",{exact:true}).waitFor();assert.equal(await count(page,"__controlsActionWrites"),2);await page.close();
   });
 
   await group("Managed Versions page selects exact real outputs and help blocks hidden controller actions", async () => {

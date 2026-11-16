@@ -334,6 +334,7 @@ pub fn execute(
     job: Option<&str>,
 ) -> Result<PathBuf, String> {
     // Every caller, including preview, must pass RAW-container/mode admission.
+    let _access=crate::commands::lightbox_trash::safety::Access::acquire(source.parent().ok_or("RAW parent unavailable")?,false)?;
     // Optional embedded-reference extraction must never swallow this check.
     source_metadata(source)?;
     runtime_identity()?;

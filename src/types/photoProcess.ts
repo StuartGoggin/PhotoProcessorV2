@@ -25,7 +25,7 @@ export interface ProcessPreviewRequest {
   stabilizationStrength?: StabilizationStrength;
   preserveSourceBitrate?: boolean;
 }
-export interface ProcessPreviewCandidates { paths: string[]; total: number; truncated: boolean }
+export interface ProcessPreviewCandidates { paths: string[]; total: number; truncated: boolean; excludedTrash?: number }
 export interface ProcessPreviewResult {
   kind: "image" | "focus" | "video" | "cleanup";
   path?: string;

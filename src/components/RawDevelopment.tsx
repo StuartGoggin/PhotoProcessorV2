@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { reviewActionWriter } from "../utils/reviewActionPersistence";
 import type { ProcessScopeMode } from "../types";
 import type { RawCandidates, RawHistogram, RawPreviewResult, RawRecipe, RawRecipeRecord, RawScope, RawSelection } from "../types/rawDevelopment";
 import { loadRawDefaults, normalizeRawRecipe, rawPreset, saveRawDefaults } from "../utils/rawRecipe";
@@ -104,6 +105,7 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
   useLayoutEffect(() => { onNamingBlockChange?.(namingBlock); }, [namingBlock, onNamingBlockChange]);
   useEffect(() => () => onNamingBlockChange?.(null), [onNamingBlockChange]);
   const unavailable = candidates?.runtime?.available === false;
+  const excludedTrash=candidates?.excludedTrash??0;
   const noOutput = singlePhoto ? !recipe.colour && !recipe.bw : !defaults.colour && !defaults.bw;
   const scope: RawScope = singlePhoto
     ? { stagingDir, scopeDir: processingDir, scopeMode: processingMode, selection: "selected", minRating: 0, selectedPaths: path ? [path] : [] }
@@ -129,9 +131,9 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
     if (!expanded || !stagingDir) { setLoading(false); return; }
     setLoading(true);
     // Explicit selection is chosen from the scoped original list; viewing a photo never selects it for a batch.
-    invoke<RawCandidates>("raw_development_candidates", { request: singlePhoto
+    reviewActionWriter.settled().then(()=>invoke<RawCandidates>("raw_development_candidates", { request: singlePhoto
       ? { stagingDir, scopeDir: processingDir, scopeMode: processingMode, selection: "selected", selectedPaths: initialPath ? [initialPath] : [], minRating: 0 }
-      : { stagingDir, scopeDir, scopeMode, selection: selection === "selected" ? "all" : selection, minRating } })
+      : { stagingDir, scopeDir, scopeMode, selection: selection === "selected" ? "all" : selection, minRating } }))
       .then((data) => {
         if (current !== candidateGeneration.current) return;
         if (!Array.isArray(data.paths) || !Number.isFinite(data.total)) throw new Error("Invalid RAW candidate response");
@@ -200,6 +202,7 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
     previewLane = previewLane.catch(() => {}).then(async () => {
       const urls: string[] = [];
       try {
+        await reviewActionWriter.settled();
         if (current !== previewGeneration.current) return;
         const result = await invoke<RawPreviewResult>("raw_development_preview", { request });
         if (current !== previewGeneration.current) return;
@@ -235,6 +238,7 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
     const current = ++actionGeneration.current;
     setQueueing(true); setError(null); setMessage(null); setJobId(null);
     try {
+      await reviewActionWriter.settled();
       const id = await invoke<string>("start_raw_development_job", { request: { ...scope, recipe: normalizeRawRecipe(singlePhoto ? recipe : defaults), usePhotoOverrides: singlePhoto ? false : usePhotoOverrides } });
       if (current !== actionGeneration.current) return;
       setJobId(id); setMessage(`RAW Development queued in Jobs. Job ID: ${id}.`);
@@ -298,11 +302,11 @@ export default function RawDevelopment({ stagingDir, scopeDir, scopeMode, onOpen
       {!singlePhoto ? <div className="grid gap-3 md:grid-cols-2 items-start">
         <div className="space-y-2 min-w-0">
           <label className="text-xs text-gray-300 block">RAW batch selection<select aria-label="RAW batch selection" className="input-field w-full mt-1" value={selection} disabled={blocked} onChange={(event) => setSelection(event.target.value as RawSelection)}>
-            <option value="nonTrash">All non-trash CR3 originals</option><option value="all">All CR3 originals, including trash-marked</option><option value="minRating">Minimum rating, excluding trash</option><option value="selected">Only originals I select below</option>
+            <option value="nonTrash">All non-trash CR3 originals</option><option value="all">All CR3 originals, excluding trash</option><option value="minRating">Minimum rating, excluding trash</option><option value="selected">Only originals I select below</option>
           </select></label>
           {selection === "minRating" && <label className="block text-xs text-gray-300">Minimum RAW rating<select aria-label="Minimum RAW rating" className="input-field ml-2" value={minRating} onChange={(event) => setMinRating(Number(event.target.value))}>{[1, 2, 3].map((rating) => <option key={rating} value={rating}>{rating} {rating === 1 ? "star" : "stars"} and above</option>)}</select></label>}
           <p className="text-xs text-gray-500 break-all">{scopeDir || "Configure staging in Settings"} · {scopeMode === "folderOnly" ? "this folder only" : "including subfolders"}</p>
-          <div className="flex gap-2 items-center flex-wrap"><button type="button" className="btn-secondary text-xs" disabled={blocked} onClick={() => setRefresh((value) => value + 1)}>Refresh RAW list</button><span className="text-xs text-gray-400">{loading ? "Finding CR3 originals…" : candidates ? `${candidates.total.toLocaleString()} eligible original${candidates.total === 1 ? "" : "s"}` : ""}</span></div>
+          <div className="flex gap-2 items-center flex-wrap"><button type="button" className="btn-secondary text-xs" disabled={blocked} onClick={() => setRefresh((value) => value + 1)}>Refresh RAW list</button><span className="text-xs text-gray-400">{loading ? "Finding CR3 originals…" : candidates ? `${candidates.total.toLocaleString()} eligible original${candidates.total === 1 ? "" : "s"}` : ""}</span>{!loading&&excludedTrash>0&&<span className="text-xs text-amber-200">{excludedTrash.toLocaleString()} trashed capture{excludedTrash===1?"":"s"} excluded</span>}</div>
           {selection === "selected" && <fieldset className="rounded border border-surface-600 p-2 min-w-0"><legend className="text-xs text-gray-300 px-1">Select batch originals · {selectedPaths.length} selected</legend>
             <input aria-label="Filter RAW originals" className="input-field w-full text-xs mb-2" type="search" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter filenames" />
             <div className="max-h-40 overflow-auto space-y-1">{visiblePaths.map((item) => <label key={item} className="flex items-center gap-2 rounded px-1 py-1 hover:bg-surface-700 text-xs text-gray-300 break-all"><input type="checkbox" aria-label={`Include ${name(item)} in RAW batch`} className="w-5 h-5 shrink-0 accent-amber-400" checked={selectedPaths.includes(item)} onChange={(event) => setSelectedPaths((current) => event.target.checked ? [...current, item] : current.filter((value) => value !== item))} />{name(item)}</label>)}</div>
