@@ -44,3 +44,18 @@ Explicit optimized throughput, compiled Help parity, source commit, installer ex
 - Compiled release Help parity passed1/1 against the generated guide; receipt `test-output/release-2.0.56-compiled-help.log`.
 - Standalone bounded import pipeline passed29/0failed; two child-probe functions are ignored in the outer listing and explicitly invoked by their normal parent tests. Receipt `test-output/release-2.0.56-import-pipeline.log`.
 - Final independent review found no remaining code safety blocker. Evidence wording was corrected to distinguish mocked IPC, real native filesystem operations, shared application metadata and explicitly removable per-file sidecars.
+
+## Verified packages
+
+Built source: `75067cb2c4b2ad383963559ab8ad0a7d7ef0245f`; build ID `20261116T033453131Z-75067cb2+local`. The local suffix reflects the four preserved unrelated untracked cleanup files; tracked application source was clean. All build-producing tests preceded this final installer build, and no Cargo/build-producing check ran afterwards.
+
+Both installers built successfully and passed non-installing extraction: `release-2.0.56-inspection-20261116T034549824Z/report.json`, complete=true. Both packages verified35payload hashes, ExifTool13.59 with2,205files/relocated runtime, RAW5.13 with440resources, controller pinned upstream archives/28modified sources/licences, and matching managed media/source. UpgradeCode `{9CBA7A69-EDA0-5480-A421-9DC9AD265A65}` is unchanged from2.0.55. Application normalized SHA256 `863e85982f6437424971fbf43febf060e47fdfe3c0709a7676685fd59de8b53f`; only the expected3-byte Tauri bundle marker is normalized. These are unsigned test installers.
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
++| PhotoGoGoV2_2.0.56_x64_en-US.msi | 223,638,228 | `709dd021a4b0f294981a7d6ce334a56dca24d41bb8a83af6171e62f291b71bc6` |
+| PhotoGoGoV2_2.0.56_x64-setup.exe | 132,356,514 | `1b0b8befc08584674dedfced8c4de9aab5cc5d611a37731156e24d7373412d8a` |
+| PhotoGoGo_User_Guide_2.0.56.html | 1,325,795 | `8ff255431b1f28da154f279d475c2e844c0956e70eb46477e811d1e340aaec68` |
+| PhotoGoGo-FFmpeg-rowtest1-source.tar.gz | 49,570,807 | `27f7cd21a21e661314d76fe4689f7e4d92b0c0e13bc101376e8443e10eec8fd8` |
+
+The matching unchanged FFmpeg source asset on GitHubv2.0.53 was reverified by server digest and size before linking it. Installer/source publication, Slack read-back and final checkout synchronization follow. Keep2.0.55 rollback installers.
