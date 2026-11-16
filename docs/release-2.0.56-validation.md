@@ -1,6 +1,6 @@
 # PhotoGoGo 2.0.56 — fast capture culling and reviewed removal
 
-Status: all source, optimized-throughput and compiled-Help checks passed. Installer validation and delivery are pending; no 2.0.56 installer has been published yet.
+Status: delivered. Source/tag, both inspected Windows installers in Personal #swghermes, and published guide/checksum assets were verified by read-back. Actual target-PC acceptance remains outstanding.
 
 ## Approved scope
 
@@ -34,7 +34,7 @@ The journal retains confirmed history and blocks safely at its documented storag
 - Production TypeScript/Vite build passed using the installed Node launcher (the roaming npm shim was stale). Only existing bundle-size/Browserslist advisories; no dependency or global installation changed. Photo Process13browser groups, shared Google/core Jobs11, Jobs UI17, import UI10, ordered review queue/transport and the helper's Lightbox/RAW/cleanup/browser checks passed. Final frozen-source functional rerun receipt follows.
 - Help host7checks and portable guide7checks passed;535source fragments,18chapters/13figures. Embedded/portable HTML SHA256 `8ff255431b1f28da154f279d475c2e844c0956e70eb46477e811d1e340aaec68`.
 
-Explicit optimized throughput, compiled Help parity, source commit, installer extraction/runtime/hash/upgrade validation and publication receipts will be appended here. Keep2.0.55 installers for rollback. All build-producing tests precede the final installer build; no installation is part of validation.
+Source, package and publication evidence follows. Keep2.0.55 installers for rollback. All build-producing tests preceded the final installer build; no installation was part of validation.
 
 ### Completed source gates
 
@@ -58,4 +58,23 @@ Both installers built successfully and passed non-installing extraction: `releas
 | PhotoGoGo_User_Guide_2.0.56.html | 1,325,795 | `8ff255431b1f28da154f279d475c2e844c0956e70eb46477e811d1e340aaec68` |
 | PhotoGoGo-FFmpeg-rowtest1-source.tar.gz | 49,570,807 | `27f7cd21a21e661314d76fe4689f7e4d92b0c0e13bc101376e8443e10eec8fd8` |
 
-The matching unchanged FFmpeg source asset on GitHubv2.0.53 was reverified by server digest and size before linking it. Installer/source publication, Slack read-back and final checkout synchronization follow. Keep2.0.55 rollback installers.
+The matching unchanged FFmpeg source asset on GitHubv2.0.53 was reverified by server digest and size before linking it. Publication evidence follows. Keep2.0.55 rollback installers.
+
+## Verified publication and delivery
+
+Package receipt `cbfe8636698e6613a66af33ce26044113ab6d57a` was atomically pushed to GitHub master and `SWG/lightbox-capture-trash`. Annotated tagv2.0.56 peels to that receipt; both remote heads and the peeled tag were read back. Final delivery documentation advances the branches without moving the tag or changing application code.
+
+Published test release: https://github.com/StuartGoggin/PhotoProcessorV2/releases/tag/v2.0.56 (release446593058, published2026-11-16T04:03:51Z, draft=false/prerelease=true). The guide server digest/size matches8ff255431b1f28da154f279d475c2e844c0956e70eb46477e811d1e340aaec68/1,325,795bytes; the403-byte checksum asset matchesb00813bd3781effc5180934c23951bc4c0ef8ec1f4cd57e045a4f760d1dd159e. Release notes link both Slack installers and matching FFmpeg source; large installers are not duplicated as GitHub assets.
+
+Personal/GoggoVille #swghermes:
+
+- EXE/new top-level release: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794801696602259; fileF0CHU8MNL3X. HTTP200 acknowledged132,356,514bytes in129.7s.
+- MSI alternative in that thread: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794801737489459; fileF0CHJ56KKCP. HTTP200 acknowledged223,638,228bytes in206.5s.
+- Published release/guide/source links and acceptance steps: https://goggoville.slack.com/archives/C0BDK1DDZTM/p1794801861069099.
+- Final thread read-back verified both file IDs, version, byte counts, hashes and published links. Evidence is sender-side pre-transfer SHA256, exact-byte HTTP200 acknowledgement and visible metadata; no independent Slack-hosted download/hash was performed. Structured receipt: `test-output/release-2.0.56-delivery.json`.
+
+Delivery recovery: the restricted upload process could not use the network client certificate (WinHTTP80072F99). An initial file-completion response did not produce a channel post, which read-back caught. A read-only comparison confirmed normal desktop networking worked; final transfers used that identity, with no certificate/network/security configuration change. Only the two final file IDs above are release artifacts. Signed upload addresses/credentials were never saved in project files or printed.
+
+The chat's clean managed checkout was fast-forwarded from668cfc34 to the verified package/source receipt. The final documentation-only commit also synchronizes there. Four unrelated untracked cleanup artifacts and other worktrees were preserved. Actual user/SD/Google media and render-PC settings were not touched.
+
+Target acceptance: finish active work, close PhotoGoGo and install one format; keep2.0.55. Use a small copied staging folder for Trash→Undo→Redo, filter/end navigation and the exact JPEG+CR3 permanent-removal confirmation. Check processing exclusions and verified re-import/default override afterwards. Target responsiveness and real-media acceptance remain unverified until that test; no automatic target installation or deletion occurred.
