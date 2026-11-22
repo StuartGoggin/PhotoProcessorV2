@@ -7,9 +7,12 @@ import { defaultLightboxBindings } from "../src/controller/lightboxBindings";
 import "../src/styles.css";
 
 const source = "E:\\";
+const secondSource = "F:\\";
+const secondLabel = "USB READER (F:)";
 const repository = "D:\\SD archives";
 const archiveFolder = repository + "\\2026-11-21_SD-C8A0-12345678-00";
 const archiveId = "sd_archive_" + "a".repeat(32);
+const secondArchiveId = "sd_archive_" + "c".repeat(32);
 const totalBytes = 64 * 1024 ** 3;
 const checkpoint = {
   mode: "archive" as const, label: "CANON (E:)", phase: "Copying",
@@ -22,8 +25,7 @@ const settings: Pick<Settings, "source_root" | "staging_dir" | "archive_dir" | "
   sd_card_repository: "", exiftool_dir: "",
 };
 
-function makeJob(id: string, summary: SdCardArchiveSummary): ProcessJob {
-  const jobSource = summary.mode === "verify" ? archiveFolder : source;
+function makeJob(id: string, summary: SdCardArchiveSummary, jobSource = summary.mode === "verify" ? archiveFolder : source): ProcessJob {
   return {
     id, task: "sdCardArchive", stagingDir: jobSource, scopeDir: jobSource, scopeMode: "folderRecursive",
     status: "running", createdAt: "2026-11-23T03:00:00Z", startedAt: "2026-11-23T03:00:01Z",
@@ -81,7 +83,7 @@ desktop.__TAURI_INTERNALS__ = {
     }
     if (command === "list_sd_archive_sources") return fixture.mounted ? [
       { path: source, label: checkpoint.label, kind: "sd", capacityBytes: 128 * 1024 ** 3 },
-      { path: "F:\\", label: "USB READER (F:)", kind: "usb", capacityBytes: 64 * 1024 ** 3 },
+      { path: secondSource, label: secondLabel, kind: "usb", capacityBytes: 64 * 1024 ** 3 },
     ] : [];
     if (command === "list_import_jobs" || command === "studio_list_jobs") return [];
     if (command === "snapshot_sessions_list") return { sessions: [], warnings: [] };
@@ -95,10 +97,12 @@ desktop.__TAURI_INTERNALS__ = {
     if (command === "controller_lightbox_bindings") return defaultLightboxBindings();
     if (command === "controller_surface" || command === "controller_ack") return;
     if (command === "scan_sd_card_archive") {
-      if (!fixture.mounted || args.source !== source) throw new Error("The card is unavailable.");
+      if (!fixture.mounted || (args.source !== source && args.source !== secondSource)) throw new Error("The card is unavailable.");
+      const second = args.source === secondSource;
       const configured = fixture.settings.sd_card_repository;
       const inspection: SdCardInspection = {
-        token: configured ? "synthetic-card-preview" : null, source, label: checkpoint.label, repository: configured || null,
+        token: configured ? (second ? "synthetic-second-card-preview" : "synthetic-card-preview") : null,
+        source: args.source, label: second ? secondLabel : checkpoint.label, repository: configured || null,
         cardReference: "C8A0", files: 246, directories: 14, totalBytes,
         availableBytes: configured ? fixture.availableBytes : null,
         repositoryIssue: configured ? null : "Choose an SD Card Repository before starting the archive.",
@@ -107,8 +111,11 @@ desktop.__TAURI_INTERNALS__ = {
       return inspection;
     }
     if (command === "start_sd_card_archive") {
-      if (args.token !== "synthetic-card-preview" || !fixture.settings.sd_card_repository || fixture.availableBytes <= totalBytes) throw new Error("Card inspection is stale.");
-      const job = makeJob(archiveId, { ...checkpoint });
+      const second = args.token === "synthetic-second-card-preview";
+      if ((!second && args.token !== "synthetic-card-preview") || !fixture.settings.sd_card_repository || fixture.availableBytes <= totalBytes) throw new Error("Card inspection is stale.");
+      const job = makeJob(second ? secondArchiveId : archiveId, {
+        ...checkpoint, label: second ? secondLabel : checkpoint.label,
+      }, second ? secondSource : source);
       fixture.jobs.unshift(job);
       return structuredClone(job);
     }

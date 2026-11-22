@@ -1,6 +1,6 @@
 [package]
 name = "photogogo-v2"
-version = "2.0.58"
+version = "2.0.59"
 description = "PhotoGoGo V2 - Desktop Photo Archiving App"
 authors = ["PhotoGoGo"]
 edition = "2021"

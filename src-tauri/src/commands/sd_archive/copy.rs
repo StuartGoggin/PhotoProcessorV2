@@ -378,6 +378,12 @@ pub(super) fn archive(
     stopped: &(impl Fn() -> bool + Sync),
     mut save: impl FnMut(&ArchiveJob) -> Result<(), String>,
 ) -> Result<(), String> {
+    let set_phase = |phase: &str| {
+        progress.phase(phase);
+        if let Some(app) = app {
+            super::log_operation(app, job, format!("phase={phase:?}"));
+        }
+    };
     let repository = root(Path::new(&job.repository))?;
     let work = root(&work_dir(&repository, &job.id))?;
     let tree = work.join("card");
@@ -385,6 +391,7 @@ pub(super) fn archive(
         let published = relative_path(&repository, &output.name, false)?;
         if published.exists() && !tree.exists() {
             let published = root(&published)?;
+            set_phase("Verifying");
             let receipt = verify(
                 &published,
                 &output.name,
@@ -406,7 +413,7 @@ pub(super) fn archive(
         .ok_or("Saved card identity is missing.")?;
     let identity = source_identity(&source, media_id)?;
     let mut ticket = acquire_source(&source, &repository, &identity)?;
-    progress.phase("Waiting for the card reader");
+    set_phase("Waiting for the card reader");
     let _reader = loop {
         if stopped() {
             return Err("Stopped at a safe checkpoint.".into());
@@ -425,7 +432,7 @@ pub(super) fn archive(
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    progress.phase("Scanning");
+    set_phase("Scanning");
     let inventory = load_inventory(&work)?;
     ensure_source_unchanged(&source, media_id, &inventory, stopped)?;
     ensure_dir(&tree)?;
@@ -435,10 +442,10 @@ pub(super) fn archive(
         || import_devices::resolve(&repository)
             .ok()
             .is_some_and(|target| !identity.conflicts(&target));
-    progress.phase("Copying");
+    set_phase("Copying");
     let (receipts, stamps) =
         record_archive(&tree, &work, &inventory, progress, separated, stopped)?;
-    progress.phase("Verifying");
+    set_phase("Verifying");
     let date = if let Some(output) = &job.output {
         output.date.clone()
     } else if let Some(date) = job.date_override {

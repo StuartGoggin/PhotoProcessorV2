@@ -52,7 +52,7 @@ try {
   const nav = page.getByRole("navigation", { name: "Main navigation" });
   const openArchive = () => nav.getByRole("button", { name: /SD Card Archive/ }).click();
   const canon = page.getByRole("radio", { name: /CANON \(E:\)/ });
-  const progress = page.getByRole("region", { name: "SD Card Archive progress" });
+  const progress = page.getByRole("region", { name: "SD Card Archive progress" }).first();
   const card = page.getByRole("article", { name: "Process job " + id, exact: true });
   const filter = page.getByRole("group", { name: "Filter jobs" });
   const calls = command => page.evaluate(command => window.__sdArchiveFixture.calls.filter(call => call.command === command), command);
@@ -258,6 +258,48 @@ try {
     assert.equal(layout.columns.split(" ").length, 1);
     assert.equal(layout.animationName, "none");
     await page.screenshot({ path: output + "/narrow.png" });
+  });
+
+  await check("Two cards can be started and monitored independently on the same page", async () => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await nav.getByRole("button", { name: /\bJobs$/ }).click();
+    await page.evaluate(() => {
+      const state = window.__sdArchiveFixture;
+      state.mounted = true;
+      state.jobs = [];
+    });
+    await openArchive();
+    const panels = page.getByRole("region", { name: "SD Card Archive progress" });
+    const canonPanel = panels.filter({ has: page.getByRole("heading", { name: "CANON (E:)", exact: true }) });
+    const secondPanel = panels.filter({ has: page.getByRole("heading", { name: "USB READER (F:)", exact: true }) });
+    async function startCard(card) {
+      await card.check();
+      await page.getByRole("button", { name: "Inspect card" }).click();
+      await page.getByRole("button", { name: "Start archive" }).click();
+    }
+    await startCard(canon);
+    await canonPanel.getByRole("status").filter({ hasText: "Copying" }).waitFor();
+    await startCard(page.getByRole("radio", { name: /USB READER/ }));
+    await secondPanel.getByRole("status").filter({ hasText: "Copying" }).waitFor();
+    assert.equal(await canonPanel.count(), 1, "starting a second card must keep the first job visible");
+    await canonPanel.getByRole("status").filter({ hasText: "Copying" }).waitFor();
+    assert.ok(await page.getByRole("button", { name: "Inspect card" }).isDisabled(), "starting an archive clears the source choice for the next card");
+    const canonJob = page.getByRole("article", { name: "CANON (E:) job", exact: true });
+    await canonJob.getByRole("button", { name: "Pause", exact: true }).click();
+    await canonPanel.getByRole("status").filter({ hasText: "Paused at a safe checkpoint" }).waitFor();
+    await secondPanel.getByRole("status").filter({ hasText: "Copying" }).waitFor();
+    assert.deepEqual((await calls("pause_process_job")).at(-1).args, { jobId: id });
+    await canonJob.getByRole("button", { name: "Resume", exact: true }).click();
+    await canonPanel.getByRole("status").filter({ hasText: "Copying" }).waitFor();
+    await page.screenshot({ path: output + "/simultaneous-cards.png" });
+    await page.evaluate(id => window.__sdArchiveFixture.complete(id), id);
+    await canonPanel.getByRole("status").filter({ hasText: "Verified" }).waitFor();
+    await secondPanel.getByRole("status").filter({ hasText: "Copying" }).waitFor();
+    await page.getByRole("article", { name: "USB READER (F:) job", exact: true })
+      .getByRole("button", { name: "View in Jobs" }).click();
+    const secondId = "sd_archive_" + "c".repeat(32);
+    await page.getByRole("article", { name: "Process job " + secondId, exact: true })
+      .getByRole("region", { name: "SD Card Archive progress" }).waitFor();
   });
 
   assert.deepEqual(pageErrors, []);

@@ -127,6 +127,8 @@ Check camera clocks and the expected event dates before a large import. If media
 
 The archive preserves the card's names, folders and bytes, including media and sidecars, and adds one checksum manifest. PhotoGoGo reads back each destination file before publishing the verified copy. Ordinary **Import** prepares files for your staging workflow.
 
+To archive another card while one is running, select the next card and repeat **Inspect card** and **Start archive**. The archive page shows each active job with its own progress and controls. PhotoGoGo runs separate readers together and serializes reads when readers are shared or cannot be distinguished. Keep each source card connected until its own job shows **Verified**. Completed jobs are available in **Jobs**.
+
 ### Import the same material again
 
 A uniquely named day such as **E:\stage\2026\11\24 - AMGA Champs** is reused when the corresponding date is imported again. Identical content is skipped through the existing checksum checks. A conflicting filename with different contents receives a safe collision name rather than overwriting another photograph.

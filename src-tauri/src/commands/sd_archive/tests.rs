@@ -81,6 +81,21 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn operations_log_correlates_archive_and_verify_events_without_inserting_lines() {
+    let fixture = Fixture::new();
+    let mut job = fixture.job();
+    assert_eq!(
+        operation_log_entry(&job, "phase=Copying"),
+        format!("sd_card_archive job_id='{}' mode=archive phase=Copying", job.id),
+    );
+    job.mode = "verify".into();
+    assert_eq!(
+        operation_log_entry(&job, "error: file unavailable\nRead failed"),
+        format!("sd_card_archive job_id='{}' mode=verify error: file unavailable Read failed", job.id),
+    );
+}
+
+#[test]
 #[cfg(windows)]
 fn archives_full_tree_and_verifies_after_card_removal() {
     let fixture = Fixture::new();

@@ -41,9 +41,13 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
   const [date, setDate] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
-  const [newJob, setNewJob] = useState<ProcessJob | null>(null);
+  const [submittedJobs, setSubmittedJobs] = useState<ProcessJob[]>([]);
   const archiveJobs = jobs.filter(job => job.task === "sdCardArchive");
-  const currentJob = newJob ? archiveJobs.find(job => job.id === newJob.id) ?? newJob : archiveJobs[0];
+  const savedIds = new Set(archiveJobs.map(job => job.id));
+  const submittedIds = new Set(submittedJobs.map(job => job.id));
+  const visibleJobs = [...submittedJobs.filter(job => !savedIds.has(job.id)), ...archiveJobs]
+    .filter((job, index) => index === 0 || submittedIds.has(job.id) || ["queued", "running", "paused"].includes(job.status));
+  const anotherJobIsRunning = visibleJobs.some(job => job.status === "queued" || job.status === "running");
   const enoughSpace = inspection?.availableBytes != null && inspection.availableBytes > inspection.totalBytes;
   const manualSource = source && !cards.some(card => card.path === source);
 
@@ -75,7 +79,7 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
   }
 
   function follow(job: ProcessJob) {
-    setNewJob(job);
+    setSubmittedJobs(current => [job, ...current]);
     void refresh();
   }
 
@@ -138,7 +142,9 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
         </div>
       </div>
       <div className="sd-picker-action">
-        <p>{source ? "Inspection reads the card’s contents and checks available space when a repository is set." : "Select a mounted card to inspect its files."}</p>
+        <p>{source
+          ? "Inspection reads the card’s contents and checks available space when a repository is set."
+          : anotherJobIsRunning ? "Select another mounted card to inspect its files." : "Select a mounted card to inspect its files."}</p>
         <div className="sd-picker-title">
           <HelpTip label="What happens when I inspect a card">PhotoGoGo counts the files, checks their total size and estimates the archive date. Inspection is read-only.</HelpTip>
           <button className="btn-primary" disabled={!source || !!busy} onClick={() => void run("Scanning card…", async () => {
@@ -160,7 +166,9 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
             const token = inspection.token;
             if (!token) return;
             setInspection(null);
-            follow(await invoke<ProcessJob>("start_sd_card_archive", { token, dateOverride: date || null }));
+            const job = await invoke<ProcessJob>("start_sd_card_archive", { token, dateOverride: date || null });
+            select("");
+            follow(job);
           })}>Start archive</button>
         </div>
         {inspection.proposedDate
@@ -173,14 +181,20 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
       {busy && <p role="status" className="sd-picker-feedback text-sky-200">{busy}</p>}
       {error && <p role="alert" className="sd-picker-feedback text-red-300">{error}</p>}
     </section>
-    {currentJob && <div className="space-y-3">
-      <SdCardArchiveProgress key={currentJob.id} job={currentJob} onChanged={refresh} onVerification={follow} />
-      {currentJob.errors.length > 0 && <p role="alert" className="text-sm text-red-300">{currentJob.errors.join(" · ")}</p>}
-      <div className="flex flex-wrap items-start gap-2">
-        <ProcessJobControls job={currentJob} onChanged={async () => { await refresh(); }} />
-        <button className="btn-secondary" onClick={() => onOpenJob(currentJob.id)}>View in Jobs</button>
+    {visibleJobs.length > 0 && <section className="space-y-4" aria-label="SD Card Archive jobs">
+      <div className="sd-picker-title">
+        <h2>Archive jobs</h2>
+        <HelpTip label="How simultaneous archives work">PhotoGoGo can archive cards together when Windows identifies separate readers. Jobs that share a reader, or whose reader cannot be identified, wait their turn.</HelpTip>
       </div>
-    </div>}
+      {visibleJobs.map(job => <article key={job.id} className="space-y-2" aria-label={`${job.sdCardArchive?.label ?? job.stagingDir} job`}>
+        <SdCardArchiveProgress job={job} onChanged={refresh} onVerification={follow} />
+        {job.errors.length > 0 && <p role="alert" className="text-sm text-red-300">{job.errors.join(" · ")}</p>}
+        <div className="flex flex-wrap items-start gap-2">
+          <ProcessJobControls job={job} onChanged={async () => { await refresh(); }} />
+          <button className="btn-secondary" onClick={() => onOpenJob(job.id)}>View in Jobs</button>
+        </div>
+      </article>)}
+    </section>}
     <section className="flex flex-wrap items-center justify-between gap-2 py-2" aria-label="Verify an existing archive">
       <p className="text-sm text-gray-400">Check an existing archive from its saved checksum file, even without the card.</p>
       <button className="btn-secondary" disabled={!!busy} onClick={() => void run("Opening archive…", async () => {

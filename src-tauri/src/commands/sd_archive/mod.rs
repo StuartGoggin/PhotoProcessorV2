@@ -333,6 +333,21 @@ fn save(directory: &Path, job: &ArchiveJob) -> Result<(), String> {
         .map_err(|e| format!("Could not save the SD Card Archive checkpoint: {e}"))
 }
 
+fn operation_log_entry(job: &ArchiveJob, message: &str) -> String {
+    format!(
+        "sd_card_archive job_id='{}' mode={} {}",
+        job.id,
+        job.mode,
+        message.replace(['\r', '\n'], " "),
+    )
+}
+
+fn log_operation(app: &AppHandle, job: &ArchiveJob, message: impl AsRef<str>) {
+    if let Err(error) = crate::utils::append_app_log(app, operation_log_entry(job, message.as_ref())) {
+        log::warn!("Could not write the operations log for SD Card Archive job {}: {error}", job.id);
+    }
+}
+
 fn project(job: &ArchiveJob, running: bool) -> Result<ProcessJob, String> {
     let progress = active_progress()
         .lock()
@@ -521,6 +536,10 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<(),
     job.errors.clear();
     job.summary.phase = "Queued".into();
     save(&directory, &job)?;
+    log_operation(&app, &job, format!(
+        "queued source={:?} repository={:?} files={} bytes={}",
+        job.source, job.repository, job.files, job.summary.total_bytes,
+    ));
     std::thread::Builder::new().name("photogogo-sd-archive".into()).spawn(move || {
         let _guards = (worker, worker_lock);
         let id = job.id.clone();
@@ -530,7 +549,9 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<(),
         job.started_at.get_or_insert_with(|| Utc::now().to_rfc3339());
         job.status = "running".into();
         let result = save(&directory, &job).and_then(|_| {
+            log_operation(&app, &job, "started");
             if job.mode == "verify" {
+                log_operation(&app, &job, "phase=Verifying");
                 verify_existing(&mut job, &progress, &stopped)
             } else {
                 let config = settings::load_settings(app.clone())?;
@@ -540,6 +561,7 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<(),
         });
         let (summary, _, stats) = progress.snapshot();
         job.summary = summary;
+        let first_new_log = job.logs.len();
         match result {
             Ok(()) => {
                 job.status = "completed".into();
@@ -571,11 +593,21 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<(),
             job.logs.push(format!("Reader queue wait {} ms. Verification worker time {} ms. Peak in-flight files {}. Verification workers {}.",
                 stats.reader_queue_wait_ms, stats.verification_worker_ms, stats.peak_files_in_flight, stats.verifier_count));
         }
+        log_operation(&app, &job, format!("finished status={} phase={:?}", job.status, job.summary.phase));
+        for line in &job.logs[first_new_log..] {
+            log_operation(&app, &job, line);
+        }
+        for error in &job.errors {
+            log_operation(&app, &job, format!("error: {error}"));
+        }
         if job.logs.len() > 32 { job.logs.drain(..job.logs.len() - 32); }
         match save(&directory, &job) {
             Ok(()) if job.mode == "archive" && job.status == "completed" => copy::retire_finished_draft(&job),
             Ok(()) => {},
-            Err(error) => log::error!("{error}"),
+            Err(error) => {
+                log::error!("{error}");
+                log_operation(&app, &job, format!("checkpoint_error: {error}"));
+            }
         }
         if let Ok(mut map) = active_progress().lock() { map.remove(&id); }
     }).map_err(|e| format!("Could not start the archive worker. The saved job can be retried: {e}"))?;
@@ -741,6 +773,7 @@ pub(super) fn control(app: AppHandle, id: &str, action: &str) -> Result<bool, St
     }
     match action {
         "pause" | "abort" => {
+            log_operation(&app, &job, format!("{action} requested"));
             if !process_runtime::request_stop(id, action == "abort")? {
                 let _lock = safety::metadata_lock(&directory, &format!("{id}.worker.lock"))?;
                 job = load(&directory, id)?;
@@ -754,12 +787,14 @@ pub(super) fn control(app: AppHandle, id: &str, action: &str) -> Result<bool, St
                 }
                 .into();
                 save(&directory, &job)?;
+                log_operation(&app, &job, format!("status={}", job.status));
             }
         }
         "resume" | "retry" => {
             if job.summary.needs_date && job.date_override.is_none() {
                 return Err("Enter an archive date before retrying this job.".into());
             }
+            log_operation(&app, &job, format!("{action} requested"));
             launch(app, directory, job)?;
         }
         _ => return Err("Unsupported archive job action.".into()),
