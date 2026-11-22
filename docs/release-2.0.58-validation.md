@@ -19,3 +19,12 @@ Source `017c7e14a1379276ca993e1a1f9c44d6458e5f19`, build `20261122T210655752Z-01
 | SHA256SUMS-2.0.58.txt | 407 | `f8631f493e6a4cafbf6c976961939a1ebdf9fccff993aa4db7ee0c90a809da68` |
 
 Both installers are unsigned Windows x64 test packages. Inspection receipt `test-output/release-2.0.58-inspection-20261122T211650175Z/report.json`. Standalone application SHA-256 `1c6b13620ade1fbc1a80ea85925afcfe8ff2e01b10ffef7d4448643659671ea2`. The bundle uses the unchanged [corresponding FFmpeg source](https://github.com/StuartGoggin/PhotoProcessorV2/releases/download/v2.0.53/PhotoGoGo-FFmpeg-rowtest1-source.tar.gz).
+
+## Published release
+
+The [GitHub prerelease](https://github.com/StuartGoggin/PhotoProcessorV2/releases/tag/v2.0.58) is live. Tag `v2.0.58` points to the exact source used to build both installers. The guide and checksum file matched their local sizes and SHA-256 digests in GitHub's read-back.
+
+Both installer uploads returned HTTP 200 with the expected byte counts. The [#swghermes thread](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1795382686715789) shows both filenames and file IDs. This records local hashes, server transfer acknowledgements and visible attachments.
+
+- [Windows x64 EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1795382692073619), Slack file `F0CL4V7ALQL`.
+- [Windows x64 MSI](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1795382726262419), Slack file `F0CLVKHTZR6`.
