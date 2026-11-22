@@ -22,3 +22,14 @@ Build `20261122T202106114Z-74f36889+local` used the source above. Packaging was 
 | SHA256SUMS-2.0.57.txt | 407 | `35ad9fe67b67ac5607405469f45fda8f67591bdceffd77cfb63b094a420dfba9` |
 
 Inspection receipt `test-output/release-2.0.57-inspection-20261122T203002532Z/report.json`. Standalone application SHA-256 `f8ecda10de8f5314585eff817a0d5ba3b01b65994273d45efc8bbc2e76e80ca2`.
+
+## Publication and delivery
+
+The [GitHub prerelease](https://github.com/StuartGoggin/PhotoProcessorV2/releases/tag/v2.0.57) is published under `v2.0.57`. The tag points to the exact built source. GitHub's copies of the guide and checksum list match the local file sizes and SHA-256 digests.
+
+Both Windows installers were shared in the [Personal #swghermes release thread](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1795380004973999). Each upload returned HTTP 200 with the exact byte count shown above, and the thread read-back confirmed both filenames and file IDs.
+
+- [EXE installer](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1795380015902319), file `F0CKVRDC3GV`.
+- [MSI installer](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1795380139579199), file `F0CKVRDNXCM`.
+
+These are upload acknowledgements and sender hashes. No independent Slack download was hashed. Target-machine acceptance remains open. Keep the 2.0.56 installer for rollback.
