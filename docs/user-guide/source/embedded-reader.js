@@ -34,6 +34,13 @@
   const intro=document.querySelector('.guide-intro');let introWasOpen=false;
   window.addEventListener('beforeprint',()=>{introWasOpen=intro.open;intro.open=true;});
   window.addEventListener('afterprint',()=>{intro.open=introWasOpen;});
-  if(/^ch-\d{2}$/.test(initial))requestAnimationFrame(()=>{const section=document.getElementById(initial);section?.scrollIntoView({block:'start'});section?.querySelector('h2')?.focus({preventScroll:true});});
+  if (/^ch-\d{2}$/.test(initial)) {
+    requestAnimationFrame(() => {
+      const section = document.getElementById(initial);
+      section?.scrollIntoView({ block: 'start' });
+      // The host owns opening focus. Sandboxed frames cannot focus on load.
+      if (!embedded) section?.querySelector('h2')?.focus({ preventScroll: true });
+    });
+  }
   send('ready');
 })();

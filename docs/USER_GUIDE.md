@@ -118,6 +118,15 @@ Normal importing copies media and checks the copied bytes. It does not remove th
 
 Check camera clocks and the expected event dates before a large import. If media lands under an unexpected date, inspect the job log and the camera’s metadata rather than immediately running a broad rename.
 
+### Make a verified copy of an entire SD card
+
+1. Choose **Settings → SD Card Repository** and save a folder on another volume.
+2. Open **SD Card Archive**, select the card and choose **Inspect card**. Check the file count, size and available space. Enter a date if the proposed date needs correcting.
+3. Choose **Start archive** and follow the copied and verified counts here or in **Jobs**. If interrupted, reconnect the same card and use the saved job to resume.
+4. Wait for **Verified** before reformatting the archived card manually. You can open the finished folder, view its checksum manifest and verify it again with the card removed.
+
+The archive preserves the card's names, folders and bytes, including media and sidecars, and adds one checksum manifest. PhotoGoGo reads back each destination file before publishing the verified copy. Ordinary **Import** prepares files for your staging workflow.
+
 ### Import the same material again
 
 A uniquely named day such as **E:\stage\2026\11\24 - AMGA Champs** is reused when the corresponding date is imported again. Identical content is skipped through the existing checksum checks. A conflicting filename with different contents receives a safe collision name rather than overwriting another photograph.

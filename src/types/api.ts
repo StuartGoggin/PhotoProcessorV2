@@ -1,4 +1,5 @@
 import type { GooglePhotosJob } from "./googlePhotos";
+import type { SdCardArchiveSummary } from "./sdCardArchive";
 /**
  * API types — mirror the Rust structs exposed via Tauri commands/events.
  * Keep in sync with src-tauri/src/commands/*.rs
@@ -8,6 +9,7 @@ export interface Settings {
   source_root: string;
   staging_dir: string;
   archive_dir: string;
+  sd_card_repository?: string;
   exiftool_dir: string;
   stabilize_max_parallel_jobs: number;
   stabilize_ffmpeg_threads_per_job: number;
@@ -177,7 +179,7 @@ export interface ProcessResult {
   errors: string[];
 }
 
-export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums" | "scan_faces" | "search_person_videos" | "googlePhotos" | "rawDevelop" | "takeOutTrash";
+export type ProcessTask = "focus" | "remove_focus" | "enhance" | "remove_enhance" | "bw" | "remove_bw" | "stabilize" | "remove_stabilize" | "scan_archive_naming" | "apply_event_naming" | "transfer" | "verify_checksums" | "scan_faces" | "search_person_videos" | "googlePhotos" | "rawDevelop" | "takeOutTrash" | "sdCardArchive";
 
 export type ProcessScopeMode = "entireStaging" | "folderRecursive" | "folderOnly";
 
@@ -192,6 +194,7 @@ export interface ProcessJob {
   task: ProcessTask;
   /** Native projection of protected receipts, never a second mutable job. */
   googlePhotos?: GooglePhotosJob;
+  sdCardArchive?: SdCardArchiveSummary;
   canContinue?: boolean;
   controlBlockedReason?: string | null;
   persistenceError?: string | null;

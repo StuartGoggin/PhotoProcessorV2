@@ -41,3 +41,4 @@ mod studio_telemetry;
 pub mod job_cleanup;
 
 pub mod lightbox_trash;
+pub mod sd_archive;

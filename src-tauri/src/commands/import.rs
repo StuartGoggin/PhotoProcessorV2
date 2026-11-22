@@ -164,7 +164,7 @@ fn jobs_store() -> &'static Mutex<HashMap<String, ImportJob>> {
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn import_scheduler() -> &'static super::import_scheduler::Scheduler {
+pub(super) fn import_scheduler() -> &'static super::import_scheduler::Scheduler {
     static SCHEDULER: OnceLock<super::import_scheduler::Scheduler> = OnceLock::new();
     SCHEDULER.get_or_init(Default::default)
 }
@@ -1214,7 +1214,13 @@ fn run_import(
                 if import_control(job_id.as_deref()) != super::import_sessions::Control::Ready {
                     drop(guard); admission.take(); continue;
                 }
-                break guard;
+                if let Some(reader) = super::import_devices::try_reader_lease(&app, &identity)? {
+                    break (guard, reader);
+                }
+                drop(guard);
+                admission.take();
+                import_phase(job_id.as_deref(), "waiting", Some("Waiting for another PhotoGoGo job using this card reader"));
+                thread::sleep(Duration::from_millis(200));
             },
             Err(reason) => {
                 import_phase(job_id.as_deref(), "waiting", Some(reason));

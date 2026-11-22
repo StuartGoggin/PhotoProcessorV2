@@ -32,6 +32,7 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   googlePhotos: "Google Photos",
   rawDevelop: "RAW Development",
   takeOutTrash: "Take out the trash",
+  sdCardArchive: "SD Card Archive",
 };
 
 const STABILIZATION_MODE_LABELS: Record<NonNullable<ProcessJob["stabilizationMode"]>, string> = {
@@ -93,7 +94,9 @@ export default function JobTile({ job, isSelected = false, onClick }: JobTilePro
   const importJob = !isProcessJob(job) ? job : null;
   const title = processJob ? PROCESS_TASK_LABELS[processJob.task] : "Import";
   const detail = processJob
-    ? processJob.task === "googlePhotos"
+    ? processJob.task === "sdCardArchive"
+      ? processJob.sdCardArchive?.label || "Card archive"
+      : processJob.task === "googlePhotos"
       ? processJob.googlePhotos?.albums.map(album => album.title).join(" · ") || "Protected Google Photos job"
       : processJob.task === "scan_archive_naming"
       ? "Archive library"

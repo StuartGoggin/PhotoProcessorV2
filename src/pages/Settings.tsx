@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { Settings } from "../types";
 import { METADATA_TOOL_SOURCES, type MetadataToolStatus } from "../types/metadataTool";
 
-type PathSettingKey = "source_root" | "staging_dir" | "archive_dir" | "exiftool_dir";
+type PathSettingKey = "source_root" | "staging_dir" | "archive_dir" | "sd_card_repository" | "exiftool_dir";
 
 const FIELDS: { key: PathSettingKey; label: string; help: string }[] = [
   {
@@ -21,6 +21,11 @@ const FIELDS: { key: PathSettingKey; label: string; help: string }[] = [
     key: "archive_dir",
     label: "Archive / NAS Directory",
     help: "Final destination for transfer (NAS or external drive)",
+  },
+  {
+    key: "sd_card_repository",
+    label: "SD Card Repository",
+    help: "Where PhotoGoGo stores verified copies of entire SD cards.",
   },
   {
     key: "exiftool_dir",
@@ -42,6 +47,7 @@ export default function SettingsPage() {
     source_root: "",
     staging_dir: "",
     archive_dir: "",
+    sd_card_repository: "",
     exiftool_dir: "",
     stabilize_max_parallel_jobs: 0,
     stabilize_ffmpeg_threads_per_job: 0,
@@ -87,6 +93,7 @@ export default function SettingsPage() {
           source_root: loaded.source_root ?? "",
           staging_dir: loaded.staging_dir ?? "",
           archive_dir: loaded.archive_dir ?? "",
+          sd_card_repository: loaded.sd_card_repository ?? "",
           exiftool_dir: loaded.exiftool_dir ?? "",
           stabilize_max_parallel_jobs: loaded.stabilize_max_parallel_jobs ?? 0,
           stabilize_ffmpeg_threads_per_job: loaded.stabilize_ffmpeg_threads_per_job ?? 0,

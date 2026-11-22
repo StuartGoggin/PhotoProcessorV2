@@ -9,7 +9,9 @@ export default function ProcessJobControls({ job, onChanged, onRestored }: { job
   const [error, setError] = useState("");
   const pending = useRef(false);
   const archived = job.googlePhotos?.historyHidden === true;
-  const mayContinue = job.task !== "googlePhotos" || (job.canContinue === true && !job.persistenceError);
+  const mayContinue = job.task === "googlePhotos"
+    ? job.canContinue === true && !job.persistenceError
+    : job.task !== "sdCardArchive" || job.canContinue !== false;
   async function run(command: string) {
     if (pending.current) return;
     pending.current = true; setBusy(true); setError("");
@@ -23,12 +25,12 @@ export default function ProcessJobControls({ job, onChanged, onRestored }: { job
       {!archived && <>
       {["running", "queued"].includes(job.status) && <button className="btn-secondary" disabled={busy} onClick={() => void run("pause_process_job")}>Pause</button>}
       {job.status === "paused" && <button className="btn-secondary" disabled={busy || !mayContinue} onClick={() => void run("resume_process_job")}>Resume</button>}
-      {["googlePhotos","takeOutTrash"].includes(job.task) && ["needs_attention", "failed", "aborted"].includes(job.status) && <button className="btn-secondary" disabled={busy || !mayContinue} onClick={() => void run("retry_process_job")}>Retry</button>}
+      {["googlePhotos","takeOutTrash","sdCardArchive"].includes(job.task) && ["needs_attention", "failed", "aborted"].includes(job.status) && <button className="btn-secondary" disabled={busy || !mayContinue} onClick={() => void run("retry_process_job")}>Retry</button>}
       {job.task === "googlePhotos" && job.status === "completed_with_warnings" && (job.googlePhotos?.accepted ?? 0) > (job.googlePhotos?.uploaded ?? 0) && <button className="btn-secondary" disabled={busy || !mayContinue} onClick={() => void run("retry_process_job")}>Recheck verification</button>}
       {["running", "queued", "paused"].includes(job.status) && <button className="btn-danger" disabled={busy} onClick={() => void run("abort_process_job")}>Abort</button>}
       </>}
     </div>
-    {!mayContinue && <p className="text-xs text-amber-200 mt-2">{job.controlBlockedReason || "Reconnect the original Google account and OAuth client to continue this saved job."}</p>}
+    {!mayContinue && <p className="text-xs text-amber-200 mt-2">{job.controlBlockedReason || (job.task === "sdCardArchive" ? "Enter an archive date to continue." : "Reconnect the original Google account and OAuth client to continue this saved job.")}</p>}
     {error && <p role="alert" className="text-xs text-red-300 mt-2">{error}</p>}
   </div>;
 }

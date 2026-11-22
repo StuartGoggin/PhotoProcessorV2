@@ -2,6 +2,7 @@
 
 export type Page =
   | "import"
+  | "sdcardarchive"
   | "stagingexplorer"
   | "videostudio"
   | "videosnapshots"

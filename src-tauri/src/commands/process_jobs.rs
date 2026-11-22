@@ -28,6 +28,13 @@ pub(crate) fn snapshot(app: &AppHandle) -> Result<Snapshot, String> {
         Ok((removal, mut notices)) => {jobs.extend(removal); warnings.append(&mut notices);}
         Err(_) => warnings.push("Saved removal jobs could not be read; their evidence remains protected.".into()),
     }
+    match super::sd_archive::snapshot(app) {
+        Ok((archives, mut notices)) => {
+            jobs.extend(archives);
+            warnings.append(&mut notices);
+        }
+        Err(_) => warnings.push("Saved SD Card Archive jobs could not be read.".into()),
+    }
     sort_jobs(&mut jobs);
     Ok(Snapshot { jobs, warnings })
 }
@@ -58,6 +65,10 @@ pub async fn process_jobs_snapshot(app: AppHandle) -> Result<Snapshot, String> {
 }
 #[tauri::command]
 pub async fn retry_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::sd_archive::is_job(&job_id) {
+        return tauri::async_runtime::spawn_blocking(move || super::sd_archive::control(app, &job_id, "retry"))
+            .await.map_err(|_| "Archive retry did not finish")?;
+    }
     if super::lightbox_trash::worker::is_job(&job_id) {
         return tauri::async_runtime::spawn_blocking(move||super::lightbox_trash::worker::control(app,&job_id,"retry"))
             .await.map_err(|_|"Removal retry did not finish")?;
@@ -70,6 +81,10 @@ pub async fn retry_process_job(app: AppHandle, job_id: String) -> Result<bool, S
 }
 #[tauri::command]
 pub async fn process_job_diagnostics(app: AppHandle, job_id: String) -> Result<String, String> {
+    if super::sd_archive::is_job(&job_id) {
+        return tauri::async_runtime::spawn_blocking(move || super::sd_archive::diagnostics(&app, &job_id))
+            .await.map_err(|_| "Archive diagnostics could not be read")?;
+    }
     if super::lightbox_trash::worker::is_job(&job_id) {
         return tauri::async_runtime::spawn_blocking(move||super::lightbox_trash::worker::diagnostics(&app,&job_id))
             .await.map_err(|_|"Removal diagnostics could not be read")?;

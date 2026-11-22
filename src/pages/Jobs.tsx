@@ -5,6 +5,7 @@ import { ProgressBar } from "../components";
 import StudioJobs from "../components/StudioJobs";
 import GooglePhotoJobDetails from "../components/GooglePhotoJobDetails";
 import ProcessJobControls from "../components/ProcessJobControls";
+import SdCardArchiveProgress from "../components/SdCardArchiveProgress";
 import ProcessJobRecovery from "../components/ProcessJobRecovery";
 import JobCleanup from "../components/JobCleanup";
 import { useJobsMonitor, type JobsMonitorResult } from "../hooks/useJobsMonitor";
@@ -36,6 +37,7 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   googlePhotos: "Google Photos",
   rawDevelop: "RAW Development",
   takeOutTrash: "Take out the trash",
+  sdCardArchive: "SD Card Archive",
 };
 
 const PROCESS_SCOPE_LABELS: Record<ProcessJob["scopeMode"], string> = {
@@ -533,8 +535,9 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
                     </div>
 
                     {job.task === "googlePhotos" && <GooglePhotoJobDetails job={job} onChanged={() => loadJobs(false)} />}
+                    {job.sdCardArchive && <SdCardArchiveProgress job={job} onChanged={() => loadJobs(false)} />}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-400">
-                      <div>Staging: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
+                      <div>{job.sdCardArchive ? "Source" : "Staging"}: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
                       <div>Scope mode: <span className="text-gray-200">{PROCESS_SCOPE_LABELS[job.scopeMode] ?? job.scopeMode}</span></div>
                       <div>Progress: <span className="text-gray-200">{doneLabel} ({progress.toFixed(0)}%)</span></div>
                       <div>{job.task === "transfer" ? "Copied" : getProcessAttemptLabel(job.task)}: <span className="text-gray-200">{job.processed}</span></div>

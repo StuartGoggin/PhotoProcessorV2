@@ -13,6 +13,7 @@ pub(crate) enum Kind {
     PhotoProcess,
     GooglePhotos,
     TakeOutTrash,
+    SdCardArchive,
 }
 #[derive(Default)]
 pub(crate) struct Control {

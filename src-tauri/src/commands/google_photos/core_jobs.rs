@@ -128,6 +128,7 @@ pub(super) fn project(job: &Job, account_id: Option<&str>) -> ProcessJob {
         pause_requested: false,
         abort_requested: false,
         google_photos: Some(summary),
+        sd_card_archive: None,
         can_continue: Some(blocked.is_none()),
         control_blocked_reason: blocked,
         persistence_error: None,

@@ -5,6 +5,78 @@
 
 use std::path::Path;
 
+/// One process may hold multiple independent card readers. The shared gate
+/// lets a source with unknown topology exclude every known reader safely.
+pub(super) fn try_reader_lease(
+    app: &tauri::AppHandle,
+    identity: &SourceIdentity,
+) -> Result<Option<Vec<std::fs::File>>, String> {
+    use tauri::Manager;
+    let path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("source-reader-locks");
+    try_reader_lease_in(&path, identity)
+}
+
+fn try_reader_lease_in(dir: &Path, identity: &SourceIdentity) -> Result<Option<Vec<std::fs::File>>, String> {
+    use fs2::FileExt;
+    use sha2::{Digest, Sha256};
+
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let dir = super::lightbox_trash::safety::root(&dir.to_string_lossy())?;
+    let known = identity.certain && !identity.lanes.is_empty();
+    let mut files = Vec::new();
+    let mut lock = |name: &str, exclusive| -> Result<bool, String> {
+        let path = dir.join(name);
+        super::lightbox_trash::safety::inspect_optional(&path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(0x00200000);
+        }
+        let file = options.open(path).map_err(|e| e.to_string())?;
+        super::lightbox_trash::safety::id(&file)?;
+        let acquired = if exclusive { FileExt::try_lock_exclusive(&file) } else { FileExt::try_lock_shared(&file) };
+        match acquired {
+            Ok(()) => { files.push(file); Ok(true) }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.raw_os_error() == Some(33) => Ok(false),
+            Err(e) => Err(format!("Could not reserve the card reader: {e}")),
+        }
+    };
+    if !lock("reader-gate.lock", !known)? { return Ok(None); }
+    if known {
+        for lane in &identity.lanes {
+            let name = format!("reader-{}.lock", hex::encode(Sha256::digest(lane.as_bytes())));
+            if !lock(&name, true)? { return Ok(None); }
+        }
+    }
+    Ok(Some(files))
+}
+
+#[cfg(test)]
+#[test]
+fn reader_leases_exclude_the_same_physical_lane_and_unknown_sources() {
+    let mut nonce = [0u8; 12];
+    getrandom::fill(&mut nonce).unwrap();
+    let path = std::env::temp_dir().join(format!("photogogo-reader-lock-test-{}", hex::encode(nonce)));
+    std::fs::create_dir(&path).unwrap();
+    let source = |lane: &str| SourceIdentity {
+        lanes: vec![lane.into()], media_id: lane.into(), label: lane.into(), certain: !lane.is_empty(),
+    };
+    let first = try_reader_lease_in(&path, &source("disk:1")).unwrap().unwrap();
+    let other = try_reader_lease_in(&path, &source("disk:2")).unwrap().unwrap();
+    assert!(try_reader_lease_in(&path, &source("disk:1")).unwrap().is_none());
+    assert!(try_reader_lease_in(&path, &source("")).unwrap().is_none());
+    drop((first, other));
+    let unknown = try_reader_lease_in(&path, &source("")).unwrap().unwrap();
+    assert!(try_reader_lease_in(&path, &source("disk:1")).unwrap().is_none());
+    drop(unknown);
+    for entry in std::fs::read_dir(&path).unwrap().flatten() {
+        let _ = std::fs::remove_file(entry.path());
+    }
+    let _ = std::fs::remove_dir(path);
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceIdentity {
     /// Sorted, deduplicated Windows disk keys; empty when topology is unknown.

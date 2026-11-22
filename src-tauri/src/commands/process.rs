@@ -63,6 +63,7 @@ pub enum ProcessTask {
     GooglePhotos,
     RawDevelop,
     TakeOutTrash,
+    SdCardArchive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +156,8 @@ pub struct ProcessJob {
     pub abort_requested: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub google_photos: Option<super::google_photos::engine::JobSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sd_card_archive: Option<super::sd_archive::Summary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_continue: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -653,6 +656,10 @@ pub fn clear_finished_process_jobs(app: AppHandle) -> Result<usize, String> {
 
 #[tauri::command]
 pub async fn pause_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::sd_archive::is_job(&job_id) {
+        return async_runtime::spawn_blocking(move || super::sd_archive::control(app, &job_id, "pause"))
+            .await.map_err(|_| "Archive pause did not finish")?;
+    }
     if super::lightbox_trash::worker::is_job(&job_id) {
         return async_runtime::spawn_blocking(move||super::lightbox_trash::worker::control(app,&job_id,"pause")).await.map_err(|_|"Removal pause did not finish")?;
     }
@@ -674,6 +681,10 @@ pub async fn pause_process_job(app: AppHandle, job_id: String) -> Result<bool, S
 
 #[tauri::command]
 pub async fn resume_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::sd_archive::is_job(&job_id) {
+        return async_runtime::spawn_blocking(move || super::sd_archive::control(app, &job_id, "resume"))
+            .await.map_err(|_| "Archive resume did not finish")?;
+    }
     if super::lightbox_trash::worker::is_job(&job_id) {
         return async_runtime::spawn_blocking(move||super::lightbox_trash::worker::control(app,&job_id,"resume")).await.map_err(|_|"Removal resume did not finish")?;
     }
@@ -694,6 +705,10 @@ pub async fn resume_process_job(app: AppHandle, job_id: String) -> Result<bool, 
 
 #[tauri::command]
 pub async fn abort_process_job(app: AppHandle, job_id: String) -> Result<bool, String> {
+    if super::sd_archive::is_job(&job_id) {
+        return async_runtime::spawn_blocking(move || super::sd_archive::control(app, &job_id, "abort"))
+            .await.map_err(|_| "Archive cancellation did not finish")?;
+    }
     if super::lightbox_trash::worker::is_job(&job_id) {
         return async_runtime::spawn_blocking(move||super::lightbox_trash::worker::control(app,&job_id,"abort")).await.map_err(|_|"Removal cancellation did not finish")?;
     }
@@ -1197,7 +1212,7 @@ pub(super) fn collect_process_files(task: &ProcessTask, dir: &Path, recursive: b
         ProcessTask::RemoveStabilize => collect_named_outputs(dir, recursive, "_stabilized", "mp4"),
         ProcessTask::ScanArchiveNaming | ProcessTask::ApplyEventNaming => vec![],
         ProcessTask::Transfer | ProcessTask::VerifyChecksums => vec![],
-        ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos | ProcessTask::RawDevelop | ProcessTask::TakeOutTrash => vec![],
+        ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos | ProcessTask::RawDevelop | ProcessTask::TakeOutTrash | ProcessTask::SdCardArchive => vec![],
     })
 }
 
@@ -2185,6 +2200,7 @@ fn task_name(task: &ProcessTask) -> &'static str {
         ProcessTask::GooglePhotos => "google_photos",
         ProcessTask::RawDevelop => "raw_develop",
         ProcessTask::TakeOutTrash => "take_out_trash",
+        ProcessTask::SdCardArchive => "sd_card_archive",
     }
 }
 
@@ -2207,6 +2223,7 @@ fn task_result_label(task: &ProcessTask) -> &'static str {
         ProcessTask::GooglePhotos => "verified",
         ProcessTask::RawDevelop => "developed",
         ProcessTask::TakeOutTrash => "removed",
+        ProcessTask::SdCardArchive => "verified",
     }
 }
 
@@ -2803,7 +2820,7 @@ fn run_process_task(
                     ProcessTask::ScanArchiveNaming => {}
                     ProcessTask::ApplyEventNaming => {}
                     ProcessTask::Transfer | ProcessTask::VerifyChecksums => {}
-                    ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos | ProcessTask::RawDevelop | ProcessTask::TakeOutTrash => {}
+                    ProcessTask::ScanFaces | ProcessTask::SearchPersonVideos | ProcessTask::GooglePhotos | ProcessTask::RawDevelop | ProcessTask::TakeOutTrash | ProcessTask::SdCardArchive => {}
                 }
                 Ok(())
             })();
@@ -3048,6 +3065,7 @@ pub fn start_process_job(
         pause_requested: false,
         abort_requested: false,
         google_photos: None, can_continue: None, control_blocked_reason: None, persistence_error: None,
+        sd_card_archive: None,
     };
 
     {
@@ -3218,6 +3236,7 @@ pub fn start_event_naming_job(
         pause_requested: false,
         abort_requested: false,
         google_photos: None, can_continue: None, control_blocked_reason: None, persistence_error: None,
+        sd_card_archive: None,
     };
 
     {

@@ -30,6 +30,10 @@ impl StagedCopy {
         self.bytes
     }
 
+    pub(super) fn with_output(&self, action: impl FnOnce(&fs::File) -> bool) -> bool {
+        self.pending_output.as_ref().is_some_and(action)
+    }
+
     /// Verify the fast destination copy against the hash computed during the
     /// single source read. A failed retry always invalidates prior verification.
     pub(super) fn verify(
@@ -69,11 +73,24 @@ impl StagedCopy {
     /// Caller coordinates destination naming and duplicate decisions. Publication
     /// never overwrites an existing file, including one created after verification.
     pub(super) fn publish(&mut self, destination: &Path) -> Result<(), String> {
+        self.publish_checked(destination, None)
+    }
+
+    /// The archive tree and scratch area are separate descendants of this
+    /// job's private directory. Scratch names can never collide with card files.
+    pub(super) fn publish_archive(&mut self, destination: &Path, private_root: &Path) -> Result<(), String> {
+        self.publish_checked(destination, Some(private_root))
+    }
+
+    fn publish_checked(&mut self, destination: &Path, private_root: Option<&Path>) -> Result<(), String> {
         if self.verified.is_none() || self.published {
             return Err("Only an unpublished, verified import can be published".into());
         }
         let parent = destination.parent().ok_or("Destination has no parent")?;
-        if fs::canonicalize(parent).map_err(|e| e.to_string())? != self.parent {
+        let actual = fs::canonicalize(parent).map_err(|e| e.to_string())?;
+        if actual != self.parent && !private_root.is_some_and(|root| {
+            actual == parent && actual.starts_with(root.join("card")) && self.parent == root.join("scratch")
+        }) {
             return Err("Import must be published into its original destination directory".into());
         }
         let metadata = fs::symlink_metadata(&self.path).map_err(|e| e.to_string())?;

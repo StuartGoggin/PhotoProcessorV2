@@ -3,6 +3,7 @@ import type { Page } from "./types";
 import { useJobsMonitor } from "./hooks";
 import { JobsPanel } from "./components";
 import Import from "./pages/Import";
+import SdCardArchive from "./pages/SdCardArchive";
 import StagingExplorer from "./pages/StagingExplorer";
 import VideoStudio from "./pages/VideoStudio";
 import VideoSnapshots from "./pages/VideoSnapshots";
@@ -26,6 +27,7 @@ import {installReviewCloseGuard} from "./utils/reviewCloseGuard";
 
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "import",      label: "Import",       icon: "📥" },
+  { id: "sdcardarchive", label: "SD Card Archive", icon: "💾" },
   { id: "stagingexplorer", label: "Video Timeline", icon: "🎬" },
   { id: "videostudio", label: "Video Studio", icon: "🎞️" },
   { id: "videosnapshots", label: "Video snapshots", icon: "📸" },
@@ -138,6 +140,7 @@ export default function App() {
 
   const pageContent: Record<Page, React.ReactNode> = {
     import: <Import />,
+    sdcardarchive: <SdCardArchive jobs={processJobs} refresh={refresh} onOpenJob={openJob} onSettings={() => setPage("settings")} />,
     stagingexplorer: <StagingExplorer />,
     videostudio: null,
     videosnapshots: null,

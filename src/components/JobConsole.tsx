@@ -42,6 +42,7 @@ const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
   googlePhotos: "Google Photos",
   rawDevelop: "RAW Development",
   takeOutTrash: "Take out the trash",
+  sdCardArchive: "SD Card Archive",
 };
 
 const PROCESS_PHASE_LABELS: Record<string, string> = {

@@ -1,7 +1,7 @@
 import type { Page } from "../types";
 
 const chapters: Record<Page, string> = {
-  import: "ch-03", stagingexplorer: "ch-04", videostudio: "ch-08", videosnapshots: "ch-11",
+  import: "ch-03", sdcardarchive: "ch-03", stagingexplorer: "ch-04", videostudio: "ch-08", videosnapshots: "ch-11",
   nameevents: "ch-03", postprocess: "ch-05", review: "ch-06", transfer: "ch-13",
   googlephotos: "ch-12", faceidentify: "ch-16", settings: "ch-02", jobs: "ch-14", cleanup: "ch-16", logs: "ch-14",
 };
