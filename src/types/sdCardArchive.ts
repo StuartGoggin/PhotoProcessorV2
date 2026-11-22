@@ -4,16 +4,24 @@ export interface ArchiveDate {
   file?: string | null;
 }
 
+export interface SdArchiveSource {
+  path: string;
+  label: string;
+  kind: "sd" | "usb" | "mmc" | "removable";
+  capacityBytes: number | null;
+}
+
 export interface SdCardInspection {
-  token: string;
+  token: string | null;
   source: string;
   label: string;
-  repository: string;
+  repository: string | null;
   cardReference: string;
   files: number;
   directories: number;
   totalBytes: number;
-  availableBytes: number;
+  availableBytes: number | null;
+  repositoryIssue: string | null;
   proposedDate: ArchiveDate | null;
 }
 

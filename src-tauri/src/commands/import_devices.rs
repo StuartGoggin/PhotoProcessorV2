@@ -99,6 +99,22 @@ impl SourceIdentity {
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveSource {
+    path: String,
+    label: String,
+    kind: &'static str,
+    capacity_bytes: Option<u64>,
+}
+
+pub(super) fn archive_sources() -> Result<Vec<ArchiveSource>, String> {
+    #[cfg(windows)]
+    { windows::archive_sources() }
+    #[cfg(not(windows))]
+    { Ok(Vec::new()) }
+}
+
 /// Resolves the existing target (including junctions), never just its drive
 /// letter. A missing/inaccessible source is an error; unsupported topology is
 /// a valid but conservative identity. Does not enumerate or read source files.
@@ -140,14 +156,16 @@ pub fn resolve(path: &Path) -> Result<SourceIdentity, String> {
 
 #[cfg(windows)]
 mod windows {
-    use super::SourceIdentity;
+    use super::{ArchiveSource, SourceIdentity};
     use std::{ffi::c_void, mem, os::windows::ffi::OsStrExt, path::Path, ptr};
+    use windows_sys::Win32::Storage::FileSystem::{BusTypeMmc, BusTypeSd, BusTypeUsb, GetDriveTypeW, GetLogicalDrives};
 
     // FILE_ANY_ACCESS metadata queries; no GENERIC_READ/WRITE or disk mutation.
     // https://learn.microsoft.com/windows/win32/api/winioctl/ni-winioctl-ioctl_volume_get_volume_disk_extents
     // https://learn.microsoft.com/windows/win32/api/winioctl/ni-winioctl-ioctl_storage_get_device_number
     const IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS: u32 = 0x0056_0000;
     const IOCTL_STORAGE_GET_DEVICE_NUMBER: u32 = 0x002d_1080;
+    const IOCTL_STORAGE_QUERY_PROPERTY: u32 = 0x002d_1400;
     const FILE_DEVICE_DISK: u32 = 7;
     const FILE_SHARE_ALL: u32 = 1 | 2 | 4;
     const OPEN_EXISTING: u32 = 3;
@@ -294,12 +312,9 @@ mod windows {
         Ok((serial, text(&label)))
     }
 
-    fn lanes(guid: &str) -> Vec<String> {
-        // CreateFile on a volume must omit its trailing slash. Zero access
-        // permits metadata-only queries without requesting administrator rights.
-        let Ok(path) = wide(std::ffi::OsStr::new(guid.trim_end_matches('\\'))) else {
-            return Vec::new();
-        };
+    fn open_device(path: &str) -> Option<VolumeHandle> {
+        let path = wide(std::ffi::OsStr::new(path)).ok()?;
+        // Zero access permits metadata queries without requesting data access.
         let raw = unsafe {
             CreateFileW(
                 path.as_ptr(),
@@ -311,10 +326,14 @@ mod windows {
                 ptr::null_mut(),
             )
         };
-        if raw.is_null() || raw as isize == -1 {
+        (!raw.is_null() && raw as isize != -1).then(|| VolumeHandle(raw))
+    }
+
+    fn lanes(guid: &str) -> Vec<String> {
+        // CreateFile on a volume must omit its trailing slash.
+        let Some(handle) = open_device(guid.trim_end_matches('\\')) else {
             return Vec::new();
-        }
-        let handle = VolumeHandle(raw);
+        };
         let mut extents = VolumeExtents {
             count: 0,
             extents: [DiskExtent::default(); MAX_EXTENTS],
@@ -392,6 +411,73 @@ mod windows {
         lanes
     }
 
+    fn storage_bus(device: &str) -> Option<u32> {
+        let handle = open_device(device)?;
+        // STORAGE_PROPERTY_QUERY for StorageDeviceProperty and PropertyStandardQuery.
+        let query = [0u32; 3];
+        // Aligned storage for STORAGE_DEVICE_DESCRIPTOR. The fixed header's BusType
+        // is at byte 28. We do not read any variable-length device identifiers.
+        let mut descriptor = [0u32; 256];
+        let mut returned = 0;
+        let ok = unsafe {
+            DeviceIoControl(
+                handle.0, IOCTL_STORAGE_QUERY_PROPERTY, query.as_ptr().cast(),
+                mem::size_of_val(&query) as u32, descriptor.as_mut_ptr().cast(),
+                mem::size_of_val(&descriptor) as u32, &mut returned, ptr::null_mut(),
+            )
+        };
+        (ok != 0 && returned >= 36 && descriptor[0] >= 36 && descriptor[1] >= 36)
+            .then_some(descriptor[7])
+            .filter(|&bus| bus != 0)
+    }
+
+    fn archive_source_kind(removable: bool, bus: Option<u32>) -> Option<&'static str> {
+        if bus == Some(BusTypeSd as u32) {
+            return Some("sd");
+        }
+        removable.then(|| match bus {
+            Some(bus) if bus == BusTypeUsb as u32 => "usb",
+            Some(bus) if bus == BusTypeMmc as u32 => "mmc",
+            _ => "removable",
+        })
+    }
+
+    pub(super) fn archive_sources() -> Result<Vec<ArchiveSource>, String> {
+        let _error_mode = ErrorMode::enter()?;
+        let mask = unsafe { GetLogicalDrives() };
+        if mask == 0 {
+            return Err(last_error("Cannot list mounted drives"));
+        }
+        let system_drive = std::env::var("SystemDrive").unwrap_or_default();
+        let mut sources = Vec::new();
+        for index in 0..26 {
+            if mask & (1 << index) == 0 {
+                continue;
+            }
+            let drive = format!("{}:", char::from(b'A' + index));
+            if drive.eq_ignore_ascii_case(&system_drive) {
+                continue;
+            }
+            let path = format!("{drive}\\");
+            let wide_root = wide(std::ffi::OsStr::new(&path))?;
+            let drive_type = unsafe { GetDriveTypeW(wide_root.as_ptr()) };
+            if !matches!(drive_type, 2 | 3) {
+                continue;
+            }
+            // Unmounted reader slots have no usable volume information.
+            let Ok(identity) = resolve(Path::new(&path)) else { continue };
+            let bus = match identity.lanes.as_slice() {
+                [lane] => lane.strip_prefix("disk:").and_then(|number| storage_bus(&format!(r"\\.\PhysicalDrive{number}"))),
+                _ => None,
+            }.or_else(|| storage_bus(&format!(r"\\.\{drive}")));
+            let Some(kind) = archive_source_kind(drive_type == 2, bus) else { continue };
+            let capacity_bytes = fs2::total_space(Path::new(&path)).ok();
+            sources.push(ArchiveSource { path, label: identity.label, kind, capacity_bytes });
+        }
+        sources.sort_by_key(|source| source.kind != "sd");
+        Ok(sources)
+    }
+
     pub(super) fn resolve(path: &Path) -> Result<SourceIdentity, String> {
         let _error_mode = ErrorMode::enter()?;
         let canonical = std::fs::canonicalize(path)
@@ -436,6 +522,16 @@ mod windows {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn only_an_sd_bus_confirms_an_sd_card() {
+            assert_eq!(archive_source_kind(false, Some(BusTypeSd as u32)), Some("sd"));
+            assert_eq!(archive_source_kind(true, Some(BusTypeUsb as u32)), Some("usb"));
+            assert_eq!(archive_source_kind(true, Some(BusTypeMmc as u32)), Some("mmc"));
+            assert_eq!(archive_source_kind(true, None), Some("removable"));
+            assert_eq!(archive_source_kind(false, Some(BusTypeMmc as u32)), None);
+            assert_eq!(archive_source_kind(false, None), None);
+        }
 
         #[test]
         fn extents_share_physical_disks_and_reject_partial_or_unbounded_data() {

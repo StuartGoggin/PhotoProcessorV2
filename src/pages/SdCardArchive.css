@@ -1,0 +1,99 @@
+.sd-picker {
+  border: 1px solid #304354;
+  border-radius: 1rem;
+  background: #121a23;
+}
+.sd-picker-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(13rem, 1fr);
+}
+.sd-picker-source, .sd-picker-destination { min-width: 0; padding: 1.15rem; }
+.sd-picker-destination {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .7rem;
+  border-left: 1px solid #304354;
+  border-radius: 0 1rem 0 0;
+  background: radial-gradient(ellipse at 72% 8%, #1b3648, transparent 80%), #162431;
+}
+.sd-picker-heading, .sd-picker-title, .sd-picker-action { display: flex; align-items: center; gap: .6rem; }
+.sd-picker-heading, .sd-picker-action { justify-content: space-between; flex-wrap: wrap; }
+.sd-picker-title h2 { font-size: .93rem; font-weight: 650; color: #f0f7ff; }
+.sd-picker .sd-picker-compact { min-height: 2rem; padding: .36rem .65rem; font-size: .75rem; }
+.sd-picker-options { display: grid; gap: .45rem; margin-top: .85rem; min-width: 0; }
+.sd-picker-option {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  min-width: 0;
+  padding: .64rem .7rem;
+  border: 1px solid #304354;
+  border-radius: .65rem;
+  background: #182532;
+}
+label.sd-picker-option { cursor: pointer; }
+label.sd-picker-option:hover, .sd-picker-option:focus-within { border-color: #789fbb; }
+.sd-picker-option[data-selected=true] { border-color: #67cbe7; background: #1a3545; }
+.sd-picker-option input { flex: none; accent-color: #84d9f1; }
+.sd-picker-option-copy { display: grid; gap: .08rem; min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.sd-picker-option-copy strong { color: #f1f7ff; font-size: .86rem; font-weight: 650; }
+.sd-picker-option-copy span, .sd-picker-capacity { font-size: .72rem; color: #abc0d2; }
+.sd-picker-option-copy .sd-picker-confirmed { color: #8de6f8; }
+.sd-picker-capacity { flex: none; font-variant-numeric: tabular-nums; }
+.sd-picker-card-icon {
+  display: flex;
+  flex: none;
+  justify-content: center;
+  gap: .14rem;
+  width: 1.58rem;
+  height: 1.92rem;
+  padding-top: .36rem;
+  border: 1px solid #77b2ce;
+  border-radius: .22rem;
+  clip-path: polygon(0 0, 72% 0, 100% 24%, 100% 100%, 0 100%);
+  background: linear-gradient(145deg, #3c667d, #213b50);
+}
+.sd-picker-card-icon i { height: .37rem; width: .11rem; border-radius: .08rem; background: #d7b779; }
+.sd-picker-empty { padding: .75rem; background: #182532; border-radius: .65rem; }
+.sd-picker-empty, .sd-picker-fallback p, .sd-picker-action p, .sd-picker-repository-path { font-size: .8rem; color: #b4c7d7; }
+.sd-picker-fallback { margin-top: .72rem; }
+.sd-picker-fallback summary { width: fit-content; cursor: pointer; color: #b9d8eb; font-size: .77rem; }
+.sd-picker-fallback p { margin: .43rem 0; }
+.sd-picker-repository { display: grid; gap: .2rem; width: 3.9rem; margin: .15rem 0; }
+.sd-picker-repository i { position: relative; height: .67rem; border: 1px solid #5e8ca6; border-radius: .2rem; background: linear-gradient(#35596c, #263f51); }
+.sd-picker-repository i::after { content: ""; position: absolute; right: .35rem; top: .22rem; width: .19rem; height: .19rem; background: #80c7df; border-radius: 50%; }
+.sd-picker-repository-path { overflow-wrap: anywhere; }
+.sd-picker-action, .sd-picker-inspection { padding: .85rem 1.15rem; border-top: 1px solid #304354; }
+.sd-picker-feedback { padding: 0 1.15rem .85rem; font-size: .85rem; }
+.sd-archive-help { position: relative; display: inline-flex; }
+.sd-archive-help button {
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 50%;
+  border: 1px solid #58768c;
+  color: #cfebf8;
+  font-size: .72rem;
+}
+.sd-archive-help [role=tooltip] {
+  position: absolute;
+  z-index: 10;
+  inset-inline-start: 0;
+  top: calc(100% + .35rem);
+  display: none;
+  width: min(15.5rem, 72vw);
+  padding: .55rem .68rem;
+  border: 1px solid #56778e;
+  border-radius: .45rem;
+  background: #1a2b39;
+  color: #edf7ff;
+  font-size: .75rem;
+  line-height: 1.4;
+  box-shadow: 0 .35rem 1.2rem #0007;
+}
+.sd-picker-destination .sd-archive-help [role=tooltip], .sd-picker-action .sd-archive-help [role=tooltip] { inset-inline: auto 0; }
+.sd-archive-help:hover [role=tooltip], .sd-archive-help:focus-within [role=tooltip] { display: block; }
+@media (max-width: 900px) {
+  .sd-picker-grid { grid-template-columns: minmax(0, 1fr); }
+  .sd-picker-destination { border-top: 1px solid #304354; border-left: 0; border-radius: 0; }
+}

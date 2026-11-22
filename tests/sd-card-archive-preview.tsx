@@ -79,7 +79,10 @@ desktop.__TAURI_INTERNALS__ = {
       Object.assign(fixture.settings, args.settings);
       return;
     }
-    if (command === "list_sd_cards") return fixture.mounted ? [{ path: source, label: checkpoint.label }] : [];
+    if (command === "list_sd_archive_sources") return fixture.mounted ? [
+      { path: source, label: checkpoint.label, kind: "sd", capacityBytes: 128 * 1024 ** 3 },
+      { path: "F:\\", label: "USB READER (F:)", kind: "usb", capacityBytes: 64 * 1024 ** 3 },
+    ] : [];
     if (command === "list_import_jobs" || command === "studio_list_jobs") return [];
     if (command === "snapshot_sessions_list") return { sessions: [], warnings: [] };
     if (command === "process_jobs_snapshot") return { jobs: structuredClone(fixture.jobs), warnings: [] };
@@ -93,16 +96,18 @@ desktop.__TAURI_INTERNALS__ = {
     if (command === "controller_surface" || command === "controller_ack") return;
     if (command === "scan_sd_card_archive") {
       if (!fixture.mounted || args.source !== source) throw new Error("The card is unavailable.");
+      const configured = fixture.settings.sd_card_repository;
       const inspection: SdCardInspection = {
-        token: "synthetic-card-preview", source, label: checkpoint.label, repository,
+        token: configured ? "synthetic-card-preview" : null, source, label: checkpoint.label, repository: configured || null,
         cardReference: "C8A0", files: 246, directories: 14, totalBytes,
-        availableBytes: fixture.availableBytes,
+        availableBytes: configured ? fixture.availableBytes : null,
+        repositoryIssue: configured ? null : "Choose an SD Card Repository before starting the archive.",
         proposedDate: { date: "2026-11-22", basis: "File modification time", file: "DCIM/100CANON/IMG_0991.JPG" },
       };
       return inspection;
     }
     if (command === "start_sd_card_archive") {
-      if (args.token !== "synthetic-card-preview" || fixture.availableBytes <= totalBytes) throw new Error("Card inspection is stale.");
+      if (args.token !== "synthetic-card-preview" || !fixture.settings.sd_card_repository || fixture.availableBytes <= totalBytes) throw new Error("Card inspection is stale.");
       const job = makeJob(archiveId, { ...checkpoint });
       fixture.jobs.unshift(job);
       return structuredClone(job);

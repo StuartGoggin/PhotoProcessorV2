@@ -120,8 +120,8 @@ Check camera clocks and the expected event dates before a large import. If media
 
 ### Make a verified copy of an entire SD card
 
-1. Choose **Settings → SD Card Repository** and save a folder on another volume.
-2. Open **SD Card Archive**, select the card and choose **Inspect card**. Check the file count, size and available space. Enter a date if the proposed date needs correcting.
+1. Open **SD Card Archive** and select the card by its label and drive letter. Windows can identify some cards by their SD connection. Some readers report only USB storage. If the card is missing, expand **Card not listed?** and browse to its drive root.
+2. Choose **Inspect card** to check its contents and size. Set **SD Card Repository** to a folder on another volume before starting the archive. Check the available space and enter a date if the proposed date needs correcting.
 3. Choose **Start archive** and follow the copied and verified counts here or in **Jobs**. If interrupted, reconnect the same card and use the saved job to resume.
 4. Wait for **Verified** before reformatting the archived card manually. You can open the finished folder, view its checksum manifest and verify it again with the card removed.
 

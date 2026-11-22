@@ -26,15 +26,16 @@ const KIND: process_runtime::Kind = process_runtime::Kind::SdCardArchive;
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Preview {
-    token: String,
+    token: Option<String>,
     source: String,
     label: String,
-    repository: String,
+    repository: Option<String>,
     card_reference: String,
     files: usize,
     directories: usize,
     total_bytes: u64,
-    available_bytes: u64,
+    available_bytes: Option<u64>,
+    repository_issue: Option<String>,
     proposed_date: Option<DateEvidence>,
 }
 
@@ -423,23 +424,34 @@ fn validate_volume(path: &str) -> Result<(), String> {
     }
 }
 
-fn inspect(app: &AppHandle, selected: &str) -> Result<Preview, String> {
-    validate_volume(selected)?;
-    let source = inventory::root(Path::new(selected))?;
-    let config = settings::load_settings(app.clone())?;
-    if config.sd_card_repository.trim().is_empty() {
-        return Err("Choose an SD Card Repository in Settings first.".into());
+fn resolve_repository(
+    configured: &str,
+    source: &Path,
+    identity: &import_devices::SourceIdentity,
+) -> Result<PathBuf, String> {
+    if configured.trim().is_empty() {
+        return Err("Choose an SD Card Repository before starting the archive.".into());
     }
-    let repository = inventory::root(Path::new(&config.sd_card_repository))?;
-    let identity = import_devices::resolve(&source)?;
-    if repository.starts_with(&source)
+    let repository = inventory::root(Path::new(configured))
+        .map_err(|error| format!("Cannot open the SD Card Repository: {error}"))?;
+    if repository.starts_with(source)
         || import_devices::resolve(&repository)
             .ok()
             .is_some_and(|target| target.media_id == identity.media_id)
     {
         return Err("Choose a repository on a different volume from the card.".into());
     }
-    let mut ticket = copy::acquire_source(&source, &repository, &identity)?;
+    Ok(repository)
+}
+
+fn inspect(app: &AppHandle, selected: &str) -> Result<Preview, String> {
+    validate_volume(selected)?;
+    let source = inventory::root(Path::new(selected))?;
+    let identity = import_devices::resolve(&source)?;
+    let repository = settings::load_settings(app.clone())
+        .and_then(|config| resolve_repository(&config.sd_card_repository, &source, &identity));
+    let scope = repository.as_deref().unwrap_or(&source);
+    let mut ticket = copy::acquire_source(&source, scope, &identity)?;
     let _permit = ticket
         .try_acquire()?
         .map_err(|message| message.to_string())?;
@@ -447,24 +459,34 @@ fn inspect(app: &AppHandle, selected: &str) -> Result<Preview, String> {
         .ok_or("Another PhotoGoGo job is using this card reader.")?;
     let inventory = inventory::scan(&source, || false)?;
     copy::source_identity(&source, &identity.media_id)?;
-    let available_bytes = fs2::available_space(&repository)
-        .map_err(|e| format!("Cannot check repository free space: {e}"))?;
+    let (repository, available_bytes, repository_issue) = match repository.and_then(|path| {
+        fs2::available_space(&path)
+            .map(|available| (path, available))
+            .map_err(|error| format!("Cannot check repository free space: {error}"))
+    }) {
+        Ok((path, available)) => (Some(path.to_string_lossy().into_owned()), Some(available), None),
+        Err(error) => (None, None, Some(error)),
+    };
     let card_reference = if identity.media_id.to_ascii_lowercase().contains("volume{") {
         hex::encode(&Sha256::digest(identity.media_id.as_bytes())[..2]).to_uppercase()
     } else {
         "CARD".into()
     };
     let preview = Preview {
-        token: new_id()?,
+        token: repository.as_ref().map(|_| new_id()).transpose()?,
         source: source.to_string_lossy().into_owned(),
         label: identity.label,
-        repository: repository.to_string_lossy().into_owned(),
+        repository,
         card_reference,
         files: inventory.files.len(),
         directories: inventory.directories.len(),
         total_bytes: inventory.bytes(),
         available_bytes,
+        repository_issue,
         proposed_date: inventory::proposed_date(&inventory),
+    };
+    let Some(token) = &preview.token else {
+        return Ok(preview);
     };
     let mut plans = inspections()
         .lock()
@@ -472,15 +494,15 @@ fn inspect(app: &AppHandle, selected: &str) -> Result<Preview, String> {
     plans.retain(|_, plan| plan.at.elapsed() < Duration::from_secs(900));
     if plans.len() >= 4 {
         if let Some(oldest) = plans
-            .values()
-            .min_by_key(|plan| plan.at)
-            .map(|plan| plan.preview.token.clone())
+            .iter()
+            .min_by_key(|(_, plan)| plan.at)
+            .map(|(key, _)| key.clone())
         {
             plans.remove(&oldest);
         }
     }
     plans.insert(
-        preview.token.clone(),
+        token.clone(),
         Inspection {
             preview: preview.clone(),
             media_id: identity.media_id,
@@ -594,7 +616,8 @@ fn start(
         .filter(|inspection| inspection.at.elapsed() < Duration::from_secs(900))
         .ok_or("Inspect the card again before starting the archive.")?;
     let preview = plan.preview;
-    let repository = inventory::root(Path::new(&preview.repository))?;
+    let saved_repository = preview.repository.ok_or("Inspect the card with a valid SD Card Repository first.")?;
+    let repository = inventory::root(Path::new(&saved_repository))?;
     let config = settings::load_settings(app.clone())?;
     if repository != inventory::root(Path::new(&config.sd_card_repository))? {
         return Err("The SD Card Repository changed. Inspect the card again.".into());
@@ -613,7 +636,7 @@ fn start(
         mode: "archive".into(),
         source: preview.source,
         media_id: Some(plan.media_id),
-        repository: preview.repository,
+        repository: saved_repository,
         card_reference: preview.card_reference,
         date_override,
         output: None,
@@ -761,6 +784,11 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(job)
         .await
         .map_err(|_| "The SD Card Archive operation did not finish.")?
+}
+
+#[tauri::command]
+pub async fn list_sd_archive_sources() -> Result<Vec<import_devices::ArchiveSource>, String> {
+    blocking(import_devices::archive_sources).await
 }
 
 #[tauri::command]

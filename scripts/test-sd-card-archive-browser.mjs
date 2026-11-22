@@ -51,17 +51,52 @@ try {
 
   const nav = page.getByRole("navigation", { name: "Main navigation" });
   const openArchive = () => nav.getByRole("button", { name: /SD Card Archive/ }).click();
+  const canon = page.getByRole("radio", { name: /CANON \(E:\)/ });
   const progress = page.getByRole("region", { name: "SD Card Archive progress" });
   const card = page.getByRole("article", { name: "Process job " + id, exact: true });
   const filter = page.getByRole("group", { name: "Filter jobs" });
   const calls = command => page.evaluate(command => window.__sdArchiveFixture.calls.filter(call => call.command === command), command);
 
-  await check("Dedicated navigation opens the page and the existing folder picker saves a separate repository", async () => {
+  await check("Card detection evidence, keyboard help and manual fallback are clear", async () => {
     await openArchive();
     await page.getByRole("heading", { name: "SD Card Archive", exact: true }).waitFor();
     assert.equal(await page.getByRole("main").count(), 1);
+    await canon.waitFor();
+    await page.getByText("SD card · Windows reports an SD bus", { exact: true }).waitFor();
+    await page.getByText("USB storage · media type unconfirmed", { exact: true }).waitFor();
+    await page.getByText("128 GiB", { exact: true }).waitFor();
+    const help = page.getByRole("button", { name: "How cards are identified" });
+    await help.hover();
+    await page.getByRole("tooltip").filter({ hasText: "only its USB reader" }).waitFor();
+    await help.focus();
+    await canon.hover();
+    await page.getByRole("tooltip").filter({ hasText: "only its USB reader" }).waitFor();
+    const browse = page.getByRole("button", { name: "Browse for card root" });
+    assert.equal(await browse.count(), 0);
+    await page.getByText("Card not listed?", { exact: true }).click();
+    await page.evaluate(() => { window.__sdArchiveFixture.pick = "G:\\DCIM"; });
+    await browse.click();
+    await page.getByRole("alert").filter({ hasText: "Choose the card's drive root" }).waitFor();
+    await page.evaluate(() => { window.__sdArchiveFixture.pick = "g:\\"; });
+    await browse.click();
+    await page.getByText("Manually selected · media type unconfirmed", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Refresh cards" }).click();
+    await canon.waitFor();
+    await page.getByText("Card not listed?", { exact: true }).click();
+  });
+
+  await check("Inspect works without a repository and only archive start waits for the destination", async () => {
     await page.getByText("Choose a repository to start archiving.").waitFor();
     assert.ok(await page.getByRole("button", { name: "Inspect card" }).isDisabled());
+    await canon.check();
+    assert.ok(await page.getByRole("button", { name: "Inspect card" }).isEnabled(), "Selecting a card enables read-only inspection even before choosing a repository");
+    await page.screenshot({ path: output + "/source-selection.png" });
+    await page.getByRole("button", { name: "Inspect card" }).click();
+    await page.getByText("246 files · 14 folders", { exact: true }).waitFor();
+    await page.getByText("Choose an SD Card Repository before starting the archive.", { exact: true }).waitFor();
+    assert.ok(await page.getByRole("button", { name: "Start archive" }).isDisabled());
+    assert.equal((await calls("start_sd_card_archive")).length, 0);
+    await page.evaluate(repository => { window.__sdArchiveFixture.pick = repository; }, repository);
     await page.getByRole("button", { name: "Repository settings" }).click();
     const setting = page.getByLabel("SD Card Repository", { exact: true });
     await setting.waitFor();
@@ -74,12 +109,12 @@ try {
     assert.equal(save.args.settings.archive_dir, "D:\\Media archive");
     await openArchive();
     await page.getByText(repository, { exact: true }).waitFor();
-    await page.getByRole("combobox", { name: "Source card" }).getByRole("option", { name: "CANON (E:)" }).waitFor({ state: "attached" });
+    await canon.waitFor();
     assert.ok(await page.getByRole("button", { name: "Inspect card" }).isDisabled(), "the source must be explicitly selected");
   });
 
   await check("Inspection shows source, counts and free space and cannot start when the destination is too small", async () => {
-    await page.getByRole("combobox", { name: "Source card" }).selectOption(source);
+    await canon.check();
     await page.getByRole("button", { name: "Inspect card" }).click();
     await page.getByText("246 files · 14 folders", { exact: true }).waitFor();
     await page.getByText("42 GiB", { exact: true }).waitFor();
