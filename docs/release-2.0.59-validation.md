@@ -22,3 +22,12 @@ Build `20261122T221538611Z-c74453f6+local` produced unsigned Windows x64 EXE and
 | SHA256SUMS-2.0.59.txt | 407 | `62a493594cca95f74eb76fea70ca25c62154a96db5bf1a5684b02427861423bb` |
 
 Inspection receipt `test-output/release-2.0.59-inspection-20261122T222547050Z/report.json`. Standalone application SHA-256 `bbc991b65dbf2c5e3310137177c1bc1a7ff54e48ad6b15ddc488e8b62dec82a4`. See the unchanged [corresponding FFmpeg source](https://github.com/StuartGoggin/PhotoProcessorV2/releases/download/v2.0.53/PhotoGoGo-FFmpeg-rowtest1-source.tar.gz).
+
+## Published release
+
+The [GitHub prerelease](https://github.com/StuartGoggin/PhotoProcessorV2/releases/tag/v2.0.59) is live. Tag `v2.0.59` points to the exact built commit. The guide and checksum assets match their local byte counts and SHA-256 digests.
+
+Both unsigned Windows installers returned HTTP 200 for the expected upload byte counts. The [#swghermes release thread](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1795386742562989) shows both filenames and file IDs.
+
+- [Windows x64 EXE](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1795386750536819), Slack file `F0CL565PGHJ`.
+- [Windows x64 MSI](https://goggoville.slack.com/archives/C0BDK1DDZTM/p1795386833023789), Slack file `F0CLVRWABTJ`.
