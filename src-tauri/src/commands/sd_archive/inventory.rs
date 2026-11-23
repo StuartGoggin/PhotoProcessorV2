@@ -63,6 +63,15 @@ impl Stamp {
             && self.created.is_none_or(|time| actual.created == Some(time))
     }
 
+    pub(super) fn has_recorded_times(&self) -> bool {
+        self.modified.is_some() || self.created.is_some()
+    }
+
+    pub(super) fn with_access_time(mut self, original: &Self) -> Self {
+        self.accessed = original.accessed;
+        self
+    }
+
     pub(super) fn same_file(&self, other: &Self) -> bool {
         self.bytes == other.bytes
             && self.modified == other.modified
@@ -454,6 +463,19 @@ fn preserve_entry_times(path: &Path, stamp: &Stamp, directory: bool) -> Result<u
         if metadata.file_attributes() & 0x400 != 0 {
             return Err(error("the entry was redirected"));
         }
+        if !directory {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            };
+            let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+            let read = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+            if read == 0 || info.nNumberOfLinks != 1 {
+                return Err(error(
+                    "the file could not be confirmed as a single independent copy",
+                ));
+            }
+        }
     }
     if !stamp.set_times(&file) {
         return Err(error("creation or modification time could not be set"));
@@ -504,6 +526,31 @@ pub(super) struct Manifest {
 }
 
 impl Manifest {
+    pub(super) fn inventory(&self) -> Inventory {
+        Inventory {
+            files: self
+                .files
+                .iter()
+                .map(|(name, receipt)| (name.clone(), receipt.stamp.clone()))
+                .collect(),
+            directories: self.directories.clone(),
+            directory_stamps: self.directory_stamps.clone(),
+            root_stamp: self.root_stamp.clone(),
+        }
+    }
+
+    pub(super) fn same_contents(&self, other: &Self) -> bool {
+        self.directories == other.directories
+            && self.file_count == other.file_count
+            && self.files.iter().zip(&other.files).all(
+                |((name, file), (other_name, other_file))| {
+                    name == other_name
+                        && file.stamp.bytes == other_file.stamp.bytes
+                        && file.sha256 == other_file.sha256
+                },
+            )
+    }
+
     pub(super) fn matches_card(&self, inventory: &Inventory) -> bool {
         self.directories == inventory.directories
             && self.files.len() == inventory.files.len()
@@ -534,7 +581,7 @@ pub(super) fn load_manifest(
         .files
         .values()
         .try_fold(0u64, |sum, file| sum.checked_add(file.stamp.bytes));
-    if !matches!(manifest.version, 1 | 2)
+    if !matches!(manifest.version, 1..=3)
         || manifest.archive_name != expected_name
         || manifest.file_count != manifest.files.len()
         || total != Some(manifest.bytes)
@@ -552,6 +599,11 @@ pub(super) fn load_manifest(
             .iter()
             .any(|path| !valid_relative(path))
         || (manifest.version == 2 && !manifest.directory_stamps.keys().eq(&manifest.directories))
+        || (manifest.version == 3
+            && manifest
+                .directory_stamps
+                .keys()
+                .any(|name| !manifest.directories.contains(name)))
     {
         return Err("Archive checksum file has unsupported or inconsistent values.".into());
     }
@@ -562,56 +614,81 @@ pub(super) fn verify(
     tree: &Path,
     archivename: &str,
     expected_digest: Option<&str>,
-    mut progress: impl FnMut(&str, u64),
+    progress: impl FnMut(&str, u64),
     stopped: impl Fn() -> bool,
 ) -> Result<Manifest, String> {
     let (manifest, digest) = load_manifest(tree, archivename)?;
     if expected_digest.is_some_and(|expected| expected != digest) {
         return Err("This archive's checksum file changed since publication.".into());
     }
-    let mut found = scan(tree, &stopped)?;
-    found.files.remove(&manifest_name(archivename));
+    let name = manifest_name(archivename);
+    let final_inventory = verify_contents(tree, &manifest, &[&name], progress, &stopped)?;
+    if load_manifest(tree, archivename)?.1 != digest {
+        return Err("Archive checksum file changed while it was being verified.".into());
+    }
+    if manifest.version >= 2 {
+        verify_times(&manifest, &final_inventory)?;
+    }
+    Ok(manifest)
+}
+
+pub(super) fn verify_contents(
+    tree: &Path,
+    manifest: &Manifest,
+    receipt_names: &[&str],
+    mut progress: impl FnMut(&str, u64),
+    stopped: &impl Fn() -> bool,
+) -> Result<Inventory, String> {
+    let contents = || {
+        let mut result = scan(tree, stopped)?;
+        for name in receipt_names {
+            result.files.remove(*name);
+        }
+        Ok::<_, String>(result)
+    };
+    let found = contents()?;
     if found.directories != manifest.directories || !found.files.keys().eq(manifest.files.keys()) {
         return Err("An archive file or folder has been added, moved or removed.".into());
     }
     for (name, file) in &manifest.files {
         let path = relative_path(tree, name, true)?;
-        if found.files[name].bytes != file.stamp.bytes || hash_file(&path, &stopped)? != file.sha256
+        if found.files[name].bytes != file.stamp.bytes || hash_file(&path, stopped)? != file.sha256
         {
             return Err(format!("Archive checksum mismatch: {name}"));
         }
         progress(name, file.stamp.bytes);
     }
-    let mut final_inventory = scan(tree, &stopped)?;
-    final_inventory.files.remove(&manifest_name(archivename));
-    if !final_inventory.same_tree(&found) || load_manifest(tree, archivename)?.1 != digest {
+    let final_inventory = contents()?;
+    if !final_inventory.same_tree(&found) {
         return Err("Archive changed while it was being verified.".into());
     }
-    if manifest.version == 2 {
-        for (name, expected) in manifest
+    Ok(final_inventory)
+}
+
+pub(super) fn verify_times(manifest: &Manifest, final_inventory: &Inventory) -> Result<(), String> {
+    for (name, expected) in manifest
+        .files
+        .iter()
+        .map(|(name, receipt)| (name, &receipt.stamp))
+        .chain(&manifest.directory_stamps)
+    {
+        let actual = final_inventory
             .files
-            .iter()
-            .map(|(name, receipt)| (name, &receipt.stamp))
-            .chain(&manifest.directory_stamps)
-        {
-            let actual = final_inventory
-                .files
-                .get(name)
-                .or_else(|| final_inventory.directory_stamps.get(name));
-            if !actual.is_some_and(|stamp| expected.times_match(stamp)) {
-                return Err(format!("Archive timestamp mismatch: {name}"));
-            }
-        }
-        if manifest.root_stamp.as_ref().is_some_and(|expected| {
-            !final_inventory
-                .root_stamp
-                .as_ref()
-                .is_some_and(|actual| expected.times_match(actual))
-        }) {
-            return Err("Archive timestamp mismatch: card root".into());
+            .get(name)
+            .or_else(|| final_inventory.directory_stamps.get(name));
+        if !actual.is_some_and(|stamp| expected.times_match(stamp)) {
+            return Err(format!("Archive timestamp mismatch: {name}"));
         }
     }
-    Ok(manifest)
+    if manifest.root_stamp.as_ref().is_some_and(|expected| {
+        !final_inventory
+            .root_stamp
+            .as_ref()
+            .is_some_and(|actual| expected.times_match(actual))
+    }) {
+        return Err("Archive timestamp mismatch: card root".into());
+    }
+    Ok(())
 }
 
 pub(super) fn is_sha256(value: &str) -> bool {

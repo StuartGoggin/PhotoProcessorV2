@@ -2,6 +2,7 @@
 mod checkpoints;
 mod copy;
 mod inventory;
+mod maintenance;
 #[cfg(test)]
 mod tests;
 
@@ -126,6 +127,8 @@ struct ArchiveJob {
     summary: Summary,
     logs: Vec<String>,
     errors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    maintenance: Option<maintenance::Maintenance>,
 }
 
 struct Progress {
@@ -345,7 +348,13 @@ fn load(directory: &Path, id: &str) -> Result<ArchiveJob, String> {
         .ok_or("Saved archive job was not found.")?;
     let job: ArchiveJob =
         serde_json::from_slice(&bytes).map_err(|_| "Saved archive job is unreadable.")?;
-    if job.version != 1 || job.id != id || !matches!(job.mode.as_str(), "archive" | "verify") {
+    let mode_matches = matches!(
+        (job.mode.as_str(), &job.maintenance),
+        ("archive" | "verify", None)
+            | ("upgrade", Some(maintenance::Maintenance::Upgrade { .. }))
+            | ("remove", Some(maintenance::Maintenance::Remove { .. }))
+    );
+    if job.version != 1 || job.id != id || !mode_matches {
         return Err("Saved archive job has an unsupported identity.".into());
     }
     Ok(job)
@@ -386,7 +395,9 @@ fn find_recovery(
             continue;
         }
         if job.status == "completed" {
-            completed.push(job);
+            if job.completed_folder.is_some() {
+                completed.push(job);
+            }
         } else {
             let path = copy::work_dir(repository, &id);
             if !path.try_exists().map_err(|error| error.to_string())? { continue; }
@@ -636,7 +647,10 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<Pro
         job.status = "running".into();
         let result = save(&directory, &job).and_then(|_| {
             log_operation(&app, &job, "started");
-            if job.mode == "verify" {
+            if job.maintenance.is_some() {
+                log_operation(&app, &job, format!("starting archive maintenance mode={}", job.mode));
+                maintenance::run(&mut job, &progress, Some(&app), &directory, &stopped)
+            } else if job.mode == "verify" {
                 if job.media_id.is_some() {
                     log_operation(&app, &job, "phase=Comparing card and archive to saved checksums");
                     copy::reuse_completed(&mut job, &progress, Some(&app), &stopped)
@@ -656,7 +670,7 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<Pro
         match result {
             Ok(()) => {
                 job.status = "completed".into();
-                job.summary.phase = "Verified".into();
+                job.summary.phase = if job.mode == "remove" { "Removed" } else { "Verified" }.into();
                 job.summary.date = job.output.as_ref().map(|output| output.date.clone()).or(job.summary.date);
                 if let (Some(folder), Some(output)) = (&job.completed_folder, &job.output) {
                     job.summary.archive_folder = Some(folder.clone());
@@ -672,7 +686,7 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<Pro
             }
             Err(error) => {
                 job.status = "needs_attention".into();
-                job.summary.phase = "Verification incomplete".into();
+                job.summary.phase = if job.maintenance.is_some() { "Archive maintenance incomplete" } else { "Verification incomplete" }.into();
                 job.summary.needs_date = error.starts_with("No reliable capture date");
                 job.errors.push(error);
             }
@@ -699,6 +713,7 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<Pro
         if job.logs.len() > 32 { job.logs.drain(..job.logs.len() - 32); }
         match save(&directory, &job) {
             Ok(()) if job.mode == "archive" && job.status == "completed" => copy::retire_finished_draft(&job),
+            Ok(()) if job.maintenance.is_some() && job.status == "completed" => maintenance::retire(&job),
             Ok(()) => {},
             Err(error) => {
                 log::error!("{error}");
@@ -737,6 +752,7 @@ fn start(
     token: &str,
     date_override: Option<NaiveDate>,
     new_snapshot: bool,
+    replace_folder: Option<&str>,
 ) -> Result<ProcessJob, String> {
     let plan = inspections()
         .lock()
@@ -755,6 +771,11 @@ fn start(
     let directory = job_root(&app)?;
     let _start_lock = safety::metadata_lock(&directory, "archive-start.lock")
         .map_err(|_| "Another archive is being started. Try again shortly.")?;
+    if let Some(folder) = replace_folder {
+        let _maintenance_lock = maintenance::lock_repository(&repository)?;
+        maintenance::validate_recreation(&directory, &repository, folder, &plan.media_id, &plan.inventory)?;
+    }
+    let new_snapshot = new_snapshot || replace_folder.is_some();
     let recovery = find_recovery(&directory, &repository, &plan.media_id, &plan.inventory)?;
     if recovery != preview.recovery {
         return Err("A matching archive changed since inspection. Inspect the card again.".into());
@@ -824,6 +845,7 @@ fn start(
         },
         logs: Vec::new(),
         errors: Vec::new(),
+        maintenance: None,
     };
     launch(app, directory, job)
 }
@@ -895,6 +917,7 @@ fn queue_verify(
         },
         logs: vec![],
         errors: vec![],
+        maintenance: None,
     };
     launch(app, directory, job)
 }
@@ -975,8 +998,33 @@ pub async fn start_sd_card_archive(
     token: String,
     date_override: Option<NaiveDate>,
     new_snapshot: Option<bool>,
+    replace_folder: Option<String>,
 ) -> Result<ProcessJob, String> {
-    blocking(move || start(app, &token, date_override, new_snapshot.unwrap_or(false))).await
+    blocking(move || start(app, &token, date_override, new_snapshot.unwrap_or(false), replace_folder.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn review_sd_archive_upgrade(
+    app: AppHandle,
+    folder: String,
+    source: Option<String>,
+) -> Result<maintenance::UpgradeReview, String> {
+    blocking(move || maintenance::review(&app, &folder, source.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn start_sd_archive_upgrade(app: AppHandle, token: String) -> Result<ProcessJob, String> {
+    blocking(move || maintenance::queue_upgrade(app, &token)).await
+}
+
+#[tauri::command]
+pub async fn remove_sd_archive_after_recreation(
+    app: AppHandle,
+    folder: String,
+    replacement: String,
+    confirmation: String,
+) -> Result<ProcessJob, String> {
+    blocking(move || maintenance::queue_remove(app, &folder, &replacement, &confirmation)).await
 }
 
 #[tauri::command]

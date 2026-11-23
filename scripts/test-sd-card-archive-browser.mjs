@@ -397,6 +397,52 @@ try {
     await archiveProgress(dock).getByText("Checking card checksums", { exact: true }).waitFor();
   });
 
+  await check("Archive upgrade previews the destination and missing directory timestamps before submitting", async () => {
+    await page.getByText("Manage an existing archive", { exact: true }).click();
+    await page.evaluate(folder => { window.__sdArchiveFixture.pick = folder; }, folder);
+    await page.getByRole("button", { name: "Choose existing archive", exact: true }).click();
+    await page.getByRole("button", { name: "Review upgrade", exact: true }).click();
+    await page.getByText("SD-C8A01234_2026-11-22", { exact: true }).waitFor();
+    await page.getByText("Some original folder times are unavailable.", { exact: false }).waitFor();
+    assert.equal((await calls("start_sd_archive_upgrade")).length, 0);
+    await page.getByRole("button", { name: "Upgrade verified files", exact: true }).click();
+    await page.getByText("Upgrade queued. Follow it in Jobs.", { exact: true }).waitFor();
+    assert.deepEqual((await calls("start_sd_archive_upgrade")).at(-1).args, { token: "test-upgrade-token" });
+  });
+
+  await check("Recreation requires an inspected card and removal requires an exact folder confirmation", async () => {
+    await page.evaluate(({ folder, totalBytes }) => {
+      const fixture = window.__sdArchiveFixture;
+      fixture.pick = folder;
+      fixture.availableBytes = totalBytes * 2;
+      fixture.recovery = null;
+    }, { folder, totalBytes });
+    await page.getByRole("button", { name: "Choose existing archive", exact: true }).click();
+    const recreate = page.getByRole("button", { name: "Recreate from inspected card", exact: true });
+    assert.ok(await recreate.isDisabled());
+    await canon.check();
+    await page.getByRole("button", { name: "Inspect card" }).click();
+    await recreate.click();
+    await page.getByText("Fresh copy queued. Follow it in Jobs.", { exact: true }).waitFor();
+    assert.deepEqual((await calls("start_sd_card_archive")).at(-1).args, {
+      token: "synthetic-card-preview", dateOverride: null, replaceFolder: folder,
+    });
+    await page.getByText("Remove old copy after recreation", { exact: true }).click();
+    const replacement = folder + "-02";
+    await page.evaluate(replacement => { window.__sdArchiveFixture.pick = replacement; }, replacement);
+    await page.getByRole("button", { name: "Choose verified replacement", exact: true }).click();
+    const remove = page.getByRole("button", { name: "Permanently remove old archive", exact: true });
+    const confirmation = page.getByRole("textbox", { name: /Type .* to confirm removal/ });
+    await confirmation.fill("wrong");
+    assert.ok(await remove.isDisabled());
+    await confirmation.fill("SD-C8A01234_2026-11-21");
+    await remove.click();
+    await page.getByText("Removal queued. Follow it in Jobs.", { exact: true }).waitFor();
+    assert.deepEqual((await calls("remove_sd_archive_after_recreation")).at(-1).args, {
+      folder, replacement, confirmation: "SD-C8A01234_2026-11-21",
+    });
+  });
+
   assert.deepEqual(pageErrors, []);
   report.complete = true;
   console.log("SD Card Archive: " + report.checks.length + " browser checks passed.");

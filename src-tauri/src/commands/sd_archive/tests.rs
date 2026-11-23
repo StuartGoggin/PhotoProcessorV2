@@ -1,27 +1,27 @@
 use super::*;
 use std::io::Write;
 
-struct Fixture(PathBuf);
+pub(super) struct Fixture(pub(super) PathBuf);
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!("photogogo-test-{}", new_id().unwrap()));
         fs::create_dir(&path).unwrap();
         fs::create_dir(path.join("source")).unwrap();
         fs::create_dir(path.join("repository")).unwrap();
         Self(inventory::root(&path).unwrap())
     }
-    fn source(&self) -> PathBuf {
+    pub(super) fn source(&self) -> PathBuf {
         self.0.join("source")
     }
-    fn repository(&self) -> PathBuf {
+    pub(super) fn repository(&self) -> PathBuf {
         self.0.join("repository")
     }
-    fn put(&self, name: &str, bytes: &[u8]) {
+    pub(super) fn put(&self, name: &str, bytes: &[u8]) {
         let path = self.source().join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, bytes).unwrap();
     }
-    fn job(&self) -> ArchiveJob {
+    pub(super) fn job(&self) -> ArchiveJob {
         let source = self.source();
         let inventory = inventory::scan(&source, || false).unwrap();
         let id = new_id().unwrap();
@@ -49,9 +49,10 @@ impl Fixture {
             },
             logs: vec![],
             errors: vec![],
+            maintenance: None,
         }
     }
-    fn run(
+    pub(super) fn run(
         &self,
         job: &mut ArchiveJob,
         stopped: impl Fn() -> bool + Sync,

@@ -16,6 +16,7 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
   if (!detail) return null;
   const completed = job.status === "completed" && !!detail.archiveFolder;
   const verifying = detail.mode === "verify";
+  const upgraded = detail.mode === "upgrade";
 
   async function action(work: () => Promise<unknown>) {
     if (busy) return;
@@ -42,7 +43,7 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
         <button className="btn-secondary" disabled={busy || !date}>Save date and retry</button>
       </form>}
       {completed && <div className="space-y-2">
-        <p className="text-sm text-emerald-200">{verifying ? "The saved archive matches its checksum file." : "The card archive is verified. You can now reformat the card manually."}</p>
+        <p className="text-sm text-emerald-200">{upgraded ? "The existing archive was verified and upgraded in place." : verifying ? "The saved archive matches its checksum file." : "The card archive is verified. You can now reformat the card manually."}</p>
         <p className="text-xs text-gray-400 break-all">{detail.archiveFolder}</p>
         <div className="flex flex-wrap gap-2">
           <button className="btn-secondary" disabled={busy} onClick={() => void action(() => invoke("open_in_default_app", { path: detail.archiveFolder }))}>Open archive folder</button>
@@ -54,6 +55,7 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
           })}>Verify archive again</button>
         </div>
       </div>}
+      {job.status === "completed" && detail.mode === "remove" && <p className="text-sm text-emerald-200">The old archive was removed after the replacement was verified.</p>}
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
     </div>
   </div>;

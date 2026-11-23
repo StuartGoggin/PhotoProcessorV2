@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import SdArchiveMaintenance from "../components/SdArchiveMaintenance";
 import { formatJobBytes, jobStatusLabel } from "../utils/jobProgress";
 import type { ProcessJob, Settings } from "../types";
 import type { SdArchiveSource, SdCardInspection } from "../types/sdCardArchive";
@@ -209,6 +210,22 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
         <button className="btn-secondary" onClick={() => onOpenJob(job.id)}>View in Jobs</button>
       </article>)}
     </section>}
+    <SdArchiveMaintenance
+      jobs={[...archiveJobs, ...submittedJobs.filter(job => !savedIds.has(job.id))]}
+      repository={repository}
+      inspection={inspection}
+      canRecreate={!!inspection?.token && enoughSpace}
+      disabled={!!busy}
+      onRecreate={async folder => {
+        if (!inspection?.token || !enoughSpace) throw new Error("Inspect the original card and check repository space.");
+        const token = inspection.token;
+        setInspection(null);
+        return await invoke<ProcessJob>("start_sd_card_archive", {
+          token, dateOverride: date || null, replaceFolder: folder,
+        });
+      }}
+      onJob={follow}
+    />
     <section className="flex flex-wrap items-center justify-between gap-2 py-2" aria-label="Verify an existing archive">
       <p className="text-sm text-gray-400">Check an existing archive from its saved checksum file, even without the card.</p>
       <button className="btn-secondary" disabled={!!busy} onClick={() => void run("Opening archive…", async () => {

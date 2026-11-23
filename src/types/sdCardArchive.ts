@@ -27,7 +27,7 @@ export interface SdCardInspection {
 }
 
 export interface SdCardArchiveSummary {
-  mode: "archive" | "verify";
+  mode: "archive" | "verify" | "upgrade" | "remove";
   label: string;
   phase: string;
   totalBytes: number;

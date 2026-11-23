@@ -133,6 +133,12 @@ On resume, PhotoGoGo checks the card and draft against saved SHA-256 checksums. 
 
 To archive another card while one is running, select the next card and repeat **Inspect card** and **Start archive**. For each active card, the archive page shows the status and a link to **Jobs**. PhotoGoGo runs separate readers together and serializes reads when readers are shared or cannot be distinguished. Keep each source card connected until its own job shows **Verified**. Completed jobs are available in **Jobs → History**.
 
+#### Upgrade or recreate a saved card archive
+
+Open **Manage an existing archive** and choose a folder inside the SD Card Repository. Use **Review upgrade** to see the proposed name and the timestamps that can be restored. An older archive uses its saved Jobs record or matching original card to resolve the full card ID. With the original card inserted, inspect it and enable **Use the inspected original card for missing folder timestamps**. **Upgrade verified files** checks the contents against the existing checksum manifest, then restores recorded times and publishes the new name without recopying the files. Follow the job in **Jobs** and retry it there if interrupted.
+
+To rebuild from the original card, inspect it and choose **Recreate from inspected card**. Plan for space for both copies. After the fresh archive shows **Verified**, open **Remove old copy after recreation**. Select the replacement and type the old folder name to confirm. PhotoGoGo rechecks the replacement's checksums before it permanently removes the old files listed in its manifest. Added files prevent removal and are retained. The card stays available as a separate source.
+
 ### Import the same material again
 
 A uniquely named day such as **E:\stage\2026\11\24 - AMGA Champs** is reused when the corresponding date is imported again. Identical content is skipped through the existing checksum checks. A conflicting filename with different contents receives a safe collision name rather than overwriting another photograph.

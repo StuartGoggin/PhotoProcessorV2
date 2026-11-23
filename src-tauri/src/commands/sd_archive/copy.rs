@@ -671,7 +671,7 @@ pub(super) fn archive(
     Ok(())
 }
 
-fn archive_name(
+pub(super) fn archive_name(
     repository: &Path,
     inventory: &Inventory,
     card: &str,
@@ -707,13 +707,13 @@ fn archive_name(
 }
 
 #[cfg(windows)]
-fn publish_directory(work: &Path, final_path: &Path) -> Result<(), String> {
+pub(super) fn publish_directory(work: &Path, final_path: &Path) -> Result<(), String> {
     import_safety::rename_new(work, final_path).map_err(|e| {
         format!("Could not publish the verified folder without replacing an archive: {e}")
     })
 }
 
 #[cfg(not(windows))]
-fn publish_directory(_: &Path, _: &Path) -> Result<(), String> {
+pub(super) fn publish_directory(_: &Path, _: &Path) -> Result<(), String> {
     Err("This build does not support safe directory publication on this platform.".into())
 }

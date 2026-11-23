@@ -115,14 +115,15 @@ export function processJobProgress(job: ProcessJob): JobProgressDisplay {
 
   if (job.sdCardArchive) {
     const archive = job.sdCardArchive;
-    const verifying = archive.mode === "verify";
+    const verifying = archive.mode !== "archive";
+    const removing = archive.mode === "remove";
     const verified = job.status === "completed" && !!archive.archiveFolder;
     const archivePhase = job.currentPhase || archive.phase;
     return {
       ...base, subject: archive.label, phase: archivePhase, verified,
-      source: verifying && archivePhase !== "Checking card checksums" ? { icon: "drive", label: "Saved archive" } : source,
-      target: verified || verifying ? { icon: "check", label: verified ? "Verified" : "Checksum check" } : target,
-      moving: isMoving(job.status, archivePhase) && ["Copying", "Verifying", "Checking card checksums"].includes(archivePhase),
+      source: verifying && archivePhase !== "Checking card checksums" ? { icon: "drive", label: removing ? "Replacement" : "Saved archive" } : source,
+      target: verified || verifying ? { icon: "check", label: verified ? "Verified" : removing && job.status === "completed" ? "Removed" : "Checksum check" } : target,
+      moving: isMoving(job.status, archivePhase) && ["Copying", "Verifying", "Checking card checksums", "Restoring timestamps", "Removing old archive"].includes(archivePhase),
       meters: [
         ...(!verifying ? [byteMeter("Read from card", archive.copiedBytes, archive.totalBytes, "Card bytes read", archive.filesCopied)] : []),
         byteMeter("Verified", archive.verifiedBytes, archive.totalBytes, "Verified bytes", archive.filesVerified),

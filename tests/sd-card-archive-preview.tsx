@@ -130,7 +130,7 @@ desktop.__TAURI_INTERNALS__ = {
     if (command === "start_sd_card_archive") {
       const second = args.token === "synthetic-second-card-preview";
       if ((!second && args.token !== "synthetic-card-preview") || !fixture.settings.sd_card_repository) throw new Error("Card inspection is stale.");
-      if (!second && fixture.recovery && !args.newSnapshot) {
+      if (!second && fixture.recovery && !args.newSnapshot && !args.replaceFolder) {
         const saved = fixture.jobs.find(job => job.id === fixture.recovery?.jobId);
         if (!saved) throw new Error("Saved job is missing.");
         if (fixture.recovery.completed) {
@@ -146,9 +146,25 @@ desktop.__TAURI_INTERNALS__ = {
         return structuredClone(saved);
       }
       if (fixture.availableBytes <= totalBytes) throw new Error("The repository is full.");
-      const job = makeJob(second ? secondArchiveId : archiveId, {
+      const job = makeJob(args.replaceFolder ? "sd_archive_" + "d".repeat(32) : second ? secondArchiveId : archiveId, {
         ...checkpoint, label: second ? secondLabel : checkpoint.label,
       }, second ? secondSource : source);
+      fixture.jobs.unshift(job);
+      return structuredClone(job);
+    }
+    if (command === "review_sd_archive_upgrade") {
+      if (args.folder !== archiveFolder) throw new Error("Archive folder missing.");
+      return {
+        token: "test-upgrade-token", targetName: "SD-C8A01234_2026-11-22",
+        date: { date: "2026-11-22", basis: "Embedded capture time" }, serialKnown: true,
+        fileTimes: 246, fileCount: 246, folderTimes: 0, directoryCount: 14, rootTime: false,
+      };
+    }
+    if (command === "start_sd_archive_upgrade" || command === "remove_sd_archive_after_recreation") {
+      const upgrade = command === "start_sd_archive_upgrade";
+      const job = makeJob("sd_archive_" + (upgrade ? "e" : "f").repeat(32), {
+        ...checkpoint, mode: upgrade ? "upgrade" : "remove", phase: "Verifying",
+      });
       fixture.jobs.unshift(job);
       return structuredClone(job);
     }
