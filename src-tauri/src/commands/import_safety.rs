@@ -30,10 +30,6 @@ impl StagedCopy {
         self.bytes
     }
 
-    pub(super) fn with_output(&self, action: impl FnOnce(&fs::File) -> bool) -> bool {
-        self.pending_output.as_ref().is_some_and(action)
-    }
-
     /// Verify the fast destination copy against the hash computed during the
     /// single source read. A failed retry always invalidates prior verification.
     pub(super) fn verify(

@@ -533,6 +533,17 @@ fn resolve_repository(
     Ok(repository)
 }
 
+fn card_reference(media_id: &str) -> String {
+    if cfg!(windows) {
+        if let Some((_, serial)) = media_id.rsplit_once(':') {
+            if serial.len() == 8 && serial.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return serial.to_ascii_uppercase();
+            }
+        }
+    }
+    hex::encode_upper(&Sha256::digest(media_id.as_bytes())[..4])
+}
+
 fn inspect(app: &AppHandle, selected: &str) -> Result<Preview, String> {
     validate_volume(selected)?;
     let source = inventory::root(Path::new(selected))?;
@@ -556,11 +567,7 @@ fn inspect(app: &AppHandle, selected: &str) -> Result<Preview, String> {
         Ok((path, available)) => (Some(path.to_string_lossy().into_owned()), Some(available), None),
         Err(error) => (None, None, Some(error)),
     };
-    let card_reference = if identity.media_id.to_ascii_lowercase().contains("volume{") {
-        hex::encode(&Sha256::digest(identity.media_id.as_bytes())[..2]).to_uppercase()
-    } else {
-        "CARD".into()
-    };
+    let card_reference = card_reference(&identity.media_id);
     let recovery = repository.as_deref().map(|path| {
         find_recovery(&job_root(app)?, Path::new(path), &identity.media_id, &inventory)
     }).transpose()?.flatten();

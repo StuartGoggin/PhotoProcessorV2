@@ -43,6 +43,8 @@ pub(super) struct Stamp {
     pub bytes: u64,
     modified: Option<Time>,
     created: Option<Time>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accessed: Option<Time>,
 }
 
 impl Stamp {
@@ -51,7 +53,20 @@ impl Stamp {
             bytes: meta.len(),
             modified: meta.modified().ok().and_then(Time::from),
             created: meta.created().ok().and_then(Time::from),
+            accessed: meta.accessed().ok().and_then(Time::from),
         }
+    }
+
+    fn times_match(&self, actual: &Self) -> bool {
+        self.modified
+            .is_none_or(|time| actual.modified == Some(time))
+            && self.created.is_none_or(|time| actual.created == Some(time))
+    }
+
+    pub(super) fn same_file(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+            && self.modified == other.modified
+            && self.created == other.created
     }
 
     pub(super) fn set_times(&self, file: &File) -> bool {
@@ -73,6 +88,8 @@ pub(super) struct Inventory {
     pub files: EntryMap,
     pub directories: BTreeSet<String>,
     pub directory_stamps: EntryMap,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_stamp: Option<Stamp>,
 }
 
 impl Inventory {
@@ -81,8 +98,18 @@ impl Inventory {
     }
 
     pub fn same_tree(&self, other: &Self) -> bool {
-        self.files == other.files && self.directories == other.directories
+        self.directories == other.directories && same_files(&self.files, &other.files)
     }
+}
+
+pub(super) fn same_files(left: &EntryMap, right: &EntryMap) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|((name, stamp), (other_name, other_stamp))| {
+                name == other_name && stamp.same_file(other_stamp)
+            })
 }
 
 pub(super) fn root(path: &Path) -> Result<PathBuf, String> {
@@ -108,6 +135,9 @@ pub(super) fn scan(base: &Path, mut stopped: impl FnMut() -> bool) -> Result<Inv
         files: BTreeMap::new(),
         directories: BTreeSet::new(),
         directory_stamps: BTreeMap::new(),
+        root_stamp: Some(Stamp::read(
+            &fs::metadata(base).map_err(|e| format!("Cannot inspect archive root: {e}"))?,
+        )),
     };
     let mut seen = BTreeSet::new();
     let mut total_bytes = 0u64;
@@ -239,12 +269,12 @@ pub(super) fn proposed_date(inventory: &Inventory) -> Option<DateEvidence> {
         .files
         .iter()
         .filter(|(name, _)| is_media(name))
-        .filter_map(|(name, stamp)| Some((modification_date(stamp)?, name)))
+        .filter_map(|(name, stamp)| Some((!is_photo(name), modification_date(stamp)?, name)))
         .min()?;
     Some(DateEvidence {
-        date: candidate.0,
+        date: candidate.1,
         basis: "File modification time".into(),
-        file: Some(candidate.1.clone()),
+        file: Some(candidate.2.clone()),
     })
 }
 
@@ -253,37 +283,33 @@ fn modification_date(stamp: &Stamp) -> Option<NaiveDate> {
     plausible(date).then_some(date)
 }
 
-fn is_media(name: &str) -> bool {
+fn has_extension(name: &str, extensions: &[&str]) -> bool {
     Path::new(name)
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| {
-            matches!(
-                ext.to_ascii_lowercase().as_str(),
-                "jpg"
-                    | "jpeg"
-                    | "heic"
-                    | "png"
-                    | "tiff"
-                    | "tif"
-                    | "cr2"
-                    | "cr3"
-                    | "nef"
-                    | "arw"
-                    | "dng"
-                    | "raf"
-                    | "orf"
-                    | "rw2"
-                    | "mp4"
-                    | "mov"
-                    | "mts"
-                    | "m2ts"
-                    | "mxf"
-                    | "avi"
-                    | "mkv"
-                    | "mpg"
-            )
+            extensions
+                .iter()
+                .any(|value| ext.eq_ignore_ascii_case(value))
         })
+}
+
+fn is_photo(name: &str) -> bool {
+    has_extension(
+        name,
+        &[
+            "jpg", "jpeg", "heic", "heif", "hif", "png", "tiff", "tif", "cr2", "cr3", "nef", "nrw",
+            "arw", "dng", "raf", "orf", "rw2", "pef",
+        ],
+    )
+}
+
+fn is_media(name: &str) -> bool {
+    is_photo(name)
+        || has_extension(
+            name,
+            &["mp4", "mov", "mts", "m2ts", "mxf", "avi", "mkv", "mpg"],
+        )
 }
 
 pub(super) fn capture_date(
@@ -297,7 +323,7 @@ pub(super) fn capture_date(
         .keys()
         .filter(|name| is_media(name))
         .peekable();
-    let mut earliest = None::<(NaiveDate, bool, String)>;
+    let mut earliest = None::<(bool, NaiveDate, bool, String)>;
     while candidates.peek().is_some() {
         if stopped() {
             return Err("Stopped at a safe checkpoint.".into());
@@ -349,14 +375,14 @@ pub(super) fn capture_date(
                 .map(|date| (*date, false))
                 .or_else(|| modification_date(&inventory.files[file]).map(|date| (date, true)));
             if let Some((date, fallback)) = date {
-                let candidate = (date, fallback, file.clone());
+                let candidate = (!is_photo(file), date, fallback, file.clone());
                 if earliest.as_ref().is_none_or(|old| &candidate < old) {
                     earliest = Some(candidate);
                 }
             }
         }
     }
-    Ok(earliest.map(|(date, fallback, file)| DateEvidence {
+    Ok(earliest.map(|(_, date, fallback, file)| DateEvidence {
         date,
         basis: if fallback {
             "File modification time"
@@ -368,31 +394,81 @@ pub(super) fn capture_date(
     }))
 }
 
-pub(super) fn preserve_folder_times(
+pub(super) fn preserve_times(
     tree: &Path,
     inventory: &Inventory,
     stopped: &impl Fn() -> bool,
 ) -> Result<usize, String> {
     let mut warnings = 0;
-    for (relative, stamp) in inventory.directory_stamps.iter().rev() {
+    for (relative, stamp, directory) in inventory
+        .files
+        .iter()
+        .map(|(name, stamp)| (name.as_str(), stamp, false))
+        .chain(
+            inventory
+                .directory_stamps
+                .iter()
+                .rev()
+                .map(|(name, stamp)| (name.as_str(), stamp, true)),
+        )
+        .chain(inventory.root_stamp.iter().map(|stamp| ("", stamp, true)))
+    {
         if stopped() {
             return Err("Stopped at a safe checkpoint.".into());
         }
-        let path = relative_path(tree, relative, false)?;
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            options
-                .access_mode(0x100)
-                .custom_flags(0x02000000 | 0x00200000);
-        }
-        if !options.open(path).is_ok_and(|file| stamp.set_times(&file)) {
-            warnings += 1;
-        }
+        let path = if relative.is_empty() {
+            tree.to_path_buf()
+        } else {
+            relative_path(tree, relative, !directory)?
+        };
+        warnings += preserve_entry_times(&path, stamp, directory)?;
     }
     Ok(warnings)
+}
+
+fn preserve_entry_times(path: &Path, stamp: &Stamp, directory: bool) -> Result<usize, String> {
+    let error = |cause: &str| {
+        format!(
+            "Repository could not preserve timestamps for {}: {cause}",
+            path.display()
+        )
+    };
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options
+            .access_mode(0x180) // FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES
+            .share_mode(1)
+            .custom_flags(0x02000000 | 0x00200000); // Directory support, no reparse traversal
+    }
+    let file = options.open(path).map_err(|e| error(&e.to_string()))?;
+    let metadata = file.metadata().map_err(|e| error(&e.to_string()))?;
+    if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+        return Err(error("the entry type changed"));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(error("the entry was redirected"));
+        }
+    }
+    if !stamp.set_times(&file) {
+        return Err(error("creation or modification time could not be set"));
+    }
+    let before = file.metadata().map_err(|e| error(&e.to_string()))?;
+    if !stamp.times_match(&Stamp::read(&before)) {
+        return Err(error(
+            "the stored creation or modification time differs from the card",
+        ));
+    }
+    let accessed = stamp.accessed.and_then(Time::system);
+    Ok(usize::from(accessed.is_some_and(|time| {
+        file.set_times(FileTimes::new().set_accessed(time)).is_err()
+            || file.metadata().and_then(|meta| meta.accessed()).ok() != Some(time)
+    })))
 }
 
 fn normal_path(path: &str) -> String {
@@ -421,12 +497,23 @@ pub(super) struct Manifest {
     pub file_count: usize,
     pub directories: BTreeSet<String>,
     pub files: BTreeMap<String, FileReceipt>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub directory_stamps: EntryMap,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_stamp: Option<Stamp>,
 }
 
 impl Manifest {
     pub(super) fn matches_card(&self, inventory: &Inventory) -> bool {
         self.directories == inventory.directories
-            && self.files.iter().map(|(name, receipt)| (name, &receipt.stamp)).eq(&inventory.files)
+            && self.files.len() == inventory.files.len()
+            && self
+                .files
+                .iter()
+                .zip(&inventory.files)
+                .all(|((name, receipt), (source, stamp))| {
+                    name == source && receipt.stamp.same_file(stamp)
+                })
     }
 }
 
@@ -447,7 +534,7 @@ pub(super) fn load_manifest(
         .files
         .values()
         .try_fold(0u64, |sum, file| sum.checked_add(file.stamp.bytes));
-    if manifest.version != 1
+    if !matches!(manifest.version, 1 | 2)
         || manifest.archive_name != expected_name
         || manifest.file_count != manifest.files.len()
         || total != Some(manifest.bytes)
@@ -464,6 +551,7 @@ pub(super) fn load_manifest(
             .directories
             .iter()
             .any(|path| !valid_relative(path))
+        || (manifest.version == 2 && !manifest.directory_stamps.keys().eq(&manifest.directories))
     {
         return Err("Archive checksum file has unsupported or inconsistent values.".into());
     }
@@ -498,6 +586,30 @@ pub(super) fn verify(
     final_inventory.files.remove(&manifest_name(archivename));
     if !final_inventory.same_tree(&found) || load_manifest(tree, archivename)?.1 != digest {
         return Err("Archive changed while it was being verified.".into());
+    }
+    if manifest.version == 2 {
+        for (name, expected) in manifest
+            .files
+            .iter()
+            .map(|(name, receipt)| (name, &receipt.stamp))
+            .chain(&manifest.directory_stamps)
+        {
+            let actual = final_inventory
+                .files
+                .get(name)
+                .or_else(|| final_inventory.directory_stamps.get(name));
+            if !actual.is_some_and(|stamp| expected.times_match(stamp)) {
+                return Err(format!("Archive timestamp mismatch: {name}"));
+            }
+        }
+        if manifest.root_stamp.as_ref().is_some_and(|expected| {
+            !final_inventory
+                .root_stamp
+                .as_ref()
+                .is_some_and(|actual| expected.times_match(actual))
+        }) {
+            return Err("Archive timestamp mismatch: card root".into());
+        }
     }
     Ok(manifest)
 }

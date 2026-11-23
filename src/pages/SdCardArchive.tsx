@@ -157,8 +157,9 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
         </div>
       </div>
       {inspection && <div className="sd-picker-inspection space-y-3">
-        <dl className="grid gap-3 grid-cols-2 lg:grid-cols-4 text-sm">
+        <dl className="grid gap-3 grid-cols-2 lg:grid-cols-5 text-sm">
           <div><dt className="text-gray-400">Volume</dt><dd className="text-white">{inspection.label}</dd></div>
+          <div><dt className="text-gray-400">Card ID</dt><dd className="text-white">{inspection.cardReference}</dd></div>
           <div><dt className="text-gray-400">Contents</dt><dd className="text-white">{inspection.files.toLocaleString()} files · {inspection.directories.toLocaleString()} folders</dd></div>
           <div><dt className="text-gray-400">Card data</dt><dd className="text-white">{formatJobBytes(inspection.totalBytes)}</dd></div>
           <div><dt className="text-gray-400">Repository free</dt><dd className={enoughSpace ? "text-white" : "text-amber-200"}>{inspection.availableBytes == null ? "Unavailable" : formatJobBytes(inspection.availableBytes)}</dd></div>
@@ -186,8 +187,8 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
           })}>{recovery ? recovery.completed ? "Verify existing archive" : "Resume archive" : "Start archive"}</button>
         </div>
         {!recovery?.completed && (inspection.proposedDate
-          ? <p className="text-xs text-gray-400">Estimated date {inspection.proposedDate.date} from file modification time. PhotoGoGo checks embedded capture times on the copy before naming it.</p>
-          : <p className="text-xs text-gray-400">PhotoGoGo will check the date on the copied files. You can enter it now if the card has no dated camera files.</p>)}
+          ? <p className="text-xs text-gray-400">Estimated date {inspection.proposedDate.date} from file modification time. New archive names start with the card ID, followed by the earliest photo date found on the copy.</p>
+          : <p className="text-xs text-gray-400">New archive names start with the card ID. PhotoGoGo checks photo dates on the copy. You can enter the date if the card has no dated camera files.</p>)}
         {inspection.repositoryIssue
           ? <p role="status" className="text-sm text-amber-200">{inspection.repositoryIssue}</p>
           : !recovery && !enoughSpace && <p role="alert" className="text-sm text-amber-200">The repository does not have enough free space for this card.</p>}

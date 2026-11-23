@@ -11,7 +11,7 @@ const source = "E:\\";
 const secondSource = "F:\\";
 const secondLabel = "USB READER (F:)";
 const repository = "D:\\SD archives";
-const archiveFolder = repository + "\\2026-11-21_SD-C8A0-12345678-00";
+const archiveFolder = repository + "\\SD-C8A01234_2026-11-21";
 const archiveId = "sd_archive_" + "a".repeat(32);
 const secondArchiveId = "sd_archive_" + "c".repeat(32);
 const totalBytes = 64 * 1024 ** 3;
@@ -58,7 +58,7 @@ const fixture = {
     const completed = {
       ...job.sdCardArchive, phase: "Verified", verifiedBytes: totalBytes, filesVerified: 246,
       sourceMbps: null, etaSeconds: null, archiveFolder,
-      checksumFile: archiveFolder + "\\2026-11-21_SD-C8A0-12345678-00.checksums.json",
+      checksumFile: archiveFolder + "\\SD-C8A01234_2026-11-21.checksums.json",
       date: { date: "2026-11-21", basis: "Date entered by you" },
     };
     if (completed.mode === "archive") {
@@ -119,7 +119,7 @@ desktop.__TAURI_INTERNALS__ = {
       const inspection: SdCardInspection = {
         token: configured ? (second ? "synthetic-second-card-preview" : "synthetic-card-preview") : null,
         source: args.source, label: second ? secondLabel : checkpoint.label, repository: configured || null,
-        cardReference: "C8A0", files: 246, directories: 14, totalBytes,
+        cardReference: "C8A01234", files: 246, directories: 14, totalBytes,
         availableBytes: configured ? fixture.availableBytes : null,
         repositoryIssue: configured ? null : "Choose an SD Card Repository before starting the archive.",
         proposedDate: { date: "2026-11-22", basis: "File modification time", file: "DCIM/100CANON/IMG_0991.JPG" },

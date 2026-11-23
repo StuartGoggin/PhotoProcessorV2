@@ -125,7 +125,9 @@ Check camera clocks and the expected event dates before a large import. If media
 3. Choose **Start archive**. Follow the live meters in the bottom **Jobs** pane or choose **View in Jobs** for the full job, controls and log. After an interruption, reconnect and inspect the same card to find **Resume archive**, or retry the saved job in **Jobs**.
 4. Wait for **Verified** before reformatting the archived card manually. You can open the finished folder, view its checksum manifest and verify it again with the card removed.
 
-The archive preserves the card's names, folders and bytes, including media and sidecars, and adds one checksum manifest. PhotoGoGo reads back each destination file before publishing the verified copy. Ordinary **Import** prepares files for your staging workflow.
+New archives use the card's Windows volume serial followed by the earliest photo date, for example `SD-1A2B3C4D_2026-11-23`. PhotoGoGo prefers the embedded capture date and uses the file's modification date when that photo has no capture date. Cards without dated photos can use a video date or a date you enter. Additional snapshots receive a number when the folder name is taken.
+
+The archive preserves the card's names, folders and bytes, including media, sidecars and empty folders, and adds one checksum manifest. PhotoGoGo reads back each destination file and requires matching creation and modification times for copied files and folders before publishing the verified copy. It also attempts to preserve last-access times, which Windows or the repository can update when files are read. Ordinary **Import** prepares files for your staging workflow.
 
 On resume, PhotoGoGo checks the card and draft against saved SHA-256 checksums. It reuses matching files, copies missing files and keeps a damaged draft file separately before recopying it. An interrupted file starts again from the beginning. When inspection finds a completed archive with a matching file list, **Verify existing archive** compares both copies to its saved checksums. Choose **Create a separate snapshot** for an intentional new archive.
 

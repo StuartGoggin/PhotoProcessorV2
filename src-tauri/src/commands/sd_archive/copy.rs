@@ -303,7 +303,7 @@ fn prepare(
     let path = relative_path(source, name, true)?;
     let guard = guarded_read(&path)?;
     let metadata = guard.metadata().map_err(|e| e.to_string())?;
-    if Stamp::read(&metadata) != *expected {
+    if !Stamp::read(&metadata).same_file(expected) {
         return Err(format!("Card file changed since inspection: {name}"));
     }
     let existing = relative_path(tree, name, false)?;
@@ -321,7 +321,7 @@ fn prepare(
     if checksum.is_some_and(|expected| expected != hash) {
         return Err(format!("Card checksum changed since this archive was started: {name}. Start a new snapshot if the changes are intentional."));
     }
-    if Stamp::read(&guard.metadata().map_err(|e| e.to_string())?) != *expected {
+    if !Stamp::read(&guard.metadata().map_err(|e| e.to_string())?).same_file(expected) {
         return Err(format!("Card file changed during copy: {name}"));
     }
     progress.copied(name, start.elapsed());
@@ -360,7 +360,7 @@ fn finish(
         let guard = guarded_read(&path)?;
         let (fresh_hash, repair) =
             stage_source(&path, &work.join("scratch"), stamp.bytes, stopped, |_| {})?;
-        if fresh_hash != hash || Stamp::read(&guard.metadata().map_err(|e| e.to_string())?) != stamp
+        if fresh_hash != hash || !Stamp::read(&guard.metadata().map_err(|e| e.to_string())?).same_file(&stamp)
         {
             return Err(format!(
                 "Card file changed while repairing the saved copy: {name}"
@@ -369,9 +369,6 @@ fn finish(
         staged = Some(repair);
     }
     if let Some(mut staged) = staged {
-        if !staged.with_output(|file| stamp.set_times(file)) {
-            progress.timestamp_warnings(1);
-        }
         staged
             .verify(&hash, |path| hash_file(path, stopped))
             .map_err(|e| format!("Destination verification failed for {name}: {e}"))?;
@@ -605,7 +602,6 @@ pub(super) fn archive(
             }
         }
     }
-    progress.timestamp_warnings(preserve_folder_times(&tree, &inventory, stopped)?);
     let output = match &job.output {
         Some(saved) => saved.clone(),
         None => {
@@ -614,10 +610,9 @@ pub(super) fn archive(
                 &inventory,
                 &job.card_reference,
                 &date.date.to_string(),
-                &job.id,
             )?;
             let manifest = Manifest {
-                version: 1,
+                version: 2,
                 archive_name: name.clone(),
                 archive_id: job.id.clone(),
                 card_reference: job.card_reference.clone(),
@@ -627,6 +622,8 @@ pub(super) fn archive(
                 file_count: receipts.len(),
                 directories: inventory.directories.clone(),
                 files: receipts,
+                directory_stamps: inventory.directory_stamps.clone(),
+                root_stamp: inventory.root_stamp.clone(),
             };
             let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
             if bytes.len() as u64 > DOCUMENT_LIMIT {
@@ -655,12 +652,15 @@ pub(super) fn archive(
     ensure_source_unchanged(&source, media_id, &inventory, stopped)?;
     let mut current = scan(&tree, stopped)?;
     current.files.remove(&manifest_name(&output.name));
-    if current.files != stamps || current.directories != inventory.directories {
+    if !same_files(&current.files, &stamps) || current.directories != inventory.directories {
         return Err("Files or folders changed in the draft archive during verification.".into());
     }
     if load_manifest(&tree, &output.name)?.1 != output.digest {
         return Err("The checksum file changed while the archive was being finalized.".into());
     }
+    // Apply dates after byte verification, capture-date reads and the manifest
+    // write. This also repairs metadata on reused draft files without recopying.
+    progress.timestamp_warnings(preserve_times(&tree, &inventory, stopped)?);
     let published = relative_path(&repository, &output.name, false)?;
     if stopped() {
         return Err("Stopped at a safe checkpoint.".into());
@@ -676,13 +676,13 @@ fn archive_name(
     inventory: &Inventory,
     card: &str,
     date: &str,
-    id: &str,
 ) -> Result<String, String> {
-    let suffix = id
-        .strip_prefix("sd_archive_")
-        .ok_or("Invalid archive ID.")?;
-    for serial in 0..100 {
-        let name = format!("{date}_SD-{card}-{}-{serial:02}", &suffix[..10]);
+    if !(1..=16).contains(&card.len()) || !card.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return Err("Invalid archive card ID.".into());
+    }
+    let base = format!("SD-{card}_{date}");
+    for serial in 1..=100 {
+        let name = if serial == 1 { base.clone() } else { format!("{base}-{serial:02}") };
         let manifest = manifest_name(&name);
         let overlaps = inventory
             .files

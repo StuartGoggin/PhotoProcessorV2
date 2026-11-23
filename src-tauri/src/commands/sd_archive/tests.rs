@@ -410,6 +410,8 @@ fn repeated_runs_use_distinct_names_and_failed_destination_is_not_published() {
     assert!(two.completed_folder.is_none());
     fs::remove_file(work.join("scratch")).unwrap();
     fixture.run(&mut two, || false, &second_progress).unwrap();
+    assert_eq!(one.output.as_ref().unwrap().name, "SD-TEST_2026-11-23");
+    assert_eq!(two.output.as_ref().unwrap().name, "SD-TEST_2026-11-23-02");
     assert_ne!(one.completed_folder, two.completed_folder);
     assert_eq!(
         fs::read(Path::new(one.completed_folder.as_ref().unwrap()).join("a.jpg")).unwrap(),
@@ -451,6 +453,7 @@ fn file_times_are_used_when_metadata_has_no_capture_date() {
     let fixture = Fixture::new();
     fixture.put("new.jpg", b"no media metadata");
     fixture.put("old.cr3", b"no media metadata");
+    fixture.put("older.mov", b"an earlier video");
     let stamp = "2025-01-01T12:00:00Z"
         .parse::<chrono::DateTime<Utc>>()
         .unwrap();
@@ -460,6 +463,12 @@ fn file_times_are_used_when_metadata_has_no_capture_date() {
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(stamp.into()))
         .unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.source().join("older.mov"))
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified((stamp - chrono::Days::new(2)).into()))
+        .unwrap();
     let mut job = fixture.job();
     job.date_override = None;
     let progress = Progress::new(&job);
@@ -468,7 +477,71 @@ fn file_times_are_used_when_metadata_has_no_capture_date() {
     assert_eq!(output.date.basis, "File modification time");
     assert_eq!(output.date.file.as_deref(), Some("old.cr3"));
     let expected_date = stamp.with_timezone(&chrono::Local).date_naive().to_string();
-    assert!(output.name.starts_with(&expected_date));
+    assert_eq!(output.name, format!("SD-TEST_{expected_date}"));
+}
+
+#[test]
+#[cfg(windows)]
+fn preserves_file_folder_and_root_times_and_detects_timestamp_drift() {
+    use std::os::windows::fs::{FileTimesExt, OpenOptionsExt};
+
+    let fixture = Fixture::new();
+    fixture.put("DCIM/photo.jpg", b"original photo bytes");
+    fs::create_dir(fixture.source().join("empty")).unwrap();
+    let created = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let modified = created + Duration::from_secs(37);
+    let accessed = modified + Duration::from_secs(41);
+    for relative in ["DCIM/photo.jpg", "DCIM", "empty", ""] {
+        let handle = fs::OpenOptions::new()
+            .access_mode(0x100)
+            .custom_flags(0x02000000)
+            .open(fixture.source().join(relative))
+            .unwrap();
+        handle
+            .set_times(
+                fs::FileTimes::new()
+                    .set_created(created)
+                    .set_modified(modified)
+                    .set_accessed(accessed),
+            )
+            .unwrap();
+    }
+    let mut job = fixture.job();
+    let progress = Progress::new(&job);
+    fixture.run(&mut job, || false, &progress).unwrap();
+    let tree = PathBuf::from(job.completed_folder.unwrap());
+    for relative in ["DCIM/photo.jpg", "DCIM", "empty", ""] {
+        let metadata = fs::metadata(tree.join(relative)).unwrap();
+        assert_eq!(metadata.created().unwrap(), created, "{relative}");
+        assert_eq!(metadata.modified().unwrap(), modified, "{relative}");
+    }
+    let output = job.output.unwrap();
+    inventory::verify(
+        &tree,
+        &output.name,
+        Some(&output.digest),
+        |_, _| {},
+        || false,
+    )
+    .unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(tree.join("DCIM/photo.jpg"))
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified + Duration::from_secs(1)))
+        .unwrap();
+    let error = inventory::verify(
+        &tree,
+        &output.name,
+        Some(&output.digest),
+        |_, _| {},
+        || false,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("timestamp mismatch") && error.contains("DCIM/photo.jpg"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -483,6 +556,73 @@ fn empty_metadata_has_no_guessed_capture_date_and_saved_jobs_project_to_core() {
     assert_eq!(result["task"], "sdCardArchive");
     assert_eq!(result["status"], "needs_attention");
     assert_eq!(result["sdCardArchive"]["verifiedBytes"], 0);
+}
+
+#[test]
+fn legacy_manifest_still_verifies_with_its_original_name() {
+    let fixture = Fixture::new();
+    let name = "2026-11-23_SD-ABCD-1234567890-00";
+    let tree = fixture.repository().join(name);
+    fs::create_dir(&tree).unwrap();
+    fs::write(tree.join("photo.jpg"), b"old").unwrap();
+    let receipt = serde_json::json!({
+        "version": 1, "archiveName": name, "archiveId": "old-job", "cardReference": "ABCD",
+        "date": {"date": "2026-11-23", "basis": "Embedded capture time", "file": "photo.jpg"},
+        "verifiedAt": "2026-11-23T00:00:00Z", "bytes": 3, "fileCount": 1, "directories": [],
+        "files": {
+            "photo.jpg": {
+                "stamp": {"bytes": 3, "modified": null, "created": null},
+                "sha256": hex::encode(Sha256::digest(b"old"))
+            }
+        }
+    });
+    fs::write(
+        tree.join(inventory::manifest_name(name)),
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        inventory::verify(&tree, name, None, |_, _| {}, || false)
+            .unwrap()
+            .version,
+        1
+    );
+}
+
+#[test]
+#[cfg(windows)]
+#[ignore = "Requires the bundled metadata tool"]
+fn earliest_embedded_photo_date_controls_the_archive_name() {
+    use crate::commands::metadata_tools;
+
+    let fixture = Fixture::new();
+    let tool = Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/exiftool/exiftool_files/perl.exe");
+    assert!(tool.is_file(), "Missing managed metadata tool");
+    for (file, date) in [
+        ("first.jpg", "2024:01:31 11:22:33"),
+        ("second.jpg", "2024:02:01 00:00:01"),
+    ] {
+        let path = fixture.source().join(file);
+        image::RgbImage::new(8, 8).save(&path).unwrap();
+        metadata_tools::run_limited(
+            &tool,
+            &[
+                "-overwrite_original".into(),
+                format!("-DateTimeOriginal={date}").into(),
+                path.into_os_string(),
+            ],
+            1024 * 1024,
+        )
+        .unwrap();
+    }
+    let mut job = fixture.job();
+    job.date_override = None;
+    let progress = Progress::new(&job);
+    copy::archive(&mut job, &progress, &tool, None, &|| false, |_| Ok(())).unwrap();
+    let output = job.output.unwrap();
+    assert_eq!(output.name, "SD-TEST_2024-01-31");
+    assert_eq!(output.date.file.as_deref(), Some("first.jpg"));
+    assert_eq!(output.date.basis, "Embedded capture time");
 }
 
 #[test]

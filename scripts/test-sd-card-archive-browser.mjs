@@ -10,7 +10,7 @@ const url = "http://127.0.0.1:1496/sd-card-archive-preview.html";
 const output = "test-output/sd-card-archive-browser";
 const source = "E:\\";
 const repository = "D:\\SD archives";
-const folder = repository + "\\2026-11-21_SD-C8A0-12345678-00";
+const folder = repository + "\\SD-C8A01234_2026-11-21";
 const id = "sd_archive_" + "a".repeat(32);
 const totalBytes = 64 * 1024 ** 3;
 await mkdir(output, { recursive: true });
@@ -131,6 +131,7 @@ try {
     await page.evaluate(() => { window.__sdArchiveFixture.availableBytes = 256 * 1024 ** 3; });
     await page.getByRole("button", { name: "Inspect card" }).click();
     await page.getByText("256 GiB", { exact: true }).waitFor();
+    await page.getByText("C8A01234", { exact: true }).waitFor();
     await page.getByText(/Estimated date 2026-11-22 from file modification time/).waitFor();
     await page.getByLabel("Override archive date").fill("2026-11-21");
     await page.getByRole("button", { name: "Start archive" }).click();
@@ -215,7 +216,7 @@ try {
     await card.getByRole("button", { name: "Open archive folder" }).click();
     await card.getByRole("button", { name: "View checksums" }).click();
     const opened = await calls("open_in_default_app");
-    assert.deepEqual(opened.map(call => call.args.path), [folder, folder + "\\2026-11-21_SD-C8A0-12345678-00.checksums.json"]);
+    assert.deepEqual(opened.map(call => call.args.path), [folder, folder + "\\SD-C8A01234_2026-11-21.checksums.json"]);
     await page.screenshot({ path: output + "/verified.png" });
   });
 
