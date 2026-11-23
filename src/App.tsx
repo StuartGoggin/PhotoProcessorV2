@@ -231,7 +231,7 @@ export default function App() {
       </div>
 
       {/* Jobs panel (bottom frame) */}
-      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} refresh={refresh} loading={loading} error={error} onOpenJobs={openJobs} preferCollapsed={page === "videostudio" || page === "videosnapshots"} />
+      <JobsPanel importJobs={importJobs} processJobs={processJobs} studioJobs={studioJobs} refresh={refresh} refreshFeed={monitor.refreshFeed} loading={loading} error={error} onOpenJobs={openJobs} preferCollapsed={page === "videostudio" || page === "videosnapshots"} />
     </div>{guide && <UserGuide chapter={guide} onClose={() => setGuide(null)} background={workspace.current} />}</>
   );
 }

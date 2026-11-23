@@ -122,14 +122,14 @@ Check camera clocks and the expected event dates before a large import. If media
 
 1. Open **SD Card Archive** and select the card by its label and drive letter. Windows can identify some cards by their SD connection. Some readers report only USB storage. If the card is missing, expand **Card not listed?** and browse to its drive root.
 2. Choose **Inspect card** to check its contents and size. Set **SD Card Repository** to a folder on another volume before starting the archive. Check the available space and enter a date if the proposed date needs correcting.
-3. Choose **Start archive** and follow the progress here or in **Jobs**. After an interruption, reconnect and inspect the same card to find **Resume archive**, or retry the saved job in **Jobs**.
+3. Choose **Start archive**. Follow the live meters in the bottom **Jobs** pane or choose **View in Jobs** for the full job, controls and log. After an interruption, reconnect and inspect the same card to find **Resume archive**, or retry the saved job in **Jobs**.
 4. Wait for **Verified** before reformatting the archived card manually. You can open the finished folder, view its checksum manifest and verify it again with the card removed.
 
 The archive preserves the card's names, folders and bytes, including media and sidecars, and adds one checksum manifest. PhotoGoGo reads back each destination file before publishing the verified copy. Ordinary **Import** prepares files for your staging workflow.
 
 On resume, PhotoGoGo checks the card and draft against saved SHA-256 checksums. It reuses matching files, copies missing files and keeps a damaged draft file separately before recopying it. An interrupted file starts again from the beginning. When inspection finds a completed archive with a matching file list, **Verify existing archive** compares both copies to its saved checksums. Choose **Create a separate snapshot** for an intentional new archive.
 
-To archive another card while one is running, select the next card and repeat **Inspect card** and **Start archive**. The archive page shows each active job with its own progress and controls. PhotoGoGo runs separate readers together and serializes reads when readers are shared or cannot be distinguished. Keep each source card connected until its own job shows **Verified**. Completed jobs are available in **Jobs**.
+To archive another card while one is running, select the next card and repeat **Inspect card** and **Start archive**. For each active card, the archive page shows the status and a link to **Jobs**. PhotoGoGo runs separate readers together and serializes reads when readers are shared or cannot be distinguished. Keep each source card connected until its own job shows **Verified**. Completed jobs are available in **Jobs → History**.
 
 ### Import the same material again
 

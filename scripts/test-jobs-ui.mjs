@@ -22,11 +22,13 @@ const jobsUrl = await compile("../src/utils/jobsView.ts");
 const modelUrl = await compile("../src/types/videoStudio.ts");
 const processUrl = await compile("../src/utils/processJobs.ts");
 const importUrl = await compile("../src/utils/importScheduling.ts");
+const progressUrl = await compile("../src/utils/jobProgress.ts", { "./importScheduling": importUrl, "./processJobs": processUrl });
+const flowCardUrl = await compile("../src/components/JobProgressCard.tsx", { "../utils/jobProgress": progressUrl });
 const importStatusUrl = await compile("../src/components/ImportSchedulingStatus.tsx", { "../utils/importScheduling": importUrl });
 const schedulerUrl = await compile("../src/components/StudioSchedulerStatus.tsx", { "../types/videoStudio": modelUrl });
 const diagnosticsUrl = await compile("../src/components/StudioJobDiagnostics.tsx", { "../types/videoStudio": modelUrl, "./StudioSchedulerStatus": schedulerUrl });
-const jobTileUrl = await compile("../src/components/JobTile.tsx", { "../utils": processUrl, "./ImportSchedulingStatus": importStatusUrl });
-const studioTileUrl = await compile("../src/components/StudioJobTile.tsx", { "./StudioJobDiagnostics": diagnosticsUrl });
+const jobTileUrl = await compile("../src/components/JobTile.tsx", { "../utils/jobProgress": progressUrl, "./JobProgressCard": flowCardUrl });
+const studioTileUrl = await compile("../src/components/StudioJobTile.tsx", { "./StudioJobDiagnostics": diagnosticsUrl, "../utils/jobProgress": progressUrl, "./JobProgressCard": flowCardUrl });
 const googleUtilsUrl = await compile("../src/utils/googlePhotos.ts");
 const googleDetailsUrl = await compile("../src/components/GooglePhotoJobDetails.tsx", { "../utils/googlePhotos": googleUtilsUrl });
 const processControlsUrl = await compile("../src/components/ProcessJobControls.tsx");
@@ -38,6 +40,8 @@ const panelUrl = await compile("../src/components/JobsPanel.tsx", {
 const { isActiveJob, jobNeedsAttention, matchesJobsView, countJobs, readPanelSize } = await import(jobsUrl);
 const { default: JobsPanel } = await import(panelUrl);
 const { default: JobTile } = await import(jobTileUrl);
+const { default: JobProgressCard } = await import(flowCardUrl);
+const { importJobProgress, processJobProgress, studioJobProgress } = await import(progressUrl);
 const render = (component, props) => renderToStaticMarkup(createElement(component, props));
 const importJob = (status, id = status) => ({
   id, status, done: 1, total: 5, errors: [], logs: [], sourceDir: "E:\\DCIM", stagingDir: "C:\\Staging",
@@ -47,6 +51,65 @@ const importJob = (status, id = status) => ({
 const studioJob = (status) => ({
   id: status, status, name: `studio-${status}`, phase: "Awaiting work", kind: "clip", progress: 30,
   logs: [], activeTasks: [], artifacts: [], paused: status === "paused",
+});
+
+test("every process job type has a graphical source, destination and progress summary", () => {
+  const tasks = [
+    "focus", "remove_focus", "enhance", "remove_enhance", "bw", "remove_bw", "stabilize", "remove_stabilize",
+    "scan_archive_naming", "apply_event_naming", "transfer", "verify_checksums", "scan_faces", "search_person_videos",
+    "googlePhotos", "rawDevelop", "takeOutTrash", "sdCardArchive",
+  ];
+  const displays = tasks.map(task => processJobProgress({
+    task, status: "running", done: 2, total: 5, processed: 2, resultCount: 1, currentFile: "sample.jpg",
+  }));
+  assert.equal(new Set(displays.map(display => display.title)).size, tasks.length);
+  for (const display of displays) {
+    assert.ok(display.source.label && display.target.label, display.title);
+    const markup = render(JobProgressCard, { display });
+    assert.match(markup, /class="job-flow"/, display.title);
+    assert.match(markup, /sample\.jpg/, display.title);
+  }
+});
+
+test("unreported totals stay indeterminate and waiting jobs stop animating", () => {
+  const importing = { ...importJob("running"), phase: "scanning", total: 0, done: 0 };
+  const scanning = render(JobProgressCard, { display: importJobProgress(importing) });
+  assert.match(scanning, /<progress aria-label="Import progress"><\/progress>/);
+  assert.doesNotMatch(scanning, /0%/);
+  const waiting = render(JobProgressCard, { display: importJobProgress({ ...importing, phase: "waiting", waitReason: "Waiting for reader" }) });
+  assert.match(waiting, /data-active="false"/);
+  assert.match(waiting, /Waiting for reader/);
+  assert.doesNotMatch(waiting, /<progress/);
+});
+
+test("archive and Google Photos show independent acceptance and verification evidence", () => {
+  const job = { status: "running", done: 1, total: 3, processed: 1, resultCount: 0, currentFile: "" };
+  const archive = render(JobProgressCard, { display: processJobProgress({ ...job, task: "sdCardArchive", sdCardArchive: {
+    label: "Canon card", mode: "archive", phase: "Copying", copiedBytes: 900, verifiedBytes: 200,
+    totalBytes: 1200, filesCopied: 2, filesVerified: 1, filesReused: 1, filesRepaired: 0,
+  } }) });
+  assert.match(archive, /aria-label="Card bytes read" max="1200" value="900"/);
+  assert.match(archive, /aria-label="Verified bytes" max="1200" value="200"/);
+  assert.match(archive, /<dt>Reused<\/dt><dd>1<\/dd>/);
+  const photos = render(JobProgressCard, { display: processJobProgress({ ...job, task: "googlePhotos", googlePhotos: {
+    albums: [], bytesDone: 900, totalBytes: 1200, accepted: 2, uploaded: 1, verificationNeedsAttention: 1, readbackUnavailable: 0,
+  } }) });
+  assert.match(photos, /<dt>Accepted<\/dt><dd>2<\/dd>/);
+  assert.match(photos, /<dt>Verified<\/dt><dd>1<\/dd>/);
+  assert.match(photos, /<dt>Needs attention<\/dt><dd>1<\/dd>/);
+});
+
+test("Studio shows observed render speed and hides live estimates while waiting", () => {
+  const job = { ...studioJob("running"), phase: "Stabilising clip", encoder: "h264_nvenc", fps: 50, etaSeconds: 37,
+    activeTasks: [{ key: "clip", phase: "Pass 2", progress: 30, fps: 12.4, speed: 0.25 }] };
+  const running = render(JobProgressCard, { display: studioJobProgress(job) });
+  assert.match(running, /h264_nvenc/);
+  assert.match(running, /12\.4 fps/);
+  assert.match(running, /37 s/);
+  assert.doesNotMatch(running, /50 fps/);
+  const waiting = render(JobProgressCard, { display: studioJobProgress({ ...job, phase: "Waiting for memory" }) });
+  assert.match(waiting, /data-active="false"/);
+  assert.doesNotMatch(waiting, /12\.4 fps|37 s/);
 });
 
 test("only running queued and paused jobs belong in Active", () => {
@@ -151,7 +214,7 @@ test("dock and tile provide keyboard accessible scrolling sizing and selection",
   assert.match(markup, /aria-label="Resize jobs panel"/);
   assert.match(markup, /role="region" aria-label="Active jobs list"/);
   const tile = render(JobTile, { job: importJob("paused"), isSelected: true, onClick() {} });
-  assert.match(tile, /role="button" tabindex="0" aria-pressed="true"/);
+  assert.match(tile, /<button[^>]+aria-pressed="true"/);
 });
 test("dock does not install a wheel hijack or duplicate Studio status bar", async () => {
   const panel = await readFile(new URL("../src/components/JobsPanel.tsx", import.meta.url), "utf8");

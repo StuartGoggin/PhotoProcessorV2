@@ -1,44 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImportJob, ProcessJob } from "../types";
-import { ProgressBar } from "../components";
 import StudioJobs from "../components/StudioJobs";
+import JobProgressCard from "../components/JobProgressCard";
 import GooglePhotoJobDetails from "../components/GooglePhotoJobDetails";
 import ProcessJobControls from "../components/ProcessJobControls";
 import SdCardArchiveProgress from "../components/SdCardArchiveProgress";
 import ProcessJobRecovery from "../components/ProcessJobRecovery";
 import JobCleanup from "../components/JobCleanup";
-import { useJobsMonitor, type JobsMonitorResult } from "../hooks/useJobsMonitor";
+import { useJobsMonitor, type JobsFeed, type JobsMonitorResult } from "../hooks/useJobsMonitor";
+import type { StudioJob } from "../types/videoStudio";
 import ImportSchedulingStatus, { ImportJobSchedulingStatus } from "../components/ImportSchedulingStatus";
-import { formatImportRate } from "../utils/importScheduling";
-import { getProcessAttemptLabel, getProcessResultLabel, getProcessResultToken } from "../utils";
+import { importJobProgress, processJobProgress } from "../utils/jobProgress";
 import { countJobs, JOBS_VIEWS, matchesJobsView, preferredJobsView, type JobsView } from "../utils/jobsView";
-
-function pct(done: number, total: number): number {
-  if (total <= 0) return 0;
-  return Math.max(0, Math.min(100, (done / total) * 100));
-}
-
-const PROCESS_TASK_LABELS: Record<ProcessJob["task"], string> = {
-  focus: "Focus Detection",
-  remove_focus: "Remove Focus Flags",
-  enhance: "JPG Enhancement",
-  remove_enhance: "Remove Enhancement Outputs",
-  bw: "B&W Conversion",
-  remove_bw: "Remove B&W Outputs",
-  stabilize: "MP4 Stabilisation",
-  remove_stabilize: "Remove Stabilised MP4s",
-  scan_archive_naming: "Archive Naming Scan",
-  apply_event_naming: "Apply Event Naming",
-  transfer: "Transfer to NAS",
-  verify_checksums: "Verify Checksums",
-  scan_faces: "Face Library Scan",
-  search_person_videos: "Search Person Videos",
-  googlePhotos: "Google Photos",
-  rawDevelop: "RAW Development",
-  takeOutTrash: "Take out the trash",
-  sdCardArchive: "SD Card Archive",
-};
 
 const PROCESS_SCOPE_LABELS: Record<ProcessJob["scopeMode"], string> = {
   entireStaging: "Entire staging",
@@ -56,17 +30,6 @@ const STABILIZATION_STRENGTH_LABELS: Record<NonNullable<ProcessJob["stabilizatio
   gentle: "Gentle",
   balanced: "Balanced",
   strong: "Strong",
-};
-
-const PROCESS_STATUS_STYLES: Record<ProcessJob["status"], string> = {
-  queued: "bg-blue-900/30 border-blue-700 text-blue-200",
-  running: "bg-emerald-900/30 border-emerald-700 text-emerald-200",
-  paused: "bg-amber-900/30 border-amber-700 text-amber-200",
-  aborted: "bg-red-900/30 border-red-700 text-red-200",
-  completed: "bg-surface-700 border-surface-500 text-gray-200",
-  completed_with_warnings: "bg-amber-950 border-amber-700 text-amber-200",
-  failed: "bg-red-900/50 border-red-600 text-red-200",
-  needs_attention: "bg-amber-900/40 border-amber-700 text-amber-200",
 };
 
 function toEpoch(value: string): number {
@@ -96,6 +59,8 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
   const focusedOnce = useRef<string | null>(null);
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [processJobs, setProcessJobs] = useState<ProcessJob[]>([]);
+  const [studioJobs, setStudioJobs] = useState<StudioJob[]>([]);
+  const [localFocus, setLocalFocus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tail, setTail] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -103,15 +68,20 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
   useEffect(() => setView(initialView), [initialView]);
   const [expandedProcessLogs, setExpandedProcessLogs] = useState<Record<string, boolean>>({});
 
-  async function loadJobs(showLoading = true, archivesOnly = false) {
+  async function loadJobs(showLoading = true, feed?: JobsFeed) {
     // Keep automatic refreshes quiet; initial/manual refreshes still give feedback.
     if (showLoading) setLoading(true);
     try {
-      if (archivesOnly) await latest.current.refreshArchives();
+      if (feed) await latest.current.refreshFeed(feed);
       else await latest.current.refresh();
       const refreshed = latest.current.getSnapshot();
-      setImportJobs(refreshed.importJobs);
-      setProcessJobs(refreshed.processJobs);
+      if (!feed || feed === "imports") setImportJobs(refreshed.importJobs);
+      if (!feed || feed === "studio") setStudioJobs(refreshed.studioJobs);
+      if (!feed) setProcessJobs(refreshed.processJobs);
+      else if (feed === "process" || feed === "archives") {
+        const matchesFeed = (job: ProcessJob) => (job.task === "sdCardArchive") === (feed === "archives");
+        setProcessJobs(current => [...current.filter(job => !matchesFeed(job)), ...refreshed.processJobs.filter(matchesFeed)]);
+      }
       setError(refreshed.error);
     } catch (e) {
       setError(String(e));
@@ -137,7 +107,7 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
     setError(null);
     try {
       await invoke<boolean>("pause_import_job", { jobId });
-      await loadJobs();
+      await loadJobs(false, "imports");
     } catch (e) {
       setError(String(e));
     }
@@ -147,7 +117,7 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
     setError(null);
     try {
       await invoke<boolean>("resume_import_job", { jobId });
-      await loadJobs();
+      await loadJobs(false, "imports");
     } catch (e) {
       setError(String(e));
     }
@@ -157,7 +127,7 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
     setError(null);
     try {
       await invoke<boolean>("abort_import_job", { jobId });
-      await loadJobs();
+      await loadJobs(false, "imports");
     } catch (e) {
       setError(String(e));
     }
@@ -174,21 +144,22 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
 
   useEffect(() => {
     if (!tail) return;
-    setImportJobs(snapshot.importJobs); setProcessJobs(snapshot.processJobs);
+    setImportJobs(snapshot.importJobs); setProcessJobs(snapshot.processJobs); setStudioJobs(snapshot.studioJobs);
     setError(snapshot.error); setLoading(snapshot.loading);
-  }, [tail, snapshot.importJobs, snapshot.processJobs, snapshot.error, snapshot.loading]);
+  }, [tail, snapshot.importJobs, snapshot.processJobs, snapshot.studioJobs, snapshot.error, snapshot.loading]);
   const [removedFocus,setRemovedFocus]=useState<string|undefined>(undefined);
-  const focusedJob=typeof focusJobId==="string"&&focusJobId!==removedFocus?processJobs.find(job=>job.id===focusJobId):undefined;
+  const focus = localFocus ?? focusJobId;
+  const focusedJob=typeof focus==="string"&&focus!==removedFocus?processJobs.find(job=>job.id===focus):undefined;
   const focusedView=focusedJob?preferredJobsView(focusedJob):null;
   useEffect(() => {
-    if (!focusJobId || focusedOnce.current === focusJobId) return;
+    if (!focus || focusedOnce.current === focus) return;
     const target = focusedJob;
     if (!target) return;
-    focusedOnce.current = focusJobId;
+    focusedOnce.current = focus;
     setView(preferredJobsView(target));
-    const timer = window.setTimeout(() => document.getElementById(`process-job-${focusJobId}`)?.scrollIntoView({ block: "center" }), 0);
+    const timer = window.setTimeout(() => document.getElementById(`process-job-${focus}`)?.scrollIntoView({ block: "center" }), 0);
     return () => window.clearTimeout(timer);
-  }, [focusJobId, focusedJob]);
+  }, [focus, focusedJob]);
 
   const processCounts = countJobs(processJobs);
   const filteredImportJobs = importJobs.filter((job) => matchesJobsView(job, view));
@@ -273,7 +244,7 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
           Refresh
         </button>
         {view === "archived" && <p className="text-xs text-gray-400">Archived Google Photos uploads retain their receipts. Restore to History before explicitly rechecking; restoring starts no cloud work.</p>}
-        <JobCleanup onChanged={async()=>{setRemovedFocus(focusJobId??undefined);await loadJobs();}}/>
+        <JobCleanup onChanged={async()=>{setRemovedFocus(focus??undefined);await loadJobs();}}/>
         {view === "history" && <button className="btn-secondary" onClick={clearFinished} disabled={loading}>Clear finished import / process history</button>}
         <label className="flex items-center gap-2 text-sm text-gray-300 ml-2">
           <input type="checkbox" className="h-4 w-4" checked={tail} onChange={(e) => setTail(e.target.checked)} />
@@ -287,14 +258,14 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
         </div>
       )}
 
-      {typeof focusJobId==="string"&&focusJobId.length>0&&focusJobId.length<=256&&focusJobId!==removedFocus&&!focusedJob&&!loading&&<ProcessJobRecovery key={focusJobId} jobId={focusJobId} onRefresh={()=>loadJobs()}/>}
+      {typeof focus==="string"&&focus.length>0&&focus.length<=256&&focus!==removedFocus&&!focusedJob&&!loading&&<ProcessJobRecovery key={focus} jobId={focus} onRefresh={()=>loadJobs()}/>}
       {focusedJob&&focusedView&&!matchesJobsView(focusedJob,view)&&<div role="status" className="card mb-4 flex flex-wrap items-center gap-3 text-sm"><span>The selected job is outside the current filter. Its status and details are available in {JOBS_VIEWS.find(item=>item.id===focusedView)?.label}.</span><button type="button" className="btn-secondary" onClick={()=>setView(focusedView)}>Show in {JOBS_VIEWS.find(item=>item.id===focusedView)?.label}</button></div>}
       <div className="card mb-6">
-        <StudioJobs view={view} />
+        <StudioJobs view={view} jobs={studioJobs} loading={loading} graphical onChanged={() => loadJobs(false, "studio")} />
       </div>
 
       {importJobs.length === 0 && processJobs.length === 0 ? (
-        <div className="card text-sm text-gray-400">{loading ? "Checking import and post-process jobs…" : error||focusJobId ? "No saved jobs are currently listed. Check the warning or saved-attempt recovery above." : "No import or post-process jobs yet."}</div>
+        <div className="card text-sm text-gray-400">{loading ? "Checking import and post-process jobs…" : error||focus ? "No saved jobs are currently listed. Check the warning or saved-attempt recovery above." : "No import or post-process jobs yet."}</div>
       ) : (
         <div className="space-y-6">
           {importJobs.length > 0 && (
@@ -302,12 +273,9 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
               <h3 className="text-sm uppercase tracking-wide text-gray-400">Import Jobs</h3>
               <ImportSchedulingStatus jobs={importJobs} />
               {filteredImportJobs.length === 0 && <p className="text-sm text-gray-400">No import jobs in this view.</p>}
-              {filteredImportJobs.map((job) => {
-            const progress = pct(job.done, job.total);
-            const doneLabel = job.total > 0 ? `${job.done}/${job.total}` : `${job.done}`;
-
-            return (
-              <div key={job.id} className="card space-y-3">
+              {filteredImportJobs.map((job) => (
+              <article key={job.id} className="card space-y-3" aria-label={`Import job ${job.id}`}>
+                <JobProgressCard display={importJobProgress(job)} />
                 <div className="job-card-header flex items-center justify-between gap-4">
                   <div className="text-sm text-gray-200 font-medium break-all">{job.id}</div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -317,7 +285,6 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
                     <button className="btn-secondary" onClick={() => revealPath(job.manifestFilePath)}>
                       Reveal Manifest
                     </button>
-                    <div className="text-xs px-2 py-1 rounded bg-surface-700 text-gray-200">{job.status}</div>
                     {(job.status === "running" || job.status === "queued") && (
                       <button className="btn-secondary" onClick={() => pauseJob(job.id)}>
                         Pause
@@ -336,34 +303,23 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-400">
+                <details className="space-y-2">
+                  <summary className="cursor-pointer text-sm text-gray-300">Import source and checksum details</summary>
+                  <ImportJobSchedulingStatus job={job} />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-400">
                   <div>Source: <span className="text-gray-200 break-all">{job.sourceDir}</span></div>
                   <div>Staging: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
                   <div>Log File: <span className="text-gray-200 break-all">{job.logFilePath}</span></div>
                   <div>Manifest File: <span className="text-gray-200 break-all">{job.manifestFilePath}</span></div>
                   <div>Mode: <span className="text-gray-200">{job.reprocessExisting ? "reprocess" : "import"}</span></div>
-                  <div>Effective throughput: <span className="text-gray-200">{formatImportRate(job.speedMbps)}</span></div>
                   <div>Source Files: <span className="text-gray-200">{job.sourceFileTotal}</span></div>
                   <div>Ignored Metadata: <span className="text-gray-200">{job.ignoredFileTotal}</span></div>
                   <div>Ignored Source .md5: <span className="text-gray-200">{job.ignoredLegacyMd5SidecarTotal}</span></div>
                   <div>Unsupported: <span className="text-gray-200">{job.unsupportedFileTotal}</span></div>
                   <div>MD5 Sidecar: <span className="text-gray-200">{job.md5SidecarHits}</span></div>
                   <div>MD5 Computed: <span className="text-gray-200">{job.md5Computed}</span></div>
-                </div>
-
-                <ImportJobSchedulingStatus job={job} />
-
-                <div>
-                  <ProgressBar
-                    total={job.total || 1}
-                    done={Math.min(job.done, job.total || 1)}
-                    label={job.currentFile || ""}
-                    extra={`attempted ${doneLabel} of ${job.sourceFileTotal || job.total} counted files • ignored ${job.ignoredFileTotal} • unsupported ${job.unsupportedFileTotal} • skipped ${job.skipped} • imported ${job.imported} • ${progress.toFixed(0)}%`}
-                  />
-                  {job.currentFile && (
-                    <div className="mt-1 text-xs text-gray-500 truncate">Current: {job.currentFile}</div>
-                  )}
-                </div>
+                  </div>
+                </details>
 
                 {job.errors.length > 0 && (
                   <div className="text-xs text-red-300 bg-red-900/20 border border-red-700 rounded p-2 max-h-24 overflow-auto">
@@ -382,9 +338,8 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
                     className="w-full h-32 resize-y overflow-auto bg-surface-900 border border-surface-600 rounded-lg p-2 text-xs text-green-300 font-mono"
                   />
                 </div>
-              </div>
-            );
-              })}
+              </article>
+              ))}
             </section>
           )}
 
@@ -478,10 +433,9 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
               )}
 
               {filteredProcessJobs.map((job) => {
-                const progress = pct(job.done, job.total);
-                const doneLabel = job.total > 0 ? `${job.done}/${job.total}` : `${job.done}`;
                 const logsExpanded = Boolean(expandedProcessLogs[job.id]);
                 const hasLogs = job.logs.length > 0;
+                const feed = job.task === "sdCardArchive" ? "archives" : "process";
                 const stabilizationModeLabel =
                   job.task === "stabilize" && job.stabilizationMode
                     ? STABILIZATION_MODE_LABELS[job.stabilizationMode]
@@ -505,9 +459,14 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
 
                 return (
                   <div key={job.id} id={`process-job-${job.id}`} role="article" aria-label={`Process job ${job.id}`} className={`card space-y-3 ${job.status === "running" ? "ring-1 ring-emerald-700/40" : ""}`}>
+                    {job.sdCardArchive
+                      ? <SdCardArchiveProgress job={job} onChanged={() => loadJobs(false, "archives")} onVerification={next => {
+                        setProcessJobs(jobs => jobs.some(item => item.id === next.id) ? jobs : [...jobs, next]);
+                        setLocalFocus(next.id);
+                      }} />
+                      : <JobProgressCard display={processJobProgress(job)} />}
                     <div className="job-card-header flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <div className="text-sm text-gray-100 font-medium">{PROCESS_TASK_LABELS[job.task] ?? job.task}</div>
                         {(stabilizationModeLabel || stabilizationStrengthLabel || bitratePolicyLabel) && (
                           <div className="mt-1 flex flex-wrap items-center gap-1">
                             {stabilizationModeLabel && (
@@ -530,36 +489,19 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
                         <div className="text-xs text-gray-500 mt-1 break-all">Job ID: {job.id}</div>
                       </div>
                       <div className="flex items-center gap-2 flex-wrap justify-end">
-                        <div className={`text-xs px-2 py-1 rounded-full border capitalize ${PROCESS_STATUS_STYLES[job.status]}`}>{job.status === "completed_with_warnings" && job.task === "googlePhotos" ? "Completed with verification warnings" : job.status.replace(/_/g, " ")}</div>
-                        <ProcessJobControls job={job} onChanged={() => loadJobs(false, job.task === "sdCardArchive")} onRestored={() => setView("history")} />
+                        <ProcessJobControls job={job} onChanged={() => loadJobs(false, feed)} onRestored={() => setView("history")} />
                       </div>
                     </div>
 
-                    {job.task === "googlePhotos" && <GooglePhotoJobDetails job={job} onChanged={() => loadJobs(false)} />}
-                    {job.sdCardArchive && <SdCardArchiveProgress job={job} onChanged={() => loadJobs(false, true)} />}
+                    {job.task === "googlePhotos" && <GooglePhotoJobDetails job={job} onChanged={() => loadJobs(false, "process")} />}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-400">
                       <div>{job.sdCardArchive ? "Source" : "Staging"}: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
                       <div>Scope mode: <span className="text-gray-200">{PROCESS_SCOPE_LABELS[job.scopeMode] ?? job.scopeMode}</span></div>
-                      <div>Progress: <span className="text-gray-200">{doneLabel} ({progress.toFixed(0)}%)</span></div>
-                      <div>{job.task === "transfer" ? "Copied" : getProcessAttemptLabel(job.task)}: <span className="text-gray-200">{job.processed}</span></div>
-                      <div>{job.task === "transfer" ? "Verified" : getProcessResultLabel(job.task)}: <span className="text-gray-200">{job.resultCount}</span></div>
                       {bitratePolicyLabel && <div>Bitrate policy: <span className="text-gray-200">{bitratePolicyLabel}</span></div>}
                       {threadingLabel && (
                         <div className="md:col-span-2">Threading in use: <span className="text-gray-200">{threadingLabel}</span></div>
                       )}
                       <div className="md:col-span-2">Scope: <span className="text-gray-200 break-all">{job.scopeDir}</span></div>
-                    </div>
-
-                    <div>
-                      <ProgressBar
-                        total={job.total || 1}
-                        done={Math.min(job.done, job.total || 1)}
-                        label={job.currentFile || ""}
-                        extra={`${doneLabel} • ${job.task === "transfer" ? "copied" : getProcessAttemptLabel(job.task).toLowerCase()} ${job.processed} • ${job.task === "transfer" ? "verified" : getProcessResultToken(job.task)} ${job.resultCount} • ${progress.toFixed(0)}%`}
-                      />
-                      {job.currentFile && (
-                        <div className="mt-1 text-xs text-gray-500 truncate">Current: {job.currentFile}</div>
-                      )}
                     </div>
 
                     {job.errors.length > 0 && (

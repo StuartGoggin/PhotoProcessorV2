@@ -99,6 +99,7 @@ try {
   await delay(2400);
   const slow = await page.evaluate(() => ({ max: window.__flickerMaxPending, calls: window.__flickerCalls }));
   assert.equal(slow.max.list_import_jobs, 1, 'slow responses must not overlap monitor polls');
+  assert.equal(slow.max.studio_list_jobs, 1, 'Studio shares the same monitor across the dock and detail views');
   assert.ok(slow.calls.list_import_jobs >= 2, 'polling must continue after slow responses');
   await page.evaluate(() => { window.__flickerDelay = 150; });
   await delay(900);

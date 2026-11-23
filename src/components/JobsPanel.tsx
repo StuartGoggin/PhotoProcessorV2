@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 import type { ImportJob, ProcessJob } from "../types";
 import type { StudioJob } from "../types/videoStudio";
+import type { JobsFeed } from "../hooks/useJobsMonitor";
 import { liveStudioScheduler, sortStudioJobs } from "../types/videoStudio";
 import { countJobs, isActiveJob, readPanelSize, type JobsView } from "../utils/jobsView";
 import JobTile from "./JobTile";
@@ -13,13 +14,14 @@ interface JobsPanelProps {
   processJobs: ProcessJob[];
   studioJobs?: StudioJob[];
   refresh?: () => Promise<void>;
+  refreshFeed?: (feed: JobsFeed) => Promise<void>;
   loading?: boolean;
   error?: string | null;
   onOpenJobs?: (view: JobsView) => void;
   preferCollapsed?: boolean;
 }
 
-export default function JobsPanel({ importJobs, processJobs, studioJobs = [], refresh, loading = false, error, onOpenJobs, preferCollapsed = false }: JobsPanelProps) {
+export default function JobsPanel({ importJobs, processJobs, studioJobs = [], refresh, refreshFeed, loading = false, error, onOpenJobs, preferCollapsed = false }: JobsPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
   const [panelHeight, setPanelHeight] = useState(() => readPanelSize("jobsPanelHeight", 280, 180, 560));
@@ -50,6 +52,9 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs = [], re
   const memorySummary = memoryWaiting.length ? `${memoryWaiting.length} Studio job${memoryWaiting.length === 1 ? "" : "s"} waiting for RAM · ${memoryWaiting[0].phase}`
     : isMemoryWait(schedulerReason) ? `Shared render capacity · ${schedulerReason}` : "";
   const selectedJob = jobs.find(({ key }) => key === selectedJobKey)?.job;
+  const selectedFeed = selectedJob && "task" in selectedJob
+    ? (selectedJob.task === "sdCardArchive" ? "archives" : "process")
+    : "imports";
 
   useEffect(() => {
     try { window.localStorage.setItem("jobsPanelHeight", String(panelHeight)); } catch { /* Optional preference. */ }
@@ -105,7 +110,7 @@ export default function JobsPanel({ importJobs, processJobs, studioJobs = [], re
             {jobs.map(({ job, key }) => <JobTile key={key} job={job} isSelected={selectedJobKey === key} onClick={() => setSelectedJobKey(selectedJobKey === key ? null : key)} />)}
           </div>
         </div>
-        {selectedJob && <div className="jobs-panel-console"><JobConsole job={selectedJob} onChanged={refresh} onClose={() => setSelectedJobKey(null)} /></div>}
+        {selectedJob && <div className="jobs-panel-console"><JobConsole job={selectedJob} onChanged={refreshFeed ? () => refreshFeed(selectedFeed) : refresh} onClose={() => setSelectedJobKey(null)} /></div>}
       </div>
     </section>
   );

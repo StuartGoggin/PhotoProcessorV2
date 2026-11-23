@@ -1,16 +1,9 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { StudioJob } from "../types/videoStudio";
+import { studioJobProgress } from "../utils/jobProgress";
 import StudioJobDiagnostics from "./StudioJobDiagnostics";
-
-const statusStyle: Record<string, string> = {
-  queued: "text-blue-300",
-  running: "text-emerald-300",
-  completed: "text-gray-200",
-  failed: "text-red-300",
-  cancelled: "text-amber-300",
-  interrupted: "text-amber-300",
-};
+import JobProgressCard from "./JobProgressCard";
 
 export default function StudioJobTile({ job }: { job: StudioJob }) {
   const [error, setError] = useState("");
@@ -23,16 +16,8 @@ export default function StudioJobTile({ job }: { job: StudioJob }) {
     }
   }
   return (
-    <article className="job-tile min-w-0 w-full rounded border border-cyan-800 bg-surface-800 p-3 space-y-2">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-xs uppercase tracking-wide text-cyan-300">Video Studio {job.kind || "render"}</p>
-          <h3 className="font-medium text-sm text-white truncate" title={job.name}>{job.name}</h3>
-        </div>
-        <span className={`text-xs ${statusStyle[job.status] || "text-gray-300"}`}>{job.status}</span>
-      </div>
-      <p className="text-xs text-gray-400 truncate" title={job.phase}>{job.phase}</p>
-      <progress className="w-full" max="100" value={job.progress} aria-label={`${job.name} progress`} />
+    <article className="job-tile min-w-0 w-full space-y-2">
+      <JobProgressCard display={studioJobProgress(job)} compact />
       <div className="flex flex-wrap gap-2">
         {["interrupted", "failed", "cancelled"].includes(job.status) && <button className="btn-secondary text-xs" onClick={() => void invoke("studio_retry_job", { id: job.id }).catch((e) => setError(String(e)))}>Resume saved render</button>}
         {active && <button className="btn-secondary text-xs" onClick={() => void control(job.paused ? "resume" : "pause")}>{job.paused ? "Resume" : "Pause"}</button>}

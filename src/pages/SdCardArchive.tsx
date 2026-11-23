@@ -1,8 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import ProcessJobControls from "../components/ProcessJobControls";
-import SdCardArchiveProgress, { archiveSize } from "../components/SdCardArchiveProgress";
+import { formatJobBytes, jobStatusLabel } from "../utils/jobProgress";
 import type { ProcessJob, Settings } from "../types";
 import type { SdArchiveSource, SdCardInspection } from "../types/sdCardArchive";
 import "./SdCardArchive.css";
@@ -115,7 +114,7 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
                 <strong>{card.label}</strong>
                 <span className={card.kind === "sd" ? "sd-picker-confirmed" : undefined}>{sourceEvidence[card.kind]}</span>
               </span>
-              {card.capacityBytes != null && <span className="sd-picker-capacity">{archiveSize(card.capacityBytes)}</span>}
+              {card.capacityBytes != null && <span className="sd-picker-capacity">{formatJobBytes(card.capacityBytes)}</span>}
             </label>)}
             {manualSource && <div className="sd-picker-option" data-selected="true">
               <ArchiveCardIcon />
@@ -161,8 +160,8 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
         <dl className="grid gap-3 grid-cols-2 lg:grid-cols-4 text-sm">
           <div><dt className="text-gray-400">Volume</dt><dd className="text-white">{inspection.label}</dd></div>
           <div><dt className="text-gray-400">Contents</dt><dd className="text-white">{inspection.files.toLocaleString()} files · {inspection.directories.toLocaleString()} folders</dd></div>
-          <div><dt className="text-gray-400">Card data</dt><dd className="text-white">{archiveSize(inspection.totalBytes)}</dd></div>
-          <div><dt className="text-gray-400">Repository free</dt><dd className={enoughSpace ? "text-white" : "text-amber-200"}>{inspection.availableBytes == null ? "Unavailable" : archiveSize(inspection.availableBytes)}</dd></div>
+          <div><dt className="text-gray-400">Card data</dt><dd className="text-white">{formatJobBytes(inspection.totalBytes)}</dd></div>
+          <div><dt className="text-gray-400">Repository free</dt><dd className={enoughSpace ? "text-white" : "text-amber-200"}>{inspection.availableBytes == null ? "Unavailable" : formatJobBytes(inspection.availableBytes)}</dd></div>
         </dl>
         {inspection.recovery && <div className="space-y-2 text-sm">
           <p className="text-sky-200">{inspection.recovery.completed
@@ -201,13 +200,12 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
         <h2>Archive jobs</h2>
         <HelpTip label="How simultaneous archives work">PhotoGoGo can archive cards together when Windows identifies separate readers. Jobs that share a reader, or whose reader cannot be identified, wait their turn.</HelpTip>
       </div>
-      {visibleJobs.map(job => <article key={job.id} className="space-y-2" aria-label={`${job.sdCardArchive?.label ?? job.stagingDir} job`}>
-        <SdCardArchiveProgress job={job} onChanged={refresh} onVerification={follow} />
-        {job.errors.length > 0 && <p role="alert" className="text-sm text-red-300">{job.errors.join(" · ")}</p>}
-        <div className="flex flex-wrap items-start gap-2">
-          <ProcessJobControls job={job} onChanged={async () => { await refresh(); }} />
-          <button className="btn-secondary" onClick={() => onOpenJob(job.id)}>View in Jobs</button>
+      {visibleJobs.map(job => <article key={job.id} data-job-id={job.id} className="card flex flex-wrap items-center justify-between gap-3" aria-label={`${job.sdCardArchive?.label ?? job.stagingDir} job`}>
+        <div className="min-w-0">
+          <strong className="text-sm break-all">{job.sdCardArchive?.label ?? job.stagingDir}</strong>
+          <p className="text-xs text-gray-400">{job.currentPhase || jobStatusLabel(job.status)}</p>
         </div>
+        <button className="btn-secondary" onClick={() => onOpenJob(job.id)}>View in Jobs</button>
       </article>)}
     </section>}
     <section className="flex flex-wrap items-center justify-between gap-2 py-2" aria-label="Verify an existing archive">

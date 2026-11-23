@@ -1,13 +1,8 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProcessJob } from "../types";
-import "./SdCardArchiveProgress.css";
-
-export function archiveSize(bytes: number) {
-  const magnitude = bytes >= 1024 ** 3 ? 3 : bytes >= 1024 ** 2 ? 2 : bytes >= 1024 ? 1 : 0;
-  const value = bytes / 1024 ** magnitude;
-  return `${value.toLocaleString(undefined, { maximumFractionDigits: magnitude ? 1 : 0 })} ${["B", "KiB", "MiB", "GiB"][magnitude]}`;
-}
+import { processJobProgress } from "../utils/jobProgress";
+import JobProgressCard from "./JobProgressCard";
 
 export default function SdCardArchiveProgress({ job, onChanged, onVerification }: {
   job: ProcessJob;
@@ -21,11 +16,6 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
   if (!detail) return null;
   const completed = job.status === "completed" && !!detail.archiveFolder;
   const verifying = detail.mode === "verify";
-  const phase = job.currentPhase || detail.phase;
-  const active = job.status === "running" && ["Copying", "Verifying", "Checking card checksums"].includes(phase);
-  const max = Math.max(detail.totalBytes, 1);
-  const value = (bytes: number) => Math.min(max, completed && !detail.totalBytes ? 1 : bytes);
-  const rate = (number?: number | null) => number == null ? "—" : `${number.toFixed(1)} MiB/s`;
 
   async function action(work: () => Promise<unknown>) {
     if (busy) return;
@@ -35,27 +25,9 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
     finally { setBusy(false); }
   }
 
-  return <section className="sd-archive-progress" data-verified={completed} aria-label="SD Card Archive progress">
-    <div className="sd-archive-graphic" data-active={active} aria-hidden="true">
-      <div className="sd-archive-device"><div className="sd-archive-card"><i /><i /><i /><i /><i /><b>SD</b></div><span>{verifying ? "Saved archive" : "SD card"}</span></div>
-      <div className="sd-archive-stream"><span /><span /><span /><span /><span /></div>
-      <div className="sd-archive-device"><div className="sd-archive-repository"><i /><i /><i /></div><span>{completed ? "Verified" : "Repository"}</span></div>
-    </div>
-    <div className="sd-archive-metrics">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-base font-semibold text-white">{detail.label}</h3>
-        <span className={completed ? "text-emerald-300 font-semibold" : "text-sky-200"} role="status">{phase}</span>
-      </div>
-      {!verifying && <label className="sd-archive-meter">Read from card <span>{archiveSize(detail.copiedBytes)} / {archiveSize(detail.totalBytes)} · {detail.filesCopied.toLocaleString()} files</span>
-        <progress aria-label="Card bytes read" max={max} value={value(detail.copiedBytes)} /></label>}
-      <label className="sd-archive-meter">Verified <span>{archiveSize(detail.verifiedBytes)} / {archiveSize(detail.totalBytes)} · {detail.filesVerified.toLocaleString()} files</span>
-        <progress aria-label="Verified bytes" max={max} value={value(detail.verifiedBytes)} /></label>
-      {!!(detail.filesReused || detail.filesRepaired) && <p className="text-xs text-sky-200">Reused {detail.filesReused ?? 0} · Repaired {detail.filesRepaired ?? 0}</p>}
-      {!verifying && <dl className="sd-archive-rates">
-        <div><dt>Card read</dt><dd>{rate(detail.sourceMbps)}</dd></div><div><dt>Sustained</dt><dd>{rate(detail.sustainedMbps)}</dd></div>
-        {detail.etaSeconds != null && detail.etaSeconds > 1 && <div><dt>Read remaining</dt><dd>{Math.ceil(detail.etaSeconds)} s</dd></div>}
-      </dl>}
-      {detail.bottleneck && <p className="text-xs text-sky-200">{detail.bottleneck}</p>}
+  return <div className="space-y-3">
+    <JobProgressCard display={processJobProgress(job)} />
+    <div className="space-y-3">
       {detail.date && <p className="text-xs text-gray-400" title={detail.date.file ?? undefined}>{detail.date.date} · {detail.date.basis}{detail.date.file ? ` · ${detail.date.file}` : ""}</p>}
       {detail.timestampWarnings > 0 && <p className="text-xs text-amber-200">The repository could not preserve {detail.timestampWarnings} timestamps.</p>}
       {detail.needsDate && <form className="flex flex-wrap items-end gap-2" onSubmit={event => {
@@ -84,5 +56,5 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
       </div>}
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
     </div>
-  </section>;
+  </div>;
 }

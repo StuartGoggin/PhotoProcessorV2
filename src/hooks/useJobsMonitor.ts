@@ -1,138 +1,138 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { STUDIO_CLEARED } from "../utils/studioWorkflow";
 import { invoke } from "@tauri-apps/api/core";
+import { STUDIO_CLEARED } from "../utils/studioWorkflow";
 import type { ImportJob, ProcessJob, ProcessJobsSnapshot } from "../types";
 import type { StudioJob } from "../types/videoStudio";
+
 interface JobsSnapshot {
   importJobs: ImportJob[];
   processJobs: ProcessJob[];
   studioJobs: StudioJob[];
   error: string | null;
 }
+
+export type JobsFeed = "imports" | "process" | "archives" | "studio";
+
 export interface JobsMonitorResult extends JobsSnapshot {
   loading: boolean;
   refresh: () => Promise<void>;
   refreshArchives: () => Promise<void>;
+  refreshFeed: (feed: JobsFeed) => Promise<void>;
   getSnapshot: () => JobsSnapshot;
 }
 
-/**
- * Hook that monitors jobs in real-time (every 500ms by default).
- * Automatically fetches and updates job lists.
- */
+const FEED_LABEL: Record<JobsFeed, string> = {
+  imports: "Import job",
+  process: "Process job",
+  archives: "SD Card Archive",
+  studio: "Studio job",
+};
+type Refreshers = Record<JobsFeed, () => Promise<void>>;
+
+function mergeProcessJobs(previous: ProcessJob[], next: ProcessJob[], archives: boolean) {
+  const isFeed = (job: ProcessJob) => (job.task === "sdCardArchive") === archives;
+  return [...previous.filter(job => !isFeed(job)), ...next.filter(isFeed)].sort(
+    (a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0) || b.id.localeCompare(a.id),
+  );
+}
+
 export function useJobsMonitor(enabled = true, interval = 500): JobsMonitorResult {
-  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
-  const [processJobs, setProcessJobs] = useState<ProcessJob[]>([]);
-  const [studioJobs, setStudioJobs] = useState<StudioJob[]>([]);
-  // Manual Refresh must consume the finished read, without depending on when
-  // React commits the corresponding render (including while Tail is paused).
-  const snapshotRef = useRef<JobsSnapshot>({ importJobs: [], processJobs: [], studioJobs: [], error: null });
-  const getSnapshot = useCallback(() => snapshotRef.current, []);
-  const generation = useRef(0);
-  const refreshRef = useRef<() => Promise<void>>(async () => {});
-  const refresh = useCallback(() => refreshRef.current(), []);
-  const archiveRefreshRef = useRef<() => Promise<void>>(async () => {});
-  const refreshArchives = useCallback(() => archiveRefreshRef.current(), []);
+  const [snapshot, setSnapshot] = useState<JobsSnapshot>({ importJobs: [], processJobs: [], studioJobs: [], error: null });
+  const [loading, setLoading] = useState(enabled);
+  const current = useRef(snapshot);
+  const feeds = useRef<Refreshers | null>(null);
+  const studioGeneration = useRef(0);
+  const getSnapshot = useCallback(() => current.current, []);
+  const refreshFeed = useCallback(async (feed: JobsFeed) => { await feeds.current?.[feed](); }, []);
+  const refreshArchives = useCallback(() => refreshFeed("archives"), [refreshFeed]);
+  const refresh = useCallback(async () => {
+    if (feeds.current) await Promise.all(Object.values(feeds.current).map(load => load()));
+  }, []);
+
+  const publish = useCallback((next: JobsSnapshot) => {
+    current.current = next;
+    setSnapshot(next);
+  }, []);
+
   useEffect(() => {
-    const clear = () => { generation.current++; snapshotRef.current = { ...snapshotRef.current, studioJobs: [] }; setStudioJobs([]); };
+    const clear = () => {
+      studioGeneration.current++;
+      publish({ ...current.current, studioJobs: [] });
+    };
     window.addEventListener(STUDIO_CLEARED, clear);
     return () => window.removeEventListener(STUDIO_CLEARED, clear);
-  }, []);
-  const [loading, setLoading] = useState(enabled);
-  const [error, setError] = useState<string | null>(null);
+  }, [publish]);
 
   useEffect(() => {
     if (!enabled) {
       setLoading(false);
       return;
     }
+
     let alive = true;
-    let pending: Promise<void> | null = null;
-    let archivePending: Promise<void> | null = null;
-    let generalWarnings: string[] = [];
-    let archiveWarnings: string[] = [];
-    // Only the initial fetch needs a loading indicator. Background polling must
-    // retain the last display (including errors) until a new snapshot arrives.
     setLoading(true);
+    const pendingInitial = new Set<JobsFeed>(["imports", "process", "archives", "studio"]);
+    const warnings = new Map<JobsFeed, string[]>();
 
-    function publish(next: JobsSnapshot) {
-      const warnings = [...generalWarnings, ...archiveWarnings];
-      next.error = warnings.length ? warnings.join(" ") : null;
-      snapshotRef.current = next;
-      setError(next.error);
+    function update(change: Partial<JobsSnapshot> = {}) {
+      const messages = Array.from(warnings.values()).flat();
+      publish({ ...current.current, ...change, error: messages.length ? messages.join(" ") : null });
     }
 
-    function updateProcessJobs(next: JobsSnapshot, jobs: ProcessJob[], archive: boolean) {
-      const belongs = (job: ProcessJob) => (job.task === "sdCardArchive") === archive;
-      next.processJobs = [...next.processJobs.filter(job => !belongs(job)), ...jobs.filter(belongs)]
-        .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0) || b.id.localeCompare(a.id));
-      setProcessJobs(next.processJobs);
-    }
-
-    function loadArchiveJobs(): Promise<void> {
-      if (archivePending) return archivePending;
-      archivePending = invoke<ProcessJobsSnapshot>("process_jobs_snapshot", { jobGroup: "sdCardArchive" })
-        .then(data => {
-          if (!alive) return;
-          const next = { ...snapshotRef.current };
-          updateProcessJobs(next, data.jobs, true);
-          archiveWarnings = data.warnings;
-          publish(next);
+    function singleFlight<T>(
+      feed: JobsFeed,
+      read: () => Promise<T>,
+      apply: (data: T) => Partial<JobsSnapshot>,
+      notices: (data: T) => string[] = () => [],
+    ) {
+      let pending: Promise<void> | null = null;
+      return () => {
+        if (pending) return pending;
+        const generation = studioGeneration.current;
+        const isCurrent = () => alive && (feed !== "studio" || generation === studioGeneration.current);
+        pending = Promise.resolve().then(read).then(data => {
+          if (!isCurrent()) return;
+          const change = apply(data);
+          warnings.set(feed, notices(data));
+          update(change);
         }).catch(reason => {
-          if (!alive) return;
-          archiveWarnings = [`SD Card Archive updates unavailable. ${String(reason)}`];
-          publish({ ...snapshotRef.current });
-        }).finally(() => { archivePending = null; });
-      return archivePending;
+          if (!isCurrent()) return;
+          warnings.set(feed, [FEED_LABEL[feed] + " updates unavailable. " + String(reason)]);
+          update();
+        }).finally(() => {
+          pending = null;
+          if (alive && pendingInitial.delete(feed) && pendingInitial.size === 0) setLoading(false);
+        });
+        return pending;
+      };
     }
 
-    function loadJobs(): Promise<void> {
-      if (pending) return pending;
-      pending = performLoad();
-      return pending;
+    function processFeed(feed: "process" | "archives") {
+      const archives = feed === "archives";
+      return singleFlight(
+        feed,
+        () => invoke<ProcessJobsSnapshot>("process_jobs_snapshot", { jobGroup: archives ? "sdCardArchive" : "other" }),
+        data => ({ processJobs: mergeProcessJobs(current.current.processJobs, data.jobs, archives) }),
+        data => data.warnings,
+      );
     }
-    async function performLoad() {
-      const epoch = generation.current;
-      try {
-        const [importData, processData, studioData] = await Promise.allSettled([
-          invoke<ImportJob[]>("list_import_jobs"),
-          invoke<ProcessJobsSnapshot>("process_jobs_snapshot", { jobGroup: "other" }),
-          invoke<StudioJob[]>("studio_list_jobs"),
-        ]);
-        if (!alive) return;
-        const warnings: string[] = [];
-        const next = { ...snapshotRef.current };
-        if (importData.status === "fulfilled") { next.importJobs = importData.value; setImportJobs(importData.value); }
-        else warnings.push(`Import job updates unavailable. ${String(importData.reason)}`);
-        if (processData.status === "fulfilled") { updateProcessJobs(next, processData.value.jobs, false); warnings.push(...processData.value.warnings); }
-        else warnings.push(`Process job updates unavailable. ${String(processData.reason)}`);
-        if (studioData.status === "fulfilled") { if (epoch === generation.current) { next.studioJobs = studioData.value; setStudioJobs(studioData.value); } }
-        else warnings.push(`Studio job updates unavailable. ${String(studioData.reason)}`);
-        generalWarnings = warnings;
-        publish(next);
-      } catch (e) {
-        if (alive) { snapshotRef.current = { ...snapshotRef.current, error: String(e) }; setError(String(e)); }
-      } finally {
-        pending = null;
-        if (alive) setLoading(false);
-      }
-    }
-    async function refreshJobs() {
-      // A slow import, Studio, or cloud job listing must not stall archive progress.
-      await Promise.all([loadJobs(), loadArchiveJobs()]);
-    }
-    refreshRef.current = refreshJobs;
-    archiveRefreshRef.current = loadArchiveJobs;
-    void refreshJobs();
-    const timer = window.setInterval(() => { void refreshJobs(); }, interval);
 
+    const activeFeeds: Refreshers = {
+      imports: singleFlight("imports", () => invoke<ImportJob[]>("list_import_jobs"), importJobs => ({ importJobs })),
+      process: processFeed("process"),
+      archives: processFeed("archives"),
+      studio: singleFlight("studio", () => invoke<StudioJob[]>("studio_list_jobs"), studioJobs => ({ studioJobs })),
+    };
+    feeds.current = activeFeeds;
+    const poll = () => Object.values(activeFeeds).forEach(load => { void load(); });
+    poll();
+    const timer = window.setInterval(poll, interval);
     return () => {
       alive = false;
-      refreshRef.current = async () => {};
-      archiveRefreshRef.current = async () => {};
+      feeds.current = null;
       window.clearInterval(timer);
     };
-  }, [enabled, interval]);
+  }, [enabled, interval, publish]);
 
-  return { importJobs, processJobs, studioJobs, loading, error, refresh, refreshArchives, getSnapshot };
+  return { ...snapshot, loading, refresh, refreshArchives, refreshFeed, getSnapshot };
 }

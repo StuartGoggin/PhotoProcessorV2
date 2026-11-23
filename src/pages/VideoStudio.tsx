@@ -862,7 +862,7 @@ export default function VideoStudio({ onOpenJobs, jobs, active = true }: { onOpe
       </section>
       <StudioExportDescription jobs={jobs} project={project} />
       </details>
-      <details className="studio-queue-details"><summary className="studio-panel-heading">Studio jobs & recovery</summary><StudioJobs /></details>
+      <details className="studio-queue-details"><summary className="studio-panel-heading">Studio jobs & recovery</summary><StudioJobs jobs={jobs} /></details>
 
     </div>
   );

@@ -1,7 +1,8 @@
 // Actual PhotoGoGo App. All directories, cards, jobs and hardware are synthetic.
 import { createRoot } from "react-dom/client";
 import App from "../src/App";
-import type { ProcessJob, Settings } from "../src/types";
+import type { ImportJob, ProcessJob, Settings } from "../src/types";
+import type { StudioJob } from "../src/types/videoStudio";
 import type { SdCardArchiveSummary, SdCardInspection } from "../src/types/sdCardArchive";
 import { defaultLightboxBindings } from "../src/controller/lightboxBindings";
 import "../src/styles.css";
@@ -40,6 +41,8 @@ function makeJob(id: string, summary: SdCardArchiveSummary, jobSource = summary.
 const fixture = {
   settings,
   jobs: [] as ProcessJob[],
+  imports: [] as ImportJob[],
+  studio: [] as StudioJob[],
   calls: [] as { command: string; args: Record<string, unknown> }[],
   mounted: true,
   availableBytes: 42 * 1024 ** 3,
@@ -88,7 +91,8 @@ desktop.__TAURI_INTERNALS__ = {
       { path: source, label: checkpoint.label, kind: "sd", capacityBytes: 128 * 1024 ** 3 },
       { path: secondSource, label: secondLabel, kind: "usb", capacityBytes: 64 * 1024 ** 3 },
     ] : [];
-    if (command === "list_import_jobs" || command === "studio_list_jobs") return [];
+    if (command === "list_import_jobs") return structuredClone(fixture.imports);
+    if (command === "studio_list_jobs") return structuredClone(fixture.studio);
     if (command === "snapshot_sessions_list") return { sessions: [], warnings: [] };
     if (command === "process_jobs_snapshot") {
       if (args.jobGroup === "other") {
