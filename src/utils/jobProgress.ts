@@ -123,7 +123,7 @@ export function processJobProgress(job: ProcessJob): JobProgressDisplay {
       ...base, subject: archive.label, phase: archivePhase, verified,
       source: verifying && archivePhase !== "Checking card checksums" ? { icon: "drive", label: removing ? "Replacement" : "Saved archive" } : source,
       target: verified || verifying ? { icon: "check", label: verified ? "Verified" : removing && job.status === "completed" ? "Removed" : "Checksum check" } : target,
-      moving: isMoving(job.status, archivePhase) && ["Copying", "Verifying", "Checking card checksums", "Restoring timestamps", "Removing old archive"].includes(archivePhase),
+      moving: isMoving(job.status, archivePhase) && ["Copying", "Verifying", "Checking card checksums", "Verifying metadata", "Restoring timestamps", "Removing old archive"].includes(archivePhase),
       meters: [
         ...(!verifying ? [byteMeter("Read from card", archive.copiedBytes, archive.totalBytes, "Card bytes read", archive.filesCopied)] : []),
         byteMeter("Verified", archive.verifiedBytes, archive.totalBytes, "Verified bytes", archive.filesVerified),

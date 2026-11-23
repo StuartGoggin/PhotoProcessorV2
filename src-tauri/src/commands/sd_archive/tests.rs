@@ -481,6 +481,135 @@ fn file_times_are_used_when_metadata_has_no_capture_date() {
     assert_eq!(output.name, format!("SD-TEST_{expected_date}"));
 }
 
+#[cfg(windows)]
+pub(super) fn set_fixture_attributes(path: &Path, flags: u32) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::SetFileAttributesW;
+
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    assert_ne!(unsafe { SetFileAttributesW(name.as_ptr(), flags) }, 0);
+}
+
+#[test]
+#[cfg(windows)]
+fn strict_archive_proves_flags_and_detects_metadata_only_changes() {
+    use std::os::windows::fs::MetadataExt;
+
+    let fixture = Fixture::new();
+    fixture.put("DCIM/photo.jpg", b"original");
+    fs::create_dir(fixture.source().join("empty")).unwrap();
+    set_fixture_attributes(&fixture.source().join("DCIM/photo.jpg"), 0x2 | 0x4);
+    set_fixture_attributes(&fixture.source().join("empty"), 0x2);
+    let mut job = fixture.job();
+    let progress = Progress::new(&job);
+    fixture.run(&mut job, || false, &progress).unwrap();
+    let tree = PathBuf::from(job.completed_folder.unwrap());
+    let photo = tree.join("DCIM/photo.jpg");
+    assert_eq!(fs::metadata(&photo).unwrap().file_attributes() & 0x27, 0x6);
+    assert_eq!(
+        fs::metadata(tree.join("empty")).unwrap().file_attributes() & 0x2,
+        0x2
+    );
+    let output = job.output.unwrap();
+    let manifest = inventory::verify(
+        &tree,
+        &output.name,
+        Some(&output.digest),
+        |_, _| {},
+        || false,
+    )
+    .unwrap();
+    assert_eq!(manifest.version, 4);
+    set_fixture_attributes(&photo, 0x80);
+    assert_eq!(fs::read(&photo).unwrap(), b"original");
+    let error = inventory::verify(
+        &tree,
+        &output.name,
+        Some(&output.digest),
+        |_, _| {},
+        || false,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("DCIM/photo.jpg")
+            && error.contains("attributes")
+            && error.contains("expected")
+            && error.contains("observed"),
+        "{error}"
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn strict_archive_refuses_unsupported_named_stream() {
+    let fixture = Fixture::new();
+    fixture.put("photo.jpg", b"primary data");
+    fs::write(fixture.source().join("photo.jpg:extra"), b"additional data").unwrap();
+    let mut job = fixture.job();
+    let progress = Progress::new(&job);
+    let error = fixture.run(&mut job, || false, &progress).unwrap_err();
+    assert!(
+        error.contains("photo.jpg") && error.contains("named data stream"),
+        "{error}"
+    );
+    assert!(job.completed_folder.is_none());
+}
+
+#[test]
+#[cfg(windows)]
+fn strict_archive_checks_last_access_at_publication_and_resumes_unfinished_readback() {
+    let fixture = Fixture::new();
+    fixture.put("photo.jpg", b"original");
+    let access = std::time::UNIX_EPOCH + Duration::from_secs(1_650_000_000);
+    let set_access = |path: &Path, time| {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_accessed(time))
+            .unwrap();
+    };
+    set_access(&fixture.source().join("photo.jpg"), access);
+    let mut job = fixture.job();
+    let progress = Progress::new(&job);
+    fixture.run(&mut job, || false, &progress).unwrap();
+    let finished = PathBuf::from(job.completed_folder.as_ref().unwrap());
+    let output = job.output.as_ref().unwrap();
+    let manifest = inventory::load_manifest(&finished, &output.name).unwrap().0;
+    set_access(
+        &finished.join("photo.jpg"),
+        access + Duration::from_secs(600),
+    );
+    let error = manifest
+        .inventory()
+        .check_published_metadata(&finished, &|| false)
+        .unwrap_err();
+    assert!(
+        error.contains("photo.jpg")
+            && error.contains("last-access time")
+            && error.contains("expected")
+            && error.contains("observed"),
+        "{error}"
+    );
+    inventory::verify(
+        &finished,
+        &output.name,
+        Some(&output.digest),
+        |_, _| {},
+        || false,
+    )
+    .unwrap();
+    let marker = copy::work_dir(&fixture.repository(), &job.id).join("metadata-verified.txt");
+    fs::remove_file(&marker).unwrap();
+    job.completed_folder = None;
+    let progress = Progress::new(&job);
+    fixture.run(&mut job, || false, &progress).unwrap();
+    assert_eq!(progress.snapshot().0.files_reused, 1);
+    assert!(progress.snapshot().0.strict_metadata);
+    let output = job.output.as_ref().unwrap();
+    assert_eq!(fs::read_to_string(marker).unwrap(), output.digest);
+}
+
 #[test]
 #[cfg(windows)]
 fn preserves_file_folder_and_root_times_and_detects_timestamp_drift() {

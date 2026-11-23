@@ -1,4 +1,7 @@
-use super::super::{google_photos::store, lightbox_trash::safety, metadata_tools};
+use super::{
+    super::{google_photos::store, lightbox_trash::safety, metadata_tools},
+    metadata,
+};
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -45,6 +48,8 @@ pub(super) struct Stamp {
     created: Option<Time>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     accessed: Option<Time>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attributes: Option<u32>,
 }
 
 impl Stamp {
@@ -54,17 +59,16 @@ impl Stamp {
             modified: meta.modified().ok().and_then(Time::from),
             created: meta.created().ok().and_then(Time::from),
             accessed: meta.accessed().ok().and_then(Time::from),
+            attributes: metadata::flags(meta),
         }
-    }
-
-    fn times_match(&self, actual: &Self) -> bool {
-        self.modified
-            .is_none_or(|time| actual.modified == Some(time))
-            && self.created.is_none_or(|time| actual.created == Some(time))
     }
 
     pub(super) fn has_recorded_times(&self) -> bool {
         self.modified.is_some() || self.created.is_some()
+    }
+
+    pub(super) fn has_attributes(&self) -> bool {
+        self.attributes.is_some()
     }
 
     pub(super) fn with_access_time(mut self, original: &Self) -> Self {
@@ -109,6 +113,181 @@ impl Inventory {
     pub fn same_tree(&self, other: &Self) -> bool {
         self.directories == other.directories && same_files(&self.files, &other.files)
     }
+
+    pub(super) fn strict(&self) -> bool {
+        self.root_stamp
+            .as_ref()
+            .is_some_and(|stamp| stamp.attributes.is_some())
+    }
+
+    fn entries(&self) -> impl Iterator<Item = (&str, &Stamp, bool)> {
+        self.files
+            .iter()
+            .map(|(name, stamp)| (name.as_str(), stamp, false))
+            .chain(
+                self.directory_stamps
+                    .iter()
+                    .rev()
+                    .map(|(name, stamp)| (name.as_str(), stamp, true)),
+            )
+            .chain(self.root_stamp.iter().map(|stamp| ("", stamp, true)))
+    }
+
+    pub(super) fn verify_source_metadata(&self, current: &Self) -> Result<(), String> {
+        if !self.strict() {
+            return Ok(());
+        }
+        for (relative, expected, directory) in self.entries() {
+            let actual = if relative.is_empty() {
+                current.root_stamp.as_ref()
+            } else if directory {
+                current.directory_stamps.get(relative)
+            } else {
+                current.files.get(relative)
+            }
+            .ok_or_else(|| format!("Card entry disappeared: {}", entry_label(relative)))?;
+            verify_stamp(
+                expected,
+                actual,
+                &format!("card {}", entry_label(relative)),
+                true,
+                false,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_source_fields(&self) -> Result<(), String> {
+        if !self.strict() {
+            return Ok(());
+        }
+        for (relative, stamp, _) in self.entries() {
+            validate_flags(stamp, entry_label(relative))?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_streams(
+        &self,
+        tree: &Path,
+        stopped: &impl Fn() -> bool,
+    ) -> Result<(), String> {
+        if !self.strict() || !metadata::may_have_named_streams(tree) {
+            return Ok(());
+        }
+        for (relative, _, directory) in self.entries() {
+            if stopped() {
+                return Err("Stopped at a safe checkpoint.".into());
+            }
+            metadata::reject_named_stream(
+                &entry_path(tree, relative, directory)?,
+                entry_label(relative),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_published_metadata(
+        &self,
+        tree: &Path,
+        stopped: &impl Fn() -> bool,
+    ) -> Result<(), String> {
+        for (relative, expected, directory) in self.entries() {
+            if stopped() {
+                return Err("Stopped at a safe checkpoint.".into());
+            }
+            let path = entry_path(tree, relative, directory)?;
+            let label = entry_label(relative);
+            let current = metadata::read_current(&path)
+                .map_err(|error| format!("Cannot read back {label}: {error}"))?;
+            if (directory && !current.is_dir()) || (!directory && !current.is_file()) {
+                return Err(format!("Archive entry type changed at {label}"));
+            }
+            verify_stamp(expected, &Stamp::read(&current), label, true, true)?;
+        }
+        Ok(())
+    }
+}
+
+fn entry_label(relative: &str) -> &str {
+    if relative.is_empty() {
+        "root folder"
+    } else {
+        relative
+    }
+}
+
+fn entry_path(tree: &Path, relative: &str, directory: bool) -> Result<PathBuf, String> {
+    if relative.is_empty() {
+        Ok(tree.to_path_buf())
+    } else {
+        relative_path(tree, relative, !directory)
+    }
+}
+
+fn validate_flags(stamp: &Stamp, label: &str) -> Result<u32, String> {
+    let flags = stamp
+        .attributes
+        .ok_or_else(|| format!("Card attributes are unavailable at {label}"))?;
+    if !metadata::supported_flags(flags) {
+        return Err(format!(
+            "Unsupported card attributes at {label}: {}",
+            metadata::describe_flags(flags)
+        ));
+    }
+    Ok(flags)
+}
+
+fn describe_time(value: Option<Time>) -> String {
+    value
+        .and_then(|time| {
+            chrono::DateTime::<chrono::Utc>::from_timestamp(
+                time.seconds.try_into().ok()?,
+                time.nanos,
+            )
+        })
+        .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .unwrap_or_else(|| "unavailable".into())
+}
+
+fn describe_attributes(flags: Option<u32>) -> String {
+    flags
+        .map(metadata::describe_flags)
+        .unwrap_or_else(|| "unavailable".into())
+}
+
+fn verify_stamp(
+    expected: &Stamp,
+    actual: &Stamp,
+    label: &str,
+    strict: bool,
+    check_accessed: bool,
+) -> Result<(), String> {
+    for (field, want, got) in [
+        ("creation time", expected.created, actual.created),
+        ("modification time", expected.modified, actual.modified),
+        (
+            "last-access time",
+            expected.accessed.filter(|_| check_accessed),
+            actual.accessed,
+        ),
+    ] {
+        if want.is_some() && want != got {
+            return Err(format!(
+                "Archive timestamp mismatch at {label}, {field}: expected {}, observed {}",
+                describe_time(want),
+                describe_time(got)
+            ));
+        }
+    }
+    if strict && expected.attributes != actual.attributes {
+        return Err(format!(
+            "Archive attributes mismatch at {label}: expected {}, observed {}",
+            describe_attributes(expected.attributes),
+            describe_attributes(actual.attributes)
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn same_files(left: &EntryMap, right: &EntryMap) -> bool {
@@ -145,7 +324,8 @@ pub(super) fn scan(base: &Path, mut stopped: impl FnMut() -> bool) -> Result<Inv
         directories: BTreeSet::new(),
         directory_stamps: BTreeMap::new(),
         root_stamp: Some(Stamp::read(
-            &fs::metadata(base).map_err(|e| format!("Cannot inspect archive root: {e}"))?,
+            &metadata::read_current(base)
+                .map_err(|e| format!("Cannot inspect archive root: {e}"))?,
         )),
     };
     let mut seen = BTreeSet::new();
@@ -192,9 +372,11 @@ pub(super) fn scan(base: &Path, mut stopped: impl FnMut() -> bool) -> Result<Inv
             ));
         }
         if metadata.is_dir() && entry.file_type().is_dir() {
+            let current = super::metadata::read_current(path)
+                .map_err(|e| format!("Cannot read directory metadata for {relative}: {e}"))?;
             result
                 .directory_stamps
-                .insert(relative.clone(), Stamp::read(&metadata));
+                .insert(relative.clone(), Stamp::read(&current));
             result.directories.insert(relative);
         } else if metadata.is_file() && entry.file_type().is_file() {
             total_bytes = total_bytes
@@ -407,38 +589,28 @@ pub(super) fn preserve_times(
     tree: &Path,
     inventory: &Inventory,
     stopped: &impl Fn() -> bool,
+    strict: bool,
 ) -> Result<usize, String> {
     let mut warnings = 0;
-    for (relative, stamp, directory) in inventory
-        .files
-        .iter()
-        .map(|(name, stamp)| (name.as_str(), stamp, false))
-        .chain(
-            inventory
-                .directory_stamps
-                .iter()
-                .rev()
-                .map(|(name, stamp)| (name.as_str(), stamp, true)),
-        )
-        .chain(inventory.root_stamp.iter().map(|stamp| ("", stamp, true)))
-    {
+    for (relative, stamp, directory) in inventory.entries() {
         if stopped() {
             return Err("Stopped at a safe checkpoint.".into());
         }
-        let path = if relative.is_empty() {
-            tree.to_path_buf()
-        } else {
-            relative_path(tree, relative, !directory)?
-        };
-        warnings += preserve_entry_times(&path, stamp, directory)?;
+        let path = entry_path(tree, relative, directory)?;
+        warnings += preserve_entry_metadata(&path, stamp, directory, strict)?;
     }
     Ok(warnings)
 }
 
-fn preserve_entry_times(path: &Path, stamp: &Stamp, directory: bool) -> Result<usize, String> {
-    let error = |cause: &str| {
+fn preserve_entry_metadata(
+    path: &Path,
+    stamp: &Stamp,
+    directory: bool,
+    strict: bool,
+) -> Result<usize, String> {
+    let context = |cause: &str| {
         format!(
-            "Repository could not preserve timestamps for {}: {cause}",
+            "Repository could not preserve metadata for {}: {cause}",
             path.display()
         )
     };
@@ -448,49 +620,48 @@ fn preserve_entry_times(path: &Path, stamp: &Stamp, directory: bool) -> Result<u
     {
         use std::os::windows::fs::OpenOptionsExt;
         options
-            .access_mode(0x180) // FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES
+            .access_mode(0x180)
             .share_mode(1)
-            .custom_flags(0x02000000 | 0x00200000); // Directory support, no reparse traversal
+            .custom_flags(0x02000000 | 0x00200000);
     }
-    let file = options.open(path).map_err(|e| error(&e.to_string()))?;
-    let metadata = file.metadata().map_err(|e| error(&e.to_string()))?;
-    if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
-        return Err(error("the entry type changed"));
+    let file = options.open(path).map_err(|e| context(&e.to_string()))?;
+    let current = file.metadata().map_err(|e| context(&e.to_string()))?;
+    if (directory && !current.is_dir()) || (!directory && !current.is_file()) {
+        return Err(context("the entry type changed"));
     }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes() & 0x400 != 0 {
-            return Err(error("the entry was redirected"));
-        }
-        if !directory {
-            use std::os::windows::io::AsRawHandle;
-            use windows_sys::Win32::Storage::FileSystem::{
-                GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-            };
-            let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-            let read = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
-            if read == 0 || info.nNumberOfLinks != 1 {
-                return Err(error(
-                    "the file could not be confirmed as a single independent copy",
-                ));
-            }
+        if current.file_attributes() & 0x400 != 0 {
+            return Err(context("the entry was redirected"));
         }
     }
-    if !stamp.set_times(&file) {
-        return Err(error("creation or modification time could not be set"));
+    if !directory {
+        metadata::require_independent_file(&file).map_err(|e| context(&e))?;
     }
-    let before = file.metadata().map_err(|e| error(&e.to_string()))?;
-    if !stamp.times_match(&Stamp::read(&before)) {
-        return Err(error(
-            "the stored creation or modification time differs from the card",
-        ));
+    let label = path.to_string_lossy();
+    if strict {
+        let expected = validate_flags(stamp, &label)?;
+        let observed = metadata::flags(&current);
+        if observed != Some(expected) {
+            metadata::write_flags(&file, expected).map_err(|e| format!(
+                "Repository could not preserve attributes at {label}: expected {}, observed {} ({e})",
+                metadata::describe_flags(expected), describe_attributes(observed)
+            ))?;
+        }
     }
+    let wrote_dates = stamp.set_times(&file);
     let accessed = stamp.accessed.and_then(Time::system);
-    Ok(usize::from(accessed.is_some_and(|time| {
-        file.set_times(FileTimes::new().set_accessed(time)).is_err()
-            || file.metadata().and_then(|meta| meta.accessed()).ok() != Some(time)
-    })))
+    let wrote_access =
+        accessed.is_none_or(|time| file.set_times(FileTimes::new().set_accessed(time)).is_ok());
+    let actual = Stamp::read(&file.metadata().map_err(|e| context(&e.to_string()))?);
+    verify_stamp(stamp, &actual, &label, strict, strict)?;
+    if !strict && !wrote_dates {
+        return Err(context("creation or modification time could not be set"));
+    }
+    Ok(usize::from(
+        !strict && accessed.is_some() && (!wrote_access || stamp.accessed != actual.accessed),
+    ))
 }
 
 fn normal_path(path: &str) -> String {
@@ -561,6 +732,8 @@ impl Manifest {
                 .all(|((name, receipt), (source, stamp))| {
                     name == source && receipt.stamp.same_file(stamp)
                 })
+            && (self.version != metadata::STRICT_VERSION
+                || self.inventory().verify_source_metadata(inventory).is_ok())
     }
 }
 
@@ -581,7 +754,7 @@ pub(super) fn load_manifest(
         .files
         .values()
         .try_fold(0u64, |sum, file| sum.checked_add(file.stamp.bytes));
-    if !matches!(manifest.version, 1..=3)
+    if !matches!(manifest.version, 1..=metadata::STRICT_VERSION)
         || manifest.archive_name != expected_name
         || manifest.file_count != manifest.files.len()
         || total != Some(manifest.bytes)
@@ -598,7 +771,8 @@ pub(super) fn load_manifest(
             .directories
             .iter()
             .any(|path| !valid_relative(path))
-        || (manifest.version == 2 && !manifest.directory_stamps.keys().eq(&manifest.directories))
+        || (matches!(manifest.version, 2 | metadata::STRICT_VERSION)
+            && !manifest.directory_stamps.keys().eq(&manifest.directories))
         || (manifest.version == 3
             && manifest
                 .directory_stamps
@@ -606,6 +780,21 @@ pub(super) fn load_manifest(
                 .any(|name| !manifest.directories.contains(name)))
     {
         return Err("Archive checksum file has unsupported or inconsistent values.".into());
+    }
+    if manifest.version == metadata::STRICT_VERSION {
+        let root = manifest
+            .root_stamp
+            .as_ref()
+            .ok_or("Strict archive root metadata is missing.")?;
+        validate_flags(root, "root folder")?;
+        for (name, stamp) in manifest
+            .files
+            .iter()
+            .map(|(name, receipt)| (name, &receipt.stamp))
+            .chain(&manifest.directory_stamps)
+        {
+            validate_flags(stamp, name)?;
+        }
     }
     Ok((manifest, hex::encode(Sha256::digest(bytes))))
 }
@@ -625,6 +814,9 @@ pub(super) fn verify(
     let final_inventory = verify_contents(tree, &manifest, &[&name], progress, &stopped)?;
     if load_manifest(tree, archivename)?.1 != digest {
         return Err("Archive checksum file changed while it was being verified.".into());
+    }
+    if manifest.version == metadata::STRICT_VERSION {
+        final_inventory.check_streams(tree, &stopped)?;
     }
     if manifest.version >= 2 {
         verify_times(&manifest, &final_inventory)?;
@@ -666,6 +858,7 @@ pub(super) fn verify_contents(
 }
 
 pub(super) fn verify_times(manifest: &Manifest, final_inventory: &Inventory) -> Result<(), String> {
+    let strict = manifest.version == metadata::STRICT_VERSION;
     for (name, expected) in manifest
         .files
         .iter()
@@ -675,18 +868,16 @@ pub(super) fn verify_times(manifest: &Manifest, final_inventory: &Inventory) -> 
         let actual = final_inventory
             .files
             .get(name)
-            .or_else(|| final_inventory.directory_stamps.get(name));
-        if !actual.is_some_and(|stamp| expected.times_match(stamp)) {
-            return Err(format!("Archive timestamp mismatch: {name}"));
-        }
+            .or_else(|| final_inventory.directory_stamps.get(name))
+            .ok_or_else(|| format!("Archive metadata is missing: {name}"))?;
+        verify_stamp(expected, actual, name, strict, false)?;
     }
-    if manifest.root_stamp.as_ref().is_some_and(|expected| {
-        !final_inventory
+    if let Some(expected) = &manifest.root_stamp {
+        let actual = final_inventory
             .root_stamp
             .as_ref()
-            .is_some_and(|actual| expected.times_match(actual))
-    }) {
-        return Err("Archive timestamp mismatch: card root".into());
+            .ok_or("Archive root metadata is missing.")?;
+        verify_stamp(expected, actual, "root folder", strict, false)?;
     }
     Ok(())
 }

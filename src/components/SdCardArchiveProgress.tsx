@@ -44,6 +44,7 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
       </form>}
       {completed && <div className="space-y-2">
         <p className="text-sm text-emerald-200">{upgraded ? "The existing archive was verified and upgraded in place." : verifying ? "The saved archive matches its checksum file." : "The card archive is verified. You can now reformat the card manually."}</p>
+        {detail.strictMetadata && <p className="text-xs text-gray-300">File checksums, creation and modification times, and standard Windows attributes verified. Last-access times were checked when the archive was saved.</p>}
         <p className="text-xs text-gray-400 break-all">{detail.archiveFolder}</p>
         <div className="flex flex-wrap gap-2">
           <button className="btn-secondary" disabled={busy} onClick={() => void action(() => invoke("open_in_default_app", { path: detail.archiveFolder }))}>Open archive folder</button>

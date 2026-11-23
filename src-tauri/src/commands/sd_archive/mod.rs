@@ -3,6 +3,7 @@ mod checkpoints;
 mod copy;
 mod inventory;
 mod maintenance;
+mod metadata;
 #[cfg(test)]
 mod tests;
 
@@ -101,6 +102,8 @@ pub struct Summary {
     pub checksum_file: Option<String>,
     date: Option<DateEvidence>,
     pub timestamp_warnings: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_metadata: bool,
     pub needs_date: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     verify_card_on_recovery: bool,
@@ -165,6 +168,7 @@ impl Progress {
         summary.eta_seconds = None;
         summary.bottleneck = None;
         summary.timestamp_warnings = 0;
+        summary.strict_metadata = false;
         Self {
             source: PathBuf::from(&job.source),
             total_files: job.files,
@@ -252,6 +256,10 @@ impl Progress {
 
     fn timestamp_warnings(&self, count: usize) {
         self.update(|data| data.summary.timestamp_warnings += count);
+    }
+
+    fn metadata_verified(&self, strict: bool) {
+        self.update(|data| data.summary.strict_metadata = strict);
     }
 
     fn recovered(&self, reused: bool, repaired: bool) {
@@ -736,13 +744,14 @@ fn verify_existing(
         .as_ref()
         .ok_or("Verification has no saved checksum receipt.")?;
     progress.phase("Verifying");
-    inventory::verify(
+    let receipt = inventory::verify(
         &path,
         &output.name,
         Some(&output.digest),
         |name, bytes| progress.verified(name, bytes),
         stopped,
     )?;
+    progress.metadata_verified(receipt.version == metadata::STRICT_VERSION);
     job.completed_folder = Some(path.to_string_lossy().into_owned());
     Ok(())
 }

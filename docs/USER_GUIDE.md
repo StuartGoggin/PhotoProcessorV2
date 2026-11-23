@@ -127,7 +127,11 @@ Check camera clocks and the expected event dates before a large import. If media
 
 New archives use the card's Windows volume serial followed by the earliest photo date, for example `SD-1A2B3C4D_2026-11-23`. PhotoGoGo prefers the embedded capture date and uses the file's modification date when that photo has no capture date. Cards without dated photos can use a video date or a date you enter. Additional snapshots receive a number when the folder name is taken.
 
-The archive preserves the card's names, folders and bytes, including media, sidecars and empty folders, and adds one checksum manifest. PhotoGoGo reads back each destination file and requires matching creation and modification times for copied files and folders before publishing the verified copy. It also attempts to preserve last-access times, which Windows or the repository can update when files are read. Ordinary **Import** prepares files for your staging workflow.
+PhotoGoGo hashes every source file with SHA-256 and independently reads back the destination file. Matching bytes preserve the embedded camera metadata, including the photo's capture date. The archive keeps original names, folder structure, sidecars and empty folders, and adds one checksum manifest.
+
+New archives also read back the recorded creation, modification and last-access times and the standard Windows attributes (Read-only, Hidden, System and Archive) on the finished copy. A mismatch shows the affected path, expected value and observed value in **Jobs → Needs attention**. Unsupported entries such as a named data stream or a linked file also stop verification.
+
+Last-access time is a copy-time check because Windows or the repository can update it during later reads. **Verify an archive folder** rechecks the bytes, paths, recorded creation and modification times, and recorded attributes. Older archives can still be verified with the evidence recorded in their original manifests. This workflow archives files and folders. Ordinary **Import** prepares files for your staging workflow.
 
 On resume, PhotoGoGo checks the card and draft against saved SHA-256 checksums. It reuses matching files, copies missing files and keeps a damaged draft file separately before recopying it. An interrupted file starts again from the beginning. When inspection finds a completed archive with a matching file list, **Verify existing archive** compares both copies to its saved checksums. Choose **Create a separate snapshot** for an intentional new archive.
 

@@ -355,6 +355,14 @@ fn require_replacement(original: &Manifest, replacement: &Manifest) -> Result<()
     {
         return Err("The replacement must be a separate, freshly verified archive of the same files and folders.".into());
     }
+    if original.version == super::metadata::STRICT_VERSION {
+        if replacement.version != super::metadata::STRICT_VERSION {
+            return Err("Recreate this archive with strict metadata verification before removing the old copy.".into());
+        }
+        original
+            .inventory()
+            .verify_source_metadata(&replacement.inventory())?;
+    }
     Ok(())
 }
 
@@ -530,7 +538,7 @@ fn prepare_upgrade(
         copy_access_times(&mut manifest, inventory);
     }
     checked_manifest(&tree, original)?;
-    manifest.version = 3;
+    manifest.version = manifest.version.max(3);
     manifest.archive_name = name.into();
     manifest.date = date.clone();
     manifest.verified_at = Utc::now().to_rfc3339();
@@ -586,6 +594,9 @@ fn remove_old_tree(
     stopped: &impl Fn() -> bool,
 ) -> Result<(), String> {
     let found = scan(tree, stopped)?;
+    if receipt.version == super::metadata::STRICT_VERSION {
+        found.check_streams(tree, stopped)?;
+    }
     let receipt_name = manifest_name(&original.name);
     if found
         .files
@@ -603,14 +614,19 @@ fn remove_old_tree(
             return Err("Stopped during old archive removal. The replacement is verified.".into());
         }
         let file = safety::MediaFile::open(tree, name, true)?;
-        if !Stamp::read(&file.file.metadata().map_err(|error| error.to_string())?)
-            .same_file(&found.files[name])
-        {
+        let current = file.file.metadata().map_err(|error| error.to_string())?;
+        if !Stamp::read(&current).same_file(&found.files[name]) {
             return Err(format!(
                 "The old archive file changed during removal: {name}"
             ));
         }
-        file.remove()?;
+        if current.permissions().readonly() {
+            super::metadata::remove_readonly(&file.file).map_err(|error| {
+                format!("Could not remove read-only archive file {name}: {error}")
+            })?;
+        } else {
+            file.remove()?;
+        }
     }
     for name in found.directories.iter().rev() {
         if stopped() {
@@ -744,13 +760,21 @@ pub(super) fn run(
                     &draft,
                     &manifest.inventory(),
                     stopped,
+                    manifest.version == super::metadata::STRICT_VERSION,
                 )?);
                 if stopped() {
                     return Err("Stopped before publishing the upgraded archive.".into());
                 }
                 copy::publish_directory(&draft, &to)?;
-                verify_times(&manifest, &scan(&to, stopped)?)?;
+                if manifest.version == super::metadata::STRICT_VERSION {
+                    manifest
+                        .inventory()
+                        .check_published_metadata(&to, stopped)?;
+                } else {
+                    verify_times(&manifest, &scan(&to, stopped)?)?;
+                }
             }
+            progress.metadata_verified(manifest.version == super::metadata::STRICT_VERSION);
             update_history(directory, &job.id, &from, &original, Some((&to, &output)))?;
             job.completed_folder = Some(to.to_string_lossy().into_owned());
         }

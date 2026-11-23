@@ -1,4 +1,7 @@
-use super::{super::tests::Fixture, *};
+use super::{
+    super::tests::{set_fixture_attributes, Fixture},
+    *,
+};
 
 fn completed_archive(fixture: &Fixture) -> ArchiveJob {
     let mut job = fixture.job();
@@ -172,6 +175,45 @@ fn maintenance_rejects_unrelated_folder_replacement_and_card_inventory() {
     different.archive_id = new_id().unwrap();
     different.files.get_mut("DCIM/photo.jpg").unwrap().sha256 = "01".repeat(32);
     assert!(require_replacement(&receipt, &different).is_err());
+}
+
+#[test]
+fn verified_recreation_can_remove_a_read_only_old_file() {
+    let fixture = Fixture::new();
+    fixture.put("photo.jpg", b"archived read-only");
+    let source = fixture.source().join("photo.jpg");
+    set_fixture_attributes(&source, 0x01);
+    let old = completed_archive(&fixture);
+    let replacement = completed_archive(&fixture);
+    let from = PathBuf::from(old.completed_folder.as_ref().unwrap());
+    let target = PathBuf::from(replacement.completed_folder.as_ref().unwrap());
+    assert!(fs::metadata(from.join("photo.jpg"))
+        .unwrap()
+        .permissions()
+        .readonly());
+    let output = old.output.unwrap();
+    let receipt = checked_manifest(&from, &output).unwrap();
+    let mut job = new_job(
+        &fixture.repository(),
+        &from,
+        &receipt,
+        "remove",
+        Maintenance::Remove {
+            original: output,
+            replacement: replacement.output.unwrap(),
+        },
+    )
+    .unwrap();
+    let progress = Progress::new(&job);
+    let result = run(&mut job, &progress, None, &fixture.0, &|| false);
+    set_fixture_attributes(&source, 0x80);
+    let copy = target.join("photo.jpg");
+    let replacement_readonly = fs::metadata(&copy).unwrap().permissions().readonly();
+    set_fixture_attributes(&copy, 0x80);
+    result.unwrap();
+    assert!(!from.exists());
+    assert!(replacement_readonly);
+    assert_eq!(fs::read(copy).unwrap(), b"archived read-only");
 }
 
 #[test]

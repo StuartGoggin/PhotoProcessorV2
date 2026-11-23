@@ -240,6 +240,7 @@ try {
     await page.evaluate(jobId => window.__sdArchiveFixture.complete(jobId), first);
     await filter.getByRole("button", { name: "History", exact: true }).click();
     await firstCard.getByText("The saved archive matches its checksum file.", { exact: true }).waitFor();
+    await firstCard.getByText(/standard Windows attributes verified/).waitFor();
 
     await openArchive();
     await page.getByRole("button", { name: "Verify an archive folder" }).click();

@@ -57,6 +57,7 @@ const fixture = {
     if (!job?.sdCardArchive) throw new Error("Missing synthetic archive");
     const completed = {
       ...job.sdCardArchive, phase: "Verified", verifiedBytes: totalBytes, filesVerified: 246,
+      strictMetadata: true,
       sourceMbps: null, etaSeconds: null, archiveFolder,
       checksumFile: archiveFolder + "\\SD-C8A01234_2026-11-21.checksums.json",
       date: { date: "2026-11-21", basis: "Date entered by you" },

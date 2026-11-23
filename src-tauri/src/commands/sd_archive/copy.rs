@@ -1,4 +1,4 @@
-use super::{checkpoints, inventory::*, ArchiveJob, Output, Progress, ReadStats};
+use super::{checkpoints, inventory::*, metadata, ArchiveJob, Output, Progress, ReadStats};
 use crate::commands::{
     archive_adaptive, google_photos::store, import, import_devices, import_pipeline, import_safety,
     import_scheduler, import_sessions,
@@ -17,6 +17,7 @@ use std::{
 };
 
 const MIB: u64 = 1024 * 1024;
+const METADATA_RECEIPT: &str = "metadata-verified.txt";
 
 struct Verifiers {
     started: Instant,
@@ -193,6 +194,10 @@ pub(super) fn reuse_completed(
         stopped,
     )?;
     ensure_source_unchanged(&source, media_id, &inventory, stopped)?;
+    if manifest.version == metadata::STRICT_VERSION {
+        inventory.check_streams(&source, stopped)?;
+    }
+    progress.metadata_verified(manifest.version == metadata::STRICT_VERSION);
     job.completed_folder = Some(target.to_string_lossy().into_owned());
     Ok(())
 }
@@ -224,12 +229,14 @@ fn ensure_source_unchanged(
     stopped: &impl Fn() -> bool,
 ) -> Result<(), String> {
     source_identity(source, media_id)?;
-    if !scan(source, stopped)?.same_tree(expected) {
+    let current = scan(source, stopped)?;
+    if !current.same_tree(expected) {
         return Err(
             "The card inventory changed. Inspect the card again before starting a new archive."
                 .into(),
         );
     }
+    expected.verify_source_metadata(&current)?;
     source_identity(source, media_id)?;
     Ok(())
 }
@@ -252,7 +259,7 @@ pub(super) fn retire_finished_draft(job: &ArchiveJob) {
         return;
     }
     clear_work(&work);
-    for name in ["inventory.json", checkpoints::FILE_NAME] {
+    for name in ["inventory.json", checkpoints::FILE_NAME, METADATA_RECEIPT] {
         let path = work.join(name);
         if store::reject_link(&path).is_ok() && path.is_file() {
             let _ = fs::remove_file(path);
@@ -303,6 +310,10 @@ fn prepare(
     let path = relative_path(source, name, true)?;
     let guard = guarded_read(&path)?;
     let metadata = guard.metadata().map_err(|e| e.to_string())?;
+    if expected.has_attributes() {
+        super::metadata::require_independent_file(&guard)
+            .map_err(|error| format!("Unsupported card file {name}: {error}"))?;
+    }
     if !Stamp::read(&metadata).same_file(expected) {
         return Err(format!("Card file changed since inspection: {name}"));
     }
@@ -360,7 +371,8 @@ fn finish(
         let guard = guarded_read(&path)?;
         let (fresh_hash, repair) =
             stage_source(&path, &work.join("scratch"), stamp.bytes, stopped, |_| {})?;
-        if fresh_hash != hash || !Stamp::read(&guard.metadata().map_err(|e| e.to_string())?).same_file(&stamp)
+        if fresh_hash != hash
+            || !Stamp::read(&guard.metadata().map_err(|e| e.to_string())?).same_file(&stamp)
         {
             return Err(format!(
                 "Card file changed while repairing the saved copy: {name}"
@@ -529,24 +541,35 @@ pub(super) fn archive(
     if let Some(output) = &job.output {
         let published = relative_path(&repository, &output.name, false)?;
         if published.exists() && !tree.exists() {
-            if job.summary.verify_card_on_recovery {
+            let published = root(&published)?;
+            let (receipt, digest) = load_manifest(&published, &output.name)?;
+            if receipt.archive_id != job.id || digest != output.digest {
+                return Err(
+                    "Published archive belongs to another job or its manifest changed.".into(),
+                );
+            }
+            let metadata_verified = store::read_bounded(&work.join(METADATA_RECEIPT), 64)?
+                .is_some_and(|bytes| bytes == output.digest.as_bytes());
+            if receipt.version == metadata::STRICT_VERSION && !metadata_verified {
+                // A crash between rename and metadata read-back can leave the
+                // directory visible before it is verified. Resume in private.
+                publish_directory(&published, &tree)?;
+            } else if job.summary.verify_card_on_recovery {
                 set_phase("Checking card checksums");
                 return reuse_completed(job, progress, app, stopped);
+            } else {
+                set_phase("Verifying");
+                verify(
+                    &published,
+                    &output.name,
+                    Some(&output.digest),
+                    |p, b| progress.verified(p, b),
+                    stopped,
+                )?;
+                progress.metadata_verified(receipt.version == metadata::STRICT_VERSION);
+                job.completed_folder = Some(published.to_string_lossy().into_owned());
+                return Ok(());
             }
-            let published = root(&published)?;
-            set_phase("Verifying");
-            let receipt = verify(
-                &published,
-                &output.name,
-                Some(&output.digest),
-                |p, b| progress.verified(p, b),
-                stopped,
-            )?;
-            if receipt.archive_id != job.id {
-                return Err("Published archive belongs to another job.".into());
-            }
-            job.completed_folder = Some(published.to_string_lossy().into_owned());
-            return Ok(());
         }
     }
     let source = root(Path::new(&job.source))?;
@@ -559,7 +582,9 @@ pub(super) fn archive(
     let _reader = wait_for_reader(&source, &repository, &identity, app, stopped)?;
     set_phase("Scanning");
     let inventory = load_inventory(&work)?;
+    inventory.check_source_fields()?;
     ensure_source_unchanged(&source, media_id, &inventory, stopped)?;
+    inventory.check_streams(&source, stopped)?;
     ensure_dir(&tree)?;
     let tree = root(&tree)?;
     let network = repository.to_string_lossy().starts_with(r"\\?\UNC\");
@@ -612,7 +637,11 @@ pub(super) fn archive(
                 &date.date.to_string(),
             )?;
             let manifest = Manifest {
-                version: 2,
+                version: if inventory.strict() {
+                    metadata::STRICT_VERSION
+                } else {
+                    2
+                },
                 archive_name: name.clone(),
                 archive_id: job.id.clone(),
                 card_reference: job.card_reference.clone(),
@@ -645,11 +674,12 @@ pub(super) fn archive(
         import_safety::rename_new(&work.join("manifest.json"), &manifest_path)
             .map_err(|e| format!("Cannot write the archive checksum file: {e}"))?;
     }
-    let (_, digest) = load_manifest(&tree, &output.name)?;
+    let (manifest, digest) = load_manifest(&tree, &output.name)?;
     if digest != output.digest {
         return Err("Saved checksum file does not match its verification receipt.".into());
     }
     ensure_source_unchanged(&source, media_id, &inventory, stopped)?;
+    inventory.check_streams(&source, stopped)?;
     let mut current = scan(&tree, stopped)?;
     current.files.remove(&manifest_name(&output.name));
     if !same_files(&current.files, &stamps) || current.directories != inventory.directories {
@@ -660,12 +690,34 @@ pub(super) fn archive(
     }
     // Apply dates after byte verification, capture-date reads and the manifest
     // write. This also repairs metadata on reused draft files without recopying.
-    progress.timestamp_warnings(preserve_times(&tree, &inventory, stopped)?);
+    let strict = manifest.version == metadata::STRICT_VERSION;
+    if strict {
+        progress.phase("Verifying metadata");
+        if let Some(app) = app {
+            super::log_operation(app, job, "phase=Verifying metadata");
+        }
+        inventory.check_streams(&tree, stopped)?;
+    }
+    progress.timestamp_warnings(preserve_times(&tree, &inventory, stopped, strict)?);
     let published = relative_path(&repository, &output.name, false)?;
     if stopped() {
         return Err("Stopped at a safe checkpoint.".into());
     }
     publish_directory(&tree, &published)?;
+    if strict {
+        let verified = inventory
+            .check_published_metadata(&published, stopped)
+            .and_then(|_| {
+                store::atomic_write(&work.join(METADATA_RECEIPT), output.digest.as_bytes())
+            });
+        if let Err(error) = verified {
+            publish_directory(&published, &tree).map_err(|move_error| {
+                format!("{error}. The published folder needs retry in Jobs: {move_error}")
+            })?;
+            return Err(error);
+        }
+    }
+    progress.metadata_verified(strict);
     clear_work(&work);
     job.completed_folder = Some(published.to_string_lossy().into_owned());
     Ok(())
@@ -682,7 +734,11 @@ pub(super) fn archive_name(
     }
     let base = format!("SD-{card}_{date}");
     for serial in 1..=100 {
-        let name = if serial == 1 { base.clone() } else { format!("{base}-{serial:02}") };
+        let name = if serial == 1 {
+            base.clone()
+        } else {
+            format!("{base}-{serial:02}")
+        };
         let manifest = manifest_name(&name);
         let overlaps = inventory
             .files

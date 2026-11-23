@@ -45,5 +45,6 @@ export interface SdCardArchiveSummary {
   checksumFile?: string | null;
   date?: ArchiveDate | null;
   timestampWarnings: number;
+  strictMetadata?: boolean;
   needsDate: boolean;
 }
