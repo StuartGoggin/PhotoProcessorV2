@@ -137,9 +137,9 @@ try {
   });
 
   await check("The live graphic uses distinct byte meters and measured transfer rates without showing reuse controls", async () => {
-    assert.equal(await progress.getByRole("progressbar", { name: "Copied bytes" }).getAttribute("value"), String(24 * 1024 ** 3));
+    assert.equal(await progress.getByRole("progressbar", { name: "Card bytes read" }).getAttribute("value"), String(24 * 1024 ** 3));
     assert.equal(await progress.getByRole("progressbar", { name: "Verified bytes" }).getAttribute("value"), String(18 * 1024 ** 3));
-    assert.equal(await progress.getByRole("progressbar", { name: "Copied bytes" }).getAttribute("max"), String(totalBytes));
+    assert.equal(await progress.getByRole("progressbar", { name: "Card bytes read" }).getAttribute("max"), String(totalBytes));
     await progress.getByText("91.5 MiB/s", { exact: true }).waitFor();
     await progress.getByText("87.2 MiB/s", { exact: true }).waitFor();
     assert.equal(await progress.getAttribute("data-verified"), "false");
@@ -196,7 +196,7 @@ try {
       Object.assign(job.sdCardArchive, { copiedBytes: total, filesCopied: 246, phase: "Verifying", etaSeconds: null });
     }, totalBytes);
     await progress.getByRole("status").filter({ hasText: "Verifying" }).waitFor();
-    assert.equal(await progress.getByRole("progressbar", { name: "Copied bytes" }).getAttribute("value"), String(totalBytes));
+    assert.equal(await progress.getByRole("progressbar", { name: "Card bytes read" }).getAttribute("value"), String(totalBytes));
     assert.equal(await progress.getByRole("button", { name: "Open archive folder" }).count(), 0);
     assert.equal(await page.getByText(/reformat the card manually/).count(), 0);
     await page.evaluate(id => window.__sdArchiveFixture.complete(id), id);
@@ -218,7 +218,7 @@ try {
     await page.getByRole("option", { name: "CANON (E:)" }).waitFor({ state: "detached" });
     await progress.getByRole("button", { name: "Verify archive again" }).click();
     await progress.getByRole("status").filter({ hasText: "Verifying" }).waitFor();
-    assert.equal(await progress.getByRole("progressbar", { name: "Copied bytes" }).count(), 0);
+    assert.equal(await progress.getByRole("progressbar", { name: "Card bytes read" }).count(), 0);
     assert.equal(await progress.getByRole("button", { name: "Open archive folder" }).count(), 0);
     await page.evaluate(() => {
       const state = window.__sdArchiveFixture;
@@ -300,6 +300,55 @@ try {
     const secondId = "sd_archive_" + "c".repeat(32);
     await page.getByRole("article", { name: "Process job " + secondId, exact: true })
       .getByRole("region", { name: "SD Card Archive progress" }).waitFor();
+  });
+
+  await check("Jobs shows live archive progress while another job list stalls", async () => {
+    const card = page.getByRole("article", { name: "Process job sd_archive_" + "c".repeat(32), exact: true });
+    const meter = card.getByRole("progressbar", { name: "Verified bytes" });
+    await meter.waitFor();
+    const updated = 20 * 1024 ** 3;
+    await page.evaluate(() => { window.__sdArchiveFixture.holdOtherJobs = true; });
+    await page.waitForFunction(() => window.__sdArchiveFixture.otherJobsBlocked);
+    await page.evaluate(bytes => {
+      const fixture = window.__sdArchiveFixture;
+      fixture.jobs.find(job => job.id.endsWith("c".repeat(32))).sdCardArchive.verifiedBytes = bytes;
+    }, updated);
+    await page.waitForFunction(bytes => [...document.querySelectorAll('progress[aria-label="Verified bytes"]')].some(meter => meter.value === bytes), updated);
+    assert.equal(await meter.getAttribute("value"), String(updated));
+    await card.getByRole("button", { name: "Pause", exact: true }).click();
+    await card.getByText("Paused at a safe checkpoint", { exact: true }).first().waitFor();
+    await card.getByRole("button", { name: "Resume", exact: true }).click();
+  });
+
+  await check("Inspection offers resume and verify without requiring space for a full new archive", async () => {
+    await page.evaluate(id => {
+      const fixture = window.__sdArchiveFixture;
+      fixture.availableBytes = 1024 ** 3;
+      fixture.jobs.find(job => job.id === id).status = "needs_attention";
+      fixture.recovery = { jobId: id, completed: false };
+    }, id);
+    await openArchive();
+    await canon.check();
+    await page.getByRole("button", { name: "Inspect card" }).click();
+    const start = page.getByRole("button", { name: "Start archive", exact: true });
+    const resume = page.getByRole("button", { name: "Resume archive", exact: true });
+    const separate = page.getByRole("checkbox", { name: "Create a separate snapshot" });
+    await resume.waitFor();
+    await separate.check();
+    assert.ok(await start.isDisabled());
+    await separate.uncheck();
+    await resume.click();
+    await page.getByText("Reused 79 · Repaired 0", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("article", { name: "CANON (E:) job", exact: true }).count(), 1);
+    await page.evaluate(id => {
+      const fixture = window.__sdArchiveFixture;
+      fixture.complete(id);
+      fixture.recovery = { jobId: id, completed: true };
+    }, id);
+    await canon.check();
+    await page.getByRole("button", { name: "Inspect card" }).click();
+    await page.getByRole("button", { name: "Verify existing archive", exact: true }).click();
+    await page.getByRole("status").filter({ hasText: "Checking card checksums" }).waitFor();
   });
 
   assert.deepEqual(pageErrors, []);

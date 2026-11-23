@@ -23,6 +23,7 @@ export interface SdCardInspection {
   availableBytes: number | null;
   repositoryIssue: string | null;
   proposedDate: ArchiveDate | null;
+  recovery?: { jobId: string; completed: boolean } | null;
 }
 
 export interface SdCardArchiveSummary {
@@ -34,6 +35,8 @@ export interface SdCardArchiveSummary {
   verifiedBytes: number;
   filesCopied: number;
   filesVerified: number;
+  filesReused?: number;
+  filesRepaired?: number;
   sourceMbps?: number | null;
   sustainedMbps?: number | null;
   etaSeconds?: number | null;

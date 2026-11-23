@@ -13,6 +13,10 @@ pub struct Snapshot {
     pub warnings: Vec<String>,
 }
 pub(crate) fn snapshot(app: &AppHandle) -> Result<Snapshot, String> {
+    snapshot_with_archives(app, true)
+}
+
+fn snapshot_with_archives(app: &AppHandle, include_archives: bool) -> Result<Snapshot, String> {
     // Never hold the local task mutex across protected-store/account work.
     let mut jobs: Vec<_> = {
         process_jobs_store()
@@ -28,12 +32,14 @@ pub(crate) fn snapshot(app: &AppHandle) -> Result<Snapshot, String> {
         Ok((removal, mut notices)) => {jobs.extend(removal); warnings.append(&mut notices);}
         Err(_) => warnings.push("Saved removal jobs could not be read; their evidence remains protected.".into()),
     }
-    match super::sd_archive::snapshot(app) {
-        Ok((archives, mut notices)) => {
-            jobs.extend(archives);
-            warnings.append(&mut notices);
+    if include_archives {
+        match super::sd_archive::snapshot(app) {
+            Ok((archives, mut notices)) => {
+                jobs.extend(archives);
+                warnings.append(&mut notices);
+            }
+            Err(_) => warnings.push("Saved SD Card Archive jobs could not be read.".into()),
         }
-        Err(_) => warnings.push("Saved SD Card Archive jobs could not be read.".into()),
     }
     sort_jobs(&mut jobs);
     Ok(Snapshot { jobs, warnings })
@@ -58,8 +64,17 @@ pub(crate) fn sort_jobs(jobs: &mut [ProcessJob]) {
     });
 }
 #[tauri::command]
-pub async fn process_jobs_snapshot(app: AppHandle) -> Result<Snapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || snapshot(&app))
+pub async fn process_jobs_snapshot(app: AppHandle, job_group: Option<String>) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || match job_group.as_deref() {
+        Some("sdCardArchive") => {
+            let (mut jobs, warnings) = super::sd_archive::snapshot(&app)?;
+            sort_jobs(&mut jobs);
+            Ok(Snapshot { jobs, warnings })
+        }
+        Some("other") => snapshot_with_archives(&app, false),
+        None => snapshot(&app),
+        Some(_) => Err("Unknown job group.".into()),
+    })
         .await
         .map_err(|_| "Could not refresh the core job tracker.")?
 }

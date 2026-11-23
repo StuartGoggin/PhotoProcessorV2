@@ -1,4 +1,4 @@
-use super::{inventory::*, ArchiveJob, Output, Progress, ReadStats};
+use super::{checkpoints, inventory::*, ArchiveJob, Output, Progress, ReadStats};
 use crate::commands::{
     archive_adaptive, google_photos::store, import, import_devices, import_pipeline, import_safety,
     import_scheduler, import_sessions,
@@ -118,6 +118,85 @@ pub(super) fn source_identity(
     Ok(identity)
 }
 
+fn wait_for_reader(
+    source: &Path,
+    repository: &Path,
+    identity: &import_devices::SourceIdentity,
+    app: Option<&tauri::AppHandle>,
+    stopped: &impl Fn() -> bool,
+) -> Result<(import_scheduler::Permit, Vec<fs::File>), String> {
+    let mut ticket = acquire_source(source, repository, identity)?;
+    loop {
+        if stopped() {
+            return Err("Stopped at a safe checkpoint.".into());
+        }
+        if let Ok(permit) = ticket.try_acquire()? {
+            let lease = match app {
+                Some(app) => import_devices::try_reader_lease(app, identity)?,
+                None => Some(Vec::new()),
+            };
+            if let Some(lease) = lease {
+                return Ok((permit, lease));
+            }
+            drop(permit);
+            ticket = acquire_source(source, repository, identity)?;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+pub(super) fn reuse_completed(
+    job: &mut ArchiveJob,
+    progress: &Progress,
+    app: Option<&tauri::AppHandle>,
+    stopped: &impl Fn() -> bool,
+) -> Result<(), String> {
+    let source = root(Path::new(&job.source))?;
+    let repository = root(Path::new(&job.repository))?;
+    let media_id = job
+        .media_id
+        .as_deref()
+        .ok_or("Saved card identity is missing.")?;
+    let output = job
+        .output
+        .as_ref()
+        .ok_or("The saved archive has no checksum receipt.")?;
+    let target = root(&relative_path(&repository, &output.name, false)?)?;
+    let identity = source_identity(&source, media_id)?;
+    progress.phase("Waiting for the card reader");
+    let _reader = wait_for_reader(&source, &repository, &identity, app, stopped)?;
+    progress.phase("Checking card checksums");
+    let (manifest, digest) = load_manifest(&target, &output.name)?;
+    if digest != output.digest || (job.mode == "archive" && manifest.archive_id != job.id) {
+        return Err("The saved archive's checksum file changed since publication.".into());
+    }
+    let inventory = scan(&source, stopped)?;
+    if !manifest.matches_card(&inventory) {
+        return Err("The card inventory changed. Inspect it again for a new snapshot.".into());
+    }
+    for (name, receipt) in &manifest.files {
+        progress.current_file(name);
+        let path = relative_path(&source, name, true)?;
+        if hash_file(&path, stopped)? != receipt.sha256 {
+            return Err(format!("The card checksum differs from the saved archive: {name}. Inspect the card and choose a new snapshot if the change is intentional."));
+        }
+    }
+    progress.phase("Verifying");
+    verify(
+        &target,
+        &output.name,
+        Some(&output.digest),
+        |name, bytes| {
+            progress.recovered(true, false);
+            progress.verified(name, bytes);
+        },
+        stopped,
+    )?;
+    ensure_source_unchanged(&source, media_id, &inventory, stopped)?;
+    job.completed_folder = Some(target.to_string_lossy().into_owned());
+    Ok(())
+}
+
 pub(super) fn work_dir(repository: &Path, id: &str) -> PathBuf {
     repository.join(format!(".photogogo-{id}.incomplete"))
 }
@@ -132,7 +211,7 @@ pub(super) fn initialize(repository: &Path, id: &str, inventory: &Inventory) -> 
     store::atomic_write(&work.join("inventory.json"), &bytes)
 }
 
-fn load_inventory(work: &Path) -> Result<Inventory, String> {
+pub(super) fn load_inventory(work: &Path) -> Result<Inventory, String> {
     let bytes = store::read_bounded(&work.join("inventory.json"), DOCUMENT_LIMIT)?
         .ok_or("The saved card inventory is missing.")?;
     serde_json::from_slice(&bytes).map_err(|_| "The saved card inventory is unreadable.".into())
@@ -173,9 +252,11 @@ pub(super) fn retire_finished_draft(job: &ArchiveJob) {
         return;
     }
     clear_work(&work);
-    let inventory = work.join("inventory.json");
-    if store::reject_link(&inventory).is_ok() && inventory.is_file() {
-        let _ = fs::remove_file(inventory);
+    for name in ["inventory.json", checkpoints::FILE_NAME] {
+        let path = work.join(name);
+        if store::reject_link(&path).is_ok() && path.is_file() {
+            let _ = fs::remove_file(path);
+        }
     }
     let _ = fs::remove_dir(work);
 }
@@ -185,6 +266,26 @@ struct Prepared {
     stamp: Stamp,
     hash: String,
     staged: Option<import_safety::StagedCopy>,
+    checkpointed: bool,
+}
+
+fn stage_source(
+    path: &Path,
+    scratch: &Path,
+    bytes: u64,
+    stopped: &impl Fn() -> bool,
+    mut read: impl FnMut(u64),
+) -> Result<(String, import_safety::StagedCopy), String> {
+    let mut hash = Sha256::new();
+    let staged = import_safety::stage_copy(path, scratch, bytes, |chunk| {
+        if stopped() {
+            return Err("Stopped at a safe checkpoint.".into());
+        }
+        hash.update(chunk);
+        read(chunk.len() as u64);
+        Ok(())
+    })?;
+    Ok((hex::encode(hash.finalize()), staged))
 }
 
 fn prepare(
@@ -193,6 +294,7 @@ fn prepare(
     scratch: &Path,
     name: &str,
     expected: &Stamp,
+    checksum: Option<&str>,
     progress: &Progress,
     stopped: &impl Fn() -> bool,
 ) -> Result<Prepared, String> {
@@ -208,21 +310,17 @@ fn prepare(
     let (hash, staged) = if existing.try_exists().map_err(|e| e.to_string())? {
         // A published work file is a durable checkpoint. Reread its source
         // bytes after restart, including on filesystems with coarse timestamps.
-        let hash = hash_file(&path, stopped)?;
-        progress.read(expected.bytes);
+        let hash = hash_file_with_progress(&path, stopped, |bytes| progress.read(bytes))?;
         (hash, None)
     } else {
-        let mut hash = Sha256::new();
-        let staged = import_safety::stage_copy(&path, scratch, expected.bytes, |chunk| {
-            if stopped() {
-                return Err("Stopped at a safe checkpoint.".into());
-            }
-            hash.update(chunk);
-            progress.read(chunk.len() as u64);
-            Ok(())
+        let (hash, staged) = stage_source(&path, scratch, expected.bytes, stopped, |bytes| {
+            progress.read(bytes)
         })?;
-        (hex::encode(hash.finalize()), Some(staged))
+        (hash, Some(staged))
     };
+    if checksum.is_some_and(|expected| expected != hash) {
+        return Err(format!("Card checksum changed since this archive was started: {name}. Start a new snapshot if the changes are intentional."));
+    }
     if Stamp::read(&guard.metadata().map_err(|e| e.to_string())?) != *expected {
         return Err(format!("Card file changed during copy: {name}"));
     }
@@ -232,6 +330,7 @@ fn prepare(
         stamp: expected.clone(),
         hash,
         staged,
+        checkpointed: checksum.is_some(),
     })
 }
 
@@ -239,6 +338,7 @@ fn finish(
     prepared: Prepared,
     tree: &Path,
     work: &Path,
+    journal: &Mutex<checkpoints::Checkpoints>,
     progress: &Progress,
     stopped: &impl Fn() -> bool,
 ) -> Result<(String, FileReceipt, Stamp), String> {
@@ -246,9 +346,28 @@ fn finish(
         name,
         stamp,
         hash,
-        staged,
+        mut staged,
+        checkpointed,
     } = prepared;
     let destination = relative_path(tree, &name, false)?;
+    let reused = staged.is_none();
+    let repaired = reused && hash_file(&destination, stopped)? != hash;
+    if repaired {
+        if !checkpointed {
+            return Err(format!("A saved checkpoint differs from the card and has no recorded checksum: {name}. Keep the card and start a fresh archive."));
+        }
+        let path = relative_path(&progress.source, &name, true)?;
+        let guard = guarded_read(&path)?;
+        let (fresh_hash, repair) =
+            stage_source(&path, &work.join("scratch"), stamp.bytes, stopped, |_| {})?;
+        if fresh_hash != hash || Stamp::read(&guard.metadata().map_err(|e| e.to_string())?) != stamp
+        {
+            return Err(format!(
+                "Card file changed while repairing the saved copy: {name}"
+            ));
+        }
+        staged = Some(repair);
+    }
     if let Some(mut staged) = staged {
         if !staged.with_output(|file| stamp.set_times(file)) {
             progress.timestamp_warnings(1);
@@ -256,15 +375,32 @@ fn finish(
         staged
             .verify(&hash, |path| hash_file(path, stopped))
             .map_err(|e| format!("Destination verification failed for {name}: {e}"))?;
+        // Pin the intended bytes before the no-replace publication. Recovery
+        // can then safely recopy a missing file or diagnose a damaged copy.
+        journal
+            .lock()
+            .map_err(|_| "Checksum journal is unavailable.")?
+            .record(&name, &hash)?;
+        if repaired {
+            let damaged = work.join("damaged");
+            ensure_dir(&damaged)?;
+            let preserved = damaged.join(super::new_id()?);
+            import_safety::rename_new(&destination, &preserved)
+                .map_err(|e| format!("Could not preserve the damaged draft file {name}: {e}"))?;
+        }
         staged.publish_archive(&destination, work)?;
-    } else if hash_file(&destination, stopped)? != hash {
-        return Err(format!("A saved checkpoint differs from the card: {name}. Keep the card and start a fresh archive."));
+    } else {
+        journal
+            .lock()
+            .map_err(|_| "Checksum journal is unavailable.")?
+            .record(&name, &hash)?;
     }
     let destination_stamp =
         Stamp::read(&fs::symlink_metadata(&destination).map_err(|e| e.to_string())?);
     if destination_stamp.bytes != stamp.bytes {
         return Err(format!("Verified size changed for {name}"));
     }
+    progress.recovered(reused && !repaired, repaired);
     progress.verified(&name, stamp.bytes);
     Ok((
         name,
@@ -287,6 +423,9 @@ fn record_archive(
     let scratch = work.join("scratch");
     ensure_dir(&scratch)?;
     import_safety::cleanup_abandoned_staged(&scratch)?;
+    let checkpoints = checkpoints::Checkpoints::open(work, inventory)?;
+    let known_hashes = checkpoints.hashes.clone();
+    let journal = Mutex::new(checkpoints);
     for name in &inventory.directories {
         ensure_dir(&relative_path(tree, name, false)?)?;
     }
@@ -314,7 +453,10 @@ fn record_archive(
             if stopped() || work_failed.load(Ordering::Relaxed) {
                 return None;
             }
-            match prepare(source, tree, &scratch, name, stamp, progress, stopped) {
+            let checksum = known_hashes.get(*name).map(String::as_str);
+            match prepare(
+                source, tree, &scratch, name, stamp, checksum, progress, stopped,
+            ) {
                 Ok(item) => Some(item),
                 Err(message) => {
                     record_error(message);
@@ -326,7 +468,7 @@ fn record_archive(
             if !verifiers.begin(|| stopped() || work_failed.load(Ordering::Relaxed)) {
                 return;
             }
-            let result = finish(item, tree, work, progress, stopped);
+            let result = finish(item, tree, work, &journal, progress, stopped);
             let verified = result
                 .as_ref()
                 .ok()
@@ -390,6 +532,10 @@ pub(super) fn archive(
     if let Some(output) = &job.output {
         let published = relative_path(&repository, &output.name, false)?;
         if published.exists() && !tree.exists() {
+            if job.summary.verify_card_on_recovery {
+                set_phase("Checking card checksums");
+                return reuse_completed(job, progress, app, stopped);
+            }
             let published = root(&published)?;
             set_phase("Verifying");
             let receipt = verify(
@@ -412,26 +558,8 @@ pub(super) fn archive(
         .as_deref()
         .ok_or("Saved card identity is missing.")?;
     let identity = source_identity(&source, media_id)?;
-    let mut ticket = acquire_source(&source, &repository, &identity)?;
     set_phase("Waiting for the card reader");
-    let _reader = loop {
-        if stopped() {
-            return Err("Stopped at a safe checkpoint.".into());
-        }
-        if let Ok(permit) = ticket.try_acquire()? {
-            let lease = if let Some(app) = app {
-                import_devices::try_reader_lease(app, &identity)?
-            } else {
-                Some(Vec::new())
-            };
-            if let Some(lease) = lease {
-                break (permit, lease);
-            }
-            drop(permit);
-            ticket = acquire_source(&source, &repository, &identity)?;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    let _reader = wait_for_reader(&source, &repository, &identity, app, stopped)?;
     set_phase("Scanning");
     let inventory = load_inventory(&work)?;
     ensure_source_unchanged(&source, media_id, &inventory, stopped)?;

@@ -1,11 +1,12 @@
 //! Durable card snapshots projected into the shared Jobs tracker.
+mod checkpoints;
 mod copy;
 mod inventory;
 #[cfg(test)]
 mod tests;
 
 use super::{
-    google_photos::store, import_devices, lightbox_trash::safety, process::ProcessJob,
+    google_photos::store, import_devices, import_sessions, lightbox_trash::safety, process::ProcessJob,
     process_runtime, settings,
 };
 use chrono::{NaiveDate, Utc};
@@ -37,6 +38,14 @@ pub struct Preview {
     available_bytes: Option<u64>,
     repository_issue: Option<String>,
     proposed_date: Option<DateEvidence>,
+    recovery: Option<Recovery>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Recovery {
+    job_id: String,
+    completed: bool,
 }
 
 struct Inspection {
@@ -79,6 +88,10 @@ pub struct Summary {
     pub verified_bytes: u64,
     pub files_copied: usize,
     pub files_verified: usize,
+    #[serde(default)]
+    pub files_reused: usize,
+    #[serde(default)]
+    pub files_repaired: usize,
     pub source_mbps: Option<f64>,
     pub sustained_mbps: Option<f64>,
     pub eta_seconds: Option<f64>,
@@ -88,6 +101,8 @@ pub struct Summary {
     date: Option<DateEvidence>,
     pub timestamp_warnings: usize,
     pub needs_date: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    verify_card_on_recovery: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -139,6 +154,8 @@ impl Progress {
         summary.verified_bytes = 0;
         summary.files_copied = 0;
         summary.files_verified = 0;
+        summary.files_reused = 0;
+        summary.files_repaired = 0;
         summary.needs_date = false;
         summary.source_mbps = None;
         summary.sustained_mbps = None;
@@ -232,6 +249,13 @@ impl Progress {
 
     fn timestamp_warnings(&self, count: usize) {
         self.update(|data| data.summary.timestamp_warnings += count);
+    }
+
+    fn recovered(&self, reused: bool, repaired: bool) {
+        self.update(|data| {
+            data.summary.files_reused += usize::from(reused);
+            data.summary.files_repaired += usize::from(repaired);
+        });
     }
 
     fn stats(&self, stats: ReadStats) {
@@ -333,6 +357,65 @@ fn save(directory: &Path, job: &ArchiveJob) -> Result<(), String> {
         .map_err(|e| format!("Could not save the SD Card Archive checkpoint: {e}"))
 }
 
+fn saved_job_ids(directory: &Path) -> Result<Vec<String>, String> {
+    let mut ids = Vec::new();
+    for item in fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let item = item.map_err(|error| error.to_string())?;
+        if let Some(id) = item.file_name().to_str().and_then(|name| name.strip_suffix(".json")).filter(|id| is_job(id)) {
+            ids.push(id.into());
+        }
+    }
+    Ok(ids)
+}
+
+fn find_recovery(
+    directory: &Path,
+    repository: &Path,
+    media_id: &str,
+    inventory: &Inventory,
+) -> Result<Option<Recovery>, String> {
+    let mut draft = None;
+    let mut completed = Vec::new();
+    let scope = import_sessions::scope_key(repository);
+    let total_bytes = inventory.bytes();
+    for id in saved_job_ids(directory)? {
+        let Ok(job) = load(directory, &id) else { continue };
+        if job.mode != "archive" || job.media_id.as_deref() != Some(media_id)
+            || import_sessions::scope_key(Path::new(&job.repository)) != scope
+            || job.files != inventory.files.len() || job.summary.total_bytes != total_bytes {
+            continue;
+        }
+        if job.status == "completed" {
+            completed.push(job);
+        } else {
+            let path = copy::work_dir(repository, &id);
+            if !path.try_exists().map_err(|error| error.to_string())? { continue; }
+            let work = inventory::root(&path)?;
+            if copy::load_inventory(&work)?.same_tree(inventory) {
+                if draft.is_some() {
+                    return Err("More than one draft matches this card. Open Jobs and resume the intended archive.".into());
+                }
+                draft = Some(Recovery { job_id: id, completed: false });
+            }
+        }
+    }
+    if draft.is_some() { return Ok(draft); }
+    completed.sort_unstable_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
+    for job in completed {
+        let output = job.output.as_ref().ok_or("A matching saved archive has no checksum receipt.")?;
+        let path = inventory::relative_path(repository, &output.name, false)?;
+        if !path.try_exists().map_err(|error| error.to_string())? { continue; }
+        let (manifest, digest) = inventory::load_manifest(&inventory::root(&path)?, &output.name)?;
+        if digest != output.digest || manifest.archive_id != job.id {
+            return Err("An existing archive's checksum receipt changed. Check it in Jobs before continuing.".into());
+        }
+        if manifest.matches_card(inventory) {
+            return Ok(Some(Recovery { job_id: job.id, completed: true }));
+        }
+    }
+    Ok(None)
+}
+
 fn operation_log_entry(job: &ArchiveJob, message: &str) -> String {
     format!(
         "sd_card_archive job_id='{}' mode={} {}",
@@ -387,17 +470,8 @@ pub(super) fn snapshot(app: &AppHandle) -> Result<(Vec<ProcessJob>, Vec<String>)
     let active = process_runtime::active(KIND)?;
     let mut jobs = Vec::new();
     let mut warnings = Vec::new();
-    for item in fs::read_dir(&directory).map_err(|e| e.to_string())? {
-        let item = item.map_err(|e| e.to_string())?;
-        let name = item.file_name();
-        let Some(id) = name
-            .to_str()
-            .and_then(|name| name.strip_suffix(".json"))
-            .filter(|id| is_job(id))
-        else {
-            continue;
-        };
-        match load(&directory, id).and_then(|job| project(&job, active.iter().any(|key| key == id)))
+    for id in saved_job_ids(&directory)? {
+        match load(&directory, &id).and_then(|job| project(&job, active.contains(&id)))
         {
             Ok(job) => jobs.push(job),
             Err(_) => warnings.push("A saved SD Card Archive job could not be read.".into()),
@@ -487,6 +561,9 @@ fn inspect(app: &AppHandle, selected: &str) -> Result<Preview, String> {
     } else {
         "CARD".into()
     };
+    let recovery = repository.as_deref().map(|path| {
+        find_recovery(&job_root(app)?, Path::new(path), &identity.media_id, &inventory)
+    }).transpose()?.flatten();
     let preview = Preview {
         token: repository.as_ref().map(|_| new_id()).transpose()?,
         source: source.to_string_lossy().into_owned(),
@@ -499,6 +576,7 @@ fn inspect(app: &AppHandle, selected: &str) -> Result<Preview, String> {
         available_bytes,
         repository_issue,
         proposed_date: inventory::proposed_date(&inventory),
+        recovery,
     };
     let Some(token) = &preview.token else {
         return Ok(preview);
@@ -528,7 +606,7 @@ fn inspect(app: &AppHandle, selected: &str) -> Result<Preview, String> {
     Ok(preview)
 }
 
-fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<(), String> {
+fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<ProcessJob, String> {
     let worker_lock = safety::metadata_lock(&directory, &format!("{}.worker.lock", job.id))?;
     let worker = process_runtime::register(KIND, &job.id)?;
     job.status = "queued".into();
@@ -536,6 +614,7 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<(),
     job.errors.clear();
     job.summary.phase = "Queued".into();
     save(&directory, &job)?;
+    let queued = project(&job, true)?;
     log_operation(&app, &job, format!(
         "queued source={:?} repository={:?} files={} bytes={}",
         job.source, job.repository, job.files, job.summary.total_bytes,
@@ -551,8 +630,13 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<(),
         let result = save(&directory, &job).and_then(|_| {
             log_operation(&app, &job, "started");
             if job.mode == "verify" {
-                log_operation(&app, &job, "phase=Verifying");
-                verify_existing(&mut job, &progress, &stopped)
+                if job.media_id.is_some() {
+                    log_operation(&app, &job, "phase=Comparing card and archive to saved checksums");
+                    copy::reuse_completed(&mut job, &progress, Some(&app), &stopped)
+                } else {
+                    log_operation(&app, &job, "phase=Verifying");
+                    verify_existing(&mut job, &progress, &stopped)
+                }
             } else {
                 let config = settings::load_settings(app.clone())?;
                 let tool = super::metadata_tools::resolve(&config.exiftool_dir).0;
@@ -589,6 +673,11 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<(),
         job.summary.source_mbps = None;
         job.summary.eta_seconds = None;
         job.finished_at = Some(Utc::now().to_rfc3339());
+        if job.mode == "archive" || job.media_id.is_some() {
+            let summary = &job.summary;
+            job.logs.push(format!("Checksum checkpoints: reused {}, copied {}, repaired {}.", summary.files_reused,
+                summary.files_verified.saturating_sub(summary.files_reused + summary.files_repaired), summary.files_repaired));
+        }
         if job.mode == "archive" {
             job.logs.push(format!("Reader queue wait {} ms. Verification worker time {} ms. Peak in-flight files {}. Verification workers {}.",
                 stats.reader_queue_wait_ms, stats.verification_worker_ms, stats.peak_files_in_flight, stats.verifier_count));
@@ -611,7 +700,7 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<(),
         }
         if let Ok(mut map) = active_progress().lock() { map.remove(&id); }
     }).map_err(|e| format!("Could not start the archive worker. The saved job can be retried: {e}"))?;
-    Ok(())
+    Ok(queued)
 }
 
 fn verify_existing(
@@ -640,6 +729,7 @@ fn start(
     app: AppHandle,
     token: &str,
     date_override: Option<NaiveDate>,
+    new_snapshot: bool,
 ) -> Result<ProcessJob, String> {
     let plan = inspections()
         .lock()
@@ -655,11 +745,50 @@ fn start(
         return Err("The SD Card Repository changed. Inspect the card again.".into());
     }
     copy::source_identity(Path::new(&preview.source), &plan.media_id)?;
+    let directory = job_root(&app)?;
+    let _start_lock = safety::metadata_lock(&directory, "archive-start.lock")
+        .map_err(|_| "Another archive is being started. Try again shortly.")?;
+    let recovery = find_recovery(&directory, &repository, &plan.media_id, &plan.inventory)?;
+    if recovery != preview.recovery {
+        return Err("A matching archive changed since inspection. Inspect the card again.".into());
+    }
+    if let Some(recovery) = recovery {
+        // Exclude a still-running worker even across app instances. The start
+        // lock also serializes with Resume from the Jobs page.
+        let _worker = safety::metadata_lock(&directory, &format!("{}.worker.lock", recovery.job_id))
+            .map_err(|_| "This card already has an active archive. Open it in Jobs.")?;
+        let mut existing = load(&directory, &recovery.job_id)?;
+        if (existing.status == "completed") != recovery.completed {
+            return Err("The saved archive changed. Inspect the card again.".into());
+        }
+        if !new_snapshot {
+            if recovery.completed {
+                existing.id = new_id()?;
+                existing.mode = "verify".into();
+                existing.summary.mode = "verify".into();
+                existing.summary.archive_folder = None;
+                existing.summary.checksum_file = None;
+                existing.completed_folder = None;
+                existing.created_at = Utc::now().to_rfc3339();
+                existing.started_at = None;
+                existing.logs.clear();
+            } else if existing.output.is_none() {
+                existing.date_override = date_override.or(existing.date_override);
+            }
+            if existing.summary.needs_date && existing.date_override.is_none() {
+                return Err("Enter an archive date before resuming this archive.".into());
+            }
+            existing.source = preview.source;
+            existing.summary.label = preview.label;
+            existing.summary.verify_card_on_recovery = true;
+            drop(_worker);
+            return launch(app, directory, existing);
+        }
+    }
     let free = fs2::available_space(&repository).map_err(|e| e.to_string())?;
     if free <= preview.total_bytes {
         return Err("The repository has insufficient free space for the complete card.".into());
     }
-    let directory = job_root(&app)?;
     let id = new_id()?;
     copy::initialize(&repository, &id, &plan.inventory)?;
     let job = ArchiveJob {
@@ -689,8 +818,7 @@ fn start(
         logs: Vec::new(),
         errors: Vec::new(),
     };
-    launch(app, directory, job.clone())?;
-    project(&job, true)
+    launch(app, directory, job)
 }
 
 fn queue_verify(
@@ -761,8 +889,7 @@ fn queue_verify(
         logs: vec![],
         errors: vec![],
     };
-    launch(app, directory, job.clone())?;
-    project(&job, true)
+    launch(app, directory, job)
 }
 
 pub(super) fn control(app: AppHandle, id: &str, action: &str) -> Result<bool, String> {
@@ -791,6 +918,10 @@ pub(super) fn control(app: AppHandle, id: &str, action: &str) -> Result<bool, St
             }
         }
         "resume" | "retry" => {
+            let _start_lock = safety::metadata_lock(&directory, "archive-start.lock")
+                .map_err(|_| "Another archive is being started. Try again shortly.")?;
+            job = load(&directory, id)?;
+            if job.status == "completed" { return Ok(false); }
             if job.summary.needs_date && job.date_override.is_none() {
                 return Err("Enter an archive date before retrying this job.".into());
             }
@@ -836,8 +967,9 @@ pub async fn start_sd_card_archive(
     app: AppHandle,
     token: String,
     date_override: Option<NaiveDate>,
+    new_snapshot: Option<bool>,
 ) -> Result<ProcessJob, String> {
-    blocking(move || start(app, &token, date_override)).await
+    blocking(move || start(app, &token, date_override, new_snapshot.unwrap_or(false))).await
 }
 
 #[tauri::command]

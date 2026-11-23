@@ -43,6 +43,9 @@ const fixture = {
   calls: [] as { command: string; args: Record<string, unknown> }[],
   mounted: true,
   availableBytes: 42 * 1024 ** 3,
+  recovery: null as SdCardInspection["recovery"],
+  holdOtherJobs: false,
+  otherJobsBlocked: false,
   pick: repository,
   verificationCount: 0,
   archiveId,
@@ -87,7 +90,16 @@ desktop.__TAURI_INTERNALS__ = {
     ] : [];
     if (command === "list_import_jobs" || command === "studio_list_jobs") return [];
     if (command === "snapshot_sessions_list") return { sessions: [], warnings: [] };
-    if (command === "process_jobs_snapshot") return { jobs: structuredClone(fixture.jobs), warnings: [] };
+    if (command === "process_jobs_snapshot") {
+      if (args.jobGroup === "other") {
+        if (fixture.holdOtherJobs) {
+          fixture.otherJobsBlocked = true;
+          await new Promise<void>(() => {});
+        }
+        return { jobs: [], warnings: [] };
+      }
+      return { jobs: structuredClone(fixture.jobs), warnings: [] };
+    }
     if (command === "plugin:dialog|open") return fixture.pick;
     if (command === "plugin:event|listen") return args.handler;
     if (command === "plugin:event|unlisten") return;
@@ -107,12 +119,29 @@ desktop.__TAURI_INTERNALS__ = {
         availableBytes: configured ? fixture.availableBytes : null,
         repositoryIssue: configured ? null : "Choose an SD Card Repository before starting the archive.",
         proposedDate: { date: "2026-11-22", basis: "File modification time", file: "DCIM/100CANON/IMG_0991.JPG" },
+        recovery: second ? null : fixture.recovery,
       };
       return inspection;
     }
     if (command === "start_sd_card_archive") {
       const second = args.token === "synthetic-second-card-preview";
-      if ((!second && args.token !== "synthetic-card-preview") || !fixture.settings.sd_card_repository || fixture.availableBytes <= totalBytes) throw new Error("Card inspection is stale.");
+      if ((!second && args.token !== "synthetic-card-preview") || !fixture.settings.sd_card_repository) throw new Error("Card inspection is stale.");
+      if (!second && fixture.recovery && !args.newSnapshot) {
+        const saved = fixture.jobs.find(job => job.id === fixture.recovery?.jobId);
+        if (!saved) throw new Error("Saved job is missing.");
+        if (fixture.recovery.completed) {
+          const verification = makeJob("sd_archive_" + String(++fixture.verificationCount).padStart(32, "b"), {
+            ...checkpoint, mode: "verify", phase: "Checking card checksums", filesVerified: 0, verifiedBytes: 0,
+          }, source);
+          fixture.jobs.unshift(verification);
+          return structuredClone(verification);
+        }
+        saved.status = "running";
+        saved.currentPhase = "Copying";
+        saved.sdCardArchive = { ...checkpoint, filesReused: 79 };
+        return structuredClone(saved);
+      }
+      if (fixture.availableBytes <= totalBytes) throw new Error("The repository is full.");
       const job = makeJob(second ? secondArchiveId : archiveId, {
         ...checkpoint, label: second ? secondLabel : checkpoint.label,
       }, second ? secondSource : source);

@@ -39,6 +39,7 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
   const [source, setSource] = useState("");
   const [inspection, setInspection] = useState<SdCardInspection | null>(null);
   const [date, setDate] = useState("");
+  const [newSnapshot, setNewSnapshot] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [submittedJobs, setSubmittedJobs] = useState<ProcessJob[]>([]);
@@ -49,6 +50,7 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
     .filter((job, index) => index === 0 || submittedIds.has(job.id) || ["queued", "running", "paused"].includes(job.status));
   const anotherJobIsRunning = visibleJobs.some(job => job.status === "queued" || job.status === "running");
   const enoughSpace = inspection?.availableBytes != null && inspection.availableBytes > inspection.totalBytes;
+  const recovery = !newSnapshot ? inspection?.recovery : null;
   const manualSource = source && !cards.some(card => card.path === source);
 
   useEffect(() => {
@@ -67,6 +69,7 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
     setSource(path);
     setInspection(null);
     setDate("");
+    setNewSnapshot(false);
     setError("");
   }
 
@@ -79,7 +82,7 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
   }
 
   function follow(job: ProcessJob) {
-    setSubmittedJobs(current => [job, ...current]);
+    setSubmittedJobs(current => [job, ...current.filter(previous => previous.id !== job.id)]);
     void refresh();
   }
 
@@ -149,6 +152,7 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
           <HelpTip label="What happens when I inspect a card">PhotoGoGo counts the files, checks their total size and estimates the archive date. Inspection is read-only.</HelpTip>
           <button className="btn-primary" disabled={!source || !!busy} onClick={() => void run("Scanning card…", async () => {
             setInspection(null);
+            setNewSnapshot(false);
             setInspection(await invoke<SdCardInspection>("scan_sd_card_archive", { source }));
           })}>Inspect card</button>
         </div>
@@ -160,23 +164,34 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
           <div><dt className="text-gray-400">Card data</dt><dd className="text-white">{archiveSize(inspection.totalBytes)}</dd></div>
           <div><dt className="text-gray-400">Repository free</dt><dd className={enoughSpace ? "text-white" : "text-amber-200"}>{inspection.availableBytes == null ? "Unavailable" : archiveSize(inspection.availableBytes)}</dd></div>
         </dl>
+        {inspection.recovery && <div className="space-y-2 text-sm">
+          <p className="text-sky-200">{inspection.recovery.completed
+            ? "A completed archive matches this card’s file list. Verify both copies against its saved checksums to reuse it."
+            : "An unfinished archive matches this card. Resume to recheck its saved checksums and copy the remaining files."}</p>
+          <label className="flex items-center gap-2 text-gray-300">
+            <input type="checkbox" checked={newSnapshot} disabled={!!busy} onChange={event => setNewSnapshot(event.target.checked)} />
+            Create a separate snapshot
+          </label>
+        </div>}
         <div className="flex flex-wrap items-end gap-3">
-          <label className="text-sm text-gray-200">Override archive date<input className="input-field block" type="date" value={date} disabled={!!busy} onChange={event => setDate(event.target.value)} /></label>
-          <button className="btn-primary" disabled={!!busy || !enoughSpace || !inspection.token} onClick={() => void run("Starting archive…", async () => {
+          {!recovery?.completed && <label className="text-sm text-gray-200">Override archive date<input className="input-field block" type="date" value={date} disabled={!!busy} onChange={event => setDate(event.target.value)} /></label>}
+          <button className="btn-primary" disabled={!!busy || (!recovery && !enoughSpace) || !inspection.token} onClick={() => void run("Starting archive…", async () => {
             const token = inspection.token;
             if (!token) return;
             setInspection(null);
-            const job = await invoke<ProcessJob>("start_sd_card_archive", { token, dateOverride: date || null });
+            const job = await invoke<ProcessJob>("start_sd_card_archive", {
+              token, dateOverride: date || null, ...(newSnapshot ? { newSnapshot: true } : {}),
+            });
             select("");
             follow(job);
-          })}>Start archive</button>
+          })}>{recovery ? recovery.completed ? "Verify existing archive" : "Resume archive" : "Start archive"}</button>
         </div>
-        {inspection.proposedDate
+        {!recovery?.completed && (inspection.proposedDate
           ? <p className="text-xs text-gray-400">Estimated date {inspection.proposedDate.date} from file modification time. PhotoGoGo checks embedded capture times on the copy before naming it.</p>
-          : <p className="text-xs text-gray-400">PhotoGoGo will check the date on the copied files. You can enter it now if the card has no dated camera files.</p>}
+          : <p className="text-xs text-gray-400">PhotoGoGo will check the date on the copied files. You can enter it now if the card has no dated camera files.</p>)}
         {inspection.repositoryIssue
           ? <p role="status" className="text-sm text-amber-200">{inspection.repositoryIssue}</p>
-          : !enoughSpace && <p role="alert" className="text-sm text-amber-200">The repository does not have enough free space for this card.</p>}
+          : !recovery && !enoughSpace && <p role="alert" className="text-sm text-amber-200">The repository does not have enough free space for this card.</p>}
       </div>}
       {busy && <p role="status" className="sd-picker-feedback text-sky-200">{busy}</p>}
       {error && <p role="alert" className="sd-picker-feedback text-red-300">{error}</p>}

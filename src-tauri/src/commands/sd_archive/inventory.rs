@@ -185,7 +185,15 @@ pub(super) fn guarded_read(path: &Path) -> Result<File, String> {
     Ok(file)
 }
 
-pub(super) fn hash_file(path: &Path, mut stopped: impl FnMut() -> bool) -> Result<String, String> {
+pub(super) fn hash_file(path: &Path, stopped: impl FnMut() -> bool) -> Result<String, String> {
+    hash_file_with_progress(path, stopped, |_| {})
+}
+
+pub(super) fn hash_file_with_progress(
+    path: &Path,
+    mut stopped: impl FnMut() -> bool,
+    mut read: impl FnMut(u64),
+) -> Result<String, String> {
     let mut file = guarded_read(path)?;
     let before = safety::id(&file)?;
     let mut buffer = vec![0; 1024 * 1024];
@@ -203,6 +211,7 @@ pub(super) fn hash_file(path: &Path, mut stopped: impl FnMut() -> bool) -> Resul
         }
         bytes += count as u64;
         hash.update(&buffer[..count]);
+        read(count as u64);
     }
     if bytes != before.bytes || !safety::same(&before, &safety::id(&file)?) {
         return Err(format!(
@@ -414,6 +423,13 @@ pub(super) struct Manifest {
     pub files: BTreeMap<String, FileReceipt>,
 }
 
+impl Manifest {
+    pub(super) fn matches_card(&self, inventory: &Inventory) -> bool {
+        self.directories == inventory.directories
+            && self.files.iter().map(|(name, receipt)| (name, &receipt.stamp)).eq(&inventory.files)
+    }
+}
+
 pub(super) fn manifest_name(folder: &str) -> String {
     format!("{folder}.checksums.json")
 }
@@ -486,7 +502,7 @@ pub(super) fn verify(
     Ok(manifest)
 }
 
-fn is_sha256(value: &str) -> bool {
+pub(super) fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 

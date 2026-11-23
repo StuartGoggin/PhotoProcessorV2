@@ -140,7 +140,7 @@ export default function App() {
 
   const pageContent: Record<Page, React.ReactNode> = {
     import: <Import />,
-    sdcardarchive: <SdCardArchive jobs={processJobs} refresh={refresh} onOpenJob={openJob} onSettings={() => setPage("settings")} />,
+    sdcardarchive: <SdCardArchive jobs={processJobs} refresh={monitor.refreshArchives} onOpenJob={openJob} onSettings={() => setPage("settings")} />,
     stagingexplorer: <StagingExplorer />,
     videostudio: null,
     videosnapshots: null,

@@ -103,11 +103,12 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
   useEffect(() => setView(initialView), [initialView]);
   const [expandedProcessLogs, setExpandedProcessLogs] = useState<Record<string, boolean>>({});
 
-  async function loadJobs(showLoading = true) {
+  async function loadJobs(showLoading = true, archivesOnly = false) {
     // Keep automatic refreshes quiet; initial/manual refreshes still give feedback.
     if (showLoading) setLoading(true);
     try {
-      await latest.current.refresh();
+      if (archivesOnly) await latest.current.refreshArchives();
+      else await latest.current.refresh();
       const refreshed = latest.current.getSnapshot();
       setImportJobs(refreshed.importJobs);
       setProcessJobs(refreshed.processJobs);
@@ -530,12 +531,12 @@ export default function Jobs({ initialView = "active", monitor, focusJobId }: { 
                       </div>
                       <div className="flex items-center gap-2 flex-wrap justify-end">
                         <div className={`text-xs px-2 py-1 rounded-full border capitalize ${PROCESS_STATUS_STYLES[job.status]}`}>{job.status === "completed_with_warnings" && job.task === "googlePhotos" ? "Completed with verification warnings" : job.status.replace(/_/g, " ")}</div>
-                        <ProcessJobControls job={job} onChanged={() => loadJobs(false)} onRestored={() => setView("history")} />
+                        <ProcessJobControls job={job} onChanged={() => loadJobs(false, job.task === "sdCardArchive")} onRestored={() => setView("history")} />
                       </div>
                     </div>
 
                     {job.task === "googlePhotos" && <GooglePhotoJobDetails job={job} onChanged={() => loadJobs(false)} />}
-                    {job.sdCardArchive && <SdCardArchiveProgress job={job} onChanged={() => loadJobs(false)} />}
+                    {job.sdCardArchive && <SdCardArchiveProgress job={job} onChanged={() => loadJobs(false, true)} />}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-400">
                       <div>{job.sdCardArchive ? "Source" : "Staging"}: <span className="text-gray-200 break-all">{job.stagingDir}</span></div>
                       <div>Scope mode: <span className="text-gray-200">{PROCESS_SCOPE_LABELS[job.scopeMode] ?? job.scopeMode}</span></div>

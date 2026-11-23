@@ -86,12 +86,18 @@ fn operations_log_correlates_archive_and_verify_events_without_inserting_lines()
     let mut job = fixture.job();
     assert_eq!(
         operation_log_entry(&job, "phase=Copying"),
-        format!("sd_card_archive job_id='{}' mode=archive phase=Copying", job.id),
+        format!(
+            "sd_card_archive job_id='{}' mode=archive phase=Copying",
+            job.id
+        ),
     );
     job.mode = "verify".into();
     assert_eq!(
         operation_log_entry(&job, "error: file unavailable\nRead failed"),
-        format!("sd_card_archive job_id='{}' mode=verify error: file unavailable Read failed", job.id),
+        format!(
+            "sd_card_archive job_id='{}' mode=verify error: file unavailable Read failed",
+            job.id
+        ),
     );
 }
 
@@ -158,7 +164,7 @@ fn archives_full_tree_and_verifies_after_card_removal() {
 
 #[test]
 #[cfg(windows)]
-fn stopped_archive_resumes_and_changed_checkpoint_never_publishes() {
+fn stopped_archive_resumes_and_repairs_only_a_proven_draft_file() {
     let fixture = Fixture::new();
     for n in 0..5 {
         fixture.put(&format!("DCIM/file-{n}.cr3"), b"original");
@@ -181,14 +187,183 @@ fn stopped_archive_resumes_and_changed_checkpoint_never_publishes() {
     assert!(first.is_file());
     fs::write(&first, b"tampered").unwrap();
     let restart = Progress::new(&job);
-    assert!(fixture
-        .run(&mut job, || false, &restart)
-        .unwrap_err()
-        .contains("differs from the card"));
-    fs::write(first, b"original").unwrap();
-    let restart = Progress::new(&job);
     fixture.run(&mut job, || false, &restart).unwrap();
     assert_eq!(restart.snapshot().0.files_verified, 5);
+    assert_eq!(restart.snapshot().0.files_repaired, 1);
+    let draft = copy::work_dir(&fixture.repository(), &job.id);
+    let damaged = fs::read_dir(draft.join("damaged"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(damaged.path()).unwrap(), b"tampered");
+    let path = Path::new(job.completed_folder.as_ref().unwrap()).join("DCIM/file-0.cr3");
+    assert_eq!(fs::read(path).unwrap(), b"original");
+}
+
+#[test]
+#[cfg(windows)]
+fn archived_child_exits_at_checkpoint() {
+    let Some(folder) = std::env::var_os("PHOTOGOGO_TEST_SD_CRASH_FOLDER") else {
+        return;
+    };
+    let fixture = Fixture(PathBuf::from(folder));
+    let id = saved_job_ids(&fixture.0).unwrap().pop().unwrap();
+    let mut job = load(&fixture.0, &id).unwrap();
+    let progress = Progress::new(&job);
+    let _ = fixture.run(
+        &mut job,
+        || {
+            if progress.snapshot().0.files_verified >= 2 {
+                // No destructors, status save, or orderly cancellation run.
+                std::process::exit(73);
+            }
+            false
+        },
+        &progress,
+    );
+    panic!("Failed to reach the forced-exit checkpoint");
+}
+
+#[test]
+#[cfg(windows)]
+fn forced_exit_reuses_verified_bytes_from_an_old_job_and_handles_a_torn_receipt() {
+    let fixture = Fixture::new();
+    for n in 0..5 {
+        fixture.put(&format!("DCIM/{n}.jpg"), b"photo");
+    }
+    let job = fixture.job();
+    save(&fixture.0, &job).unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "commands::sd_archive::tests::archived_child_exits_at_checkpoint",
+        ])
+        .env("PHOTOGOGO_TEST_SD_CRASH_FOLDER", &fixture.0)
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(73));
+    let work = copy::work_dir(&fixture.repository(), &job.id);
+    let journal = work.join(checkpoints::FILE_NAME);
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&journal)
+        .unwrap()
+        .write_all(b"[\"torn")
+        .unwrap();
+    // Missing data must be copied even when it still has a saved checksum.
+    fs::remove_file(work.join("card/DCIM/0.jpg")).unwrap();
+    let inventory = inventory::scan(&fixture.source(), || false).unwrap();
+    let recovered = find_recovery(
+        &fixture.0,
+        &fixture.repository(),
+        job.media_id.as_deref().unwrap(),
+        &inventory,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(recovered.job_id, job.id);
+    assert!(!recovered.completed);
+    let mut job = load(&fixture.0, &recovered.job_id).unwrap();
+    let progress = Progress::new(&job);
+    fixture.run(&mut job, || false, &progress).unwrap();
+    let summary = progress.snapshot().0;
+    assert_eq!(summary.files_verified, 5);
+    assert!((1..5).contains(&summary.files_reused));
+}
+
+#[test]
+#[cfg(windows)]
+fn checksum_detects_changed_card_bytes_with_the_same_inventory() {
+    let fixture = Fixture::new();
+    fixture.put("DCIM/a.jpg", b"camera");
+    fixture.put("DCIM/b.jpg", b"camera");
+    let mut job = fixture.job();
+    let progress = Progress::new(&job);
+    fixture
+        .run(
+            &mut job,
+            || progress.snapshot().0.files_verified >= 1,
+            &progress,
+        )
+        .unwrap_err();
+    let work = copy::work_dir(&fixture.repository(), &job.id);
+    let before = copy::load_inventory(&work).unwrap();
+    let path = fixture.source().join("DCIM/a.jpg");
+    fs::write(&path, b"change").unwrap();
+    assert!(before.files["DCIM/a.jpg"]
+        .set_times(&fs::OpenOptions::new().write(true).open(&path).unwrap()));
+    assert!(before.same_tree(&inventory::scan(&fixture.source(), || false).unwrap()));
+    let progress = Progress::new(&job);
+    let result = fixture.run(&mut job, || false, &progress).unwrap_err();
+    assert!(result.contains("Card checksum changed"), "{result}");
+    assert_eq!(fs::read(work.join("card/DCIM/a.jpg")).unwrap(), b"camera");
+    assert!(job.completed_folder.is_none());
+}
+
+#[test]
+#[cfg(windows)]
+fn matching_completed_archive_is_reverified_without_creating_a_snapshot() {
+    let fixture = Fixture::new();
+    fixture.put("DCIM/a.jpg", b"original");
+    let mut job = fixture.job();
+    let progress = Progress::new(&job);
+    fixture.run(&mut job, || false, &progress).unwrap();
+    job.status = "completed".into();
+    save(&fixture.0, &job).unwrap();
+    copy::retire_finished_draft(&job);
+    let inventory = inventory::scan(&fixture.source(), || false).unwrap();
+    let recovery = find_recovery(
+        &fixture.0,
+        &fixture.repository(),
+        job.media_id.as_deref().unwrap(),
+        &inventory,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(recovery.completed);
+    assert_eq!(job.id, recovery.job_id);
+    let mut verify = load(&fixture.0, &job.id).unwrap();
+    verify.completed_folder = None;
+    let progress = Progress::new(&verify);
+    copy::reuse_completed(&mut verify, &progress, None, &|| false).unwrap();
+    assert_eq!(job.completed_folder, verify.completed_folder);
+    assert_eq!(fs::read_dir(fixture.repository()).unwrap().count(), 1);
+    assert_eq!(progress.snapshot().0.files_reused, 1);
+    let file = Path::new(job.completed_folder.as_ref().unwrap()).join("DCIM/a.jpg");
+    fs::write(&file, b"tampered").unwrap();
+    assert!(
+        copy::reuse_completed(&mut verify, &Progress::new(&job), None, &|| false)
+            .unwrap_err()
+            .contains("checksum mismatch")
+    );
+    assert_eq!(fs::read(file).unwrap(), b"tampered");
+}
+
+#[test]
+#[cfg(windows)]
+fn reinspecting_a_published_but_unsaved_job_compares_the_card_to_its_manifest() {
+    let fixture = Fixture::new();
+    fixture.put("DCIM/a.jpg", b"original");
+    let mut job = fixture.job();
+    let progress = Progress::new(&job);
+    fixture.run(&mut job, || false, &progress).unwrap();
+    let mut saved = load(&fixture.0, &job.id).unwrap();
+    assert!(saved.completed_folder.is_none());
+    saved.summary.verify_card_on_recovery = true;
+    let before = inventory::scan(&fixture.source(), || false).unwrap();
+    let path = fixture.source().join("DCIM/a.jpg");
+    fs::write(&path, b"modified").unwrap();
+    assert!(before.files["DCIM/a.jpg"]
+        .set_times(&fs::OpenOptions::new().write(true).open(&path).unwrap()));
+    assert!(before.same_tree(&inventory::scan(&fixture.source(), || false).unwrap()));
+    let progress = Progress::new(&saved);
+    let error = fixture.run(&mut saved, || false, &progress).unwrap_err();
+    assert!(error.contains("card checksum differs"), "{error}");
+    assert_eq!(
+        fs::read(Path::new(job.completed_folder.as_ref().unwrap()).join("DCIM/a.jpg")).unwrap(),
+        b"original"
+    );
 }
 
 #[test]

@@ -22,7 +22,7 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
   const completed = job.status === "completed" && !!detail.archiveFolder;
   const verifying = detail.mode === "verify";
   const phase = job.currentPhase || detail.phase;
-  const active = job.status === "running" && ["Copying", "Verifying"].includes(phase);
+  const active = job.status === "running" && ["Copying", "Verifying", "Checking card checksums"].includes(phase);
   const max = Math.max(detail.totalBytes, 1);
   const value = (bytes: number) => Math.min(max, completed && !detail.totalBytes ? 1 : bytes);
   const rate = (number?: number | null) => number == null ? "—" : `${number.toFixed(1)} MiB/s`;
@@ -46,13 +46,14 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
         <h3 className="text-base font-semibold text-white">{detail.label}</h3>
         <span className={completed ? "text-emerald-300 font-semibold" : "text-sky-200"} role="status">{phase}</span>
       </div>
-      {!verifying && <label className="sd-archive-meter">Copied <span>{archiveSize(detail.copiedBytes)} / {archiveSize(detail.totalBytes)} · {detail.filesCopied.toLocaleString()} files</span>
-        <progress aria-label="Copied bytes" max={max} value={value(detail.copiedBytes)} /></label>}
+      {!verifying && <label className="sd-archive-meter">Read from card <span>{archiveSize(detail.copiedBytes)} / {archiveSize(detail.totalBytes)} · {detail.filesCopied.toLocaleString()} files</span>
+        <progress aria-label="Card bytes read" max={max} value={value(detail.copiedBytes)} /></label>}
       <label className="sd-archive-meter">Verified <span>{archiveSize(detail.verifiedBytes)} / {archiveSize(detail.totalBytes)} · {detail.filesVerified.toLocaleString()} files</span>
         <progress aria-label="Verified bytes" max={max} value={value(detail.verifiedBytes)} /></label>
+      {!!(detail.filesReused || detail.filesRepaired) && <p className="text-xs text-sky-200">Reused {detail.filesReused ?? 0} · Repaired {detail.filesRepaired ?? 0}</p>}
       {!verifying && <dl className="sd-archive-rates">
         <div><dt>Card read</dt><dd>{rate(detail.sourceMbps)}</dd></div><div><dt>Sustained</dt><dd>{rate(detail.sustainedMbps)}</dd></div>
-        {detail.etaSeconds != null && detail.etaSeconds > 1 && <div><dt>Copy remaining</dt><dd>{Math.ceil(detail.etaSeconds)} s</dd></div>}
+        {detail.etaSeconds != null && detail.etaSeconds > 1 && <div><dt>Read remaining</dt><dd>{Math.ceil(detail.etaSeconds)} s</dd></div>}
       </dl>}
       {detail.bottleneck && <p className="text-xs text-sky-200">{detail.bottleneck}</p>}
       {detail.date && <p className="text-xs text-gray-400" title={detail.date.file ?? undefined}>{detail.date.date} · {detail.date.basis}{detail.date.file ? ` · ${detail.date.file}` : ""}</p>}
