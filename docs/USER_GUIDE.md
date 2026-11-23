@@ -123,7 +123,8 @@ Check camera clocks and the expected event dates before a large import. If media
 1. Open **SD Card Archive** and select the card by its label and drive letter. Windows can identify some cards by their SD connection. Some readers report only USB storage. If the card is missing, expand **Card not listed?** and browse to its drive root.
 2. Choose **Inspect card** to check its contents and size. Set **SD Card Repository** to a folder on another volume before starting the archive. Check the available space and enter a date if the proposed date needs correcting.
 3. Choose **Start archive**. Follow the live meters in the bottom **Jobs** pane or choose **View in Jobs** for the full job, controls and log. After an interruption, reconnect and inspect the same card to find **Resume archive**, or retry the saved job in **Jobs**.
-4. Wait for **Verified** before reformatting the archived card manually. You can open the finished folder, view its checksum manifest and verify it again with the card removed.
+4. Open the finished folder or view its checksum manifest from the completed job. You can run **Verify archive again** with the card removed.
+5. Before reusing a card, select it in **Source card**, click the red **Prepare to format** button and choose its folder in the SD Card Repository. Wait for **Card and repository matched** in Jobs. If a check fails, resolve the issue or archive the card again. Once the copies match, confirm the card label and drive before formatting it manually. In Windows, use **GogginPhoto** as the volume label.
 
 New archives use the card's Windows volume serial followed by the earliest photo date, for example `SD-1A2B3C4D_2026-11-23`. PhotoGoGo prefers the embedded capture date and uses the file's modification date when that photo has no capture date. Cards without dated photos can use a video date or a date you enter. Additional snapshots receive a number when the folder name is taken.
 

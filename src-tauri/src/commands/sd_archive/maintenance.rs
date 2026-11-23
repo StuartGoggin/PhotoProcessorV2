@@ -50,7 +50,7 @@ fn plans() -> &'static Mutex<HashMap<String, Plan>> {
     PLANS.get_or_init(Mutex::default)
 }
 
-fn selected_folder(repository: &Path, selected: &str) -> Result<(PathBuf, String), String> {
+pub(super) fn selected_folder(repository: &Path, selected: &str) -> Result<(PathBuf, String), String> {
     let selected = root(Path::new(selected))?;
     if selected.parent() != Some(repository) {
         return Err(

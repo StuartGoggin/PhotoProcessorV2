@@ -4,6 +4,7 @@ mod copy;
 mod inventory;
 mod maintenance;
 mod metadata;
+mod reuse;
 #[cfg(test)]
 mod tests;
 
@@ -358,7 +359,7 @@ fn load(directory: &Path, id: &str) -> Result<ArchiveJob, String> {
         serde_json::from_slice(&bytes).map_err(|_| "Saved archive job is unreadable.")?;
     let mode_matches = matches!(
         (job.mode.as_str(), &job.maintenance),
-        ("archive" | "verify", None)
+        ("archive" | "verify" | reuse::MODE, None)
             | ("upgrade", Some(maintenance::Maintenance::Upgrade { .. }))
             | ("remove", Some(maintenance::Maintenance::Remove { .. }))
     );
@@ -658,6 +659,9 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<Pro
             if job.maintenance.is_some() {
                 log_operation(&app, &job, format!("starting archive maintenance mode={}", job.mode));
                 maintenance::run(&mut job, &progress, Some(&app), &directory, &stopped)
+            } else if job.mode == reuse::MODE {
+                log_operation(&app, &job, "phase=Comparing inserted card and repository for reuse");
+                reuse::run(&app, &mut job, &progress, &stopped)
             } else if job.mode == "verify" {
                 if job.media_id.is_some() {
                     log_operation(&app, &job, "phase=Comparing card and archive to saved checksums");
@@ -678,7 +682,11 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<Pro
         match result {
             Ok(()) => {
                 job.status = "completed".into();
-                job.summary.phase = if job.mode == "remove" { "Removed" } else { "Verified" }.into();
+                job.summary.phase = match job.mode.as_str() {
+                    "remove" => "Removed",
+                    reuse::MODE => "Card and repository matched",
+                    _ => "Verified",
+                }.into();
                 job.summary.date = job.output.as_ref().map(|output| output.date.clone()).or(job.summary.date);
                 if let (Some(folder), Some(output)) = (&job.completed_folder, &job.output) {
                     job.summary.archive_folder = Some(folder.clone());
@@ -702,7 +710,7 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<Pro
         job.summary.source_mbps = None;
         job.summary.eta_seconds = None;
         job.finished_at = Some(Utc::now().to_rfc3339());
-        if job.mode == "archive" || job.media_id.is_some() {
+        if job.mode == "archive" || job.mode == "verify" && job.media_id.is_some() {
             let summary = &job.summary;
             job.logs.push(format!("Checksum checkpoints: reused {}, copied {}, repaired {}.", summary.files_reused,
                 summary.files_verified.saturating_sub(summary.files_reused + summary.files_repaired), summary.files_repaired));
@@ -1043,6 +1051,15 @@ pub async fn verify_sd_card_archive(
     archive_job_id: Option<String>,
 ) -> Result<ProcessJob, String> {
     blocking(move || queue_verify(app, folder, archive_job_id)).await
+}
+
+#[tauri::command]
+pub async fn verify_sd_card_for_reuse(
+    app: AppHandle,
+    source: String,
+    folder: String,
+) -> Result<ProcessJob, String> {
+    blocking(move || reuse::queue(app, &source, &folder)).await
 }
 
 #[tauri::command]

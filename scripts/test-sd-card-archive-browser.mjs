@@ -211,7 +211,7 @@ try {
     assert.equal(await page.getByText(/reformat the card manually/).count(), 0);
     await page.evaluate(id => window.__sdArchiveFixture.complete(id), id);
     await filter.getByRole("button", { name: "History", exact: true }).click();
-    await card.getByText(/You can now reformat the card manually/).waitFor();
+    await card.getByText(/Run Prepare to format with the card inserted before reusing it/).waitFor();
     assert.equal(await progress.getAttribute("data-verified"), "true");
     await card.getByRole("button", { name: "Open archive folder" }).click();
     await card.getByRole("button", { name: "View checksums" }).click();
@@ -442,6 +442,34 @@ try {
     assert.deepEqual((await calls("remove_sd_archive_after_recreation")).at(-1).args, {
       folder, replacement, confirmation: "SD-C8A01234_2026-11-21",
     });
+  });
+
+
+  await check("The red Prepare to format action runs a fresh read-only comparison in Jobs", async () => {
+    await openArchive();
+    const prepare = page.getByRole("button", { name: "Prepare to format", exact: true });
+    await prepare.waitFor();
+    const before = (await calls("verify_sd_card_for_reuse")).length;
+    await page.getByRole("button", { name: "Refresh cards" }).click();
+    assert.ok(await prepare.isDisabled());
+    await canon.check();
+    assert.ok(await prepare.isEnabled());
+    await page.evaluate(() => { window.__sdArchiveFixture.pick = null; });
+    await prepare.click();
+    assert.equal((await calls("verify_sd_card_for_reuse")).length, before);
+    await page.evaluate(folder => { window.__sdArchiveFixture.pick = folder; }, folder);
+    await prepare.click();
+    await page.getByText("Checking the card and its archive. Follow progress in Jobs.", { exact: true }).waitFor();
+    assert.ok(await prepare.isDisabled());
+    assert.deepEqual((await calls("verify_sd_card_for_reuse")).at(-1).args, { source, folder });
+    const jobId = "sd_archive_" + "9".repeat(32);
+    const cardRow = page.locator('[data-job-id="' + jobId + '"]');
+    await cardRow.getByRole("button", { name: "View in Jobs" }).click();
+    const job = archiveCard(jobId);
+    await page.evaluate(jobId => window.__sdArchiveFixture.complete(jobId), jobId);
+    await filter.getByRole("button", { name: "History", exact: true }).click();
+    await job.getByText("The inserted card and repository copy matched during this check.", { exact: true }).waitFor();
+    await job.getByText(/GogginPhoto/).waitFor();
   });
 
   assert.deepEqual(pageErrors, []);

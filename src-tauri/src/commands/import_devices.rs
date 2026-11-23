@@ -102,7 +102,7 @@ impl SourceIdentity {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchiveSource {
-    path: String,
+    pub(super) path: String,
     label: String,
     kind: &'static str,
     capacity_bytes: Option<u64>,

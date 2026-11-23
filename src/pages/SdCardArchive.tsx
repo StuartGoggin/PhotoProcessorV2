@@ -52,6 +52,9 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
   const enoughSpace = inspection?.availableBytes != null && inspection.availableBytes > inspection.totalBytes;
   const recovery = !newSnapshot ? inspection?.recovery : null;
   const manualSource = source && !cards.some(card => card.path === source);
+  const reuseHelpId = useId();
+  const reuseRunning = visibleJobs.some(job => job.sdCardArchive?.mode === "verifyReuse"
+    && job.stagingDir === source && ["queued", "running"].includes(job.status));
 
   useEffect(() => {
     let active = true;
@@ -132,6 +135,20 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
               select(`${picked[0].toUpperCase()}:\\`);
             })}>Browse for card root</button>
           </details>
+          <div className="sd-picker-reuse">
+            <button className="sd-picker-format" aria-describedby={reuseHelpId}
+              disabled={!source || !!manualSource || !repository || !!busy || reuseRunning}
+              onClick={() => void run("Choosing the card’s archive…", async () => {
+                const folder = await open({ directory: true, multiple: false, defaultPath: repository || undefined });
+                if (typeof folder !== "string") return;
+                const job = await invoke<ProcessJob>("verify_sd_card_for_reuse", { source, folder });
+                follow(job);
+              })}>Prepare to format</button>
+            <p id={reuseHelpId}>{reuseRunning ? "Checking the card and its archive. Follow progress in Jobs."
+              : !source || manualSource ? "Select a detected card to check it for reuse."
+              : !repository ? "Set the SD Card Repository before checking the card."
+              : "Choose the card’s archive for a fresh comparison. This button only verifies both copies."}</p>
+          </div>
         </div>
         <div className="sd-picker-destination">
           <div className="sd-picker-title">

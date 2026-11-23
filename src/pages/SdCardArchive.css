@@ -97,3 +97,24 @@ label.sd-picker-option:hover, .sd-picker-option:focus-within { border-color: #78
   .sd-picker-grid { grid-template-columns: minmax(0, 1fr); }
   .sd-picker-destination { border-top: 1px solid #304354; border-left: 0; border-radius: 0; }
 }
+
+.sd-picker-reuse {
+  display: grid;
+  gap: .42rem;
+  margin-top: 1rem;
+}
+.sd-picker-reuse p { color: #d5b9b8; font-size: .74rem; }
+.sd-picker-format {
+  justify-self: start;
+  min-height: 2.55rem;
+  padding: .4rem 1rem;
+  border: 1px solid #ff9292;
+  border-radius: .65rem;
+  background: #ac2734;
+  color: #fff5f5;
+  font-size: .83rem;
+  font-weight: 700;
+}
+.sd-picker-format:enabled:hover { background: #c52e3d; }
+.sd-picker-format:focus-visible { outline: 2px solid #fff5f5; outline-offset: 3px; }
+.sd-picker-format:disabled { opacity: .5; cursor: default; }

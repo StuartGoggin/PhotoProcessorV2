@@ -119,7 +119,7 @@ pub(super) fn source_identity(
     Ok(identity)
 }
 
-fn wait_for_reader(
+pub(super) fn wait_for_reader(
     source: &Path,
     repository: &Path,
     identity: &import_devices::SourceIdentity,

@@ -16,6 +16,7 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
   if (!detail) return null;
   const completed = job.status === "completed" && !!detail.archiveFolder;
   const verifying = detail.mode === "verify";
+  const reuseCheck = detail.mode === "verifyReuse";
   const upgraded = detail.mode === "upgrade";
 
   async function action(work: () => Promise<unknown>) {
@@ -43,7 +44,10 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
         <button className="btn-secondary" disabled={busy || !date}>Save date and retry</button>
       </form>}
       {completed && <div className="space-y-2">
-        <p className="text-sm text-emerald-200">{upgraded ? "The existing archive was verified and upgraded in place." : verifying ? "The saved archive matches its checksum file." : "The card archive is verified. You can now reformat the card manually."}</p>
+        {reuseCheck ? <div className="space-y-1">
+          <p className="text-sm text-emerald-200">The inserted card and repository copy matched during this check.</p>
+          <p className="text-xs text-gray-300">Check the card label and drive in this job before formatting it manually. If the card or archive changes, run the check again. In Windows, use the volume label GogginPhoto.</p>
+        </div> : <p className="text-sm text-emerald-200">{upgraded ? "The existing archive was verified and upgraded in place." : verifying ? "The saved archive matches its checksum file." : "The card archive is verified. Run Prepare to format with the card inserted before reusing it."}</p>}
         {detail.strictMetadata && <p className="text-xs text-gray-300">File checksums, creation and modification times, and standard Windows attributes verified. Last-access times were checked when the archive was saved.</p>}
         <p className="text-xs text-gray-400 break-all">{detail.archiveFolder}</p>
         <div className="flex flex-wrap gap-2">

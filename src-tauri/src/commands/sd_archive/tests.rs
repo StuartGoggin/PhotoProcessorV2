@@ -806,3 +806,33 @@ fn archive_throughput_fixture() {
         assert_eq!(summary.verified_bytes, tree.bytes());
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn reuse_verification_checks_both_copies_and_rejects_new_card_files() {
+    let fixture = Fixture::new();
+    fixture.put("DCIM/photo.jpg", b"original picture");
+    fs::create_dir(fixture.source().join("EMPTY")).unwrap();
+    let mut job = fixture.job();
+    let progress = Progress::new(&job);
+    fixture.run(&mut job, || false, &progress).unwrap();
+
+    let source = fixture.source();
+    let folder = PathBuf::from(job.completed_folder.take().unwrap());
+    let output = job.output.as_ref().unwrap();
+    let check = || reuse::verify_pair(&source, &folder, output, &Progress::new(&job), &|| false);
+    check().unwrap();
+
+
+    // Restore the modification time, leaving a same-size content change.
+    let path = folder.join("DCIM/photo.jpg");
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, b"corrupt picture!").unwrap();
+    fs::OpenOptions::new().write(true).open(&path).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    assert!(check().unwrap_err().contains("checksum mismatch"));
+    fixture.put("DCIM/unarchived.jpg", b"another photo");
+    assert!(check().unwrap_err().contains("added, moved or removed"));
+    fs::remove_file(source.join("DCIM/unarchived.jpg")).unwrap();
+    assert_eq!(fs::read(source.join("DCIM/photo.jpg")).unwrap(), b"original picture");
+}

@@ -169,6 +169,15 @@ desktop.__TAURI_INTERNALS__ = {
       fixture.jobs.unshift(job);
       return structuredClone(job);
     }
+    if (command === "verify_sd_card_for_reuse") {
+      if (args.source !== source || args.folder !== archiveFolder) throw new Error("Choose the matching archive.");
+      const job = makeJob("sd_archive_" + "9".repeat(32), {
+        ...checkpoint, mode: "verifyReuse", phase: "Checking card checksums",
+        copiedBytes: 0, filesCopied: 0, verifiedBytes: 0, filesVerified: 0,
+      }, source);
+      fixture.jobs.unshift(job);
+      return structuredClone(job);
+    }
     if (command === "verify_sd_card_archive") {
       const known = fixture.jobs.some(job => job.id === args.archiveJobId && job.sdCardArchive?.archiveFolder === archiveFolder);
       if (!known && args.folder !== archiveFolder) throw new Error("Archive folder missing.");
