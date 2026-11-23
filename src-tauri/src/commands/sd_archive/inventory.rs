@@ -157,6 +157,21 @@ impl Inventory {
         Ok(())
     }
 
+    /// Pin stable metadata read from a live tree. Access time can change simply
+    /// from reading the files, so it is checked at archive publication only.
+    pub(super) fn stable_metadata_sha256(&self) -> Result<String, String> {
+        let mut digest = Sha256::new();
+        for (name, stamp, directory) in self.entries() {
+            digest.update((name.len() as u64).to_le_bytes());
+            digest.update(name.as_bytes());
+            digest.update([u8::from(directory)]);
+            let mut stable = stamp.clone();
+            stable.accessed = None;
+            digest.update(serde_json::to_vec(&stable).map_err(|error| error.to_string())?);
+        }
+        Ok(hex::encode(digest.finalize()))
+    }
+
     pub(super) fn check_source_fields(&self) -> Result<(), String> {
         if !self.strict() {
             return Ok(());

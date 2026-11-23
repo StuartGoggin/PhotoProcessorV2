@@ -54,6 +54,8 @@ pub struct Proof {
     archive_folder: Option<String>,
     checksum_file: Option<String>,
     manifest_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_metadata_sha256: Option<String>,
     checked_at: Option<String>,
 }
 
@@ -70,6 +72,7 @@ impl Proof {
             archive_folder: None,
             checksum_file: None,
             manifest_sha256: None,
+            legacy_metadata_sha256: None,
             checked_at: None,
         }
     }
@@ -96,11 +99,9 @@ fn update_proof(progress: &Progress, action: impl FnOnce(&mut Proof)) {
     });
 }
 
-fn strict_archive(tree: &Path, name: &str) -> Result<(Manifest, String), String> {
+fn reuse_manifest(tree: &Path, name: &str) -> Result<(Manifest, String), String> {
     let (manifest, digest) = load_manifest(tree, name)?;
-    if manifest.version != metadata::STRICT_VERSION {
-        return Err("This archive predates full metadata verification. Create a new archive of this card before preparing it for reuse.".into());
-    }
+
     if manifest.file_count == 0 {
         return Err("The selected archive contains no files to verify.".into());
     }
@@ -139,7 +140,7 @@ pub(super) fn queue(
     let output = folder
         .map(|folder| {
             let (tree, name) = maintenance::selected_folder(&repository, folder)?;
-            let (receipt, digest) = strict_archive(&tree, &name)?;
+            let (receipt, digest) = reuse_manifest(&tree, &name)?;
             if !receipt.card_reference.eq_ignore_ascii_case(&card_id) {
                 return Err("The selected archive belongs to a different card ID.".into());
             }
@@ -264,7 +265,7 @@ fn candidates(
             Ok((manifest, digest)) if manifest.card_reference.eq_ignore_ascii_case(card_id) => {
                 same_id += 1;
                 update_proof(progress, |proof| proof.candidates = same_id);
-                if manifest.version == metadata::STRICT_VERSION && manifest.file_count > 0 {
+                if manifest.file_count > 0 {
                     let completed =
                         chrono::DateTime::parse_from_rfc3339(&manifest.verified_at).ok();
                     ready.push((
@@ -285,7 +286,7 @@ fn candidates(
         return Err(if same_id == 0 {
             format!("No readable archive for card {card_id} was found in the repository.")
         } else {
-            format!("The archives for card {card_id} lack a complete strict checksum record. Create a fresh archive and try again.")
+            format!("The readable archives for card {card_id} contain no files to verify.")
         });
     }
     ready.sort_by(|(left, a), (right, b)| right.cmp(left).then_with(|| b.name.cmp(&a.name)));
@@ -338,17 +339,52 @@ fn find_and_verify(
     Err(last_error.unwrap_or_else(|| "No archive fully matched the inserted card.".into()))
 }
 
+fn compare_legacy_metadata(card: &Inventory, archive: &Inventory) -> Result<String, String> {
+    if !card.strict() || !archive.strict() {
+        return Err("Stable card or repository attributes are unavailable. Use a current archive with verified metadata.".into());
+    }
+    card.check_source_fields()?;
+    archive.check_source_fields()?;
+    card.verify_source_metadata(archive)
+        .and_then(|()| archive.verify_source_metadata(card))
+        .map_err(|error| {
+            format!("The older archive does not preserve the card's metadata: {error}")
+        })?;
+    if !card.same_tree(archive) {
+        return Err(
+            "The older archive's file list, sizes, or stable timestamps differ from the card."
+                .into(),
+        );
+    }
+    let observed = card.stable_metadata_sha256()?;
+    if archive.stable_metadata_sha256()? != observed {
+        return Err("The older archive's folder or file metadata differs from the card.".into());
+    }
+    Ok(observed)
+}
+
+fn handoff_metadata_matches(
+    manifest: &Manifest,
+    proof: &Proof,
+    card: &Inventory,
+    archive: &Inventory,
+) -> Result<bool, String> {
+    if manifest.version == metadata::STRICT_VERSION {
+        return Ok(manifest.matches_card(card) && manifest.matches_card(archive));
+    }
+    let observed = compare_legacy_metadata(card, archive)?;
+    Ok(proof.legacy_metadata_sha256.as_deref() == Some(observed.as_str()))
+}
+
 pub(super) fn confirm_manual(app: &AppHandle, job_id: &str) -> Result<(), String> {
     let job = load(&job_root(app)?, job_id)?;
-    if job.status != "completed"
-        || job.mode != MODE
-        || !job.summary.strict_metadata
-        || !job
-            .summary
-            .reuse_proof
-            .as_ref()
-            .is_some_and(|proof| proof.checked_at.is_some() && proof.complete())
-    {
+    let proof = job
+        .summary
+        .reuse_proof
+        .as_ref()
+        .filter(|proof| proof.checked_at.is_some() && proof.complete())
+        .ok_or("Run a fresh reuse check and wait for a complete proof.")?;
+    if job.status != "completed" || job.mode != MODE || !job.summary.strict_metadata {
         return Err("Run a fresh reuse check and wait for a complete proof.".into());
     }
     let (source, identity, repository) = check_context(app, &job)?;
@@ -364,12 +400,11 @@ pub(super) fn confirm_manual(app: &AppHandle, job_id: &str) -> Result<(), String
     let card_changes = windows::TreeWatch::open(&source)?;
     #[cfg(windows)]
     let archive_changes = windows::TreeWatch::open(&tree)?;
-    let (manifest, digest) = strict_archive(&tree, &output.name)?;
+    let (manifest, digest) = reuse_manifest(&tree, &output.name)?;
     let stopped = || false;
     let card = scan(&source, stopped)?;
     let contents = payload_inventory(&tree, &[&manifest_name(&output.name)], &stopped)?;
-    if digest != output.digest || !manifest.matches_card(&card) || !manifest.matches_card(&contents)
-    {
+    if digest != output.digest || !handoff_metadata_matches(&manifest, proof, &card, &contents)? {
         return Err("The card or repository changed since verification. Close this report and run a new check.".into());
     }
     #[cfg(windows)]
@@ -394,7 +429,7 @@ pub(super) fn verify_pair(
 ) -> Result<(), String> {
     let card_changes = windows::TreeWatch::open(source)?;
     let archive_changes = windows::TreeWatch::open(tree)?;
-    let (manifest, digest) = strict_archive(tree, &output.name)?;
+    let (manifest, digest) = reuse_manifest(tree, &output.name)?;
     if digest != output.digest {
         return Err(
             "The selected archive's checksum file changed. Start a new reuse check.".into(),
@@ -416,6 +451,7 @@ pub(super) fn verify_pair(
                     .into_owned(),
             );
             proof.manifest_sha256 = Some(digest.clone());
+            proof.legacy_metadata_sha256 = None;
         }
     });
     progress.phase("Counting files on both copies");
@@ -450,8 +486,11 @@ pub(super) fn verify_pair(
         stopped,
     )
     .map_err(|error| format!("Source card: {error}"))?;
-    manifest.inventory().verify_source_metadata(&found)?;
+    if manifest.version == metadata::STRICT_VERSION {
+        manifest.inventory().verify_source_metadata(&found)?;
+    }
     found.check_streams(source, stopped)?;
+    let verified_card = found;
 
     progress.phase("Checking repository copy");
     let found = verify_inventory(
@@ -471,7 +510,14 @@ pub(super) fn verify_pair(
     )
     .map_err(|error| format!("Repository copy: {error}"))?;
     found.check_streams(tree, stopped)?;
-    verify_times(&manifest, &found)?;
+    if manifest.version == metadata::STRICT_VERSION {
+        verify_times(&manifest, &found)?;
+    } else {
+        let stable_metadata = compare_legacy_metadata(&verified_card, &found)?;
+        update_proof(progress, |proof| {
+            proof.legacy_metadata_sha256 = Some(stable_metadata)
+        });
+    }
     if hash_file(&relative_path(tree, &receipt_name, true)?, stopped)? != digest {
         return Err("The archive checksum file changed during verification.".into());
     }
@@ -589,6 +635,78 @@ mod windows {
 mod tests {
     use super::super::tests::Fixture;
     use super::*;
+
+    #[test]
+    fn older_checksum_record_can_prove_an_exact_live_copy_and_blocks_metadata_drift() {
+        let fixture = Fixture::new();
+        fixture.put("DCIM/photo.jpg", b"original picture");
+        let mut job = fixture.job();
+        let copy_progress = Progress::new(&job);
+        fixture.run(&mut job, || false, &copy_progress).unwrap();
+        let tree = PathBuf::from(job.completed_folder.as_ref().unwrap());
+        let original_output = job.output.as_ref().unwrap();
+        let receipt_path = tree.join(manifest_name(&original_output.name));
+        let original = fs::read(&receipt_path).unwrap();
+        let mut receipt: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        receipt["version"] = 1.into();
+        let fields = receipt.as_object_mut().unwrap();
+        fields.remove("directoryStamps");
+        fields.remove("rootStamp");
+        for file in receipt["files"].as_object_mut().unwrap().values_mut() {
+            let stamp = file["stamp"].as_object_mut().unwrap();
+            stamp.remove("attributes");
+            stamp.remove("created");
+        }
+        let legacy_bytes = serde_json::to_vec(&receipt).unwrap();
+        fs::write(&receipt_path, &legacy_bytes).unwrap();
+
+        job.mode = MODE.into();
+        job.summary.mode = MODE.into();
+        let progress = Progress::new(&job);
+        let (matched, output) = find_and_verify(
+            &fixture.source(),
+            &fixture.repository(),
+            &job.card_reference,
+            None,
+            &progress,
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(matched, tree);
+        let summary = progress.snapshot().0;
+        let proof = summary.reuse_proof.unwrap();
+        assert!(summary.strict_metadata);
+        assert!(proof.complete());
+        assert!(proof.legacy_metadata_sha256.is_some());
+
+        let (manifest, _) = reuse_manifest(&tree, &output.name).unwrap();
+        let card = scan(&fixture.source(), || false).unwrap();
+        let names = [&manifest_name(&output.name)[..]];
+        let archive = payload_inventory(&tree, &names, &|| false).unwrap();
+        assert!(handoff_metadata_matches(&manifest, &proof, &card, &archive).unwrap());
+
+        let photo = tree.join("DCIM/photo.jpg");
+        let observed = fs::metadata(&photo).unwrap().modified().unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(photo)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(observed - Duration::from_secs(10)))
+            .unwrap();
+        let archive = payload_inventory(&tree, &names, &|| false).unwrap();
+        assert!(handoff_metadata_matches(&manifest, &proof, &card, &archive).is_err());
+        let progress = Progress::new(&job);
+        let error =
+            verify_pair(&fixture.source(), &tree, &output, &progress, &|| false).unwrap_err();
+        assert!(error.contains("modification time"), "{error}");
+        let summary = progress.snapshot().0;
+        assert!(!summary.strict_metadata);
+        let proof = summary.reuse_proof.unwrap();
+        assert!(proof.card.unwrap().complete());
+        assert!(proof.archive.unwrap().complete());
+        assert!(proof.legacy_metadata_sha256.is_none());
+        assert_eq!(fs::read(receipt_path).unwrap(), legacy_bytes);
+    }
 
     #[test]
     fn reuse_checks_older_match_and_reports_observed_counts_and_blockers() {

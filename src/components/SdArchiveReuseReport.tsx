@@ -52,7 +52,9 @@ export default function SdArchiveReuseReport({ job }: { job: ProcessJob }) {
       <div><dt>Card ID</dt><dd>{proof.cardId}</dd></div>
       <div><dt>Archives with this ID</dt><dd>{proof.candidates.toLocaleString()} of {proof.archivesSearched.toLocaleString()} checked</dd></div>
       {proof.checkedAt && <div><dt>Matched at</dt><dd>{new Date(proof.checkedAt).toLocaleString()}</dd></div>}
-      {matched && <div><dt>Metadata</dt><dd>Paths, creation and modification times, and supported Windows attributes matched.</dd></div>}
+      {matched && <div><dt>Metadata</dt><dd>{proof.legacyMetadataSha256
+        ? "Older checksum record. Paths, creation and modification times, and supported Windows attributes matched in a live comparison."
+        : "Paths, creation and modification times, and supported Windows attributes matched."}</dd></div>}
       {proof.checksumFile && <div><dt>Checksum file</dt><dd>{proof.checksumFile}</dd></div>}
       {proof.manifestSha256 && <div><dt>Checksum file SHA-256</dt><dd className="sd-reuse-hash">{proof.manifestSha256}</dd></div>}
     </dl>

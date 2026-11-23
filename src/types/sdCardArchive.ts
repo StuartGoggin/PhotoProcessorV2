@@ -45,6 +45,7 @@ export interface ArchiveReuseProof {
   archiveFolder: string | null;
   checksumFile: string | null;
   manifestSha256: string | null;
+  legacyMetadataSha256?: string | null;
   checkedAt: string | null;
 }
 

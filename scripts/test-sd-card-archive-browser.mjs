@@ -47,7 +47,7 @@ try {
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10000);
   page.on("pageerror", error => pageErrors.push(error.message));
-  await page.goto(url);
+  await page.goto(url, { timeout: 45000 });
 
   const nav = page.getByRole("navigation", { name: "Main navigation" });
   const openArchive = () => nav.getByRole("button", { name: /SD Card Archive/ }).click();
@@ -469,8 +469,13 @@ try {
 
     await prepare.click();
     await modal.getByText("Looking for matching archives", {exact:true}).first().waitFor();
-    await page.evaluate(() => window.__sdArchiveFixture.reusePhase("matched"));
+    await page.evaluate(() => {
+      const fixture = window.__sdArchiveFixture;
+      fixture.reusePhase("matched");
+      fixture.jobs.find(job => job.sdCardArchive?.reuseProof?.checkedAt).sdCardArchive.reuseProof.legacyMetadataSha256 = "a".repeat(64);
+    });
     await modal.getByRole("heading", {name:"Verification proof", exact:true}).waitFor();
+    await modal.getByText(/Older checksum record.*live comparison/).waitFor();
     await modal.getByText(/246 of 246 SHA-256 checks matched/).first().waitFor();
     assert.equal(await modal.getByText(/format the card manually/i).count(), 0);
     await modal.getByRole("button", {name: "Confirm card for manual formatting", exact:true}).click();

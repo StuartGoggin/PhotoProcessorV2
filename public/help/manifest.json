@@ -1,12 +1,12 @@
 {
-  "version": "2.0.66",
+  "version": "2.0.67",
   "chapters": 18,
   "figures": 13,
   "bytes": 1332021,
-  "sha256": "4d6609948a9415dda416ceb348f7bc4242f089abd27de79571556af3aaf8df68",
+  "sha256": "b2a72b85ba3ad31803d757e42ff5580161c2f3ecca2b25e141c1948d847b414a",
   "sourceSha256": "87440c388d95a72b62e521814a218b179a1111fb91c15aa0549917fd1dc25ad0",
   "outputs": [
     "public/help/user-guide.html",
-    "docs/user-guide/PhotoGoGo_User_Guide_2.0.66.html"
+    "docs/user-guide/PhotoGoGo_User_Guide_2.0.67.html"
   ]
 }
