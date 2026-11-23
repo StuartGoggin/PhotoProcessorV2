@@ -2,6 +2,7 @@
 mod checkpoints;
 mod copy;
 mod inventory;
+pub(crate) mod library;
 mod maintenance;
 mod metadata;
 mod reuse;
@@ -105,6 +106,8 @@ pub struct Summary {
     pub timestamp_warnings: usize,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub strict_metadata: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse_proof: Option<reuse::Proof>,
     pub needs_date: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     verify_card_on_recovery: bool,
@@ -170,6 +173,9 @@ impl Progress {
         summary.bottleneck = None;
         summary.timestamp_warnings = 0;
         summary.strict_metadata = false;
+        if job.mode == reuse::MODE {
+            summary.reuse_proof = Some(reuse::Proof::new(&job.card_reference));
+        }
         Self {
             source: PathBuf::from(&job.source),
             total_files: job.files,
@@ -477,7 +483,7 @@ fn project(job: &ArchiveJob, running: bool) -> Result<ProcessJob, String> {
     serde_json::from_value(serde_json::json!({
         "id":job.id, "task":"sdCardArchive", "stagingDir":job.source, "scopeDir":job.source,
         "scopeMode":"folderRecursive", "status":status, "createdAt":job.created_at, "startedAt":job.started_at,
-        "finishedAt":job.finished_at, "total":job.files, "done":summary.files_verified,
+        "finishedAt":job.finished_at, "total":summary.reuse_proof.as_ref().and_then(|proof| proof.card.as_ref()).map_or(job.files, |side| side.files), "done":summary.files_verified,
         "processed":summary.files_copied, "resultCount":summary.files_verified, "currentFile":file,
         "archiveDir":job.repository, "currentPhase":phase, "speedMbps":summary.source_mbps,
         "statusLine":phase, "pauseRequested":false, "abortRequested":false,
@@ -640,6 +646,9 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<Pro
     job.finished_at = None;
     job.errors.clear();
     job.summary.phase = "Queued".into();
+    if job.mode == reuse::MODE {
+        job.summary.reuse_proof = Some(reuse::Proof::new(&job.card_reference));
+    }
     save(&directory, &job)?;
     let queued = project(&job, true)?;
     log_operation(&app, &job, format!(
@@ -678,6 +687,9 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<Pro
         });
         let (summary, _, stats) = progress.snapshot();
         job.summary = summary;
+        if let Some(proof) = &mut job.summary.reuse_proof {
+            proof.stage = reuse::Stage::Report;
+        }
         let first_new_log = job.logs.len();
         match result {
             Ok(()) => {
@@ -697,7 +709,7 @@ fn launch(app: AppHandle, directory: PathBuf, mut job: ArchiveJob) -> Result<Pro
             Err(error) if stopped() => {
                 let abort = process_runtime::stop_state(&id).1;
                 job.status = if abort { "aborted" } else { "paused" }.into();
-                job.summary.phase = if abort { "Cancelled. Draft retained" } else { "Paused at a safe checkpoint" }.into();
+                job.summary.phase = if abort && job.mode == reuse::MODE { "Reuse check cancelled" } else if abort { "Cancelled. Draft retained" } else { "Paused at a safe checkpoint" }.into();
                 job.logs.push(error);
             }
             Err(error) => {
@@ -1057,9 +1069,14 @@ pub async fn verify_sd_card_archive(
 pub async fn verify_sd_card_for_reuse(
     app: AppHandle,
     source: String,
-    folder: String,
+    folder: Option<String>,
 ) -> Result<ProcessJob, String> {
-    blocking(move || reuse::queue(app, &source, &folder)).await
+    blocking(move || reuse::queue(app, &source, folder.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn confirm_sd_card_reuse(app: AppHandle, job_id: String) -> Result<(), String> {
+    blocking(move || reuse::confirm_manual(&app, &job_id)).await
 }
 
 #[tauri::command]

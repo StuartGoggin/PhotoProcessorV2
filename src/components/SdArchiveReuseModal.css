@@ -1,0 +1,146 @@
+.sd-reuse-modal {
+  --reuse-edge: #3b4b5d;
+  --reuse-accent: #8ccce9;
+  --reuse-muted: #b4c0d0;
+  width: min(calc(100vw - 2rem), 55rem);
+  margin: auto;
+  max-height: calc(100dvh - 2rem);
+  overflow: auto;
+  border: 1px solid var(--reuse-edge);
+  border-radius: 1rem;
+  background: #131c28;
+  color: #f2f6fb;
+  box-shadow: 0 1.35rem 4rem #050608c9;
+}
+.sd-reuse-modal::backdrop { background: #030713bf; }
+.sd-reuse-header, .sd-reuse-footer {
+  display: flex;
+  gap: .8rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: .95rem 1.15rem;
+  background: #172536;
+}
+.sd-reuse-header { border-bottom: 1px solid var(--reuse-edge); }
+.sd-reuse-header h2 { font-size: 1.27rem; font-weight: 720; }
+.sd-reuse-header h2:focus { outline: none; }
+.sd-reuse-header p, .sd-reuse-lookup span { color: var(--reuse-muted); font-size: .83rem; }
+.sd-reuse-footer { position: sticky; bottom: 0; border-top: 1px solid var(--reuse-edge); justify-content: end; flex-wrap: wrap; }
+.sd-reuse-phases {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .5rem;
+  padding: .9rem 1.15rem 0;
+}
+.sd-reuse-phases li {
+  min-height: 3.2rem;
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  border: 1px solid #384960;
+  padding: .45rem .58rem;
+  border-radius: .62rem;
+  background: #1b2636;
+  color: #aebaca;
+  font-size: .78rem;
+  line-height: 1.22;
+}
+.sd-reuse-step {
+  display: grid;
+  width: 1.52rem;
+  height: 1.52rem;
+  flex: 0 0 1.52rem;
+  place-items: center;
+  border-radius: 50%;
+  background: #33435a;
+  font-variant-numeric: tabular-nums;
+}
+.sd-reuse-phases li[data-state=active] { border-color: #65bde3; background: #15374a; color: #d5f4ff; }
+.sd-reuse-phases li[data-state=done] { border-color: #41856e; color: #bdf5d6; }
+.sd-reuse-phases li[data-state=done] .sd-reuse-step { background: #205942; }
+.sd-reuse-phases li[data-state=blocked] { border-color: #936447; color: #ffdab5; }
+.sd-reuse-body { padding: 1rem 1.15rem; }
+.sd-reuse-lookup {
+  min-height: 10rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.15rem;
+  border: 1px solid #3a5a71;
+  border-radius: .78rem;
+  background: radial-gradient(ellipse at 38% 50%, #123846, #182534 68%);
+}
+.sd-reuse-lookup p { font-size: 1.05rem; font-weight: 630; }
+.sd-reuse-radar {
+  width: 3.35rem;
+  height: 3.35rem;
+  flex: 0 0 3.35rem;
+  border-radius: 50%;
+  border: 1px solid #68b2d7;
+  background:
+    repeating-radial-gradient(circle, #77e4ff70 0 1px, transparent 1px 7px),
+    conic-gradient(#1e53697a, #61d4fcad, #1e53697a 26%);
+  animation: sd-reuse-radar 3s linear infinite;
+}
+@keyframes sd-reuse-radar { to { transform: rotate(1turn); } }
+.sd-reuse-sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.sd-reuse-side {
+  min-width: 0;
+  padding: .75rem;
+  border: 1px solid #41536a;
+  border-radius: .68rem;
+  background: #172739;
+}
+.sd-reuse-side h4 { margin: 0; font-weight: 660; font-size: .9rem; }
+.sd-reuse-side-label, .sd-reuse-current-file, .sd-reuse-record { color: #adbed0; font-size: .75rem; overflow-wrap: anywhere; }
+.sd-reuse-current-file { margin-top: .45rem; }
+.sd-reuse-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .35rem; margin: .65rem 0; }
+.sd-reuse-counts dt { color: #adbed0; font-size: .72rem; }
+.sd-reuse-counts dd { color: #f5f7f9; font-size: .9rem; margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sd-reuse-side progress {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: .52rem;
+  margin: .45rem 0;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #0b1927;
+}
+.sd-reuse-side progress::-webkit-progress-bar { background: #0b1927; }
+.sd-reuse-side progress::-webkit-progress-value { background: linear-gradient(90deg, #42a3c5, #77dabb); border-radius: 999px; }
+.sd-reuse-sides[data-live=true] { position: relative; }
+.sd-reuse-sides[data-live=true]::after {
+  content: "";
+  position: absolute;
+  bottom: -4px;
+  left: 0;
+  width: 18%;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #8de6f8, transparent);
+  animation: sd-reuse-transfer 1.75s ease-in-out infinite;
+}
+@keyframes sd-reuse-transfer { to { transform: translateX(460%); } }
+.sd-reuse-check-count { font-size: .84rem; margin-block: .18rem; }
+.sd-reuse-report { display: grid; gap: .65rem; }
+.sd-reuse-report h3, .sd-reuse-handoff h3 { font-size: 1rem; font-weight: 660; }
+.sd-reuse-proof-details { display: grid; gap: .45rem; font-size: .8rem; }
+.sd-reuse-proof-details div { display: grid; grid-template-columns: minmax(6rem, 10rem) 1fr; gap: .45rem; }
+.sd-reuse-proof-details dt { color: #adbed0; }
+.sd-reuse-proof-details dd { margin: 0; overflow-wrap: anywhere; }
+.sd-reuse-hash { font-family: Consolas, monospace; font-size: .72rem; }
+.sd-reuse-ok { color: #baf1d1; font-size: .85rem; }
+.sd-reuse-warning { color: #ffcc9f; overflow-wrap: anywhere; font-size: .85rem; }
+.sd-reuse-message { margin: .4rem 0; }
+.sd-reuse-modal > .sd-reuse-message { padding: .6rem 1.15rem; }
+.sd-reuse-handoff { display: grid; gap: .35rem; background: #25392b; border: 1px solid #447f65; border-radius: .6rem; padding: .66rem .75rem; margin: 0 1.15rem 1rem; font-size: .86rem; }
+@media (max-width: 590px) {
+  .sd-reuse-sides { grid-template-columns: 1fr; }
+  .sd-reuse-phases { grid-template-columns: 1fr; }
+  .sd-reuse-lookup, .sd-reuse-header { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sd-reuse-radar, .sd-reuse-sides[data-live=true]::after { animation: none; }
+}

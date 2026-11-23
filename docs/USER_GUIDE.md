@@ -124,7 +124,12 @@ Check camera clocks and the expected event dates before a large import. If media
 2. Choose **Inspect card** to check its contents and size. Set **SD Card Repository** to a folder on another volume before starting the archive. Check the available space and enter a date if the proposed date needs correcting.
 3. Choose **Start archive**. Follow the live meters in the bottom **Jobs** pane or choose **View in Jobs** for the full job, controls and log. After an interruption, reconnect and inspect the same card to find **Resume archive**, or retry the saved job in **Jobs**.
 4. Open the finished folder or view its checksum manifest from the completed job. You can run **Verify archive again** with the card removed.
-5. Before reusing a card, select it in **Source card**, click the red **Prepare to format** button and choose its folder in the SD Card Repository. Wait for **Card and repository matched** in Jobs. If a check fails, resolve the issue or archive the card again. Once the copies match, confirm the card label and drive before formatting it manually. In Windows, use **GogginPhoto** as the volume label.
+5. Before reusing a card, select it in **Source card** and click the red **Prepare to format** button. PhotoGoGo looks for finished archives with the same card ID and compares the inserted card and repository copy against the saved SHA-256 checksums. The modal and Jobs show file counts, verified bytes and any differences.
+6. After a full match, select **Confirm card for manual formatting**. PhotoGoGo checks that the same card and archive are still present before showing the Windows formatting steps. Use **GogginPhoto** as the volume label. Run a fresh check if the card was removed or any files changed.
+
+### Browse a card archive
+
+Open **Repository Library** from **SD Card Archive**. Each finished archive appears as a book with the photo date range on its spine. Select a book to turn through its photos, use the thumbnail strip to jump, or select an image to enlarge it. Dates inferred from file times are labelled **Estimated**.
 
 New archives use the card's Windows volume serial followed by the earliest photo date, for example `SD-1A2B3C4D_2026-11-23`. PhotoGoGo prefers the embedded capture date and uses the file's modification date when that photo has no capture date. Cards without dated photos can use a video date or a date you enter. Additional snapshots receive a number when the folder name is taken.
 

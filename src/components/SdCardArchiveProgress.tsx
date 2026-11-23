@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ProcessJob } from "../types";
 import { processJobProgress } from "../utils/jobProgress";
 import JobProgressCard from "./JobProgressCard";
+import SdArchiveReuseReport from "./SdArchiveReuseReport";
 
 export default function SdCardArchiveProgress({ job, onChanged, onVerification }: {
   job: ProcessJob;
@@ -43,8 +44,9 @@ export default function SdCardArchiveProgress({ job, onChanged, onVerification }
         <label className="text-sm">Archive date<input required type="date" value={date} onChange={event => setDate(event.target.value)} className="input-field block" /></label>
         <button className="btn-secondary" disabled={busy || !date}>Save date and retry</button>
       </form>}
+      {reuseCheck && detail.reuseProof && !["queued", "running"].includes(job.status) && <SdArchiveReuseReport job={job} />}
       {completed && <div className="space-y-2">
-        {reuseCheck ? <div className="space-y-1">
+        {reuseCheck ? !detail.reuseProof && <div className="space-y-1">
           <p className="text-sm text-emerald-200">The inserted card and repository copy matched during this check.</p>
           <p className="text-xs text-gray-300">Check the card label and drive in this job before formatting it manually. If the card or archive changes, run the check again. In Windows, use the volume label GogginPhoto.</p>
         </div> : <p className="text-sm text-emerald-200">{upgraded ? "The existing archive was verified and upgraded in place." : verifying ? "The saved archive matches its checksum file." : "The card archive is verified. Run Prepare to format with the card inserted before reusing it."}</p>}

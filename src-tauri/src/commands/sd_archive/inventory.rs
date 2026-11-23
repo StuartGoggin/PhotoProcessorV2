@@ -311,6 +311,14 @@ pub(super) fn relative_path(path: &Path, relative: &str, exists: bool) -> Result
     safety::scoped(path, relative, exists)
 }
 
+pub(super) fn published_folder(repository: &Path, name: &str) -> Result<PathBuf, String> {
+    let tree = root(&relative_path(repository, name, false)?)?;
+    if tree.parent() != Some(repository) {
+        return Err("The archive must be directly inside the repository.".into());
+    }
+    Ok(tree)
+}
+
 fn valid_relative(relative: &str) -> bool {
     !relative.is_empty()
         && relative.split('/').all(|part| {
@@ -485,7 +493,7 @@ fn has_extension(name: &str, extensions: &[&str]) -> bool {
         })
 }
 
-fn is_photo(name: &str) -> bool {
+pub(super) fn is_photo(name: &str) -> bool {
     has_extension(
         name,
         &[
@@ -507,14 +515,30 @@ pub(super) fn capture_date(
     tree: &Path,
     inventory: &Inventory,
     tool: &Path,
-    mut stopped: impl FnMut() -> bool,
+    stopped: impl FnMut() -> bool,
 ) -> Result<Option<DateEvidence>, String> {
-    let mut candidates = inventory
-        .files
-        .keys()
-        .filter(|name| is_media(name))
-        .peekable();
     let mut earliest = None::<(bool, NaiveDate, bool, String)>;
+    visit_dates(tree, tool, inventory.files.iter().filter(|(name, _)| is_media(name)), stopped, |file, date, fallback| {
+        let candidate = (!is_photo(file), date, fallback, file.to_owned());
+        if earliest.as_ref().is_none_or(|old| &candidate < old) {
+            earliest = Some(candidate);
+        }
+    })?;
+    Ok(earliest.map(|(_, date, fallback, file)| DateEvidence {
+        date,
+        basis: if fallback { "File modification time" } else { "Embedded capture time" }.into(),
+        file: Some(file),
+    }))
+}
+
+pub(super) fn visit_dates<'a>(
+    tree: &Path,
+    tool: &Path,
+    files: impl Iterator<Item = (&'a String, &'a Stamp)>,
+    mut stopped: impl FnMut() -> bool,
+    mut visit: impl FnMut(&str, NaiveDate, bool),
+) -> Result<(), String> {
+    let mut candidates = files.peekable();
     while candidates.peek().is_some() {
         if stopped() {
             return Err("Stopped at a safe checkpoint.".into());
@@ -525,14 +549,14 @@ pub(super) fn capture_date(
             .collect();
         let mut batch = BTreeMap::new();
         let mut units = 0;
-        while let Some(relative) = candidates.peek() {
+        while let Some(&(relative, stamp)) = candidates.peek() {
             let path = relative_path(tree, relative, true)?;
             let limit = path.as_os_str().len() + 1;
             if !batch.is_empty() && (units + limit > 10_000 || batch.len() == 96) {
                 break;
             }
             units += limit;
-            batch.insert(normal_path(&path.to_string_lossy()), (*relative).clone());
+            batch.insert(normal_path(&path.to_string_lossy()), (relative, stamp));
             args.push(path.as_os_str().to_owned());
             candidates.next();
         }
@@ -543,7 +567,7 @@ pub(super) fn capture_date(
         for row in rows.into_iter().flatten() {
             let Some(file) = row["SourceFile"]
                 .as_str()
-                .and_then(|p| batch.get(&normal_path(p)))
+                .and_then(|p| batch.get(&normal_path(p))).map(|(name, _)| *name)
             else {
                 continue;
             };
@@ -557,32 +581,20 @@ pub(super) fn capture_date(
                     plausible(date).then_some(date)
                 });
             if let Some(date) = date {
-                embedded.insert(file.clone(), date);
+                embedded.insert(file, date);
             }
         }
-        for file in batch.values() {
+        for &(file, stamp) in batch.values() {
             let date = embedded
                 .get(file)
                 .map(|date| (*date, false))
-                .or_else(|| modification_date(&inventory.files[file]).map(|date| (date, true)));
+                .or_else(|| modification_date(stamp).map(|date| (date, true)));
             if let Some((date, fallback)) = date {
-                let candidate = (!is_photo(file), date, fallback, file.clone());
-                if earliest.as_ref().is_none_or(|old| &candidate < old) {
-                    earliest = Some(candidate);
-                }
+                visit(file, date, fallback);
             }
         }
     }
-    Ok(earliest.map(|(_, date, fallback, file)| DateEvidence {
-        date,
-        basis: if fallback {
-            "File modification time"
-        } else {
-            "Embedded capture time"
-        }
-        .into(),
-        file: Some(file),
-    }))
+    Ok(())
 }
 
 pub(super) fn preserve_times(
@@ -828,19 +840,41 @@ pub(super) fn verify_contents(
     tree: &Path,
     manifest: &Manifest,
     receipt_names: &[&str],
+    progress: impl FnMut(&str, u64),
+    stopped: &impl Fn() -> bool,
+) -> Result<Inventory, String> {
+    let found = payload_inventory(tree, receipt_names, stopped)?;
+    verify_inventory(tree, manifest, receipt_names, &found, progress, stopped)
+}
+
+pub(super) fn payload_inventory(
+    tree: &Path,
+    receipt_names: &[&str],
+    stopped: &impl Fn() -> bool,
+) -> Result<Inventory, String> {
+    let mut result = scan(tree, stopped)?;
+    for name in receipt_names {
+        result.files.remove(*name);
+    }
+    Ok(result)
+}
+
+pub(super) fn verify_inventory(
+    tree: &Path,
+    manifest: &Manifest,
+    receipt_names: &[&str],
+    found: &Inventory,
     mut progress: impl FnMut(&str, u64),
     stopped: &impl Fn() -> bool,
 ) -> Result<Inventory, String> {
-    let contents = || {
-        let mut result = scan(tree, stopped)?;
-        for name in receipt_names {
-            result.files.remove(*name);
-        }
-        Ok::<_, String>(result)
-    };
-    let found = contents()?;
     if found.directories != manifest.directories || !found.files.keys().eq(manifest.files.keys()) {
-        return Err("An archive file or folder has been added, moved or removed.".into());
+        let difference = found.files.keys().find(|path| !manifest.files.contains_key(*path))
+            .or_else(|| manifest.files.keys().find(|path| !found.files.contains_key(*path)))
+            .or_else(|| found.directories.symmetric_difference(&manifest.directories).next());
+        return Err(format!(
+            "An archive file or folder has been added, moved or removed: {}",
+            difference.map(String::as_str).unwrap_or("unknown entry")
+        ));
     }
     for (name, file) in &manifest.files {
         let path = relative_path(tree, name, true)?;
@@ -850,8 +884,8 @@ pub(super) fn verify_contents(
         }
         progress(name, file.stamp.bytes);
     }
-    let final_inventory = contents()?;
-    if !final_inventory.same_tree(&found) {
+    let final_inventory = payload_inventory(tree, receipt_names, stopped)?;
+    if !final_inventory.same_tree(found) {
         return Err("Archive changed while it was being verified.".into());
     }
     Ok(final_inventory)

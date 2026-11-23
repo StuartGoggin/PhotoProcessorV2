@@ -26,6 +26,28 @@ export interface SdCardInspection {
   recovery?: { jobId: string; completed: boolean } | null;
 }
 
+export interface ArchiveReuseSide {
+  files: number;
+  bytes: number;
+  folders: number;
+  checkedFiles: number;
+  checkedBytes: number;
+}
+
+export interface ArchiveReuseProof {
+  stage: "lookup" | "compare" | "report";
+  cardId: string;
+  archivesSearched: number;
+  candidates: number;
+  unreadable: number;
+  card: ArchiveReuseSide | null;
+  archive: ArchiveReuseSide | null;
+  archiveFolder: string | null;
+  checksumFile: string | null;
+  manifestSha256: string | null;
+  checkedAt: string | null;
+}
+
 export interface SdCardArchiveSummary {
   mode: "archive" | "verify" | "verifyReuse" | "upgrade" | "remove";
   label: string;
@@ -46,5 +68,6 @@ export interface SdCardArchiveSummary {
   date?: ArchiveDate | null;
   timestampWarnings: number;
   strictMetadata?: boolean;
+  reuseProof?: ArchiveReuseProof;
   needsDate: boolean;
 }

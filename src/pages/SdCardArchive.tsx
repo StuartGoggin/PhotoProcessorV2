@@ -2,6 +2,8 @@ import { useEffect, useId, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import SdArchiveMaintenance from "../components/SdArchiveMaintenance";
+import SdArchiveLibrary from "../components/SdArchiveLibrary";
+import SdArchiveReuseModal from "../components/SdArchiveReuseModal";
 import { formatJobBytes, jobStatusLabel } from "../utils/jobProgress";
 import type { ProcessJob, Settings } from "../types";
 import type { SdArchiveSource, SdCardInspection } from "../types/sdCardArchive";
@@ -32,6 +34,8 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
   onOpenJob: (id: string) => void;
   onSettings: () => void;
 }) {
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [reuseModal, setReuseModal] = useState<{ card: SdArchiveSource; jobId?: string; error?: string } | null>(null);
   const [repository, setRepository] = useState<string | null>(null);
   const [repositoryError, setRepositoryError] = useState("");
   const [cards, setCards] = useState<SdArchiveSource[]>([]);
@@ -53,8 +57,10 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
   const recovery = !newSnapshot ? inspection?.recovery : null;
   const manualSource = source && !cards.some(card => card.path === source);
   const reuseHelpId = useId();
-  const reuseRunning = visibleJobs.some(job => job.sdCardArchive?.mode === "verifyReuse"
+  const selectedCard = cards.find(card => card.path === source);
+  const activeReuse = visibleJobs.find(job => job.sdCardArchive?.mode === "verifyReuse"
     && job.stagingDir === source && ["queued", "running"].includes(job.status));
+  const modalJob = visibleJobs.find(job => job.id === reuseModal?.jobId);
 
   useEffect(() => {
     let active = true;
@@ -94,6 +100,15 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
       <h1 className="text-2xl font-bold text-white">SD Card Archive</h1>
       <p className="mt-1 text-sm text-gray-400">Preserve the entire card and verify every file before reusing it.</p>
     </header>
+    <nav className="sd-lib-tabs" aria-label="SD Card Archive views">
+      <button type="button" aria-pressed={!libraryOpen} onClick={() => setLibraryOpen(false)}>Archive cards</button>
+      <button type="button" aria-pressed={libraryOpen} onClick={() => setLibraryOpen(true)}>Repository Library</button>
+    </nav>
+    {libraryOpen && <SdArchiveLibrary />}
+    {reuseModal && <SdArchiveReuseModal card={reuseModal.card} repository={repository ?? ""}
+      job={modalJob} queueError={reuseModal.error ?? ""} refresh={refresh}
+      close={() => setReuseModal(null)} openJob={onOpenJob} />}
+    <div className="space-y-5" hidden={libraryOpen}>
     <section className="sd-picker" aria-label="New card archive">
       <div className="sd-picker-grid">
         <div className="sd-picker-source">
@@ -137,17 +152,20 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
           </details>
           <div className="sd-picker-reuse">
             <button className="sd-picker-format" aria-describedby={reuseHelpId}
-              disabled={!source || !!manualSource || !repository || !!busy || reuseRunning}
-              onClick={() => void run("Choosing the card’s archive…", async () => {
-                const folder = await open({ directory: true, multiple: false, defaultPath: repository || undefined });
-                if (typeof folder !== "string") return;
-                const job = await invoke<ProcessJob>("verify_sd_card_for_reuse", { source, folder });
-                follow(job);
-              })}>Prepare to format</button>
-            <p id={reuseHelpId}>{reuseRunning ? "Checking the card and its archive. Follow progress in Jobs."
-              : !source || manualSource ? "Select a detected card to check it for reuse."
+              disabled={!selectedCard || !repository || !!busy}
+              onClick={() => {
+                if (!selectedCard) return;
+                const request = { card: selectedCard, jobId: activeReuse?.id };
+                setReuseModal(request);
+                if (activeReuse) return;
+                void invoke<ProcessJob>("verify_sd_card_for_reuse", { source: selectedCard.path })
+                  .then(job => { follow(job); setReuseModal(current => current === request ? { ...request, jobId: job.id } : current); })
+                  .catch(reason => setReuseModal(current => current === request ? { ...request, error: String(reason) } : current));
+              }}>Prepare to format</button>
+            <p id={reuseHelpId}>{activeReuse ? "Open the running check."
+              : !selectedCard ? "Select a detected card to check it for reuse."
               : !repository ? "Set the SD Card Repository before checking the card."
-              : "Choose the card’s archive for a fresh comparison. This button only verifies both copies."}</p>
+              : "Find this card in the repository and verify both copies before formatting manually."}</p>
           </div>
         </div>
         <div className="sd-picker-destination">
@@ -251,5 +269,6 @@ export default function SdCardArchive({ jobs, refresh, onOpenJob, onSettings }: 
         follow(await invoke<ProcessJob>("verify_sd_card_archive", { folder }));
       })}>Verify an archive folder</button>
     </section>
+    </div>
   </div>;
 }

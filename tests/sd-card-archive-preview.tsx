@@ -15,6 +15,7 @@ const archiveFolder = repository + "\\SD-C8A01234_2026-11-21";
 const archiveId = "sd_archive_" + "a".repeat(32);
 const secondArchiveId = "sd_archive_" + "c".repeat(32);
 const totalBytes = 64 * 1024 ** 3;
+const reuseJobId = "sd_archive_" + "9".repeat(32);
 const checkpoint = {
   mode: "archive" as const, label: "CANON (E:)", phase: "Copying",
   totalBytes, copiedBytes: 24 * 1024 ** 3, verifiedBytes: 18 * 1024 ** 3,
@@ -51,6 +52,39 @@ const fixture = {
   otherJobsBlocked: false,
   pick: repository,
   verificationCount: 0,
+  librarySlow: false,
+  reuseReplaced: false,
+  reusePhase(phase: "compare" | "failed" | "matched") {
+    const job = this.jobs.find(item => item.id === reuseJobId);
+    if (!job?.sdCardArchive?.reuseProof) throw new Error("Missing synthetic reuse proof");
+    const proof = job.sdCardArchive.reuseProof;
+    const matched = phase === "matched";
+    const side = {
+      files: 246, folders: 14, bytes: totalBytes,
+      checkedFiles: matched ? 246 : 79, checkedBytes: matched ? totalBytes : 18 * 1024 ** 3,
+    };
+    Object.assign(proof, {
+      stage: phase === "compare" ? "compare" : "report",
+      archivesSearched: 4, candidates: 2,
+      card: { ...side, files: phase === "failed" ? 247 : 246 },
+      archive: { ...side }, archiveFolder, checksumFile: archiveFolder + "\\SD-C8A01234_2026-11-21.checksums.json",
+      manifestSha256: "2".repeat(64),
+      checkedAt: matched ? "2026-11-24T02:00:00Z" : null,
+    });
+    const currentPhase = matched ? "Card and repository matched" : phase === "failed" ? "Verification incomplete" : "Checking card checksums";
+    Object.assign(job.sdCardArchive, {
+      phase: currentPhase,
+      strictMetadata: matched,
+      archiveFolder: matched ? archiveFolder : null,
+      checksumFile: matched ? proof.checksumFile : null,
+    });
+    Object.assign(job, {
+      currentPhase, status: matched ? "completed" : phase === "failed" ? "needs_attention" : "running",
+      errors: phase === "failed" ? ["Mismatch: DCIM/extra.jpg"] : [],
+    });
+  },
+  libraryPreviewsActive: 0,
+  libraryPeakPreviews: 0,
   archiveId,
   complete(id: string) {
     const job = this.jobs.find(item => item.id === id);
@@ -113,6 +147,51 @@ desktop.__TAURI_INTERNALS__ = {
     }
     if (command === "controller_lightbox_bindings") return defaultLightboxBindings();
     if (command === "controller_surface" || command === "controller_ack") return;
+    if (command === "list_sd_archive_library") return {
+      books: [
+        { name: "SD-C8A01234_2026-11-21", card: "SD-C8A01234", dateHint: "2026-11-21" },
+        { name: "2025-12-01_SD-legacy-archive", card: "Legacy SD archive", dateHint: "2025-12-01" },
+      ],
+      skipped: 0,
+    };
+    if (command === "sd_archive_library_date_range") {
+      while (fixture.librarySlow) await new Promise(resolve => setTimeout(resolve, 50));
+      return args.name === "SD-C8A01234_2026-11-21"
+        ? { first: "2026-11-21", last: "2026-11-22", estimated: false, undated: 0 }
+        : { first: "2025-12-01", last: "2025-12-01", estimated: true, undated: 0 };
+    }
+    if (command === "sd_archive_library_page") {
+      const size = args.name === "SD-C8A01234_2026-11-21" ? 64 : 1;
+      const offset = Number(args.offset);
+      return {
+        revision: "browser-fixture:" + args.name,
+        card: "C8A01234", archiveDate: "2026-11-21", total: size, offset,
+        photos: Array.from({length: Math.max(0, Math.min(48, size - offset))}, (_, i) => {
+          const index = i + offset;
+          const name = "IMG_" + String(index + 1).padStart(4, "0") + ".JPG";
+          return { index, name, relative: "DCIM/100CANON/" + name };
+        }),
+      };
+    }
+    if (command === "sd_archive_library_preview") {
+      fixture.libraryPreviewsActive += 1;
+      fixture.libraryPeakPreviews = Math.max(fixture.libraryPeakPreviews, fixture.libraryPreviewsActive);
+      try {
+        while (fixture.librarySlow) await new Promise(resolve => setTimeout(resolve, 50));
+        const canvas = document.createElement("canvas");
+        canvas.width = 320;
+        canvas.height = 210;
+        const context = canvas.getContext("2d")!;
+        const gradient = context.createLinearGradient(0, 0, 320, 210);
+        gradient.addColorStop(0, "hsl(" + (Number(args.index) * 47 % 360) + ", 44%, 47%)");
+        gradient.addColorStop(1, "#354859");
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, 320, 210);
+        return canvas.toDataURL("image/jpeg").split(",")[1];
+      } finally {
+        fixture.libraryPreviewsActive -= 1;
+      }
+    }
     if (command === "scan_sd_card_archive") {
       if (!fixture.mounted || (args.source !== source && args.source !== secondSource)) throw new Error("The card is unavailable.");
       const second = args.source === secondSource;
@@ -170,13 +249,25 @@ desktop.__TAURI_INTERNALS__ = {
       return structuredClone(job);
     }
     if (command === "verify_sd_card_for_reuse") {
-      if (args.source !== source || args.folder !== archiveFolder) throw new Error("Choose the matching archive.");
-      const job = makeJob("sd_archive_" + "9".repeat(32), {
-        ...checkpoint, mode: "verifyReuse", phase: "Checking card checksums",
+      if (args.source !== source || !fixture.mounted) throw new Error("The selected card is unavailable.");
+      fixture.jobs = fixture.jobs.filter(job => job.id !== reuseJobId);
+      const job = makeJob(reuseJobId, {
+        ...checkpoint, mode: "verifyReuse", phase: "Looking for matching archives",
         copiedBytes: 0, filesCopied: 0, verifiedBytes: 0, filesVerified: 0,
+        reuseProof: {
+          stage: "lookup", cardId: "C8A01234", archivesSearched: 0, candidates: 0, unreadable: 0,
+          card: null, archive: null, archiveFolder: null, checksumFile: null, manifestSha256: null, checkedAt: null,
+        },
       }, source);
       fixture.jobs.unshift(job);
       return structuredClone(job);
+    }
+    if (command === "confirm_sd_card_reuse") {
+      if (fixture.reuseReplaced) throw new Error("The selected card was removed or replaced. Start a new reuse check.");
+      if (args.jobId !== reuseJobId || !fixture.jobs.find(job => job.id === reuseJobId && job.status === "completed")) {
+        throw new Error("A complete verification proof is required.");
+      }
+      return;
     }
     if (command === "verify_sd_card_archive") {
       const known = fixture.jobs.some(job => job.id === args.archiveJobId && job.sdCardArchive?.archiveFolder === archiveFolder);

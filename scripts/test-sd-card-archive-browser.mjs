@@ -445,31 +445,107 @@ try {
   });
 
 
-  await check("The red Prepare to format action runs a fresh read-only comparison in Jobs", async () => {
+  await check("Prepare to format finds an archive, tracks both checks, and shows a saved proof or a blocked result", async () => {
     await openArchive();
     const prepare = page.getByRole("button", { name: "Prepare to format", exact: true });
     await prepare.waitFor();
-    const before = (await calls("verify_sd_card_for_reuse")).length;
-    await page.getByRole("button", { name: "Refresh cards" }).click();
+    await page.getByRole("button", { name: "Refresh cards", exact: true }).click();
     assert.ok(await prepare.isDisabled());
     await canon.check();
-    assert.ok(await prepare.isEnabled());
-    await page.evaluate(() => { window.__sdArchiveFixture.pick = null; });
     await prepare.click();
-    assert.equal((await calls("verify_sd_card_for_reuse")).length, before);
-    await page.evaluate(folder => { window.__sdArchiveFixture.pick = folder; }, folder);
+    const modal = page.getByRole("dialog", {name: "Prepare to format", exact: true});
+    await modal.getByText("Looking for matching archives", {exact:true}).first().waitFor();
+    assert.deepEqual((await calls("verify_sd_card_for_reuse")).at(-1).args, {source});
+    assert.equal(await modal.getByText(/format the card manually/i).count(), 0);
+
+    await page.evaluate(() => window.__sdArchiveFixture.reusePhase("compare"));
+    await modal.getByText("Checking card and repository", {exact:true}).waitFor();
+    await modal.getByRole("progressbar", {name: "Source card checksums", exact:true}).waitFor();
+    await page.screenshot({path:output + "/prepare-to-format-comparison.png"});
+    await page.evaluate(() => window.__sdArchiveFixture.reusePhase("failed"));
+    await modal.getByText("Mismatch: DCIM/extra.jpg", {exact:true}).waitFor();
+    assert.equal(await modal.getByText(/format the card manually/i).count(), 0);
+    await modal.getByRole("button", {name: "Close", exact:true}).click();
+
     await prepare.click();
-    await page.getByText("Checking the card and its archive. Follow progress in Jobs.", { exact: true }).waitFor();
-    assert.ok(await prepare.isDisabled());
-    assert.deepEqual((await calls("verify_sd_card_for_reuse")).at(-1).args, { source, folder });
+    await modal.getByText("Looking for matching archives", {exact:true}).first().waitFor();
+    await page.evaluate(() => window.__sdArchiveFixture.reusePhase("matched"));
+    await modal.getByRole("heading", {name:"Verification proof", exact:true}).waitFor();
+    await modal.getByText(/246 of 246 SHA-256 checks matched/).first().waitFor();
+    assert.equal(await modal.getByText(/format the card manually/i).count(), 0);
+    await modal.getByRole("button", {name: "Confirm card for manual formatting", exact:true}).click();
+    await modal.getByText(/format the card manually/i).waitFor();
+    await modal.getByText("GogginPhoto", {exact:true}).waitFor();
+    await page.screenshot({path:output + "/prepare-to-format-proof.png"});
+    assert.equal((await calls("format_sd_card")).length, 0);
+    await modal.getByRole("button", {name: "View in Jobs", exact:true}).click();
     const jobId = "sd_archive_" + "9".repeat(32);
-    const cardRow = page.locator('[data-job-id="' + jobId + '"]');
-    await cardRow.getByRole("button", { name: "View in Jobs" }).click();
-    const job = archiveCard(jobId);
-    await page.evaluate(jobId => window.__sdArchiveFixture.complete(jobId), jobId);
     await filter.getByRole("button", { name: "History", exact: true }).click();
-    await job.getByText("The inserted card and repository copy matched during this check.", { exact: true }).waitFor();
-    await job.getByText(/GogginPhoto/).waitFor();
+    await archiveCard(jobId).getByRole("heading", {name:"Verification proof", exact:true}).waitFor();
+  });
+
+  await check("A card replacement blocks the manual handoff and requires a fresh check", async () => {
+    await openArchive();
+    await canon.check();
+    await page.getByRole("button",{name:"Prepare to format", exact:true}).click();
+    const modal = page.getByRole("dialog",{name:"Prepare to format", exact:true});
+    await modal.getByText("Looking for matching archives",{exact:true}).first().waitFor();
+    await page.evaluate(() => {
+      window.__sdArchiveFixture.reuseReplaced = true;
+      window.__sdArchiveFixture.reusePhase("matched");
+    });
+    const confirm = modal.getByRole("button",{name:"Confirm card for manual formatting", exact:true});
+    await confirm.click();
+    await modal.getByText(/card was removed or replaced/i).waitFor();
+    assert.equal(await modal.getByText("GogginPhoto",{exact:true}).count(), 0);
+    assert.equal(await confirm.count(), 0);
+    await modal.getByRole("button",{name:"Close", exact:true}).click();
+    await page.locator("dialog.sd-reuse-modal").waitFor({state:"detached"});
+    await page.evaluate(() => { window.__sdArchiveFixture.reuseReplaced = false; });
+  });
+
+  await check("Repository Library opens existing books while dates and previews arrive slowly", async () => {
+    await openArchive();
+    await page.evaluate(() => {
+      const fixture = window.__sdArchiveFixture;
+      fixture.mounted = false;
+      fixture.librarySlow = true;
+    });
+    await page.getByRole("button", {name:"Refresh cards", exact:true}).click();
+    await page.getByText("No mounted card found. Insert your card and refresh.", {exact:true}).waitFor();
+    await page.getByRole("button", {name:"Repository Library", exact:true}).click();
+    const book = page.getByRole("button", {name:/Open archive SD-C8A01234_2026-11-21/});
+    await book.waitFor();
+    await page.getByText("Finding photo dates…", {exact:true}).first().waitFor();
+    await book.click();
+    const spread = page.getByRole("region", {name:"Photo spread", exact:true});
+    await spread.getByRole("button",{name:"Enlarge IMG_0001.JPG", exact:true}).waitFor();
+    const next = page.getByRole("button", {name:"Next spread", exact:true});
+    await next.click();
+    await spread.getByRole("button",{name:"Enlarge IMG_0003.JPG", exact:true}).waitFor();
+    await page.evaluate(() => { window.__sdArchiveFixture.librarySlow = false; });
+    const image = spread.getByRole("img", {name:"IMG_0003.JPG", exact:true});
+    await image.waitFor();
+    await page.screenshot({path:output + "/repository-library-spread.png"});
+    await spread.getByRole("button",{name:"Enlarge IMG_0003.JPG", exact:true}).click();
+    await page.getByRole("dialog",{name:"IMG_0003.JPG", exact:true}).waitFor();
+    await page.keyboard.press("Escape");
+    await page.locator("dialog.sd-lib-lightbox").waitFor({state:"detached"});
+    await next.focus();
+    await page.keyboard.press("ArrowRight");
+    await spread.getByRole("button",{name:"Enlarge IMG_0005.JPG", exact:true}).waitFor();
+    await page.getByRole("slider",{name:"Jump to spread", exact:true}).press("End");
+    await spread.getByRole("button",{name:"Enlarge IMG_0063.JPG", exact:true}).waitFor();
+    assert.ok(await next.isDisabled());
+    assert.ok((await calls("sd_archive_library_page")).some(call => call.args.offset === 48));
+    assert.ok(await page.evaluate(() => window.__sdArchiveFixture.libraryPeakPreviews <= 2));
+    await page.getByRole("button", {name:"Back to shelf", exact:true}).click();
+    await book.waitFor();
+    await page.getByText("21–22 Nov 2026", {exact:true}).first().waitFor();
+    await page.getByText("Estimated",{exact:true}).first().waitFor();
+    assert.ok(await book.evaluate(node => document.activeElement === node), "closing the book restores focus to its spine");
+    await page.screenshot({path:output + "/repository-library-shelf.png"});
+    assert.equal((await calls("list_sd_archive_library")).length, 1);
   });
 
   assert.deepEqual(pageErrors, []);
